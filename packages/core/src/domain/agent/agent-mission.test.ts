@@ -8,6 +8,7 @@ import {
   AgentMission,
   computeQuoteMissionCatalogueChoiceSetHash,
   computeQuoteMissionChoiceSetHash,
+  computeQuoteMissionLineConfirmationChoiceSetHash,
   type AgentMissionResult,
   type AgentMissionTransition,
   type QuoteMissionDraftReferenceV1,
@@ -25,8 +26,11 @@ const CHOICE_4 = '00000000-0000-4000-8000-000000000008';
 const CHOICE_5 = '00000000-0000-4000-8000-000000000009';
 const CHOICE_6 = '00000000-0000-4000-8000-00000000000a';
 const PENDING_LINE_ID = '00000000-0000-4000-8000-00000000000b';
+const PROPOSAL_ID = '00000000-0000-4000-8000-00000000000c';
 const CREATED_AT = '2026-07-22T10:00:00.000Z';
 const DIGEST = 'a'.repeat(64);
+const DIFF_HASH = 'd'.repeat(64);
+const VAT_CONTEXT_DIGEST = 'b'.repeat(64);
 
 const draft = (
   sessionId = 'quote-session-1',
@@ -181,6 +185,24 @@ function awaitingCatalogueChoice(): AgentMission {
       },
     ],
     freeLineChoiceId: CHOICE_3,
+    occurredAt: at(2),
+  })).mission;
+}
+
+function awaitingLineConfirmation(): AgentMission {
+  return value(awaitingLinesV2().presentLineProposal({
+    expectedRevision: 2,
+    decisionId: DECISION_1,
+    pendingLineId: PENDING_LINE_ID,
+    proposalId: PROPOSAL_ID,
+    expectedDraft: draft(),
+    expectedWorkRevision: 4,
+    expectedCatalogue: { itemId: 'catalogue-1', revision: 7 },
+    expectedVatContextDigest: VAT_CONTEXT_DIGEST,
+    diffHash: DIFF_HASH,
+    confirmChoiceId: CHOICE_1,
+    editChoiceId: CHOICE_2,
+    cancelChoiceId: CHOICE_3,
     occurredAt: at(2),
   })).mission;
 }
@@ -747,6 +769,276 @@ describe('AgentMission — frontière catalogue M2-A-1', () => {
     expect(invalidated.event.data).toEqual({
       kind: 'decision_invalidated',
       reason: 'candidate_unavailable',
+    });
+  });
+});
+
+describe('AgentMission — proposition de ligne M2-A-2', () => {
+  const lineHashInput = {
+    missionId: MISSION_ID,
+    choiceSetRevision: 3,
+    decisionId: DECISION_1,
+    pendingLineId: PENDING_LINE_ID,
+    proposalId: PROPOSAL_ID,
+    proposalRevision: 1,
+    expectedDraft: draft(),
+    expectedWorkRevision: 4,
+    expectedCatalogue: { itemId: 'catalogue-1', revision: 7 },
+    expectedVatContextDigest: VAT_CONTEXT_DIGEST,
+    diffHash: DIFF_HASH,
+    choices: [
+      { choiceId: CHOICE_1, action: 'confirm_line' },
+      { choiceId: CHOICE_2, action: 'edit_line' },
+      { choiceId: CHOICE_3, action: 'cancel_line' },
+    ],
+  } as const;
+
+  it('scelle tous les fences et l’ordre sémantique des trois choix', () => {
+    const baseline = value(computeQuoteMissionLineConfirmationChoiceSetHash(lineHashInput));
+    expect(baseline).toMatch(/^[a-f0-9]{64}$/u);
+    expect(value(computeQuoteMissionLineConfirmationChoiceSetHash({
+      ...lineHashInput,
+      expectedWorkRevision: 5,
+    }))).not.toBe(baseline);
+    expect(value(computeQuoteMissionLineConfirmationChoiceSetHash({
+      ...lineHashInput,
+      expectedDraft: draft('quote-session-1', 2, 0),
+    }))).not.toBe(baseline);
+    expect(value(computeQuoteMissionLineConfirmationChoiceSetHash({
+      ...lineHashInput,
+      expectedCatalogue: { itemId: 'catalogue-1', revision: 8 },
+    }))).not.toBe(baseline);
+    expect(value(computeQuoteMissionLineConfirmationChoiceSetHash({
+      ...lineHashInput,
+      expectedVatContextDigest: 'c'.repeat(64),
+    }))).not.toBe(baseline);
+    expect(value(computeQuoteMissionLineConfirmationChoiceSetHash({
+      ...lineHashInput,
+      diffHash: 'e'.repeat(64),
+    }))).not.toBe(baseline);
+    expect(computeQuoteMissionLineConfirmationChoiceSetHash({
+      ...lineHashInput,
+      choices: [
+        lineHashInput.choices[1],
+        lineHashInput.choices[0],
+        lineHashInput.choices[2],
+      ],
+    } as never)).toMatchObject({
+      ok: false,
+      error: { field: 'choices[0]', reason: 'invalid_value' },
+    });
+    expect(computeQuoteMissionLineConfirmationChoiceSetHash({
+      ...lineHashInput,
+      choices: [
+        lineHashInput.choices[0],
+        { ...lineHashInput.choices[1], choiceId: CHOICE_1 },
+        lineHashInput.choices[2],
+      ],
+    })).toMatchObject({
+      ok: false,
+      error: { field: 'choices[1]', reason: 'invalid_value' },
+    });
+  });
+
+  it('persiste et réhydrate la décision complète, puis conserve son sens après un nouvel ACK', () => {
+    const mission = awaitingLineConfirmation();
+    expect(mission.phase).toBe('awaiting_line_confirmation');
+    expect(mission.payload.decision).toMatchObject({
+      kind: 'line_confirmation',
+      decisionId: DECISION_1,
+      choiceSetRevision: 3,
+      pendingLineId: PENDING_LINE_ID,
+      proposalId: PROPOSAL_ID,
+      proposalRevision: 1,
+      expectedDraft: draft(),
+      expectedWorkRevision: 4,
+      expectedCatalogue: { itemId: 'catalogue-1', revision: 7 },
+      diffHash: DIFF_HASH,
+      choices: lineHashInput.choices,
+    });
+    const rehydrated = value(AgentMission.rehydrate(mission.toSnapshot()));
+    expect(rehydrated.payload.decision).toEqual(mission.payload.decision);
+
+    const rebound = value(rehydrated.acknowledgeQuoteScreen({
+      expectedRevision: 3,
+      binding: binding(at(3)),
+      observedDraft: draft(),
+      draftHasCustomer: true,
+      occurredAt: at(3),
+    }));
+    expect(rebound.mission.phase).toBe('awaiting_line_confirmation');
+    expect(rebound.mission.payload.decision).toEqual(mission.payload.decision);
+  });
+
+  it('confirme atomiquement une seule ligne et avance les deux révisions du brouillon', () => {
+    const mission = awaitingLineConfirmation();
+    const confirmed = value(mission.confirmLine({
+      expectedRevision: 3,
+      decisionId: DECISION_1,
+      choiceSetRevision: 3,
+      choiceId: CHOICE_1,
+      pendingLineId: PENDING_LINE_ID,
+      proposalId: PROPOSAL_ID,
+      proposalRevision: 1,
+      expectedWorkRevision: 4,
+      observedDraft: draft(),
+      observedCatalogue: { itemId: 'catalogue-1', revision: 7 },
+      diffHash: DIFF_HASH,
+      updatedDraft: draft('quote-session-1', 2, 1),
+      occurredAt: at(3),
+    }));
+    expectTransition(confirmed, 3, 4, 'line_confirmed');
+    expect(confirmed.mission.phase).toBe('awaiting_lines');
+    expect(confirmed.mission.payload.draft).toEqual(draft('quote-session-1', 2, 1));
+    expect(confirmed.mission.payload.decision).toBeNull();
+    expect(confirmed.event.data).toMatchObject({
+      kind: 'line_confirmed',
+      pendingLineId: PENDING_LINE_ID,
+      proposalId: PROPOSAL_ID,
+      choiceId: CHOICE_1,
+      diffHash: DIFF_HASH,
+    });
+  });
+
+  it.each([
+    ['proposal', { proposalId: DECISION_2 }, 'proposal_id'],
+    ['work', { expectedWorkRevision: 5 }, 'work_revision'],
+    ['draft', { observedDraft: draft('quote-session-1', 2, 0) }, 'draft_reference'],
+    ['catalogue', {
+      observedCatalogue: { itemId: 'catalogue-1', revision: 8 },
+    }, 'catalogue_revision'],
+    ['diff', { diffHash: 'e'.repeat(64) }, 'diff_hash'],
+  ] as const)('refuse un fence %s périmé', (_label, override, reason) => {
+    const mission = awaitingLineConfirmation();
+    expect(mission.confirmLine({
+      expectedRevision: 3,
+      decisionId: DECISION_1,
+      choiceSetRevision: 3,
+      choiceId: CHOICE_1,
+      pendingLineId: PENDING_LINE_ID,
+      proposalId: PROPOSAL_ID,
+      proposalRevision: 1,
+      expectedWorkRevision: 4,
+      observedDraft: draft(),
+      observedCatalogue: { itemId: 'catalogue-1', revision: 7 },
+      diffHash: DIFF_HASH,
+      updatedDraft: draft('quote-session-1', 2, 1),
+      occurredAt: at(3),
+      ...override,
+    })).toMatchObject({
+      ok: false,
+      error: { code: 'agent_mission_decision_conflict', reason },
+    });
+  });
+
+  it('distingue explicitement modifier de supprimer la ligne', () => {
+    const mission = awaitingLineConfirmation();
+    const edited = value(mission.rejectLineProposal({
+      expectedRevision: 3,
+      decisionId: DECISION_1,
+      choiceSetRevision: 3,
+      choiceId: CHOICE_2,
+      pendingLineId: PENDING_LINE_ID,
+      proposalId: PROPOSAL_ID,
+      proposalRevision: 1,
+      expectedWorkRevision: 4,
+      observedDraft: draft(),
+      observedCatalogue: { itemId: 'catalogue-1', revision: 7 },
+      diffHash: DIFF_HASH,
+      workRevisionAfter: 5,
+      occurredAt: at(3),
+    }));
+    expect(edited.mission.phase).toBe('awaiting_line_details');
+    expect(edited.mission.payload.draft).toEqual(draft());
+    expect(edited.event.eventType).toBe('line_proposal_rejected');
+
+    const cancelled = value(mission.cancelLine({
+      expectedRevision: 3,
+      decisionId: DECISION_1,
+      choiceSetRevision: 3,
+      choiceId: CHOICE_3,
+      pendingLineId: PENDING_LINE_ID,
+      proposalId: PROPOSAL_ID,
+      proposalRevision: 1,
+      expectedWorkRevision: 4,
+      observedDraft: draft(),
+      observedCatalogue: { itemId: 'catalogue-1', revision: 7 },
+      diffHash: DIFF_HASH,
+      occurredAt: at(3),
+    }));
+    expect(cancelled.mission.phase).toBe('awaiting_lines');
+    expect(cancelled.mission.payload.draft).toEqual(draft());
+    expect(cancelled.event.eventType).toBe('line_cancelled');
+  });
+
+  it.each([
+    ['candidate_unavailable', 'awaiting_line_details'],
+    ['choice_set_stale', 'awaiting_lines'],
+  ] as const)(
+    'invalide une proposition devenue %s vers %s sans faux succès',
+    (reason, nextPhase) => {
+      const invalidated = value(awaitingLineConfirmation().invalidateLineProposal({
+        expectedRevision: 3,
+        reason,
+        nextPhase,
+        occurredAt: at(3),
+      }));
+      expect(invalidated.mission.phase).toBe(nextPhase);
+      expect(invalidated.mission.payload.decision).toBeNull();
+      expect(invalidated.event).toMatchObject({
+        eventType: 'decision_invalidated',
+        data: { kind: 'decision_invalidated', reason },
+      });
+      expect(value(AgentMission.rehydrate(invalidated.mission.toSnapshot())).phase)
+        .toBe(nextPhase);
+    },
+  );
+
+  it('autorise une demande de précision générique sans inventer un champ', () => {
+    const requested = value(awaitingLinesV2().requestLineDetails({
+      expectedRevision: 2,
+      pendingLineId: PENDING_LINE_ID,
+      requiredFact: null,
+      workRevisionAfter: 3,
+      occurredAt: at(2),
+    }));
+    expect(requested.mission.phase).toBe('awaiting_line_details');
+    expect(requested.event.data).toEqual({
+      kind: 'line_details_requested',
+      pendingLineId: PENDING_LINE_ID,
+      requiredFact: null,
+      workRevisionAfter: 3,
+    });
+  });
+
+  it('maintient le protocole V1 fermé aux transitions de proposition', () => {
+    const v1Lines = value(noSlotMission().acknowledgeQuoteScreen({
+      expectedRevision: 1,
+      binding: binding(),
+      observedDraft: draft(),
+      draftHasCustomer: true,
+      occurredAt: at(1),
+    })).mission;
+    expect(v1Lines.presentLineProposal({
+      expectedRevision: 2,
+      decisionId: DECISION_1,
+      pendingLineId: PENDING_LINE_ID,
+      proposalId: PROPOSAL_ID,
+      expectedDraft: draft(),
+      expectedWorkRevision: 4,
+      expectedCatalogue: null,
+      expectedVatContextDigest: VAT_CONTEXT_DIGEST,
+      diffHash: DIFF_HASH,
+      confirmChoiceId: CHOICE_1,
+      editChoiceId: CHOICE_2,
+      cancelChoiceId: CHOICE_3,
+      occurredAt: at(2),
+    })).toMatchObject({
+      ok: false,
+      error: {
+        code: 'agent_mission_invalid_transition',
+        action: 'present_line_proposal',
+      },
     });
   });
 });

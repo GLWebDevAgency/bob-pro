@@ -173,6 +173,10 @@ export class InMemoryPersistence implements Persistence {
     // Un double mémoire ne peut pas attester RLS owner + snapshot RR strictement read-only.
     return null;
   }
+  createAgentMissionResumeV2UnitOfWork(): null {
+    // La projection M2-A exige le même snapshot PostgreSQL réel, enrichi du work/catalogue/TVA.
+    return null;
+  }
   createAgentMissionFingerprintKeyVersionAuthority(
     _configuredBindings: readonly AgentMissionFingerprintKeyBinding[],
     _currentVersion: number,

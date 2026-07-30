@@ -1,8 +1,40 @@
 import { type DomainResult, ok, err } from '../../shared-kernel/result';
 import { type VatRate, VAT_RATES } from '../billing/shared/vat-rate';
 import { type LineCategory } from '../billing/shared/line-item';
-import { type Company } from '../company/company';
-import { type Customer } from '../customer/customer';
+import {
+  isBtpTrade,
+  type Company,
+  type Trade,
+  type VatRegime,
+} from '../company/company';
+import {
+  type Customer,
+  type CustomerType,
+} from '../customer/customer';
+
+/**
+ * Faits minimaux et autoritaires nécessaires au calcul de TVA d'une ligne.
+ *
+ * Ce contrat purpose-specific permet aux missions Bob de relire uniquement les colonnes utiles
+ * sous RLS, tout en partageant exactement le même moteur que les use cases historiques fondés sur
+ * les agrégats Company/Customer.
+ */
+export interface VatDecisionFacts {
+  readonly companyVatRegime: VatRegime;
+  readonly companyTrade: Trade;
+  readonly customerType: CustomerType;
+  readonly customerIsSubcontractingBtp: boolean;
+}
+
+export interface SuggestVatFromFactsInput {
+  readonly facts: VatDecisionFacts;
+  readonly category: LineCategory;
+  readonly requestedRate: number;
+  readonly context?: {
+    readonly housingOlderThan2y?: boolean;
+    readonly energyRenovation?: boolean;
+  };
+}
 
 export interface SuggestVatInput {
   company: Company;
@@ -14,8 +46,35 @@ export interface SuggestVatInput {
   context?: { housingOlderThan2y?: boolean; energyRenovation?: boolean };
 }
 
-export function suggestVatRate(input: SuggestVatInput): DomainResult<VatRate> {
-  const { company, customer, category, context, requestedRate } = input;
+export function vatDecisionFactsFromAggregates(
+  company: Company,
+  customer: Customer,
+): VatDecisionFacts {
+  return Object.freeze({
+    // L'agrégat reste l'autorité de sa propre sémantique. Le getter fournit la donnée brute,
+    // tandis que la méthode porte l'invariant public déjà consommé par les use cases historiques.
+    companyVatRegime: company.isVatFranchise() ? 'franchise' : company.vatRegime,
+    companyTrade: company.trade,
+    customerType: customer.type,
+    customerIsSubcontractingBtp: customer.isSubcontractingBtp,
+  });
+}
+
+export function requiresVatAutoliquidation(facts: VatDecisionFacts): boolean {
+  return isBtpTrade(facts.companyTrade)
+    && facts.customerType === 'b2b'
+    && facts.customerIsSubcontractingBtp;
+}
+
+export function suggestVatRateFromFacts(
+  input: SuggestVatFromFactsInput,
+): DomainResult<VatRate> {
+  const {
+    facts,
+    category,
+    context,
+    requestedRate,
+  } = input;
 
   // La frontière de persistance doit toujours transmettre le taux explicitement confirmé.
   // Ni le métier ni un contexte partiel ne valent consentement fiscal.
@@ -28,7 +87,7 @@ export function suggestVatRate(input: SuggestVatInput): DomainResult<VatRate> {
   }
 
   // 1. Franchise en base : 0 obligatoire.
-  if (company.isVatFranchise()) {
+  if (facts.companyVatRegime === 'franchise') {
     if (requestedRate !== 0)
       return err({ code: 'VAT_RATE_NOT_APPLICABLE', rate: requestedRate, reason: 'franchise_293B' });
     return ok(0);
@@ -46,7 +105,7 @@ export function suggestVatRate(input: SuggestVatInput): DomainResult<VatRate> {
     return ok(0);
   }
   // 3. Autoliquidation BTP B2B sous-traitance : 0 obligatoire.
-  if (company.requiresAutoliquidation({ type: customer.type, isSubcontractingBtp: customer.isSubcontractingBtp })) {
+  if (requiresVatAutoliquidation(facts)) {
     if (requestedRate !== 0)
       return err({ code: 'VAT_RATE_NOT_APPLICABLE', rate: requestedRate, reason: 'autoliquidation' });
     return ok(0);
@@ -67,4 +126,13 @@ export function suggestVatRate(input: SuggestVatInput): DomainResult<VatRate> {
     return err({ code: 'VAT_RATE_NOT_APPLICABLE', rate: requestedRate, reason: 'unknown' });
 
   return ok(requestedRate as VatRate);
+}
+
+export function suggestVatRate(input: SuggestVatInput): DomainResult<VatRate> {
+  return suggestVatRateFromFacts({
+    facts: vatDecisionFactsFromAggregates(input.company, input.customer),
+    category: input.category,
+    requestedRate: input.requestedRate,
+    ...(input.context === undefined ? {} : { context: input.context }),
+  });
 }

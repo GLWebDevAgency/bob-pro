@@ -148,14 +148,14 @@ BEGIN
 
   event_table_oid := pg_catalog.to_regclass('public.agent_mission_events');
   event_guard_oid :=
-    pg_catalog.to_regprocedure('public.guard_agent_mission_event_append_v2()');
+    pg_catalog.to_regprocedure('public.guard_agent_mission_event_append_v3()');
   SELECT pg_catalog.count(*)::INTEGER
     INTO event_trigger_count
     FROM pg_catalog.pg_trigger AS trigger
    WHERE trigger.tgrelid = event_table_oid
      AND trigger.tgname IN (
        'agent_mission_events_append_guard_v1',
-       'agent_mission_events_append_guard_v2'
+       'agent_mission_events_append_guard_v3'
      )
      AND NOT trigger.tgisinternal;
   IF event_guard_oid IS NULL
@@ -164,7 +164,7 @@ BEGIN
        SELECT 1
          FROM pg_catalog.pg_trigger AS trigger
         WHERE trigger.tgrelid = event_table_oid
-          AND trigger.tgname = 'agent_mission_events_append_guard_v2'
+          AND trigger.tgname = 'agent_mission_events_append_guard_v3'
           AND NOT trigger.tgisinternal
           AND trigger.tgenabled = 'O'
           AND trigger.tgtype = 7
@@ -179,7 +179,7 @@ BEGIN
   quote_line_work_table_oid :=
     pg_catalog.to_regclass('public.agent_mission_quote_line_work');
   quote_line_work_guard_oid :=
-    pg_catalog.to_regprocedure('public.guard_agent_mission_quote_line_work_v2()');
+    pg_catalog.to_regprocedure('public.guard_agent_mission_quote_line_work_v3()');
   SELECT pg_catalog.count(*)::INTEGER
     INTO quote_line_work_trigger_count
     FROM pg_catalog.pg_trigger AS trigger
@@ -191,7 +191,7 @@ BEGIN
        SELECT 1
          FROM pg_catalog.pg_trigger AS trigger
         WHERE trigger.tgrelid = quote_line_work_table_oid
-          AND trigger.tgname = 'agent_mission_quote_line_work_guard_v2'
+          AND trigger.tgname = 'agent_mission_quote_line_work_guard_v3'
           AND NOT trigger.tgisinternal
           AND trigger.tgenabled = 'O'
           AND trigger.tgtype = 31
@@ -856,9 +856,9 @@ BEGIN
   FOREACH function_name IN ARRAY ARRAY[
     'guard_agent_mission_mutation_v2()',
     'guard_quote_draft_agent_mission_v1()',
-    'guard_agent_mission_quote_line_work_v2()',
+    'guard_agent_mission_quote_line_work_v3()',
     'reject_agent_mission_event_mutation_v1()',
-    'guard_agent_mission_event_append_v2()',
+    'guard_agent_mission_event_append_v3()',
     'require_agent_mission_event_v1()',
     'guard_catalogue_prestation_revision_v1()',
     'sync_catalogue_prestation_search_tokens_v1()',
@@ -1003,9 +1003,9 @@ BEGIN
          WHERE function.oid IN (
            'public.guard_agent_mission_mutation_v2()'::pg_catalog.regprocedure,
            'public.guard_quote_draft_agent_mission_v1()'::pg_catalog.regprocedure,
-           'public.guard_agent_mission_quote_line_work_v2()'::pg_catalog.regprocedure,
+           'public.guard_agent_mission_quote_line_work_v3()'::pg_catalog.regprocedure,
            'public.reject_agent_mission_event_mutation_v1()'::pg_catalog.regprocedure,
-           'public.guard_agent_mission_event_append_v2()'::pg_catalog.regprocedure,
+           'public.guard_agent_mission_event_append_v3()'::pg_catalog.regprocedure,
            'public.require_agent_mission_event_v1()'::pg_catalog.regprocedure,
            'public.guard_catalogue_prestation_revision_v1()'::pg_catalog.regprocedure,
            'public.sync_catalogue_prestation_search_tokens_v1()'::pg_catalog.regprocedure,
@@ -1102,9 +1102,9 @@ BEGIN
            WHERE function.oid IN (
              'public.guard_agent_mission_mutation_v2()'::pg_catalog.regprocedure,
              'public.guard_quote_draft_agent_mission_v1()'::pg_catalog.regprocedure,
-             'public.guard_agent_mission_quote_line_work_v2()'::pg_catalog.regprocedure,
+             'public.guard_agent_mission_quote_line_work_v3()'::pg_catalog.regprocedure,
              'public.reject_agent_mission_event_mutation_v1()'::pg_catalog.regprocedure,
-             'public.guard_agent_mission_event_append_v2()'::pg_catalog.regprocedure,
+             'public.guard_agent_mission_event_append_v3()'::pg_catalog.regprocedure,
              'public.require_agent_mission_event_v1()'::pg_catalog.regprocedure,
              'public.guard_catalogue_prestation_revision_v1()'::pg_catalog.regprocedure,
              'public.sync_catalogue_prestation_search_tokens_v1()'::pg_catalog.regprocedure,
@@ -1159,9 +1159,9 @@ BEGIN
     FOREACH function_name IN ARRAY ARRAY[
       'guard_agent_mission_mutation_v2()',
       'guard_quote_draft_agent_mission_v1()',
-      'guard_agent_mission_quote_line_work_v2()',
+      'guard_agent_mission_quote_line_work_v3()',
       'reject_agent_mission_event_mutation_v1()',
-      'guard_agent_mission_event_append_v2()',
+      'guard_agent_mission_event_append_v3()',
       'require_agent_mission_event_v1()',
       'guard_catalogue_prestation_revision_v1()',
       'sync_catalogue_prestation_search_tokens_v1()',

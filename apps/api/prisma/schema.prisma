@@ -514,33 +514,35 @@ model AgentMission {
 /// Faits normalisés et éphémères d'une ligne de devis en cours de résolution par AgentMission.
 /// Aucun transcript, nom client, prompt, score LLM ou snapshot catalogue n'est stocké ici.
 model AgentMissionQuoteLineWork {
-  id                        String        @id @db.Uuid
-  companyId                 String
-  ownerUserId               String
-  missionId                 String        @db.Uuid
-  mission                   AgentMission  @relation("AgentMissionQuoteLineWork", fields: [missionId, companyId, ownerUserId], references: [id, companyId, ownerUserId], onDelete: Cascade, onUpdate: Cascade)
-  ordinal                   Int
-  revision                  Int
-  state                     String
-  origin                    String
-  catalogueResolution       String        @default("pending")
-  serviceReference          String?
-  category                  LineCategory?
-  quantityMilli             BigInt?
-  unit                      String?
-  unitPriceCents            Int?
-  requestedVatRate          Decimal?      @db.Decimal(4, 2)
-  priceBasis                String?
-  housingOlderThan2y        Boolean?
-  energyRenovation          Boolean?
-  requiredFact              String?
-  catalogueItemId           String?
-  expectedCatalogueRevision Int?
-  proposalId                String?       @db.Uuid
-  proposalRevision          Int?
-  proposalDiffHash          String?       @db.Char(64)
-  createdAt                 DateTime      @db.Timestamptz(6)
-  updatedAt                 DateTime      @db.Timestamptz(6)
+  id                                 String        @id @db.Uuid
+  companyId                          String
+  ownerUserId                        String
+  missionId                          String        @db.Uuid
+  mission                            AgentMission  @relation("AgentMissionQuoteLineWork", fields: [missionId, companyId, ownerUserId], references: [id, companyId, ownerUserId], onDelete: Cascade, onUpdate: Cascade)
+  ordinal                            Int
+  revision                           Int
+  state                              String
+  origin                             String
+  catalogueResolution                String        @default("pending")
+  serviceReference                   String?
+  category                           LineCategory?
+  quantityMilli                      BigInt?
+  unit                               String?
+  unitPriceCents                     Int?
+  requestedVatRate                   Decimal?      @db.Decimal(4, 2)
+  priceBasis                         String?
+  housingOlderThan2y                 Boolean?
+  energyRenovation                   Boolean?
+  requiredFact                       String?
+  catalogueItemId                    String?
+  expectedCatalogueRevision          Int?
+  catalogueCategoryOverrideConfirmed Boolean       @default(false)
+  catalogueUnitOverrideConfirmed     Boolean       @default(false)
+  proposalId                         String?       @db.Uuid
+  proposalRevision                   Int?
+  proposalDiffHash                   String?       @db.Char(64)
+  createdAt                          DateTime      @db.Timestamptz(6)
+  updatedAt                          DateTime      @db.Timestamptz(6)
 
   @@unique([missionId, ordinal], map: "agent_mission_quote_line_work_mission_ordinal_key")
   @@index([companyId, ownerUserId, missionId, ordinal], map: "agent_mission_quote_line_work_owner_queue_idx")

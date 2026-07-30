@@ -65,6 +65,12 @@ export interface ContinueQuoteAgentMissionLineQueueInput extends AgentMissionOwn
   readonly parentCommandId: string;
 }
 
+export interface AgentMissionCatalogueContinuationReceipt {
+  readonly commandId: string;
+  readonly eventType: 'catalogue_not_found' | 'catalogue_choices_presented';
+  readonly missionRevisionAfter: number;
+}
+
 export interface ContinueQuoteAgentMissionLineQueueOutput {
   readonly outcome:
     | 'catalogue_not_found'
@@ -76,6 +82,7 @@ export interface ContinueQuoteAgentMissionLineQueueOutput {
   readonly mission: AgentMissionViewV1;
   readonly pendingLineId: string | null;
   readonly presentedChoiceCount: number;
+  readonly continuationReceipt: AgentMissionCatalogueContinuationReceipt | null;
 }
 
 export interface ContinueQuoteAgentMissionLineQueueDeps {
@@ -206,6 +213,25 @@ function lockedHead(
   return workItems[0] as AgentMissionQuoteLineWork;
 }
 
+function receiptFromSnapshot(
+  snapshot: AgentMissionEventSnapshot,
+): AgentMissionCatalogueContinuationReceipt {
+  if (
+    snapshot.eventType !== 'catalogue_not_found'
+    && snapshot.eventType !== 'catalogue_choices_presented'
+  ) {
+    return invalidPersistedState(
+      'agent_mission_event',
+      'invalid_catalogue_continuation_receipt',
+    );
+  }
+  return {
+    commandId: snapshot.commandId,
+    eventType: snapshot.eventType,
+    missionRevisionAfter: snapshot.missionRevisionAfter,
+  };
+}
+
 function replayOutput(
   snapshot: AgentMissionEventSnapshot,
   mission: AgentMissionViewV1,
@@ -219,6 +245,7 @@ function replayOutput(
       mission,
       pendingLineId: snapshot.data.pendingLineId,
       presentedChoiceCount: 0,
+      continuationReceipt: receiptFromSnapshot(snapshot),
     };
   }
   if (
@@ -230,6 +257,7 @@ function replayOutput(
       mission,
       pendingLineId: snapshot.data.pendingLineId,
       presentedChoiceCount: snapshot.data.candidateCount + 1,
+      continuationReceipt: receiptFromSnapshot(snapshot),
     };
   }
   return invalidPersistedState(
@@ -367,6 +395,7 @@ export class ContinueQuoteAgentMissionLineQueue {
                 mission: view.value,
                 pendingLineId: null,
                 presentedChoiceCount: 0,
+                continuationReceipt: null,
               } satisfies ContinueQuoteAgentMissionLineQueueOutput,
             } as const;
           }
@@ -429,6 +458,7 @@ export class ContinueQuoteAgentMissionLineQueue {
                 mission: view.value,
                 pendingLineId: null,
                 presentedChoiceCount: 0,
+                continuationReceipt: null,
               } satisfies ContinueQuoteAgentMissionLineQueueOutput,
             } as const;
           }
@@ -446,6 +476,7 @@ export class ContinueQuoteAgentMissionLineQueue {
                 mission: view.value,
                 pendingLineId: head.id,
                 presentedChoiceCount: 0,
+                continuationReceipt: null,
               } satisfies ContinueQuoteAgentMissionLineQueueOutput,
             } as const;
           }
@@ -483,6 +514,7 @@ export class ContinueQuoteAgentMissionLineQueue {
                 mission: view.value,
                 pendingLineId: head.id,
                 presentedChoiceCount: 0,
+                continuationReceipt: null,
               } satisfies ContinueQuoteAgentMissionLineQueueOutput,
             } as const;
           }
@@ -575,6 +607,7 @@ export class ContinueQuoteAgentMissionLineQueue {
           });
           if (!event.ok) abort(event.error);
           await transaction.events.append(event.value);
+          const eventSnapshot = event.value.toSnapshot();
           const view = toAgentMissionView(transition.mission, now);
           if (!view.ok) abort(view.error);
           return {
@@ -584,6 +617,7 @@ export class ContinueQuoteAgentMissionLineQueue {
               mission: view.value,
               pendingLineId: head.id,
               presentedChoiceCount,
+              continuationReceipt: receiptFromSnapshot(eventSnapshot),
             } satisfies ContinueQuoteAgentMissionLineQueueOutput,
           } as const;
         },

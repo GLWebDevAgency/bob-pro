@@ -41,6 +41,10 @@ function serviceSpies() {
       ok: true as const,
       value: { mission: null },
     })),
+    getCurrentResumeV2: vi.fn(async () => ({
+      ok: true as const,
+      value: { mission: null, presentation: null },
+    })),
     start: vi.fn(async () => ({
       ok: true as const,
       value: {
@@ -282,6 +286,7 @@ class RecordingAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
           return true;
         },
         selectCustomerCas: async () => null,
+        appendLineCas: async () => null,
       },
       quoteLineWork: {
         listForUpdate: async () => [],
@@ -305,6 +310,9 @@ class RecordingAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
       catalogueCandidates: {
         search: async () => ({ candidates: [], truncated: false }),
         getById: async () => null,
+      },
+      quoteVatContext: {
+        getForUpdate: async () => null,
       },
     });
     return { status: 'executed', value };
@@ -342,18 +350,44 @@ describe('AgentMissionController M1-A', () => {
     const authority = testAuthority();
     const { controller: candidate, spies } = controller(authority);
 
-    await expect(candidate.getCurrentResume({})).resolves.toEqual({
+    await expect(candidate.getCurrentResume({}, undefined)).resolves.toEqual({
       mission: null,
     });
     expect(spies.getCurrentResume).toHaveBeenCalledOnce();
+    expect(spies.getCurrentResumeV2).not.toHaveBeenCalled();
     expect(authority.prepare).not.toHaveBeenCalled();
 
     const invalid = await candidate.getCurrentResume({
       ownerUserId: 'forged-owner',
-    }).catch((error: unknown) => error);
+    }, undefined).catch((error: unknown) => error);
     expect(invalid).toBeInstanceOf(HttpException);
     expect((invalid as HttpException).getStatus()).toBe(422);
     expect(spies.getCurrentResume).toHaveBeenCalledOnce();
+    expect(spies.getCurrentResumeV2).not.toHaveBeenCalled();
+  });
+
+  it('négocie la reprise V2 explicitement sans fallback silencieux', async () => {
+    const authority = testAuthority();
+    const { controller: candidate, spies } = controller(authority);
+
+    await expect(candidate.getCurrentResume({}, '2')).resolves.toEqual({
+      mission: null,
+      presentation: null,
+    });
+    expect(spies.getCurrentResumeV2).toHaveBeenCalledOnce();
+    expect(spies.getCurrentResume).not.toHaveBeenCalled();
+    expect(authority.prepare).not.toHaveBeenCalled();
+
+    for (const unsupported of ['', '1', '3', ' 2 ']) {
+      const invalid = await candidate.getCurrentResume(
+        {},
+        unsupported,
+      ).catch((error: unknown) => error);
+      expect(invalid).toBeInstanceOf(HttpException);
+      expect((invalid as HttpException).getStatus()).toBe(422);
+    }
+    expect(spies.getCurrentResumeV2).toHaveBeenCalledOnce();
+    expect(spies.getCurrentResume).not.toHaveBeenCalled();
   });
 
   it('fixe la baseline idempotente à 200 avant le statut dynamique 201 de la création', () => {

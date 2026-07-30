@@ -19,6 +19,9 @@ import {
 import {
   type AgentMissionQuoteLineWorkRepositoryPort,
 } from './agent-mission-quote-line-work';
+import {
+  type QuoteVatContextPort,
+} from './quote-vat-context';
 
 export interface AgentMissionRealtimeAuthorityProof {
   /** Version corrélée au préfixe bam*, au binding de lease et à la mission durable. */
@@ -109,6 +112,7 @@ export interface AgentMissionTransaction {
   readonly quoteScreen: AgentMissionQuoteScreenAuthorityPort;
   readonly customers: CustomerCandidateSearchPort & CustomerCandidateReadPort;
   readonly catalogueCandidates: CatalogueCandidateSearchPort;
+  readonly quoteVatContext: QuoteVatContextPort;
 }
 
 export type AgentMissionCompanyUnavailableReason = 'missing' | 'closed';

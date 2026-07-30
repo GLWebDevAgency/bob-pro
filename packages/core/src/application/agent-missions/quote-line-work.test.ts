@@ -5,9 +5,15 @@ import {
   AGENT_MISSION_QUOTE_LINE_MAX_SERVICE_REFERENCE_LENGTH,
   consumeCatalogueChoiceOnQuoteLineWork,
   invalidateCatalogueChoiceOnQuoteLineWork,
+  invalidateQuoteLineProposalOnWork,
+  patchQuoteLineFactOnWork,
   parseAgentMissionQuoteLineWork,
+  presentQuoteLineProposalOnWork,
   presentCatalogueChoicesOnQuoteLineWork,
   recordCatalogueNotFoundOnQuoteLineWork,
+  rejectQuoteLineProposalOnWork,
+  requestQuoteLineCatalogueRefreshOnWork,
+  requestQuoteLineDetailsOnWork,
   type AgentMissionQuoteLineWork,
 } from './quote-line-work';
 
@@ -41,6 +47,8 @@ function queued(
     catalogueResolution: 'pending',
     catalogueItemId: null,
     expectedCatalogueRevision: null,
+    catalogueCategoryOverrideConfirmed: false,
+    catalogueUnitOverrideConfirmed: false,
     proposalId: null,
     proposalRevision: null,
     proposalDiffHash: null,
@@ -94,6 +102,22 @@ describe('parseAgentMissionQuoteLineWork', () => {
     });
   });
 
+  it('normalise la forme M2-A-1 historique avec des preuves override à false', () => {
+    const {
+      catalogueCategoryOverrideConfirmed: _categoryOverride,
+      catalogueUnitOverrideConfirmed: _unitOverride,
+      ...legacy
+    } = queued();
+
+    expect(parseAgentMissionQuoteLineWork(legacy)).toMatchObject({
+      ok: true,
+      value: {
+        catalogueCategoryOverrideConfirmed: false,
+        catalogueUnitOverrideConfirmed: false,
+      },
+    });
+  });
+
   it.each([
     ['id', 'not-a-uuid', 'invalid_uuid'],
     ['companyId', ' company-1', 'invalid_identifier'],
@@ -126,6 +150,8 @@ describe('parseAgentMissionQuoteLineWork', () => {
     ['catalogueResolution', 'unknown', 'invalid_value'],
     ['catalogueItemId', 'catalogue/1', 'invalid_identifier'],
     ['expectedCatalogueRevision', 0, 'invalid_revision'],
+    ['catalogueCategoryOverrideConfirmed', 'yes', 'invalid_value'],
+    ['catalogueUnitOverrideConfirmed', null, 'invalid_value'],
     ['proposalId', 'not-a-uuid', 'invalid_uuid'],
     ['proposalRevision', 2, 'invalid_revision'],
     ['proposalDiffHash', 'ABC', 'invalid_value'],
@@ -221,6 +247,13 @@ describe('parseAgentMissionQuoteLineWork', () => {
         proposalDiffHash: DIFF_HASH,
       }),
     ],
+    [
+      'un override catalogue exige une sélection réelle',
+      queued({
+        catalogueResolution: 'free',
+        catalogueCategoryOverrideConfirmed: true,
+      }),
+    ],
   ])('rejette un état incohérent : %s', (_label, value) => {
     const result = parseAgentMissionQuoteLineWork(value);
 
@@ -264,6 +297,14 @@ describe('parseAgentMissionQuoteLineWork', () => {
     }))).toMatchObject({ ok: true });
   });
 
+  it('autorise le retour générique aux détails sans requiredFact après résolution catalogue', () => {
+    expect(parseAgentMissionQuoteLineWork(queued({
+      state: 'awaiting_details',
+      requiredFact: null,
+      catalogueResolution: 'free',
+    }))).toMatchObject({ ok: true });
+  });
+
   it('rejette une horloge qui régresse', () => {
     expect(parseAgentMissionQuoteLineWork(queued({
       updatedAt: '2026-07-29T11:59:59.999Z',
@@ -281,6 +322,282 @@ describe('parseAgentMissionQuoteLineWork', () => {
     expect(parseAgentMissionQuoteLineWork(queued({ ordinal: 21 }))).toMatchObject({
       ok: true,
       value: { ordinal: 21 },
+    });
+  });
+});
+
+describe('transitions de proposition M2-A-2', () => {
+  const occurredAt = '2026-07-29T12:00:01.000Z';
+  const selectedCatalogue = {
+    id: 'catalogue-1',
+    revision: 7,
+    label: 'Heure de plomberie',
+    category: 'labor' as const,
+    unit: 'heure',
+    unitPriceHT: 5_500,
+    vatRate: 20 as const,
+  };
+
+  it('n’accepte une réponse courte que pour le requiredFact exact', () => {
+    const current = queued({
+      state: 'awaiting_details',
+      requiredFact: 'unit_price',
+      catalogueResolution: 'free',
+      unitPriceCents: null,
+      priceBasis: null,
+    });
+    expect(patchQuoteLineFactOnWork({
+      workItem: current,
+      expectedRevision: 1,
+      patch: { field: 'unit_price', unitPriceCents: 5_500, basis: 'per_unit' },
+      scope: 'answer_required_fact',
+      selectedCatalogue: null,
+      selectedCatalogueStatus: 'not_required',
+      occurredAt,
+    })).toMatchObject({
+      ok: true,
+      value: {
+        state: 'queued',
+        requiredFact: null,
+        unitPriceCents: 5_500,
+        priceBasis: 'per_unit',
+        revision: 2,
+      },
+    });
+    expect(patchQuoteLineFactOnWork({
+      workItem: current,
+      expectedRevision: 1,
+      patch: { field: 'quantity', quantityMilli: 3_000 },
+      scope: 'answer_required_fact',
+      selectedCatalogue: null,
+      selectedCatalogueStatus: 'not_required',
+      occurredAt,
+    })).toMatchObject({
+      ok: false,
+      error: {
+        code: 'agent_mission_quote_line_work_invalid_transition',
+        action: 'patch_line_fact',
+      },
+    });
+  });
+
+  it('mémorise puis conserve un arbitrage explicite différent du catalogue', () => {
+    const current = queued({
+      state: 'awaiting_details',
+      requiredFact: 'category',
+      catalogueResolution: 'selected',
+      catalogueItemId: selectedCatalogue.id,
+      expectedCatalogueRevision: selectedCatalogue.revision,
+      category: 'supply',
+    });
+    const patched = patchQuoteLineFactOnWork({
+      workItem: current,
+      expectedRevision: 1,
+      patch: { field: 'category', value: 'supply' },
+      scope: 'explicit_correction',
+      selectedCatalogue,
+      selectedCatalogueStatus: 'matched',
+      occurredAt,
+    });
+
+    expect(patched).toMatchObject({
+      ok: true,
+      value: {
+        category: 'supply',
+        catalogueCategoryOverrideConfirmed: true,
+        state: 'queued',
+        revision: 2,
+      },
+    });
+    if (!patched.ok) throw new Error('expected patched work');
+    expect(parseAgentMissionQuoteLineWork(patched.value)).toEqual(patched);
+  });
+
+  it('conserve la correction mais relance la résolution si le catalogue est périmé', () => {
+    expect(patchQuoteLineFactOnWork({
+      workItem: queued({
+        state: 'awaiting_details',
+        requiredFact: 'unit',
+        catalogueResolution: 'selected',
+        catalogueItemId: selectedCatalogue.id,
+        expectedCatalogueRevision: selectedCatalogue.revision,
+      }),
+      expectedRevision: 1,
+      patch: { field: 'unit', value: 'jour' },
+      scope: 'explicit_correction',
+      selectedCatalogue: null,
+      selectedCatalogueStatus: 'stale',
+      occurredAt,
+    })).toMatchObject({
+      ok: true,
+      value: {
+        unit: 'jour',
+        state: 'queued',
+        catalogueResolution: 'pending',
+        catalogueItemId: null,
+        expectedCatalogueRevision: null,
+        catalogueCategoryOverrideConfirmed: false,
+        catalogueUnitOverrideConfirmed: false,
+      },
+    });
+  });
+
+  it('réinitialise recherche, fence et overrides lors d’une correction du libellé', () => {
+    expect(patchQuoteLineFactOnWork({
+      workItem: queued({
+        state: 'awaiting_confirmation',
+        catalogueResolution: 'selected',
+        catalogueItemId: selectedCatalogue.id,
+        expectedCatalogueRevision: selectedCatalogue.revision,
+        catalogueCategoryOverrideConfirmed: true,
+        catalogueUnitOverrideConfirmed: true,
+        proposalId: PROPOSAL_ID,
+        proposalRevision: 1,
+        proposalDiffHash: DIFF_HASH,
+      }),
+      expectedRevision: 1,
+      patch: { field: 'service_reference', value: 'Entretien fontaines' },
+      scope: 'explicit_correction',
+      selectedCatalogue: null,
+      selectedCatalogueStatus: 'not_required',
+      occurredAt,
+    })).toMatchObject({
+      ok: true,
+      value: {
+        serviceReference: 'Entretien fontaines',
+        state: 'queued',
+        catalogueResolution: 'pending',
+        catalogueItemId: null,
+        expectedCatalogueRevision: null,
+        catalogueCategoryOverrideConfirmed: false,
+        catalogueUnitOverrideConfirmed: false,
+        proposalId: null,
+      },
+    });
+  });
+
+  it('enchaîne question, proposition puis édition générique avec révisions exactes', () => {
+    const requested = requestQuoteLineDetailsOnWork({
+      workItem: queued({
+        catalogueResolution: 'free',
+        unitPriceCents: null,
+        priceBasis: null,
+      }),
+      expectedRevision: 1,
+      requiredFact: 'unit_price',
+      occurredAt,
+    });
+    expect(requested).toMatchObject({
+      ok: true,
+      value: { revision: 2, state: 'awaiting_details', requiredFact: 'unit_price' },
+    });
+
+    const proposed = presentQuoteLineProposalOnWork({
+      workItem: queued({ catalogueResolution: 'free' }),
+      expectedRevision: 1,
+      facts: {
+        serviceReference: 'Main-d’œuvre plomberie',
+        category: 'labor',
+        quantityMilli: 2_000,
+        unit: 'heure',
+        unitPriceCents: 5_500,
+        requestedVatRate: 20,
+        priceBasis: 'per_unit',
+        housingOlderThan2y: null,
+        energyRenovation: null,
+      },
+      proposalId: PROPOSAL_ID,
+      proposalDiffHash: DIFF_HASH,
+      occurredAt,
+    });
+    expect(proposed).toMatchObject({
+      ok: true,
+      value: {
+        revision: 2,
+        state: 'awaiting_confirmation',
+        proposalId: PROPOSAL_ID,
+      },
+    });
+    if (!proposed.ok) throw new Error('expected proposal');
+
+    expect(rejectQuoteLineProposalOnWork({
+      workItem: proposed.value,
+      expectedRevision: 2,
+      proposalId: PROPOSAL_ID,
+      occurredAt: '2026-07-29T12:00:02.000Z',
+    })).toMatchObject({
+      ok: true,
+      value: {
+        revision: 3,
+        state: 'awaiting_details',
+        requiredFact: null,
+        proposalId: null,
+      },
+    });
+  });
+
+  it('invalide une proposition sans rendre modifier/annuler dépendants du catalogue', () => {
+    const proposed = queued({
+      state: 'awaiting_confirmation',
+      catalogueResolution: 'selected',
+      catalogueItemId: selectedCatalogue.id,
+      expectedCatalogueRevision: selectedCatalogue.revision,
+      proposalId: PROPOSAL_ID,
+      proposalRevision: 1,
+      proposalDiffHash: DIFF_HASH,
+    });
+    expect(invalidateQuoteLineProposalOnWork({
+      workItem: proposed,
+      expectedRevision: 1,
+      reason: 'catalogue_stale',
+      occurredAt,
+    })).toMatchObject({
+      ok: true,
+      value: {
+        revision: 2,
+        state: 'awaiting_details',
+        requiredFact: 'service_reference',
+        catalogueResolution: 'pending',
+        catalogueItemId: null,
+        proposalId: null,
+      },
+    });
+    expect(invalidateQuoteLineProposalOnWork({
+      workItem: proposed,
+      expectedRevision: 1,
+      reason: 'proposal_stale',
+      occurredAt,
+    })).toMatchObject({
+      ok: true,
+      value: {
+        revision: 2,
+        state: 'queued',
+        requiredFact: null,
+        catalogueResolution: 'selected',
+        catalogueItemId: selectedCatalogue.id,
+        proposalId: null,
+      },
+    });
+  });
+
+  it('transforme une sélection catalogue périmée en question persistée', () => {
+    expect(requestQuoteLineCatalogueRefreshOnWork({
+      workItem: queued({
+        catalogueResolution: 'selected',
+        catalogueItemId: selectedCatalogue.id,
+        expectedCatalogueRevision: selectedCatalogue.revision,
+      }),
+      expectedRevision: 1,
+      occurredAt,
+    })).toMatchObject({
+      ok: true,
+      value: {
+        revision: 2,
+        state: 'awaiting_details',
+        requiredFact: 'service_reference',
+        catalogueResolution: 'pending',
+        catalogueItemId: null,
+      },
     });
   });
 });

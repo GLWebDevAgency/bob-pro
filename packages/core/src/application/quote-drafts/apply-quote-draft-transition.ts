@@ -2,6 +2,8 @@ import { hasAsciiControlCharacter } from '../../shared-kernel/control-characters
 import {
   parseQuoteDraftPayload,
   QUOTE_DRAFT_REVISION_MAX,
+  type QuoteDraftPayloadLine,
+  type QuoteDraftPayloadLineMetadata,
   type QuoteDraftPayloadV1,
   type QuoteDraftPayloadResult,
 } from './quote-draft-slot';
@@ -123,6 +125,102 @@ export function applyQuoteDraftCustomerSelection(
       step: transition.value.step,
       customer: transition.value.customer,
       contentRevision: transition.value.contentRevision,
+    },
+  });
+}
+
+/**
+ * Ajoute une ligne déjà résolue par les autorités métier.
+ *
+ * Cette primitive est la frontière partagée entre le wizard manuel et AgentMission : elle ne
+ * connaît ni proposition IA, ni capability, ni ORM. Les appelants restent responsables de la
+ * relecture fiscale et catalogue ; la primitive protège la forme durable, la révision et
+ * l'invariant mono-taux du payload V1.
+ */
+export function appendResolvedQuoteDraftLine(input: {
+  readonly payload: QuoteDraftPayloadV1;
+  readonly expectedContentRevision: number;
+  readonly resolvedLine: QuoteDraftPayloadLine;
+  readonly metadata: QuoteDraftPayloadLineMetadata;
+  readonly vatDecision: NonNullable<QuoteDraftPayloadV1['draft']['vatDecision']>;
+}): QuoteDraftPayloadResult {
+  const parsed = parseQuoteDraftPayload(input.payload);
+  if (!parsed.ok) return parsed;
+  const draft = parsed.value.draft;
+  if (
+    !Number.isSafeInteger(input.expectedContentRevision)
+    || input.expectedContentRevision < 0
+    || input.expectedContentRevision > QUOTE_DRAFT_REVISION_MAX
+    || draft.contentRevision !== input.expectedContentRevision
+  ) {
+    return {
+      ok: false,
+      error: { code: 'invalid_value', path: '$.draft.contentRevision' },
+    };
+  }
+  if (
+    draft.contentRevision === QUOTE_DRAFT_REVISION_MAX
+    || draft.stagingRevision === QUOTE_DRAFT_REVISION_MAX
+  ) {
+    return {
+      ok: false,
+      error: { code: 'invalid_value', path: '$.draft.revision' },
+    };
+  }
+  if (draft.step !== 'lignes' || draft.customer === null) {
+    return {
+      ok: false,
+      error: { code: 'invalid_value', path: '$.draft.step' },
+    };
+  }
+  if (
+    input.resolvedLine.vatRate !== input.vatDecision.rate
+    || (
+      draft.vatDecision !== null
+      && draft.vatDecision.rate !== input.vatDecision.rate
+    )
+    || (
+      draft.lines.length > 0
+      && draft.vatDecision === null
+    )
+  ) {
+    return {
+      ok: false,
+      error: { code: 'invalid_value', path: '$.draft.vatDecision.rate' },
+    };
+  }
+  if (draft.lineMetadata.some((metadata) => metadata.id === input.metadata.id)) {
+    return {
+      ok: false,
+      error: { code: 'invalid_value', path: '$.draft.lineMetadata.id' },
+    };
+  }
+
+  return parseQuoteDraftPayload({
+    ...parsed.value,
+    draft: {
+      ...draft,
+      contentRevision: draft.contentRevision + 1,
+      stagingRevision: draft.stagingRevision + 1,
+      lines: [...draft.lines, { ...input.resolvedLine }],
+      lineMetadata: [
+        ...draft.lineMetadata,
+        {
+          ...input.metadata,
+          ...(input.metadata.catalogue === undefined
+            ? {}
+            : { catalogue: { ...input.metadata.catalogue } }),
+        },
+      ],
+      lineForm: {
+        label: '',
+        quantity: '1',
+        unitPrice: '',
+        category: input.resolvedLine.category,
+      },
+      vatDecision: {
+        ...input.vatDecision,
+      },
     },
   });
 }

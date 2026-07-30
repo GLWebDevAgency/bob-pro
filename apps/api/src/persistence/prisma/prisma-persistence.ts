@@ -29,6 +29,7 @@ import {
 } from './agent-mission.persistence';
 import type {
   AgentMissionResumeUnitOfWorkPort,
+  AgentMissionResumeV2UnitOfWorkPort,
   AgentMissionUnitOfWorkPort,
 } from '@bob/core';
 import type {
@@ -181,6 +182,10 @@ export class PrismaPersistence implements Persistence {
   }
 
   createAgentMissionResumeUnitOfWork(): AgentMissionResumeUnitOfWorkPort {
+    return new PrismaAgentMissionResumeUnitOfWork(this.prisma);
+  }
+
+  createAgentMissionResumeV2UnitOfWork(): AgentMissionResumeV2UnitOfWorkPort {
     return new PrismaAgentMissionResumeUnitOfWork(this.prisma);
   }
 

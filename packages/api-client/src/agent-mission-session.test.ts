@@ -4,6 +4,13 @@ import {
   toAgentMissionView,
   type AgentMissionViewV1,
 } from '@bob/core';
+import {
+  decodeAgentMissionCatalogueChoice,
+  decodeAgentMissionLineProposalDecision,
+  decodeAgentMissionPatchQuoteLine,
+  decodeAgentMissionStageQuoteLines,
+  decodeQuoteAgentMissionResumeV2,
+} from './agent-mission-codec';
 import { HttpBobClient } from './http-client';
 
 const CONFIG_VERSION = 'bob-live-provider-neutral-v4';
@@ -33,6 +40,10 @@ const PENDING_LINE_ID = '33333333-3333-4333-8333-333333333333';
 const DECISION_ID = '88888888-8888-4888-8888-888888888888';
 const CANDIDATE_CHOICE_ID = '99999999-9999-4999-8999-999999999999';
 const FREE_CHOICE_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const PROPOSAL_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+const CONFIRM_CHOICE_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1';
+const EDIT_CHOICE_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee2';
+const CANCEL_CHOICE_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee3';
 
 function initialMission() {
   const result = AgentMission.start({
@@ -181,6 +192,207 @@ function resolvedM2AMission() {
   });
   if (!resolved.ok) throw new Error(`Résolution M2-A invalide: ${resolved.error.code}`);
   return resolved.value.transition.mission;
+}
+
+function patchedLineDetailsM2AMission() {
+  const base = resolvedM2AMission();
+  const requested = base.requestLineDetails({
+    expectedRevision: base.toSnapshot().revision,
+    pendingLineId: PENDING_LINE_ID,
+    requiredFact: 'unit_price',
+    workRevisionAfter: 4,
+    occurredAt: '2026-07-26T08:06:00.000Z',
+  });
+  if (!requested.ok) {
+    throw new Error(`Détails M2-A invalides: ${requested.error.code}`);
+  }
+  const patched = requested.value.mission.patchLineFact({
+    expectedRevision: requested.value.mission.toSnapshot().revision,
+    pendingLineId: PENDING_LINE_ID,
+    field: 'unit_price',
+    workRevisionAfter: 5,
+    occurredAt: '2026-07-26T08:07:00.000Z',
+  });
+  if (!patched.ok) {
+    throw new Error(`Patch M2-A invalide: ${patched.error.code}`);
+  }
+  const continued = patched.value.mission.requestLineDetails({
+    expectedRevision: patched.value.mission.toSnapshot().revision,
+    pendingLineId: PENDING_LINE_ID,
+    requiredFact: 'vat_rate',
+    workRevisionAfter: 6,
+    occurredAt: '2026-07-26T08:08:00.000Z',
+  });
+  if (!continued.ok) {
+    throw new Error(`Continuation patch M2-A invalide: ${continued.error.code}`);
+  }
+  return continued.value.mission;
+}
+
+function lineProposalM2AMission() {
+  const base = resolvedM2AMission();
+  const draft = base.toSnapshot().payload.draft;
+  if (draft === null) throw new Error('Brouillon M2-A attendu');
+  const presented = base.presentLineProposal({
+    expectedRevision: base.toSnapshot().revision,
+    decisionId: DECISION_ID,
+    pendingLineId: PENDING_LINE_ID,
+    proposalId: PROPOSAL_ID,
+    expectedDraft: draft,
+    expectedWorkRevision: 4,
+    expectedCatalogue: null,
+    expectedVatContextDigest: 'a'.repeat(64),
+    diffHash: 'b'.repeat(64),
+    confirmChoiceId: CONFIRM_CHOICE_ID,
+    editChoiceId: EDIT_CHOICE_ID,
+    cancelChoiceId: CANCEL_CHOICE_ID,
+    occurredAt: '2026-07-26T08:06:00.000Z',
+  });
+  if (!presented.ok) {
+    throw new Error(`Proposition M2-A invalide: ${presented.error.code}`);
+  }
+  return presented.value.mission;
+}
+
+function editedLineM2AMission() {
+  const proposal = lineProposalM2AMission();
+  const decision = proposal.toSnapshot().payload.decision;
+  if (decision?.kind !== 'line_confirmation') {
+    throw new Error('Décision de ligne attendue');
+  }
+  const edited = proposal.rejectLineProposal({
+    expectedRevision: proposal.toSnapshot().revision,
+    decisionId: decision.decisionId,
+    choiceSetRevision: decision.choiceSetRevision,
+    choiceId: EDIT_CHOICE_ID,
+    pendingLineId: decision.pendingLineId,
+    proposalId: decision.proposalId,
+    proposalRevision: decision.proposalRevision,
+    expectedWorkRevision: decision.expectedWorkRevision,
+    observedDraft: decision.expectedDraft,
+    observedCatalogue: decision.expectedCatalogue,
+    diffHash: decision.diffHash,
+    workRevisionAfter: 5,
+    occurredAt: '2026-07-26T08:07:00.000Z',
+  });
+  if (!edited.ok) {
+    throw new Error(`Édition M2-A invalide: ${edited.error.code}`);
+  }
+  return edited.value.mission;
+}
+
+function cataloguePresentation(view: AgentMissionViewV1) {
+  const decision = view.payload.decision;
+  if (decision?.kind !== 'catalogue') {
+    throw new Error('Décision catalogue attendue dans la fixture');
+  }
+  return {
+    schema: 'bob.agent-mission.quote-presentation',
+    version: 1,
+    requiredFact: null,
+    pendingLine: {
+      pendingLineId: decision.pendingLineId,
+      expectedWorkRevision: decision.expectedWorkRevision,
+    },
+    decision: {
+      kind: decision.kind,
+      decisionId: decision.decisionId,
+      choiceSetRevision: decision.choiceSetRevision,
+      pendingLineId: decision.pendingLineId,
+      expectedDraft: decision.expectedDraft,
+      expectedWorkRevision: decision.expectedWorkRevision,
+      choices: decision.candidates,
+      freeLineChoiceId: decision.freeLineChoiceId,
+      choiceSetHash: decision.choiceSetHash,
+    },
+    catalogueChoices: [{
+      choiceId: CANDIDATE_CHOICE_ID,
+      available: true,
+      label: 'Heure de main-d’œuvre plomberie',
+      category: 'labor',
+      unit: 'heure',
+      unitPriceCents: 5_500,
+      vatRate: 20,
+    }],
+    freeLineChoiceId: decision.freeLineChoiceId,
+    proposalStatus: { kind: 'absent' },
+    proposal: null,
+  };
+}
+
+function awaitingLinesPresentation(expectedWorkRevision: number) {
+  return {
+    schema: 'bob.agent-mission.quote-presentation',
+    version: 1,
+    requiredFact: null,
+    pendingLine: {
+      pendingLineId: PENDING_LINE_ID,
+      expectedWorkRevision,
+    },
+    decision: null,
+    catalogueChoices: [],
+    freeLineChoiceId: null,
+    proposalStatus: { kind: 'absent' },
+    proposal: null,
+  };
+}
+
+function lineDetailsPresentation(
+  expectedWorkRevision: number,
+  requiredFact: 'unit_price' | 'vat_rate' | null,
+) {
+  return {
+    schema: 'bob.agent-mission.quote-presentation',
+    version: 1,
+    requiredFact,
+    pendingLine: {
+      pendingLineId: PENDING_LINE_ID,
+      expectedWorkRevision,
+    },
+    decision: null,
+    catalogueChoices: [],
+    freeLineChoiceId: null,
+    proposalStatus: { kind: 'absent' },
+    proposal: null,
+  };
+}
+
+function lineConfirmationPresentation(view: AgentMissionViewV1) {
+  const decision = view.payload.decision;
+  if (decision?.kind !== 'line_confirmation') {
+    throw new Error('Décision de confirmation attendue dans la fixture');
+  }
+  return {
+    schema: 'bob.agent-mission.quote-presentation',
+    version: 1,
+    requiredFact: null,
+    pendingLine: {
+      pendingLineId: decision.pendingLineId,
+      expectedWorkRevision: decision.expectedWorkRevision,
+    },
+    decision: {
+      kind: decision.kind,
+      decisionId: decision.decisionId,
+      choiceSetRevision: decision.choiceSetRevision,
+      pendingLineId: decision.pendingLineId,
+      proposalId: decision.proposalId,
+      proposalRevision: decision.proposalRevision,
+      expectedDraft: decision.expectedDraft,
+      expectedWorkRevision: decision.expectedWorkRevision,
+      expectedCatalogue: decision.expectedCatalogue,
+      expectedVatContextDigest: decision.expectedVatContextDigest,
+      diffHash: decision.diffHash,
+      choices: decision.choices,
+      choiceSetHash: decision.choiceSetHash,
+    },
+    catalogueChoices: [],
+    freeLineChoiceId: null,
+    proposalStatus: {
+      kind: 'stale',
+      reason: 'vat_context_changed',
+    },
+    proposal: null,
+  };
 }
 
 function nativeBootstrap(
@@ -466,6 +678,40 @@ describe('Realtime AgentMission capability handle', () => {
       resolvedM2AMission(),
       '2026-07-26T08:05:00.000Z',
     );
+    const patchedDetailsView = missionView(
+      patchedLineDetailsM2AMission(),
+      '2026-07-26T08:08:00.000Z',
+    );
+    const proposalMission = lineProposalM2AMission();
+    const proposalDecision = proposalMission.toSnapshot().payload.decision;
+    if (proposalDecision?.kind !== 'line_confirmation') {
+      throw new Error('Décision de proposition attendue');
+    }
+    const proposalView = missionView(
+      proposalMission,
+      '2026-07-26T08:06:00.000Z',
+    );
+    const editedView = missionView(
+      editedLineM2AMission(),
+      '2026-07-26T08:07:00.000Z',
+    );
+    const catalogueDraft = catalogueView.payload.draft;
+    if (catalogueDraft === null) throw new Error('Brouillon catalogue attendu');
+    expect(decodeQuoteAgentMissionResumeV2({
+      mission: {
+        id: catalogueView.id,
+        status: catalogueView.status,
+        phase: catalogueView.phase,
+        revision: catalogueView.revision,
+        actionable: catalogueView.actionable,
+        draft: catalogueDraft,
+        idleExpiresAt: catalogueView.idleExpiresAt,
+        hardExpiresAt: catalogueView.hardExpiresAt,
+      },
+      draft: { ...catalogueDraft, step: 'lignes' },
+      customerChoices: [],
+      presentation: cataloguePresentation(catalogueView),
+    })).not.toBeNull();
     const paths: string[] = [];
     const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
       const path = new URL(String(url)).pathname;
@@ -491,6 +737,49 @@ describe('Realtime AgentMission capability handle', () => {
           replayed: false,
         }), { headers: { 'content-type': 'application/json' } });
       }
+      if (path === `/agent-missions/${MISSION_ID}/screen-acks`) {
+        expect(JSON.parse(String(init?.body))).toEqual({
+          commandId: '13131313-1313-4313-8313-131313131313',
+          expectedMissionRevision: 1,
+          realtimeSessionId: SESSION_ID,
+          contextRevision: 3,
+          contextDigest: 'a'.repeat(64),
+          draftSessionId: DRAFT.sessionId,
+          expectedDraftSlotRevision: 1,
+          expectedDraftContentRevision: 0,
+        });
+        return new Response(JSON.stringify({
+          outcome: 'acknowledged',
+          receipt: {
+            ackCommandId: '13131313-1313-4313-8313-131313131313',
+            missionId: MISSION_ID,
+            missionRevisionAfter: 2,
+            realtimeSessionId: SESSION_ID,
+            contextRevision: 3,
+            contextDigest: 'a'.repeat(64),
+            occurredAt: ACKNOWLEDGED_AT,
+          },
+          mission: patchedDetailsView,
+          presentation: lineDetailsPresentation(6, 'vat_rate'),
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      if (path === `/agent-missions/${MISSION_ID}/decisions`) {
+        expect(JSON.parse(String(init?.body))).toEqual({
+          action: 'select_screen_customer',
+          commandId: '14141414-1414-4414-8414-141414141414',
+          expectedMissionRevision: 2,
+          expectedDraftSessionId: DRAFT.sessionId,
+          expectedDraftSlotRevision: 1,
+          expectedDraftContentRevision: 0,
+          customerId: 'customer-camping',
+        });
+        return new Response(JSON.stringify({
+          outcome: 'selected',
+          effect: { kind: 'selected' },
+          mission: proposalView,
+          presentation: lineConfirmationPresentation(proposalView),
+        }), { headers: { 'content-type': 'application/json' } });
+      }
       if (path === `/agent-missions/${MISSION_ID}/quote-lines`) {
         expect(JSON.parse(String(init?.body))).toEqual({
           commandId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
@@ -510,7 +799,10 @@ describe('Realtime AgentMission capability handle', () => {
             outcome: 'choices_presented',
             pendingLineId: PENDING_LINE_ID,
             presentedChoiceCount: 2,
+            requiredFact: null,
+            proposalId: null,
           },
+          presentation: cataloguePresentation(catalogueView),
         }), { headers: { 'content-type': 'application/json' } });
       }
       if (path === `/agent-missions/${MISSION_ID}/catalogue-choices`) {
@@ -540,7 +832,80 @@ describe('Realtime AgentMission capability handle', () => {
             outcome: 'deferred_to_m2a2',
             pendingLineId: PENDING_LINE_ID,
             presentedChoiceCount: 0,
+            requiredFact: null,
+            proposalId: null,
           },
+          presentation: awaitingLinesPresentation(3),
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      if (path === `/agent-missions/${MISSION_ID}/quote-line-patches`) {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        expect(body).toEqual({
+          commandId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+          expectedMissionRevision: 7,
+          expectedDraftSessionId: DRAFT.sessionId,
+          expectedDraftSlotRevision: 2,
+          expectedDraftContentRevision: 1,
+          pendingLineId: PENDING_LINE_ID,
+          expectedWorkRevision: 4,
+          scope: 'answer_required_fact',
+          patch: {
+            field: 'unit_price',
+            decimal: '55',
+            currency: 'EUR',
+            basis: 'per_unit',
+          },
+        });
+        expect(body).not.toHaveProperty('missionId');
+        expect(body).not.toHaveProperty('actor');
+        return new Response(JSON.stringify({
+          outcome: 'patched',
+          pendingLineId: PENDING_LINE_ID,
+          workRevisionAfter: 5,
+          mission: patchedDetailsView,
+          continuation: {
+            outcome: 'details_requested',
+            pendingLineId: PENDING_LINE_ID,
+            presentedChoiceCount: 0,
+            requiredFact: 'vat_rate',
+            proposalId: null,
+          },
+          presentation: lineDetailsPresentation(6, 'vat_rate'),
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      if (path === `/agent-missions/${MISSION_ID}/quote-line-decisions`) {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        expect(body).toEqual({
+          commandId: '12121212-1212-4212-8212-121212121212',
+          expectedMissionRevision: proposalDecision.choiceSetRevision,
+          expectedDraftSessionId: DRAFT.sessionId,
+          expectedDraftSlotRevision: 2,
+          expectedDraftContentRevision: 1,
+          decisionId: proposalDecision.decisionId,
+          choiceSetRevision: proposalDecision.choiceSetRevision,
+          choiceSetHash: proposalDecision.choiceSetHash,
+          choiceId: EDIT_CHOICE_ID,
+          pendingLineId: PENDING_LINE_ID,
+          proposalId: PROPOSAL_ID,
+          proposalRevision: 1,
+          expectedWorkRevision: 4,
+          expectedCatalogue: null,
+          diffHash: 'b'.repeat(64),
+        });
+        expect(body).not.toHaveProperty('missionId');
+        expect(body).not.toHaveProperty('actor');
+        return new Response(JSON.stringify({
+          outcome: 'edit_requested',
+          invalidationReason: null,
+          mission: editedView,
+          continuation: {
+            outcome: 'stable',
+            pendingLineId: null,
+            presentedChoiceCount: 0,
+            requiredFact: null,
+            proposalId: null,
+          },
+          presentation: lineDetailsPresentation(5, null),
         }), { headers: { 'content-type': 'application/json' } });
       }
       throw new Error(`Route inattendue: ${path}`);
@@ -556,6 +921,47 @@ describe('Realtime AgentMission capability handle', () => {
     expect(Object.keys(handle)).toEqual([]);
     expect(JSON.stringify(handle)).toBe('{}');
     expect(JSON.stringify(bootstrap.value)).not.toContain('bam2_');
+
+    await expect(handle.acknowledgeQuoteScreen({
+      missionId: MISSION_ID,
+      commandId: '13131313-1313-4313-8313-131313131313',
+      expectedMissionRevision: 1,
+      contextRevision: 3,
+      contextDigest: 'a'.repeat(64),
+      draftSessionId: DRAFT.sessionId,
+      expectedDraftSlotRevision: 1,
+      expectedDraftContentRevision: 0,
+    })).resolves.toMatchObject({
+      ok: true,
+      value: {
+        mission: { phase: 'awaiting_line_details' },
+        presentation: {
+          requiredFact: 'vat_rate',
+          pendingLine: { pendingLineId: PENDING_LINE_ID },
+        },
+      },
+    });
+    await expect(handle.decideQuoteCreation({
+      missionId: MISSION_ID,
+      action: 'select_screen_customer',
+      commandId: '14141414-1414-4414-8414-141414141414',
+      expectedMissionRevision: 2,
+      expectedDraftSessionId: DRAFT.sessionId,
+      expectedDraftSlotRevision: 1,
+      expectedDraftContentRevision: 0,
+      customerId: 'customer-camping',
+    })).resolves.toMatchObject({
+      ok: true,
+      value: {
+        mission: { phase: 'awaiting_line_confirmation' },
+        presentation: {
+          decision: {
+            kind: 'line_confirmation',
+            proposalId: PROPOSAL_ID,
+          },
+        },
+      },
+    });
 
     const fetchesAfterBootstrap = fetchMock.mock.calls.length;
     await expect(handle.stageQuoteLines({
@@ -587,9 +993,50 @@ describe('Realtime AgentMission capability handle', () => {
       ok: false,
       error: { kind: 'validation' },
     });
+    await expect(handle.patchQuoteLine({
+      missionId: MISSION_ID,
+      commandId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      expectedMissionRevision: 7,
+      expectedDraftSessionId: DRAFT.sessionId,
+      expectedDraftSlotRevision: 2,
+      expectedDraftContentRevision: 1,
+      pendingLineId: PENDING_LINE_ID,
+      expectedWorkRevision: 4,
+      scope: 'answer_required_fact',
+      patch: {
+        field: 'unit_price',
+        decimal: 'NaN',
+        currency: 'EUR',
+        basis: 'per_unit',
+      },
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'validation' },
+    });
+    await expect(handle.decideQuoteLineProposal({
+      missionId: MISSION_ID,
+      commandId: '12121212-1212-4212-8212-121212121212',
+      expectedMissionRevision: proposalDecision.choiceSetRevision,
+      expectedDraftSessionId: DRAFT.sessionId,
+      expectedDraftSlotRevision: 2,
+      expectedDraftContentRevision: 1,
+      decisionId: proposalDecision.decisionId,
+      choiceSetRevision: proposalDecision.choiceSetRevision,
+      choiceSetHash: 'not-a-hash',
+      choiceId: EDIT_CHOICE_ID,
+      pendingLineId: PENDING_LINE_ID,
+      proposalId: PROPOSAL_ID,
+      proposalRevision: 1,
+      expectedWorkRevision: 4,
+      expectedCatalogue: null,
+      diffHash: 'b'.repeat(64),
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'validation' },
+    });
     expect(fetchMock).toHaveBeenCalledTimes(fetchesAfterBootstrap);
 
-    await expect(handle.stageQuoteLines({
+    const stagedResult = await handle.stageQuoteLines({
       missionId: MISSION_ID,
       commandId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
       expectedMissionRevision: 3,
@@ -597,7 +1044,11 @@ describe('Realtime AgentMission capability handle', () => {
       expectedDraftSlotRevision: 2,
       expectedDraftContentRevision: 1,
       lines: [LINE],
-    })).resolves.toMatchObject({
+    });
+    if (!stagedResult.ok) {
+      throw new Error(JSON.stringify(stagedResult.error));
+    }
+    expect(stagedResult).toMatchObject({
       ok: true,
       value: { outcome: 'staged' },
     });
@@ -618,11 +1069,59 @@ describe('Realtime AgentMission capability handle', () => {
       ok: true,
       value: { outcome: 'selected', resolution: 'free' },
     });
+    await expect(handle.patchQuoteLine({
+      missionId: MISSION_ID,
+      commandId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      expectedMissionRevision: 7,
+      expectedDraftSessionId: DRAFT.sessionId,
+      expectedDraftSlotRevision: 2,
+      expectedDraftContentRevision: 1,
+      pendingLineId: PENDING_LINE_ID,
+      expectedWorkRevision: 4,
+      scope: 'answer_required_fact',
+      patch: {
+        field: 'unit_price',
+        decimal: '55',
+        currency: 'EUR',
+        basis: 'per_unit',
+      },
+    })).resolves.toMatchObject({
+      ok: true,
+      value: {
+        outcome: 'patched',
+        continuation: { outcome: 'details_requested', requiredFact: 'vat_rate' },
+      },
+    });
+    await expect(handle.decideQuoteLineProposal({
+      missionId: MISSION_ID,
+      commandId: '12121212-1212-4212-8212-121212121212',
+      expectedMissionRevision: proposalDecision.choiceSetRevision,
+      expectedDraftSessionId: DRAFT.sessionId,
+      expectedDraftSlotRevision: 2,
+      expectedDraftContentRevision: 1,
+      decisionId: proposalDecision.decisionId,
+      choiceSetRevision: proposalDecision.choiceSetRevision,
+      choiceSetHash: proposalDecision.choiceSetHash,
+      choiceId: EDIT_CHOICE_ID,
+      pendingLineId: PENDING_LINE_ID,
+      proposalId: PROPOSAL_ID,
+      proposalRevision: 1,
+      expectedWorkRevision: 4,
+      expectedCatalogue: null,
+      diffHash: 'b'.repeat(64),
+    })).resolves.toMatchObject({
+      ok: true,
+      value: { outcome: 'edit_requested' },
+    });
     expect(paths).toEqual([
       '/voice/realtime/calls',
       `/voice/realtime/calls/${SESSION_ID}/agent-mission-bootstrap-acknowledgements`,
+      `/agent-missions/${MISSION_ID}/screen-acks`,
+      `/agent-missions/${MISSION_ID}/decisions`,
       `/agent-missions/${MISSION_ID}/quote-lines`,
       `/agent-missions/${MISSION_ID}/catalogue-choices`,
+      `/agent-missions/${MISSION_ID}/quote-line-patches`,
+      `/agent-missions/${MISSION_ID}/quote-line-decisions`,
     ]);
 
     const beforeDispose = fetchMock.mock.calls.length;
@@ -635,6 +1134,26 @@ describe('Realtime AgentMission capability handle', () => {
       expectedDraftSlotRevision: 2,
       expectedDraftContentRevision: 1,
       lines: [LINE],
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'unavailable' },
+    });
+    await expect(handle.patchQuoteLine({
+      missionId: MISSION_ID,
+      commandId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      expectedMissionRevision: 7,
+      expectedDraftSessionId: DRAFT.sessionId,
+      expectedDraftSlotRevision: 2,
+      expectedDraftContentRevision: 1,
+      pendingLineId: PENDING_LINE_ID,
+      expectedWorkRevision: 4,
+      scope: 'answer_required_fact',
+      patch: {
+        field: 'unit_price',
+        decimal: '55',
+        currency: 'EUR',
+        basis: 'per_unit',
+      },
     })).resolves.toMatchObject({
       ok: false,
       error: { kind: 'unavailable' },
@@ -936,5 +1455,126 @@ describe('Realtime AgentMission capability handle', () => {
     });
     expect(getToken).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('Contrats réseau M2-A exacts', () => {
+  function commandFixtures() {
+    const catalogueView = missionView(
+      catalogueChoiceM2AMission(),
+      '2026-07-26T08:04:00.000Z',
+    );
+    const resolvedView = missionView(
+      resolvedM2AMission(),
+      '2026-07-26T08:05:00.000Z',
+    );
+    const patchedDetailsView = missionView(
+      patchedLineDetailsM2AMission(),
+      '2026-07-26T08:08:00.000Z',
+    );
+    const editedView = missionView(
+      editedLineM2AMission(),
+      '2026-07-26T08:07:00.000Z',
+    );
+    return {
+      stage: {
+        outcome: 'staged',
+        mission: catalogueView,
+        stagedCount: 1,
+        firstQueueOrdinal: 1,
+        lastQueueOrdinal: 1,
+        continuation: {
+          outcome: 'choices_presented',
+          pendingLineId: PENDING_LINE_ID,
+          presentedChoiceCount: 2,
+          requiredFact: null,
+          proposalId: null,
+        },
+        presentation: cataloguePresentation(catalogueView),
+      },
+      catalogue: {
+        outcome: 'selected',
+        resolution: 'free',
+        invalidationReason: null,
+        mission: resolvedView,
+        continuation: {
+          outcome: 'deferred_to_m2a2',
+          pendingLineId: PENDING_LINE_ID,
+          presentedChoiceCount: 0,
+          requiredFact: null,
+          proposalId: null,
+        },
+        presentation: awaitingLinesPresentation(3),
+      },
+      patch: {
+        outcome: 'patched',
+        pendingLineId: PENDING_LINE_ID,
+        workRevisionAfter: 5,
+        mission: patchedDetailsView,
+        continuation: {
+          outcome: 'details_requested',
+          pendingLineId: PENDING_LINE_ID,
+          presentedChoiceCount: 0,
+          requiredFact: 'vat_rate',
+          proposalId: null,
+        },
+        presentation: lineDetailsPresentation(6, 'vat_rate'),
+      },
+      decision: {
+        outcome: 'edit_requested',
+        invalidationReason: null,
+        mission: editedView,
+        continuation: {
+          outcome: 'stable',
+          pendingLineId: null,
+          presentedChoiceCount: 0,
+          requiredFact: null,
+          proposalId: null,
+        },
+        presentation: lineDetailsPresentation(5, null),
+      },
+    };
+  }
+
+  it('accepte les quatre réponses serveur complètes', () => {
+    const wire = commandFixtures();
+    expect(decodeAgentMissionStageQuoteLines(wire.stage, MISSION_ID)).toEqual(
+      wire.stage,
+    );
+    expect(decodeAgentMissionCatalogueChoice(wire.catalogue, MISSION_ID)).toEqual(
+      wire.catalogue,
+    );
+    expect(decodeAgentMissionPatchQuoteLine(wire.patch, MISSION_ID)).toEqual(
+      wire.patch,
+    );
+    expect(
+      decodeAgentMissionLineProposalDecision(wire.decision, MISSION_ID),
+    ).toEqual(wire.decision);
+  });
+
+  it('refuse les clés ajoutées et les continuations contradictoires', () => {
+    const wire = commandFixtures();
+    expect(decodeAgentMissionStageQuoteLines({
+      ...wire.stage,
+      companyId: 'forged',
+    }, MISSION_ID)).toBeNull();
+    expect(decodeAgentMissionCatalogueChoice({
+      ...wire.catalogue,
+      presentation: {
+        ...wire.catalogue.presentation,
+        internalWork: 'forbidden',
+      },
+    }, MISSION_ID)).toBeNull();
+    expect(decodeAgentMissionPatchQuoteLine({
+      ...wire.patch,
+      continuation: {
+        ...wire.patch.continuation,
+        proposalId: PROPOSAL_ID,
+      },
+    }, MISSION_ID)).toBeNull();
+    expect(decodeAgentMissionLineProposalDecision({
+      ...wire.decision,
+      invalidationReason: 'choice_set_stale',
+    }, MISSION_ID)).toBeNull();
   });
 });

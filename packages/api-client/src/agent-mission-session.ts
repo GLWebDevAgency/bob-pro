@@ -1,10 +1,14 @@
 import type {
   AcknowledgeQuoteScreenOutput,
+  AgentMissionQuoteLinePatchScope,
+  AgentMissionQuoteLinePatchV1,
+  AgentMissionQuoteLineRequiredFact,
   AgentMissionQuoteLineCandidateV1,
   AgentMissionViewV1,
   AppError,
   CancelQuoteAgentMissionOutput,
   DecideQuoteAgentMissionOutput,
+  QuoteAgentMissionPresentationV1,
   Result,
   StageQuoteAgentMissionLinesOutput,
   StartQuoteAgentMissionOutput,
@@ -48,6 +52,11 @@ export interface RealtimeAgentMissionAcknowledgeQuoteScreenInput {
   readonly expectedDraftContentRevision: number;
 }
 
+export type RealtimeAgentMissionAcknowledgeQuoteScreenOutputV2 =
+  AcknowledgeQuoteScreenOutput & {
+    readonly presentation: QuoteAgentMissionPresentationV1;
+  };
+
 interface RealtimeAgentMissionQuoteDecisionBase {
   readonly missionId: string;
   readonly commandId: string;
@@ -71,6 +80,11 @@ export type RealtimeAgentMissionQuoteDecisionInput =
         readonly customerId: string;
       }
   );
+
+export type RealtimeAgentMissionQuoteDecisionOutputV2 =
+  DecideQuoteAgentMissionOutput & {
+    readonly presentation: QuoteAgentMissionPresentationV1;
+  };
 
 interface RealtimeAgentMissionQuoteLineCommandBase {
   readonly missionId: string;
@@ -102,16 +116,23 @@ export interface RealtimeAgentMissionLineContinuation {
     | 'choices_presented'
     | 'empty'
     | 'deferred_to_m2a2'
+    | 'details_requested'
+    | 'proposal_presented'
+    | 'catalogue_choice_pending'
+    | 'stable'
     | 'superseded'
     | 'replayed';
   readonly pendingLineId: string | null;
   readonly presentedChoiceCount: number;
+  readonly requiredFact: AgentMissionQuoteLineRequiredFact | null;
+  readonly proposalId: string | null;
 }
 
 export interface RealtimeAgentMissionStageQuoteLinesOutput
 extends Omit<StageQuoteAgentMissionLinesOutput, 'mission'> {
   readonly mission: AgentMissionViewV1;
   readonly continuation: RealtimeAgentMissionLineContinuation;
+  readonly presentation: QuoteAgentMissionPresentationV1;
 }
 
 export interface RealtimeAgentMissionCatalogueChoiceOutput {
@@ -123,6 +144,56 @@ export interface RealtimeAgentMissionCatalogueChoiceOutput {
     | null;
   readonly mission: AgentMissionViewV1;
   readonly continuation: RealtimeAgentMissionLineContinuation;
+  readonly presentation: QuoteAgentMissionPresentationV1;
+}
+
+export interface RealtimeAgentMissionPatchQuoteLineInput
+extends RealtimeAgentMissionQuoteLineCommandBase {
+  readonly pendingLineId: string;
+  readonly expectedWorkRevision: number;
+  readonly scope: AgentMissionQuoteLinePatchScope;
+  readonly patch: AgentMissionQuoteLinePatchV1;
+}
+
+export interface RealtimeAgentMissionPatchQuoteLineOutput {
+  readonly outcome: 'patched' | 'replayed';
+  readonly pendingLineId: string;
+  readonly workRevisionAfter: number;
+  readonly mission: AgentMissionViewV1;
+  readonly continuation: RealtimeAgentMissionLineContinuation;
+  readonly presentation: QuoteAgentMissionPresentationV1;
+}
+
+export interface RealtimeAgentMissionLineProposalDecisionInput
+extends RealtimeAgentMissionQuoteLineCommandBase {
+  readonly decisionId: string;
+  readonly choiceSetRevision: number;
+  readonly choiceSetHash: string;
+  readonly choiceId: string;
+  readonly pendingLineId: string;
+  readonly proposalId: string;
+  readonly proposalRevision: 1;
+  readonly expectedWorkRevision: number;
+  readonly expectedCatalogue:
+    | { readonly itemId: string; readonly revision: number }
+    | null;
+  readonly diffHash: string;
+}
+
+export interface RealtimeAgentMissionLineProposalDecisionOutput {
+  readonly outcome:
+    | 'confirmed'
+    | 'edit_requested'
+    | 'cancelled'
+    | 'invalidated'
+    | 'replayed';
+  readonly invalidationReason:
+    | 'candidate_unavailable'
+    | 'choice_set_stale'
+    | null;
+  readonly mission: AgentMissionViewV1;
+  readonly continuation: RealtimeAgentMissionLineContinuation;
+  readonly presentation: QuoteAgentMissionPresentationV1;
 }
 
 /**
@@ -167,6 +238,14 @@ extends RealtimeAgentMissionSessionCommon {
 export interface RealtimeAgentMissionSessionV2
 extends RealtimeAgentMissionSessionCommon {
   readonly protocolVersion: typeof REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION;
+  acknowledgeQuoteScreen(
+    input: RealtimeAgentMissionAcknowledgeQuoteScreenInput,
+    signal?: AbortSignal,
+  ): Promise<Result<RealtimeAgentMissionAcknowledgeQuoteScreenOutputV2, AppError>>;
+  decideQuoteCreation(
+    input: RealtimeAgentMissionQuoteDecisionInput,
+    signal?: AbortSignal,
+  ): Promise<Result<RealtimeAgentMissionQuoteDecisionOutputV2, AppError>>;
   stageQuoteLines(
     input: RealtimeAgentMissionStageQuoteLinesInput,
     signal?: AbortSignal,
@@ -175,6 +254,14 @@ extends RealtimeAgentMissionSessionCommon {
     input: RealtimeAgentMissionCatalogueChoiceInput,
     signal?: AbortSignal,
   ): Promise<Result<RealtimeAgentMissionCatalogueChoiceOutput, AppError>>;
+  patchQuoteLine(
+    input: RealtimeAgentMissionPatchQuoteLineInput,
+    signal?: AbortSignal,
+  ): Promise<Result<RealtimeAgentMissionPatchQuoteLineOutput, AppError>>;
+  decideQuoteLineProposal(
+    input: RealtimeAgentMissionLineProposalDecisionInput,
+    signal?: AbortSignal,
+  ): Promise<Result<RealtimeAgentMissionLineProposalDecisionOutput, AppError>>;
 }
 
 export type RealtimeAgentMissionSession =

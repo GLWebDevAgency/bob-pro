@@ -2504,6 +2504,234 @@ COMMIT;
 SQL
 }
 
+# Writer N-1 exact du train M2-A-2 : mission protocole 2 + événement M2-A-1 +
+# work item qui connaît catalogueResolution mais omet volontairement les deux nouveaux reçus
+# d'override. Il tourne sous bob_app, FORCE RLS et le trigger V3 à chacune des trois étapes.
+certify_m2a1_quote_line_writer_n1() {
+  writer_stage="$1"
+  writer_owner="$2"
+  writer_mission_id="$3"
+  writer_start_event_id="$4"
+  writer_line_event_id="$5"
+  writer_work_id="$6"
+
+  "$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+    -v writer_stage="$writer_stage" \
+    -v writer_owner="$writer_owner" \
+    -v writer_mission_id="$writer_mission_id" \
+    -v writer_start_event_id="$writer_start_event_id" \
+    -v writer_line_event_id="$writer_line_event_id" \
+    -v writer_work_id="$writer_work_id" <<'SQL'
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '30s';
+SELECT set_config('app.current_company_id', 'writer-n1-company', true);
+SELECT set_config('app.current_user_id', :'writer_owner', true);
+SELECT set_config('app.current_agent_mission_id', :'writer_mission_id', true);
+SELECT set_config('bob.cert.m2a2_n1_stage', :'writer_stage', true);
+SELECT set_config('bob.cert.m2a2_n1_work_id', :'writer_work_id', true);
+SELECT set_config('bob.cert.m2a2_n1_started_at', clock_timestamp()::TEXT, true);
+
+INSERT INTO public.agent_missions (
+  "id", "companyId", "ownerUserId", "protocolVersion", "kind", "status", "phase",
+  "revision", "payloadVersion", "payload", "currentBinding", "idleExpiresAt",
+  "hardExpiresAt", "terminalAt", "retentionExpiresAt", "createdAt", "updatedAt"
+) VALUES (
+  :'writer_mission_id'::UUID,
+  'writer-n1-company',
+  :'writer_owner',
+  2,
+  'quote_creation',
+  'active',
+  'awaiting_lines',
+  1,
+  1,
+  jsonb_build_object(
+    'schema', 'bob.agent-mission.quote-creation',
+    'version', 1,
+    'draft', jsonb_build_object(
+      'sessionId', :'writer_owner',
+      'slotRevision', 1,
+      'contentRevision', 0
+    ),
+    'decision', 'null'::JSONB
+  ),
+  jsonb_build_object(
+    'realtimeSessionId', :'writer_mission_id',
+    'contextRevision', 1,
+    'contextDigest', repeat('a', 64),
+    'screenName', '/devis/new',
+    'screenInstanceId', 'cert-' || :'writer_stage',
+    'acknowledgedAt', '2026-07-30T06:00:00.000Z'
+  ),
+  current_setting('bob.cert.m2a2_n1_started_at')::TIMESTAMPTZ
+    + INTERVAL '24 hours',
+  current_setting('bob.cert.m2a2_n1_started_at')::TIMESTAMPTZ
+    + INTERVAL '168 hours',
+  NULL,
+  current_setting('bob.cert.m2a2_n1_started_at')::TIMESTAMPTZ
+    + INTERVAL '2328 hours',
+  current_setting('bob.cert.m2a2_n1_started_at')::TIMESTAMPTZ,
+  current_setting('bob.cert.m2a2_n1_started_at')::TIMESTAMPTZ
+);
+
+INSERT INTO public.quote_draft_slots (
+  "companyId", "ownerUserId", "revision", "payloadVersion", "payload", "agentMissionId"
+) VALUES (
+  'writer-n1-company',
+  :'writer_owner',
+  1,
+  1,
+  jsonb_build_object(
+    'schema', 'bob.quote-draft',
+    'version', 1,
+    'draft', jsonb_build_object(
+      'sessionId', :'writer_owner',
+      'contentRevision', 0,
+      'stagingRevision', 0,
+      'step', 'lines',
+      'customer', 'null'::JSONB,
+      'lines', '[]'::JSONB,
+      'lineMetadata', '[]'::JSONB,
+      'lineForm', jsonb_build_object(
+        'label', '',
+        'quantity', '1',
+        'unitPrice', '',
+        'category', 'labor'
+      ),
+      'vatDecision', 'null'::JSONB,
+      'depositPct', 30,
+      'signMode', 'null'::JSONB
+    )
+  ),
+  :'writer_mission_id'::UUID
+);
+
+INSERT INTO public.agent_mission_events (
+  "id", "companyId", "ownerUserId", "missionId", "sequence", "eventType",
+  "eventVersion", "actor", "commandId", "requestFingerprintHmac",
+  "fingerprintKeyVersion", "fingerprintCanonicalizationVersion",
+  "missionRevisionBefore", "missionRevisionAfter", "draftSlotRevisionBefore",
+  "draftSlotRevisionAfter", "draftContentRevisionBefore", "draftContentRevisionAfter",
+  "realtimeSessionId", "turnId", "contextRevision", "contextDigest", "data",
+  "occurredAt", "retentionExpiresAt"
+) VALUES (
+  :'writer_start_event_id'::UUID,
+  'writer-n1-company',
+  :'writer_owner',
+  :'writer_mission_id'::UUID,
+  1,
+  'mission_started',
+  1,
+  'user_tap',
+  gen_random_uuid(),
+  repeat('1', 64),
+  1,
+  1,
+  0,
+  1,
+  NULL,
+  1,
+  NULL,
+  0,
+  NULL,
+  NULL,
+  NULL,
+  NULL,
+  '{"kind":"mission_started","startOutcome":"no_slot"}'::JSONB,
+  current_setting('bob.cert.m2a2_n1_started_at')::TIMESTAMPTZ,
+  current_setting('bob.cert.m2a2_n1_started_at')::TIMESTAMPTZ
+    + INTERVAL '2160 hours'
+);
+
+-- Forme M2-A-1 exacte : catalogueResolution existe, les reçus M2-A-2 sont omis.
+INSERT INTO public.agent_mission_quote_line_work (
+  "id", "companyId", "ownerUserId", "missionId", "ordinal", "revision",
+  "state", "origin", "catalogueResolution", "createdAt", "updatedAt"
+) VALUES (
+  :'writer_work_id'::UUID,
+  'writer-n1-company',
+  :'writer_owner',
+  :'writer_mission_id'::UUID,
+  1,
+  1,
+  'queued',
+  'user_voice',
+  'pending',
+  clock_timestamp(),
+  clock_timestamp()
+);
+
+SELECT set_config('bob.cert.m2a2_n1_line_at', clock_timestamp()::TEXT, true);
+UPDATE public.agent_missions
+   SET "revision" = 2,
+       "idleExpiresAt" = LEAST(
+         current_setting('bob.cert.m2a2_n1_line_at')::TIMESTAMPTZ
+           + INTERVAL '24 hours',
+         "hardExpiresAt"
+       ),
+       "updatedAt" =
+         current_setting('bob.cert.m2a2_n1_line_at')::TIMESTAMPTZ
+ WHERE "id" = :'writer_mission_id'::UUID
+   AND "revision" = 1;
+
+INSERT INTO public.agent_mission_events (
+  "id", "companyId", "ownerUserId", "missionId", "sequence", "eventType",
+  "eventVersion", "actor", "commandId", "requestFingerprintHmac",
+  "fingerprintKeyVersion", "fingerprintCanonicalizationVersion",
+  "missionRevisionBefore", "missionRevisionAfter", "draftSlotRevisionBefore",
+  "draftSlotRevisionAfter", "draftContentRevisionBefore", "draftContentRevisionAfter",
+  "realtimeSessionId", "turnId", "contextRevision", "contextDigest", "data",
+  "occurredAt", "retentionExpiresAt"
+) VALUES (
+  :'writer_line_event_id'::UUID,
+  'writer-n1-company',
+  :'writer_owner',
+  :'writer_mission_id'::UUID,
+  2,
+  'line_candidates_staged',
+  1,
+  'user_tap',
+  gen_random_uuid(),
+  repeat('2', 64),
+  1,
+  1,
+  1,
+  2,
+  1,
+  1,
+  0,
+  0,
+  NULL,
+  NULL,
+  NULL,
+  NULL,
+  '{"kind":"line_candidates_staged","stagedCount":1,"firstQueueOrdinal":1,"lastQueueOrdinal":1}'::JSONB,
+  current_setting('bob.cert.m2a2_n1_line_at')::TIMESTAMPTZ,
+  current_setting('bob.cert.m2a2_n1_line_at')::TIMESTAMPTZ
+    + INTERVAL '2160 hours'
+);
+
+DO $m2a2_writer_n1$
+BEGIN
+  IF (
+    SELECT ROW(
+      "catalogueCategoryOverrideConfirmed",
+      "catalogueUnitOverrideConfirmed"
+    )
+      FROM public.agent_mission_quote_line_work
+     WHERE "id" =
+       current_setting('bob.cert.m2a2_n1_work_id')::UUID
+  ) IS DISTINCT FROM ROW(false, false) THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A2_WRITER_N1_DEFAULT_DRIFT:%',
+      current_setting('bob.cert.m2a2_n1_stage');
+  END IF;
+END;
+$m2a2_writer_n1$;
+COMMIT;
+SQL
+}
+
 certify_m2a_quote_draft_reader_n1 pre-expand
 
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
@@ -3674,6 +3902,82 @@ $m2a1_catalogue_plan_cleanup$;
 COMMIT;
 SQL
 done
+
+# M2-A-2 : le train ajoute seulement les reçus d'override et les formes fermées de détail /
+# confirmation. Les trois étapes sont rejouées avant le provisionnement canonique afin que les
+# certificats finaux observent exclusivement les triggers V3.
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+SET ROLE bob_schema_owner;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT EXECUTE ON FUNCTIONS TO anon, authenticated, service_role;
+RESET ROLE;
+SQL
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260730110000_agent_mission_line_confirmation_expand/migration.sql"
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+DO $m2a2_expand_acl_fence$
+DECLARE
+  exposed_role TEXT;
+  function_name TEXT;
+BEGIN
+  FOREACH exposed_role IN ARRAY ARRAY['anon', 'authenticated', 'service_role'] LOOP
+    FOREACH function_name IN ARRAY ARRAY[
+      'guard_agent_mission_event_append_v3',
+      'guard_agent_mission_quote_line_work_v3'
+    ] LOOP
+      IF has_function_privilege(
+        exposed_role,
+        ('public.' || function_name || '()')::pg_catalog.regprocedure,
+        'EXECUTE'
+      ) THEN
+        RAISE EXCEPTION 'AGENT_MISSION_M2A2_DATA_API_FUNCTION_ACL_SURVIVED:%:%',
+          exposed_role, function_name;
+      END IF;
+    END LOOP;
+  END LOOP;
+END;
+$m2a2_expand_acl_fence$;
+
+SET ROLE bob_schema_owner;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  REVOKE EXECUTE ON FUNCTIONS FROM anon, authenticated, service_role;
+RESET ROLE;
+SQL
+
+certify_m2a1_quote_line_writer_n1 \
+  expand \
+  writer-m2a2-n1-expand \
+  f3000000-0000-4000-8000-000000000001 \
+  f3000000-0000-4000-8000-000000000002 \
+  f3000000-0000-4000-8000-000000000003 \
+  f3000000-0000-4000-8000-000000000004
+certify_m2a_quote_draft_reader_n1 m2a2expand
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260730110100_agent_mission_line_confirmation_validate/migration.sql"
+
+certify_m2a1_quote_line_writer_n1 \
+  validate \
+  writer-m2a2-n1-validate \
+  f4000000-0000-4000-8000-000000000001 \
+  f4000000-0000-4000-8000-000000000002 \
+  f4000000-0000-4000-8000-000000000003 \
+  f4000000-0000-4000-8000-000000000004
+certify_m2a_quote_draft_reader_n1 m2a2validate
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260730110200_agent_mission_line_confirmation_cutover/migration.sql"
+
+certify_m2a1_quote_line_writer_n1 \
+  cutover \
+  writer-m2a2-n1-cutover \
+  f5000000-0000-4000-8000-000000000001 \
+  f5000000-0000-4000-8000-000000000002 \
+  f5000000-0000-4000-8000-000000000003 \
+  f5000000-0000-4000-8000-000000000004
+certify_m2a_quote_draft_reader_n1 m2a2cutover
 
 # Les flags restent exactement OFF et FORCE RLS doit avoir été restauré après l'écriture globale.
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'

@@ -19,11 +19,29 @@ export const AGENT_MISSION_EVENT_TYPES = [
   'catalogue_not_found',
   'catalogue_choices_presented',
   'catalogue_choice_selected',
+  'line_fact_patched',
+  'line_details_requested',
+  'line_proposal_presented',
+  'line_proposal_rejected',
+  'line_confirmed',
+  'line_cancelled',
   'mission_cancelled',
   'mission_expired',
 ] as const;
 
 export type AgentMissionEventType = (typeof AGENT_MISSION_EVENT_TYPES)[number];
+export const AGENT_MISSION_M2A_EVENT_TYPES = [
+  'line_candidates_staged',
+  'catalogue_not_found',
+  'catalogue_choices_presented',
+  'catalogue_choice_selected',
+  'line_fact_patched',
+  'line_details_requested',
+  'line_proposal_presented',
+  'line_proposal_rejected',
+  'line_confirmed',
+  'line_cancelled',
+] as const satisfies readonly AgentMissionEventType[];
 export const AGENT_MISSION_ACTORS = ['user_voice', 'user_tap', 'system'] as const;
 export type AgentMissionActor = (typeof AGENT_MISSION_ACTORS)[number];
 export const AGENT_MISSION_USER_ACTORS = ['user_voice', 'user_tap'] as const;
@@ -54,6 +72,8 @@ export const AGENT_MISSION_CORRELATION_SYSTEM_EVENT_TYPES = [
   'mission_expired',
   'catalogue_not_found',
   'catalogue_choices_presented',
+  'line_details_requested',
+  'line_proposal_presented',
 ] as const;
 export const AGENT_MISSION_CORRELATION_SCREEN_ACK_EVENT_TYPES = [
   'screen_acknowledged',
@@ -64,6 +84,8 @@ export const AGENT_MISSION_SYSTEM_CONTINUATION_EVENT_TYPES = [
   'customer_selected',
   'catalogue_not_found',
   'catalogue_choices_presented',
+  'line_details_requested',
+  'line_proposal_presented',
 ] as const;
 export const AGENT_MISSION_CORRELATION_USER_EVENT_TYPES = [
   'mission_started',
@@ -79,6 +101,10 @@ export const AGENT_MISSION_CORRELATION_USER_EVENT_TYPES = [
   'decision_invalidated',
   'line_candidates_staged',
   'catalogue_choice_selected',
+  'line_fact_patched',
+  'line_proposal_rejected',
+  'line_confirmed',
+  'line_cancelled',
   'mission_cancelled',
 ] as const;
 export const AGENT_MISSION_DRAFT_START_EVENT_TYPES = ['mission_started'] as const;
@@ -96,6 +122,11 @@ export const AGENT_MISSION_DRAFT_NO_OP_EVENT_TYPES = [
   'catalogue_not_found',
   'catalogue_choices_presented',
   'catalogue_choice_selected',
+  'line_fact_patched',
+  'line_details_requested',
+  'line_proposal_presented',
+  'line_proposal_rejected',
+  'line_cancelled',
   'mission_cancelled',
   'mission_expired',
 ] as const;
@@ -104,6 +135,9 @@ export const AGENT_MISSION_DRAFT_REPLACE_EVENT_TYPES = [
 ] as const;
 export const AGENT_MISSION_DRAFT_ADVANCE_CUSTOMER_EVENT_TYPES = [
   'customer_selected',
+] as const;
+export const AGENT_MISSION_DRAFT_ADVANCE_LINE_EVENT_TYPES = [
+  'line_confirmed',
 ] as const;
 export const AGENT_MISSION_EVENT_RETENTION_MS = 90 * 24 * 60 * 60 * 1_000;
 export const AGENT_MISSION_EVENT_INT4_MAX = 2_147_483_647;
@@ -164,11 +198,71 @@ export const AGENT_MISSION_EVENT_CATALOGUE_SELECTED_DATA_KEYS = [
   'choiceId',
   'choiceSetHash',
 ] as const;
+export const AGENT_MISSION_EVENT_LINE_FACT_PATCHED_DATA_KEYS = [
+  'kind',
+  'pendingLineId',
+  'field',
+  'workRevisionAfter',
+] as const;
+export const AGENT_MISSION_EVENT_LINE_DETAILS_REQUESTED_DATA_KEYS = [
+  'kind',
+  'pendingLineId',
+  'requiredFact',
+  'workRevisionAfter',
+] as const;
+export const AGENT_MISSION_EVENT_LINE_PROPOSAL_PRESENTED_DATA_KEYS = [
+  'kind',
+  'pendingLineId',
+  'proposalId',
+  'proposalRevision',
+  'expectedWorkRevision',
+  'diffHash',
+  'choiceSetHash',
+] as const;
+export const AGENT_MISSION_EVENT_LINE_PROPOSAL_REJECTED_DATA_KEYS = [
+  'kind',
+  'pendingLineId',
+  'proposalId',
+  'workRevisionAfter',
+  'choiceId',
+  'choiceSetHash',
+] as const;
+export const AGENT_MISSION_EVENT_LINE_CONFIRMED_DATA_KEYS = [
+  'kind',
+  'pendingLineId',
+  'proposalId',
+  'proposalRevision',
+  'expectedWorkRevision',
+  'choiceId',
+  'choiceSetHash',
+  'diffHash',
+] as const;
+export const AGENT_MISSION_EVENT_LINE_CANCELLED_DATA_KEYS = [
+  'kind',
+  'pendingLineId',
+  'expectedWorkRevision',
+  'choiceId',
+  'choiceSetHash',
+] as const;
+export const AGENT_MISSION_QUOTE_LINE_REQUIRED_FACTS = [
+  'service_reference',
+  'category',
+  'quantity',
+  'unit',
+  'unit_price',
+  'vat_rate',
+  'housing_older_than_2y',
+  'energy_renovation',
+] as const;
+export type AgentMissionQuoteLineRequiredFact =
+  (typeof AGENT_MISSION_QUOTE_LINE_REQUIRED_FACTS)[number];
 export const AGENT_MISSION_SCREEN_ACK_NEXT_PHASES = [
   'awaiting_customer',
   'awaiting_customer_choice',
   'awaiting_lines',
   'awaiting_catalogue_choice',
+  'awaiting_line_details',
+  'awaiting_line_confirmation',
 ] as const;
 export const AGENT_MISSION_CUSTOMER_NOT_FOUND_RESULTS = ['none', 'too_many'] as const;
 export const AGENT_MISSION_STAGED_CUSTOMER_RESOLUTION_RESULTS = [
@@ -207,7 +301,9 @@ export type AgentMissionEventDataV1 =
         | 'awaiting_customer'
         | 'awaiting_customer_choice'
         | 'awaiting_lines'
-        | 'awaiting_catalogue_choice';
+        | 'awaiting_catalogue_choice'
+        | 'awaiting_line_details'
+        | 'awaiting_line_confirmation';
     }
   | {
       readonly kind: 'customer_resolution_staged';
@@ -261,6 +357,52 @@ export type AgentMissionEventDataV1 =
       readonly pendingLineId: string;
       readonly workRevisionAfter: number;
       readonly resolution: 'free' | 'selected';
+      readonly choiceId: string;
+      readonly choiceSetHash: string;
+    }
+  | {
+      readonly kind: 'line_fact_patched';
+      readonly pendingLineId: string;
+      readonly field: AgentMissionQuoteLineRequiredFact;
+      readonly workRevisionAfter: number;
+    }
+  | {
+      readonly kind: 'line_details_requested';
+      readonly pendingLineId: string;
+      readonly requiredFact: AgentMissionQuoteLineRequiredFact | null;
+      readonly workRevisionAfter: number;
+    }
+  | {
+      readonly kind: 'line_proposal_presented';
+      readonly pendingLineId: string;
+      readonly proposalId: string;
+      readonly proposalRevision: 1;
+      readonly expectedWorkRevision: number;
+      readonly diffHash: string;
+      readonly choiceSetHash: string;
+    }
+  | {
+      readonly kind: 'line_proposal_rejected';
+      readonly pendingLineId: string;
+      readonly proposalId: string;
+      readonly workRevisionAfter: number;
+      readonly choiceId: string;
+      readonly choiceSetHash: string;
+    }
+  | {
+      readonly kind: 'line_confirmed';
+      readonly pendingLineId: string;
+      readonly proposalId: string;
+      readonly proposalRevision: 1;
+      readonly expectedWorkRevision: number;
+      readonly choiceId: string;
+      readonly choiceSetHash: string;
+      readonly diffHash: string;
+    }
+  | {
+      readonly kind: 'line_cancelled';
+      readonly pendingLineId: string;
+      readonly expectedWorkRevision: number;
       readonly choiceId: string;
       readonly choiceSetHash: string;
     }
@@ -445,7 +587,9 @@ function validateData(
         | 'awaiting_customer'
         | 'awaiting_customer_choice'
         | 'awaiting_lines'
-        | 'awaiting_catalogue_choice',
+        | 'awaiting_catalogue_choice'
+        | 'awaiting_line_details'
+        | 'awaiting_line_confirmation',
     };
   } else if (eventType === 'customer_resolution_staged') {
     if (
@@ -560,6 +704,89 @@ function validateData(
       choiceId: value['choiceId'] as string,
       choiceSetHash: value['choiceSetHash'] as string,
     };
+  } else if (eventType === 'line_fact_patched') {
+    if (
+      !exactKeys(value, AGENT_MISSION_EVENT_LINE_FACT_PATCHED_DATA_KEYS)
+      || !isOneOf(AGENT_MISSION_QUOTE_LINE_REQUIRED_FACTS, value['field'])
+    ) {
+      return invalid('data', 'invalid_shape');
+    }
+    data = {
+      kind: eventType,
+      pendingLineId: value['pendingLineId'] as string,
+      field: value['field'],
+      workRevisionAfter: value['workRevisionAfter'] as number,
+    };
+  } else if (eventType === 'line_details_requested') {
+    if (
+      !exactKeys(value, AGENT_MISSION_EVENT_LINE_DETAILS_REQUESTED_DATA_KEYS)
+      || (
+        value['requiredFact'] !== null
+        && !isOneOf(
+          AGENT_MISSION_QUOTE_LINE_REQUIRED_FACTS,
+          value['requiredFact'],
+        )
+      )
+    ) {
+      return invalid('data', 'invalid_shape');
+    }
+    data = {
+      kind: eventType,
+      pendingLineId: value['pendingLineId'] as string,
+      requiredFact:
+        value['requiredFact'] as AgentMissionQuoteLineRequiredFact | null,
+      workRevisionAfter: value['workRevisionAfter'] as number,
+    };
+  } else if (eventType === 'line_proposal_presented') {
+    if (!exactKeys(value, AGENT_MISSION_EVENT_LINE_PROPOSAL_PRESENTED_DATA_KEYS)) {
+      return invalid('data', 'invalid_shape');
+    }
+    data = {
+      kind: eventType,
+      pendingLineId: value['pendingLineId'] as string,
+      proposalId: value['proposalId'] as string,
+      proposalRevision: value['proposalRevision'] as 1,
+      expectedWorkRevision: value['expectedWorkRevision'] as number,
+      diffHash: value['diffHash'] as string,
+      choiceSetHash: value['choiceSetHash'] as string,
+    };
+  } else if (eventType === 'line_proposal_rejected') {
+    if (!exactKeys(value, AGENT_MISSION_EVENT_LINE_PROPOSAL_REJECTED_DATA_KEYS)) {
+      return invalid('data', 'invalid_shape');
+    }
+    data = {
+      kind: eventType,
+      pendingLineId: value['pendingLineId'] as string,
+      proposalId: value['proposalId'] as string,
+      workRevisionAfter: value['workRevisionAfter'] as number,
+      choiceId: value['choiceId'] as string,
+      choiceSetHash: value['choiceSetHash'] as string,
+    };
+  } else if (eventType === 'line_confirmed') {
+    if (!exactKeys(value, AGENT_MISSION_EVENT_LINE_CONFIRMED_DATA_KEYS)) {
+      return invalid('data', 'invalid_shape');
+    }
+    data = {
+      kind: eventType,
+      pendingLineId: value['pendingLineId'] as string,
+      proposalId: value['proposalId'] as string,
+      proposalRevision: value['proposalRevision'] as 1,
+      expectedWorkRevision: value['expectedWorkRevision'] as number,
+      choiceId: value['choiceId'] as string,
+      choiceSetHash: value['choiceSetHash'] as string,
+      diffHash: value['diffHash'] as string,
+    };
+  } else if (eventType === 'line_cancelled') {
+    if (!exactKeys(value, AGENT_MISSION_EVENT_LINE_CANCELLED_DATA_KEYS)) {
+      return invalid('data', 'invalid_shape');
+    }
+    data = {
+      kind: eventType,
+      pendingLineId: value['pendingLineId'] as string,
+      expectedWorkRevision: value['expectedWorkRevision'] as number,
+      choiceId: value['choiceId'] as string,
+      choiceSetHash: value['choiceSetHash'] as string,
+    };
   } else if (eventType === 'mission_cancelled') {
     if (
       !exactKeys(value, AGENT_MISSION_EVENT_REASON_DATA_KEYS)
@@ -669,11 +896,85 @@ function validateData(
     }
   }
 
+  if (
+    data.kind === 'line_fact_patched'
+    || data.kind === 'line_details_requested'
+    || data.kind === 'line_proposal_presented'
+    || data.kind === 'line_proposal_rejected'
+    || data.kind === 'line_confirmed'
+    || data.kind === 'line_cancelled'
+  ) {
+    if (!isCanonicalUuid(data.pendingLineId)) {
+      return invalid('data.pendingLineId', 'invalid_uuid');
+    }
+  }
+  if (
+    data.kind === 'line_fact_patched'
+    || data.kind === 'line_details_requested'
+    || data.kind === 'line_proposal_rejected'
+  ) {
+    if (!isSafeRevision(data.workRevisionAfter, false)) {
+      return invalid('data.workRevisionAfter', 'invalid_revision');
+    }
+  }
+  if (
+    data.kind === 'line_proposal_presented'
+    || data.kind === 'line_proposal_rejected'
+    || data.kind === 'line_confirmed'
+  ) {
+    if (!isCanonicalUuid(data.proposalId)) {
+      return invalid('data.proposalId', 'invalid_uuid');
+    }
+  }
+  if (
+    data.kind === 'line_proposal_presented'
+    || data.kind === 'line_confirmed'
+  ) {
+    if (data.proposalRevision !== 1) {
+      return invalid('data.proposalRevision', 'invalid_revision');
+    }
+    if (!isSafeRevision(data.expectedWorkRevision, false)) {
+      return invalid('data.expectedWorkRevision', 'invalid_revision');
+    }
+    if (!SHA256.test(data.diffHash)) {
+      return invalid('data.diffHash', 'invalid_digest');
+    }
+  }
+  if (data.kind === 'line_cancelled') {
+    if (!isSafeRevision(data.expectedWorkRevision, false)) {
+      return invalid('data.expectedWorkRevision', 'invalid_revision');
+    }
+  }
+  if (
+    data.kind === 'line_proposal_presented'
+    || data.kind === 'line_proposal_rejected'
+    || data.kind === 'line_confirmed'
+    || data.kind === 'line_cancelled'
+  ) {
+    if (!SHA256.test(data.choiceSetHash)) {
+      return invalid('data.choiceSetHash', 'invalid_digest');
+    }
+  }
+  if (
+    data.kind === 'line_proposal_rejected'
+    || data.kind === 'line_confirmed'
+    || data.kind === 'line_cancelled'
+  ) {
+    if (!isCanonicalUuid(data.choiceId)) {
+      return invalid('data.choiceId', 'invalid_uuid');
+    }
+  }
+
   return ok(cloneEventData(data));
 }
 
 type EventCorrelationRule = 'user' | 'screen_ack' | 'system';
-type EventDraftRule = 'mission_start' | 'no_op' | 'replace_in_place' | 'advance_customer';
+type EventDraftRule =
+  | 'mission_start'
+  | 'no_op'
+  | 'replace_in_place'
+  | 'advance_customer'
+  | 'advance_line';
 
 interface AgentMissionEventRule {
   readonly actors: readonly AgentMissionActor[];
@@ -718,6 +1019,10 @@ function ruleForEvent(eventType: AgentMissionEventType): AgentMissionEventRule {
     containsEventType(AGENT_MISSION_DRAFT_ADVANCE_CUSTOMER_EVENT_TYPES, eventType)
   ) {
     draft = 'advance_customer';
+  } else if (
+    containsEventType(AGENT_MISSION_DRAFT_ADVANCE_LINE_EVENT_TYPES, eventType)
+  ) {
+    draft = 'advance_line';
   } else {
     throw new Error(`AGENT_MISSION_EVENT_DRAFT_RULE_MISSING:${eventType}`);
   }

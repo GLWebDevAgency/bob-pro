@@ -592,9 +592,9 @@ test('le certificat s’exécute comme runtime non-superuser et ferme Data API +
   for (const functionName of [
     'guard_agent_mission_mutation_v2',
     'guard_quote_draft_agent_mission_v1',
-    'guard_agent_mission_quote_line_work_v2',
+    'guard_agent_mission_quote_line_work_v3',
     'reject_agent_mission_event_mutation_v1',
-    'guard_agent_mission_event_append_v2',
+    'guard_agent_mission_event_append_v3',
     'require_agent_mission_event_v1',
     'guard_catalogue_prestation_revision_v1',
     'sync_catalogue_prestation_search_tokens_v1',
@@ -725,11 +725,11 @@ test('M2-A ferme exactement work items, capability, trigger et policies RLS', ()
   );
   assert.match(
     rls,
-    /REVOKE ALL ON TABLE agent_mission_quote_line_work FROM PUBLIC;[\s\S]*?REVOKE ALL ON FUNCTION guard_agent_mission_quote_line_work_v2\(\) FROM PUBLIC;/u,
+    /REVOKE ALL ON TABLE agent_mission_quote_line_work FROM PUBLIC;[\s\S]*?REVOKE ALL ON FUNCTION guard_agent_mission_quote_line_work_v3\(\) FROM PUBLIC;/u,
   );
   assert.match(
     rls,
-    /REVOKE ALL PRIVILEGES ON TABLE agent_mission_quote_line_work FROM %I[\s\S]*?REVOKE ALL PRIVILEGES ON FUNCTION guard_agent_mission_quote_line_work_v2\(\) FROM %I/u,
+    /REVOKE ALL PRIVILEGES ON TABLE agent_mission_quote_line_work FROM %I[\s\S]*?REVOKE ALL PRIVILEGES ON FUNCTION guard_agent_mission_quote_line_work_v3\(\) FROM %I/u,
   );
   assert.match(
     runtimeGrants,
@@ -737,23 +737,23 @@ test('M2-A ferme exactement work items, capability, trigger et policies RLS', ()
   );
   assert.match(
     runtimeGrants,
-    /'guard_agent_mission_quote_line_work_v2'[\s\S]*?'guard_catalogue_prestation_revision_v1'[\s\S]*?'sync_catalogue_prestation_search_tokens_v1'[\s\S]*?\) <> 17 THEN[\s\S]*?AGENT_MISSION_RUNTIME_FUNCTION_INVENTORY_DRIFT/u,
+    /'guard_agent_mission_quote_line_work_v3'[\s\S]*?'guard_catalogue_prestation_revision_v1'[\s\S]*?'sync_catalogue_prestation_search_tokens_v1'[\s\S]*?\) <> 17 THEN[\s\S]*?AGENT_MISSION_RUNTIME_FUNCTION_INVENTORY_DRIFT/u,
   );
   assert.match(
     runtimeGrants,
-    /REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I[\s\S]*?'guard_agent_mission_quote_line_work_v2'/u,
+    /REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I[\s\S]*?'guard_agent_mission_quote_line_work_v3'/u,
   );
   const executeGrant = runtimeGrants.slice(
     runtimeGrants.indexOf('GRANT EXECUTE ON FUNCTION %s TO %I'),
   );
   assert.doesNotMatch(
     executeGrant,
-    /guard_agent_mission_quote_line_work_v2/u,
+    /guard_agent_mission_quote_line_work_v3/u,
     'La fonction de trigger M2-A ne doit jamais devenir une API exécutable.',
   );
   assert.match(
     releaseCertificate,
-    /quote_line_work_trigger_count <> 1[\s\S]*?agent_mission_quote_line_work_guard_v2[\s\S]*?trigger\.tgenabled = 'O'[\s\S]*?trigger\.tgtype = 31[\s\S]*?trigger\.tgqual IS NULL[\s\S]*?trigger\.tgnargs = 0[\s\S]*?trigger\.tgattr = ''::pg_catalog\.int2vector[\s\S]*?guard_agent_mission_quote_line_work_v2/u,
+    /quote_line_work_trigger_count <> 1[\s\S]*?agent_mission_quote_line_work_guard_v3[\s\S]*?trigger\.tgenabled = 'O'[\s\S]*?trigger\.tgtype = 31[\s\S]*?trigger\.tgqual IS NULL[\s\S]*?trigger\.tgnargs = 0[\s\S]*?trigger\.tgattr = ''::pg_catalog\.int2vector[\s\S]*?guard_agent_mission_quote_line_work_v3/u,
   );
   assert.match(
     releaseCertificate,
@@ -789,7 +789,7 @@ test('M2-A ferme exactement work items, capability, trigger et policies RLS', ()
   );
   assert.match(
     releaseCertificate,
-    /'public\.guard_agent_mission_quote_line_work_v2\(\)'::pg_catalog\.regprocedure[\s\S]*?DATA_API_OWNER_MEMBERSHIP_FORBIDDEN/u,
+    /'public\.guard_agent_mission_quote_line_work_v3\(\)'::pg_catalog\.regprocedure[\s\S]*?DATA_API_OWNER_MEMBERSHIP_FORBIDDEN/u,
   );
   assert.match(
     releaseCertificate,
@@ -797,7 +797,67 @@ test('M2-A ferme exactement work items, capability, trigger et policies RLS', ()
   );
   assert.match(
     releaseCertificate,
-    /FOREACH function_name IN ARRAY ARRAY\[[\s\S]*?'guard_agent_mission_quote_line_work_v2\(\)'[\s\S]*?DATA_API_FUNCTION_EXECUTE_FORBIDDEN/u,
+    /FOREACH function_name IN ARRAY ARRAY\[[\s\S]*?'guard_agent_mission_quote_line_work_v3\(\)'[\s\S]*?DATA_API_FUNCTION_EXECUTE_FORBIDDEN/u,
+  );
+});
+
+test('M2-A-2 exécute le writer M2-A-1 et le reader N-1 après chaque migration', () => {
+  const expand = localCertificate.indexOf(
+    '20260730110000_agent_mission_line_confirmation_expand',
+  );
+  const writerAfterExpand = localCertificate.indexOf(
+    'certify_m2a1_quote_line_writer_n1 \\\n  expand',
+    expand,
+  );
+  const readerAfterExpand = localCertificate.indexOf(
+    'certify_m2a_quote_draft_reader_n1 m2a2expand',
+    writerAfterExpand,
+  );
+  const validate = localCertificate.indexOf(
+    '20260730110100_agent_mission_line_confirmation_validate',
+    readerAfterExpand,
+  );
+  const writerAfterValidate = localCertificate.indexOf(
+    'certify_m2a1_quote_line_writer_n1 \\\n  validate',
+    validate,
+  );
+  const readerAfterValidate = localCertificate.indexOf(
+    'certify_m2a_quote_draft_reader_n1 m2a2validate',
+    writerAfterValidate,
+  );
+  const cutover = localCertificate.indexOf(
+    '20260730110200_agent_mission_line_confirmation_cutover',
+    readerAfterValidate,
+  );
+  const writerAfterCutover = localCertificate.indexOf(
+    'certify_m2a1_quote_line_writer_n1 \\\n  cutover',
+    cutover,
+  );
+  const readerAfterCutover = localCertificate.indexOf(
+    'certify_m2a_quote_draft_reader_n1 m2a2cutover',
+    writerAfterCutover,
+  );
+
+  assert.ok(
+    expand >= 0 &&
+      writerAfterExpand > expand &&
+      readerAfterExpand > writerAfterExpand &&
+      validate > readerAfterExpand &&
+      writerAfterValidate > validate &&
+      readerAfterValidate > writerAfterValidate &&
+      cutover > readerAfterValidate &&
+      writerAfterCutover > cutover &&
+      readerAfterCutover > writerAfterCutover,
+    'Chaque étape M2-A-2 doit être immédiatement suivie des preuves writer et reader N-1.',
+  );
+  assert.match(
+    localCertificate,
+    /Forme M2-A-1 exacte[\s\S]*?AGENT_MISSION_M2A2_WRITER_N1_DEFAULT_DRIFT/u,
+  );
+  assert.match(
+    localCertificate,
+    /ALTER DEFAULT PRIVILEGES IN SCHEMA public[\s\S]*?GRANT EXECUTE ON FUNCTIONS TO anon, authenticated, service_role[\s\S]*?AGENT_MISSION_M2A2_DATA_API_FUNCTION_ACL_SURVIVED[\s\S]*?REVOKE EXECUTE ON FUNCTIONS FROM anon, authenticated, service_role/u,
+    'L’expand doit retirer les ACL Data API même si les default privileges Supabase les accordent.',
   );
 });
 
@@ -1229,6 +1289,9 @@ test('local et CI statique exercent les mêmes ACL que release', () => {
     '20260730100000_agent_mission_catalogue_choice_expand',
     '20260730100100_agent_mission_catalogue_choice_validate',
     '20260730100200_agent_mission_catalogue_choice_cutover',
+    '20260730110000_agent_mission_line_confirmation_expand',
+    '20260730110100_agent_mission_line_confirmation_validate',
+    '20260730110200_agent_mission_line_confirmation_cutover',
   ]) {
     assert.match(localCertificate, new RegExp(migration, 'u'));
   }

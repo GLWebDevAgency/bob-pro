@@ -75,6 +75,7 @@ import type {
   CustomerPaymentTerms,
   CustomerBillingChannel,
   QuoteAgentMissionResumeView,
+  QuoteAgentMissionResumeViewV2,
 } from '@bob/core';
 import type {
   BobClient,
@@ -209,6 +210,7 @@ import {
 } from './realtime-native-speech-ack-codec';
 import {
   decodeQuoteAgentMissionResume,
+  decodeQuoteAgentMissionResumeV2,
 } from './agent-mission-codec';
 import {
   createHttpRealtimeAgentMissionSession,
@@ -2414,6 +2416,17 @@ export class HttpBobClient implements BobClient {
       undefined,
       undefined,
       decodeQuoteAgentMissionResume,
+      12_000,
+      signal,
+    );
+  }
+  getCurrentQuoteAgentMissionResumeV2(signal?: AbortSignal) {
+    return this.req<QuoteAgentMissionResumeViewV2>(
+      'GET',
+      '/agent-missions/current/quote-creation/resume',
+      undefined,
+      { 'x-bob-agent-mission-protocol-version': '2' },
+      decodeQuoteAgentMissionResumeV2,
       12_000,
       signal,
     );

@@ -89,6 +89,7 @@ import type {
   QualifiedBankBalanceWithPosition,
   QuoteDraftPayloadV1,
   QuoteAgentMissionResumeView,
+  QuoteAgentMissionResumeViewV2,
   PurchaseOrderRef,
   PurchaseOrderRefInput,
   PurchaseOrderMutationView,
@@ -1203,6 +1204,13 @@ export interface BobClient {
   getCurrentQuoteAgentMissionResume(
     signal?: AbortSignal,
   ): Promise<Result<QuoteAgentMissionResumeView, AppError>>;
+  /**
+   * Contrat M2-A explicite. Aucun appelant publié ne l'utilise avant M2-A-3 ; l'en-tête V2
+   * interdit tout rabaissement silencieux vers la reprise V1.
+   */
+  getCurrentQuoteAgentMissionResumeV2(
+    signal?: AbortSignal,
+  ): Promise<Result<QuoteAgentMissionResumeViewV2, AppError>>;
   /** GET /subscription (C26b) : abonnement réel du tenant (SubscriptionView ⊂ SubscriptionInfo @bob/core).
    * En early-access le serveur renvoie earlyAccess: true, priceCents: 0 — l'écran Compte en dérive
    * l'état honnête. */

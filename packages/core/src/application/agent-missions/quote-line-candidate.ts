@@ -252,6 +252,8 @@ export function createQueuedAgentMissionQuoteLineWork(input: {
     catalogueResolution: 'pending',
     catalogueItemId: null,
     expectedCatalogueRevision: null,
+    catalogueCategoryOverrideConfirmed: false,
+    catalogueUnitOverrideConfirmed: false,
     proposalId: null,
     proposalRevision: null,
     proposalDiffHash: null,

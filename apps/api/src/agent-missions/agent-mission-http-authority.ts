@@ -37,6 +37,8 @@ export type AgentMissionHttpOperation =
   | 'decide_quote_creation'
   | 'stage_quote_lines'
   | 'decide_catalogue_choice'
+  | 'patch_quote_line'
+  | 'decide_quote_line_proposal'
   | 'cancel_quote_creation';
 
 export type AgentMissionCapabilityMetricOperation =
@@ -47,6 +49,8 @@ export type AgentMissionCapabilityMetricOperation =
   | 'decision'
   | 'line_stage'
   | 'catalogue_choice'
+  | 'line_patch'
+  | 'line_decision'
   | 'line_continuation';
 
 export function agentMissionCapabilityMetricOperation(
@@ -60,6 +64,8 @@ export function agentMissionCapabilityMetricOperation(
     case 'decide_quote_creation': return 'decision';
     case 'stage_quote_lines': return 'line_stage';
     case 'decide_catalogue_choice': return 'catalogue_choice';
+    case 'patch_quote_line': return 'line_patch';
+    case 'decide_quote_line_proposal': return 'line_decision';
   }
 }
 
@@ -119,6 +125,8 @@ export class DurableAgentMissionHttpAuthority implements AgentMissionHttpAuthori
       (
         operation === 'stage_quote_lines'
         || operation === 'decide_catalogue_choice'
+        || operation === 'patch_quote_line'
+        || operation === 'decide_quote_line_proposal'
       )
       && protocolVersion !== 2
     ) {

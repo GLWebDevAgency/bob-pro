@@ -5,12 +5,17 @@ import {
   AdvanceQuoteAgentMission,
   CancelQuoteAgentMission,
   ContinueQuoteAgentMissionLineQueue,
+  ContinueQuoteAgentMissionLineResolution,
   DecideQuoteAgentMissionCatalogueChoice,
+  DecideQuoteAgentMissionLineProposal,
   DecideQuoteAgentMission,
   GetActiveAgentMission,
   GetResumableQuoteAgentMission,
+  GetResumableQuoteAgentMissionV2,
+  PatchQuoteAgentMissionLine,
   StageQuoteAgentMissionLines,
   StartQuoteAgentMission,
+  appConflict,
   appUnavailable,
   deriveAgentMissionSystemCommandId,
   err,
@@ -26,10 +31,17 @@ import {
   type AcknowledgeQuoteScreenOutput,
   type AppError,
   type CancelQuoteAgentMissionOutput,
+  type ContinueQuoteAgentMissionLineResolutionOutput,
   type ContinueQuoteAgentMissionLineQueueOutput,
   type DecideQuoteAgentMissionCatalogueChoiceOutput,
+  type DecideQuoteAgentMissionLineProposalOutput,
   type DecideQuoteAgentMissionOutput,
+  type AgentMissionQuoteLinePatchScope,
+  type AgentMissionQuoteLinePatchV1,
+  type AgentMissionQuoteLineRequiredFact,
   type QuoteAgentMissionCustomerDecision,
+  type QuoteAgentMissionPresentationV1,
+  type QuoteAgentMissionResumeViewV2,
   type Result,
   type QuoteAgentMissionResumeView,
   type StageQuoteAgentMissionLinesOutput,
@@ -50,13 +62,110 @@ Pick<AgentMissionHttpAuthorization, 'owner' | 'proof'>
 export interface StageQuoteAgentMissionLinesServiceOutput
 extends Omit<StageQuoteAgentMissionLinesOutput, 'mission'> {
   readonly mission: AgentMissionViewV1;
-  readonly continuation: Omit<ContinueQuoteAgentMissionLineQueueOutput, 'mission'>;
+  readonly continuation: AgentMissionLineContinuationServiceOutput;
+  readonly presentation: QuoteAgentMissionPresentationV1;
 }
 
 export interface DecideQuoteAgentMissionCatalogueChoiceServiceOutput
 extends Omit<DecideQuoteAgentMissionCatalogueChoiceOutput, 'mission'> {
   readonly mission: AgentMissionViewV1;
-  readonly continuation: Omit<ContinueQuoteAgentMissionLineQueueOutput, 'mission'>;
+  readonly continuation: AgentMissionLineContinuationServiceOutput;
+  readonly presentation: QuoteAgentMissionPresentationV1;
+}
+
+export interface AcknowledgeQuoteScreenServiceOutputV2
+extends AcknowledgeQuoteScreenOutput {
+  readonly presentation: QuoteAgentMissionPresentationV1;
+}
+
+export type DecideQuoteAgentMissionServiceOutputV2 =
+DecideQuoteAgentMissionOutput & {
+  readonly presentation: QuoteAgentMissionPresentationV1;
+};
+
+export interface AgentMissionLineContinuationServiceOutput {
+  readonly outcome:
+    | Exclude<
+        ContinueQuoteAgentMissionLineQueueOutput['outcome'],
+        'deferred_to_m2a2'
+      >
+    | Exclude<
+        ContinueQuoteAgentMissionLineResolutionOutput['outcome'],
+        'needs_catalogue_resolution'
+      >;
+  readonly pendingLineId: string | null;
+  readonly presentedChoiceCount: number;
+  readonly requiredFact: AgentMissionQuoteLineRequiredFact | null;
+  readonly proposalId: string | null;
+}
+
+interface AgentMissionLineConvergenceOutput {
+  readonly mission: AgentMissionViewV1;
+  readonly continuation: AgentMissionLineContinuationServiceOutput;
+}
+
+export interface PatchQuoteAgentMissionLineServiceOutput {
+  readonly outcome: 'patched' | 'replayed';
+  readonly pendingLineId: string;
+  readonly workRevisionAfter: number;
+  readonly mission: AgentMissionViewV1;
+  readonly continuation: AgentMissionLineContinuationServiceOutput;
+  readonly presentation: QuoteAgentMissionPresentationV1;
+}
+
+export interface DecideQuoteAgentMissionLineProposalServiceOutput
+extends Omit<
+  DecideQuoteAgentMissionLineProposalOutput,
+  'mission' | 'commandReceipt'
+> {
+  readonly mission: AgentMissionViewV1;
+  readonly continuation: AgentMissionLineContinuationServiceOutput;
+  readonly presentation: QuoteAgentMissionPresentationV1;
+}
+
+const AGENT_MISSION_RESUME_V2_CAUSE_CODES = new Set([
+  'AGENT_MISSION_DATABASE_CLOCK_UNAVAILABLE',
+  'AGENT_MISSION_FOREGROUND_AMBIGUOUS',
+  'AGENT_MISSION_PROTOCOL_VERSION_CORRUPT',
+  'AGENT_MISSION_QUOTE_DRAFT_CORRUPT',
+  'AGENT_MISSION_QUOTE_DRAFT_VERSION_OR_REVISION_CORRUPT',
+  'AGENT_MISSION_QUOTE_LINE_WORK_ROW_CORRUPT',
+  'AGENT_MISSION_QUOTE_VAT_CONTEXT_CORRUPT',
+  'AGENT_MISSION_RESUME_CATALOGUE_INPUT_INVALID',
+  'AGENT_MISSION_RESUME_CATALOGUE_ROW_CORRUPT',
+  'AGENT_MISSION_ROW_CORRUPT',
+] as const);
+
+type AgentMissionResumeV2CauseCode =
+  | 'AGENT_MISSION_DATABASE_CLOCK_UNAVAILABLE'
+  | 'AGENT_MISSION_FOREGROUND_AMBIGUOUS'
+  | 'AGENT_MISSION_PROTOCOL_VERSION_CORRUPT'
+  | 'AGENT_MISSION_QUOTE_DRAFT_CORRUPT'
+  | 'AGENT_MISSION_QUOTE_DRAFT_VERSION_OR_REVISION_CORRUPT'
+  | 'AGENT_MISSION_QUOTE_LINE_WORK_ROW_CORRUPT'
+  | 'AGENT_MISSION_QUOTE_VAT_CONTEXT_CORRUPT'
+  | 'AGENT_MISSION_RESUME_CATALOGUE_INPUT_INVALID'
+  | 'AGENT_MISSION_RESUME_CATALOGUE_ROW_CORRUPT'
+  | 'AGENT_MISSION_ROW_CORRUPT'
+  | 'unexpected_error';
+
+function classifyAgentMissionResumeV2Failure(error: unknown): Readonly<{
+  errorType: 'error' | 'non_error';
+  causeCode: AgentMissionResumeV2CauseCode;
+  port: 'agent_mission_resume_v2_persistence';
+}> {
+  const message = error instanceof Error ? error.message : '';
+  const candidate = message.split(':', 1)[0] ?? '';
+  const causeCode = AGENT_MISSION_RESUME_V2_CAUSE_CODES.has(
+    candidate as Exclude<AgentMissionResumeV2CauseCode, 'unexpected_error'>,
+  )
+    ? candidate as Exclude<AgentMissionResumeV2CauseCode, 'unexpected_error'>
+    : 'unexpected_error';
+  return Object.freeze({
+    errorType: error instanceof Error ? 'error' : 'non_error',
+    causeCode,
+    port: 'agent_mission_resume_v2_persistence',
+  });
 }
 
 function observeBoundedUnitOfWorkOutcome<T>(
@@ -233,6 +342,81 @@ export class AgentMissionService {
       );
       return err(appUnavailable('agent_mission_resume_persistence'));
     }
+  }
+
+  async getCurrentResumeV2(): Promise<
+    Result<QuoteAgentMissionResumeViewV2, AppError>
+  > {
+    const principal = getPrincipal();
+    if (principal === undefined || principal.companyId === null) {
+      return err({ kind: 'forbidden', reason: 'authenticated_owner_required' });
+    }
+    return this.readCurrentResumeV2({
+      companyId: principal.companyId,
+      ownerUserId: principal.userId,
+    });
+  }
+
+  private async readCurrentResumeV2(
+    owner: AgentMissionServiceAuthorization['owner'],
+  ): Promise<Result<QuoteAgentMissionResumeViewV2, AppError>> {
+    const unitOfWork = this.persistence.createAgentMissionResumeV2UnitOfWork();
+    if (unitOfWork === null) {
+      return err(appUnavailable('agent_mission_resume_v2_persistence'));
+    }
+    try {
+      return await new GetResumableQuoteAgentMissionV2({ unitOfWork }).execute(owner);
+    } catch (error) {
+      this.logger.error(
+        'Lecture de reprise AgentMission V2 impossible.',
+        undefined,
+        'AgentMissionService',
+        classifyAgentMissionResumeV2Failure(error),
+      );
+      return err(appUnavailable('agent_mission_resume_v2_persistence'));
+    }
+  }
+
+  private async attachCurrentLinePresentation<
+    T extends { readonly mission: AgentMissionViewV1 },
+  >(
+    owner: AgentMissionServiceAuthorization['owner'],
+    value: T,
+  ): Promise<Result<T & {
+    readonly presentation: QuoteAgentMissionPresentationV1;
+  }, AppError>> {
+    const resumed = await this.readCurrentResumeV2(owner);
+    if (!resumed.ok) return resumed;
+    const current = resumed.value;
+    const commandDraft = value.mission.payload.draft;
+    if (
+      current.mission === null
+      || current.presentation === null
+      || commandDraft === null
+      || current.mission.id !== value.mission.id
+      || current.mission.status !== value.mission.status
+      || current.mission.phase !== value.mission.phase
+      || current.mission.revision !== value.mission.revision
+      || current.mission.actionable !== value.mission.actionable
+      || current.mission.draft.sessionId !== commandDraft.sessionId
+      || current.mission.draft.slotRevision !== commandDraft.slotRevision
+      || current.mission.draft.contentRevision !== commandDraft.contentRevision
+    ) {
+      return err({
+        kind: 'dependency',
+        port: 'agent_mission_command_projection',
+        cause: current.mission === null
+          ? 'mission_missing_after_command'
+          : 'mission_changed_after_command',
+      });
+    }
+    return {
+      ok: true,
+      value: Object.freeze({
+        ...value,
+        presentation: current.presentation,
+      }),
+    };
   }
 
   start(input: {
@@ -456,7 +640,8 @@ export class AgentMissionService {
     }
 
     let mission = advanced.value.mission;
-    let continuationOutcome: ContinueQuoteAgentMissionLineQueueOutput['outcome'] | null = null;
+    let continuationOutcome:
+      AgentMissionLineContinuationServiceOutput['outcome'] | null = null;
     if (
       input.authorization.proof.protocolVersion === 2
       && mission.status === 'active'
@@ -488,17 +673,24 @@ export class AgentMissionService {
           return continued;
         }
         mission = continued.value.mission;
-        continuationOutcome = continued.value.outcome;
+        continuationOutcome = continued.value.continuation.outcome;
       }
     }
 
-    const result: Result<AcknowledgeQuoteScreenOutput, AppError> = {
-      ok: true,
-      value: Object.freeze({
-        ...acknowledged.value,
-        mission,
-      }),
-    };
+    const acknowledgedValue = Object.freeze({
+      ...acknowledged.value,
+      mission,
+    });
+    const result: Result<AcknowledgeQuoteScreenOutput, AppError> =
+      input.authorization.proof.protocolVersion === 2
+      ? await this.attachCurrentLinePresentation(owner, acknowledgedValue)
+      : { ok: true, value: acknowledgedValue };
+    if (!result.ok) {
+      this.metrics.agentMissionScreenAcks.inc({
+        outcome: agentMissionScreenAckMetricOutcome(result),
+      });
+      return result;
+    }
     this.metrics.agentMissionScreenAcks.inc({
       outcome: agentMissionScreenAckMetricOutcome(result),
     });
@@ -615,7 +807,8 @@ export class AgentMissionService {
       origin: input.origin,
       lines: input.lines,
     });
-    if (result.ok && result.value.outcome !== 'replayed') {
+    if (!result.ok) return result;
+    if (result.value.outcome !== 'replayed') {
       this.logger.audit('agent_mission.customer_decision', {
         ...auditReferences(this.fingerprints, {
           companyId: owner.companyId,
@@ -628,9 +821,9 @@ export class AgentMissionService {
         phase: result.value.mission.phase,
       });
     }
+    let finalValue = result.value;
     if (
-      result.ok
-      && input.authorization.proof.protocolVersion === 2
+      input.authorization.proof.protocolVersion === 2
       && result.value.mission.status === 'active'
       && result.value.mission.phase === 'awaiting_lines'
     ) {
@@ -640,15 +833,14 @@ export class AgentMissionService {
         parentCommandId: input.commandId,
       });
       if (!continued.ok) return continued;
-      return {
-        ok: true,
-        value: Object.freeze({
-          ...result.value,
-          mission: continued.value.mission,
-        }),
-      };
+      finalValue = Object.freeze({
+        ...result.value,
+        mission: continued.value.mission,
+      });
     }
-    return result;
+    return input.authorization.proof.protocolVersion === 2
+      ? this.attachCurrentLinePresentation(owner, finalValue)
+      : { ok: true, value: finalValue };
   }
 
   stageLines(input: {
@@ -755,24 +947,17 @@ export class AgentMissionService {
         }),
         actor: input.origin.actor,
         stagedCount: staged.value.stagedCount,
-        continuationOutcome: continued.value.outcome,
+        continuationOutcome: continued.value.continuation.outcome,
       });
     }
-    const {
-      mission: _continuedMission,
-      ...continuation
-    } = continued.value;
-    return {
-      ok: true,
-      value: Object.freeze({
-        outcome: staged.value.outcome,
-        mission: continued.value.mission,
-        stagedCount: staged.value.stagedCount,
-        firstQueueOrdinal: staged.value.firstQueueOrdinal,
-        lastQueueOrdinal: staged.value.lastQueueOrdinal,
-        continuation: Object.freeze(continuation),
-      }),
-    };
+    return this.attachCurrentLinePresentation(owner, Object.freeze({
+      outcome: staged.value.outcome,
+      mission: continued.value.mission,
+      stagedCount: staged.value.stagedCount,
+      firstQueueOrdinal: staged.value.firstQueueOrdinal,
+      lastQueueOrdinal: staged.value.lastQueueOrdinal,
+      continuation: continued.value.continuation,
+    }));
   }
 
   decideCatalogueChoice(input: {
@@ -917,27 +1102,328 @@ export class AgentMissionService {
       parentCommandId: input.commandId,
     });
     if (!continued.ok) return continued;
-    const {
-      mission: _continuedMission,
-      ...continuation
-    } = continued.value;
-    return {
-      ok: true,
-      value: Object.freeze({
-        outcome: result.value.outcome,
-        resolution: result.value.resolution,
-        invalidationReason: result.value.invalidationReason,
-        mission: continued.value.mission,
-        continuation: Object.freeze(continuation),
-      }),
-    };
+    return this.attachCurrentLinePresentation(owner, Object.freeze({
+      outcome: result.value.outcome,
+      resolution: result.value.resolution,
+      invalidationReason: result.value.invalidationReason,
+      mission: continued.value.mission,
+      continuation: continued.value.continuation,
+    }));
+  }
+
+  patchLine(input: {
+    readonly authorization: AgentMissionServiceAuthorization;
+    readonly missionId: string;
+    readonly commandId: string;
+    readonly expectedMissionRevision: number;
+    readonly expectedDraftSessionId: string;
+    readonly expectedDraftSlotRevision: number;
+    readonly expectedDraftContentRevision: number;
+    readonly pendingLineId: string;
+    readonly expectedWorkRevision: number;
+    readonly scope: AgentMissionQuoteLinePatchScope;
+    readonly patch: AgentMissionQuoteLinePatchV1;
+  }): Promise<Result<PatchQuoteAgentMissionLineServiceOutput, AppError>> {
+    return this.executePatchLine({
+      ...input,
+      origin: { actor: 'user_tap', correlation: null },
+    });
+  }
+
+  patchLineFromVoiceTurn(input: {
+    readonly authorization: AgentMissionServiceAuthorization;
+    readonly missionId: string;
+    readonly turnId: string;
+    readonly realtimeSessionId: string;
+    readonly contextRevision: number;
+    readonly contextDigest: string;
+    readonly expectedMissionRevision: number;
+    readonly expectedDraftSessionId: string;
+    readonly expectedDraftSlotRevision: number;
+    readonly expectedDraftContentRevision: number;
+    readonly pendingLineId: string;
+    readonly expectedWorkRevision: number;
+    readonly scope: AgentMissionQuoteLinePatchScope;
+    readonly patch: AgentMissionQuoteLinePatchV1;
+  }): Promise<Result<PatchQuoteAgentMissionLineServiceOutput, AppError>> {
+    return this.executePatchLine({
+      authorization: input.authorization,
+      missionId: input.missionId,
+      commandId: input.turnId,
+      expectedMissionRevision: input.expectedMissionRevision,
+      expectedDraftSessionId: input.expectedDraftSessionId,
+      expectedDraftSlotRevision: input.expectedDraftSlotRevision,
+      expectedDraftContentRevision: input.expectedDraftContentRevision,
+      pendingLineId: input.pendingLineId,
+      expectedWorkRevision: input.expectedWorkRevision,
+      scope: input.scope,
+      patch: input.patch,
+      origin: {
+        actor: 'user_voice',
+        correlation: {
+          realtimeSessionId: input.realtimeSessionId,
+          turnId: input.turnId,
+          contextRevision: input.contextRevision,
+          contextDigest: input.contextDigest,
+        },
+      },
+    });
+  }
+
+  private async executePatchLine(input: {
+    readonly authorization: AgentMissionServiceAuthorization;
+    readonly missionId: string;
+    readonly commandId: string;
+    readonly expectedMissionRevision: number;
+    readonly expectedDraftSessionId: string;
+    readonly expectedDraftSlotRevision: number;
+    readonly expectedDraftContentRevision: number;
+    readonly pendingLineId: string;
+    readonly expectedWorkRevision: number;
+    readonly scope: AgentMissionQuoteLinePatchScope;
+    readonly patch: AgentMissionQuoteLinePatchV1;
+    readonly origin: Parameters<PatchQuoteAgentMissionLine['execute']>[0]['origin'];
+  }): Promise<Result<PatchQuoteAgentMissionLineServiceOutput, AppError>> {
+    const persistedUnitOfWork = this.persistence.createAgentMissionUnitOfWork();
+    if (persistedUnitOfWork === null) {
+      return err(appUnavailable('agent_mission_persistence'));
+    }
+    const unitOfWork = instrumentAgentMissionCapabilityRejections(
+      persistedUnitOfWork,
+      this.metrics,
+      this.logger,
+      'line_patch',
+    );
+    const owner = input.authorization.owner;
+    const patched = await new PatchQuoteAgentMissionLine({
+      unitOfWork,
+      fingerprints: this.fingerprints,
+      ids: { newId: () => randomUUID() },
+    }).execute({
+      ...owner,
+      authority: input.authorization.proof,
+      missionId: input.missionId,
+      commandId: input.commandId,
+      expectedMissionRevision: input.expectedMissionRevision,
+      expectedDraftSessionId: input.expectedDraftSessionId,
+      expectedDraftSlotRevision: input.expectedDraftSlotRevision,
+      expectedDraftContentRevision: input.expectedDraftContentRevision,
+      pendingLineId: input.pendingLineId,
+      expectedWorkRevision: input.expectedWorkRevision,
+      scope: input.scope,
+      patch: input.patch,
+      origin: input.origin,
+    });
+    if (!patched.ok) return patched;
+    const continued = await this.continueLineQueue({
+      authorization: input.authorization,
+      missionId: input.missionId,
+      parentCommandId: input.commandId,
+    });
+    if (!continued.ok) return continued;
+    if (patched.value.outcome !== 'replayed') {
+      this.logger.audit('agent_mission.line_fact_patched', {
+        ...auditReferences(this.fingerprints, {
+          companyId: owner.companyId,
+          ownerUserId: owner.ownerUserId,
+          missionId: input.missionId,
+        }),
+        actor: input.origin.actor,
+        outcome: patched.value.outcome,
+        phase: continued.value.mission.phase,
+        continuationOutcome: continued.value.continuation.outcome,
+      });
+    }
+    return this.attachCurrentLinePresentation(owner, Object.freeze({
+      outcome: patched.value.outcome,
+      pendingLineId: patched.value.pendingLineId,
+      workRevisionAfter: patched.value.workRevisionAfter,
+      mission: continued.value.mission,
+      continuation: continued.value.continuation,
+    }));
+  }
+
+  decideLineProposal(input: {
+    readonly authorization: AgentMissionServiceAuthorization;
+    readonly missionId: string;
+    readonly commandId: string;
+    readonly expectedMissionRevision: number;
+    readonly expectedDraftSessionId: string;
+    readonly expectedDraftSlotRevision: number;
+    readonly expectedDraftContentRevision: number;
+    readonly decisionId: string;
+    readonly choiceSetRevision: number;
+    readonly choiceSetHash: string;
+    readonly choiceId: string;
+    readonly pendingLineId: string;
+    readonly proposalId: string;
+    readonly proposalRevision: 1;
+    readonly expectedWorkRevision: number;
+    readonly expectedCatalogue:
+      | { readonly itemId: string; readonly revision: number }
+      | null;
+    readonly diffHash: string;
+  }): Promise<
+    Result<DecideQuoteAgentMissionLineProposalServiceOutput, AppError>
+  > {
+    return this.executeLineProposalDecision({
+      ...input,
+      origin: { actor: 'user_tap', correlation: null },
+    });
+  }
+
+  decideLineProposalFromVoiceTurn(input: {
+    readonly authorization: AgentMissionServiceAuthorization;
+    readonly missionId: string;
+    readonly turnId: string;
+    readonly realtimeSessionId: string;
+    readonly contextRevision: number;
+    readonly contextDigest: string;
+    readonly expectedMissionRevision: number;
+    readonly expectedDraftSessionId: string;
+    readonly expectedDraftSlotRevision: number;
+    readonly expectedDraftContentRevision: number;
+    readonly decisionId: string;
+    readonly choiceSetRevision: number;
+    readonly choiceSetHash: string;
+    readonly choiceId: string;
+    readonly pendingLineId: string;
+    readonly proposalId: string;
+    readonly proposalRevision: 1;
+    readonly expectedWorkRevision: number;
+    readonly expectedCatalogue:
+      | { readonly itemId: string; readonly revision: number }
+      | null;
+    readonly diffHash: string;
+  }): Promise<
+    Result<DecideQuoteAgentMissionLineProposalServiceOutput, AppError>
+  > {
+    return this.executeLineProposalDecision({
+      authorization: input.authorization,
+      missionId: input.missionId,
+      commandId: input.turnId,
+      expectedMissionRevision: input.expectedMissionRevision,
+      expectedDraftSessionId: input.expectedDraftSessionId,
+      expectedDraftSlotRevision: input.expectedDraftSlotRevision,
+      expectedDraftContentRevision: input.expectedDraftContentRevision,
+      decisionId: input.decisionId,
+      choiceSetRevision: input.choiceSetRevision,
+      choiceSetHash: input.choiceSetHash,
+      choiceId: input.choiceId,
+      pendingLineId: input.pendingLineId,
+      proposalId: input.proposalId,
+      proposalRevision: input.proposalRevision,
+      expectedWorkRevision: input.expectedWorkRevision,
+      expectedCatalogue: input.expectedCatalogue,
+      diffHash: input.diffHash,
+      origin: {
+        actor: 'user_voice',
+        correlation: {
+          realtimeSessionId: input.realtimeSessionId,
+          turnId: input.turnId,
+          contextRevision: input.contextRevision,
+          contextDigest: input.contextDigest,
+        },
+      },
+    });
+  }
+
+  private async executeLineProposalDecision(input: {
+    readonly authorization: AgentMissionServiceAuthorization;
+    readonly missionId: string;
+    readonly commandId: string;
+    readonly expectedMissionRevision: number;
+    readonly expectedDraftSessionId: string;
+    readonly expectedDraftSlotRevision: number;
+    readonly expectedDraftContentRevision: number;
+    readonly decisionId: string;
+    readonly choiceSetRevision: number;
+    readonly choiceSetHash: string;
+    readonly choiceId: string;
+    readonly pendingLineId: string;
+    readonly proposalId: string;
+    readonly proposalRevision: 1;
+    readonly expectedWorkRevision: number;
+    readonly expectedCatalogue:
+      | { readonly itemId: string; readonly revision: number }
+      | null;
+    readonly diffHash: string;
+    readonly origin: Parameters<
+      DecideQuoteAgentMissionLineProposal['execute']
+    >[0]['origin'];
+  }): Promise<
+    Result<DecideQuoteAgentMissionLineProposalServiceOutput, AppError>
+  > {
+    const persistedUnitOfWork = this.persistence.createAgentMissionUnitOfWork();
+    if (persistedUnitOfWork === null) {
+      return err(appUnavailable('agent_mission_persistence'));
+    }
+    const unitOfWork = instrumentAgentMissionCapabilityRejections(
+      persistedUnitOfWork,
+      this.metrics,
+      this.logger,
+      'line_decision',
+    );
+    const owner = input.authorization.owner;
+    const decided = await new DecideQuoteAgentMissionLineProposal({
+      unitOfWork,
+      fingerprints: this.fingerprints,
+      ids: { newId: () => randomUUID() },
+    }).execute({
+      ...owner,
+      authority: input.authorization.proof,
+      missionId: input.missionId,
+      commandId: input.commandId,
+      expectedMissionRevision: input.expectedMissionRevision,
+      expectedDraftSessionId: input.expectedDraftSessionId,
+      expectedDraftSlotRevision: input.expectedDraftSlotRevision,
+      expectedDraftContentRevision: input.expectedDraftContentRevision,
+      decisionId: input.decisionId,
+      choiceSetRevision: input.choiceSetRevision,
+      choiceSetHash: input.choiceSetHash,
+      choiceId: input.choiceId,
+      pendingLineId: input.pendingLineId,
+      proposalId: input.proposalId,
+      proposalRevision: input.proposalRevision,
+      expectedWorkRevision: input.expectedWorkRevision,
+      expectedCatalogue: input.expectedCatalogue,
+      diffHash: input.diffHash,
+      origin: input.origin,
+    });
+    if (!decided.ok) return decided;
+    const continued = await this.continueLineQueue({
+      authorization: input.authorization,
+      missionId: input.missionId,
+      parentCommandId: input.commandId,
+    });
+    if (!continued.ok) return continued;
+    if (decided.value.outcome !== 'replayed') {
+      this.logger.audit('agent_mission.line_proposal_decided', {
+        ...auditReferences(this.fingerprints, {
+          companyId: owner.companyId,
+          ownerUserId: owner.ownerUserId,
+          missionId: input.missionId,
+        }),
+        actor: input.origin.actor,
+        outcome: decided.value.outcome,
+        invalidationReason: decided.value.invalidationReason,
+        phase: continued.value.mission.phase,
+        continuationOutcome: continued.value.continuation.outcome,
+      });
+    }
+    return this.attachCurrentLinePresentation(owner, Object.freeze({
+      outcome: decided.value.outcome,
+      invalidationReason: decided.value.invalidationReason,
+      mission: continued.value.mission,
+      continuation: continued.value.continuation,
+    }));
   }
 
   private async continueLineQueue(input: {
     readonly authorization: AgentMissionServiceAuthorization;
     readonly missionId: string;
     readonly parentCommandId: string;
-  }): Promise<Result<ContinueQuoteAgentMissionLineQueueOutput, AppError>> {
+  }): Promise<Result<AgentMissionLineConvergenceOutput, AppError>> {
     const persistedUnitOfWork = this.persistence.createAgentMissionUnitOfWork();
     if (persistedUnitOfWork === null) {
       return err(appUnavailable('agent_mission_persistence'));
@@ -948,15 +1434,77 @@ export class AgentMissionService {
       this.logger,
       'line_continuation',
     );
-    return new ContinueQuoteAgentMissionLineQueue({
+    const deps = {
       unitOfWork,
       fingerprints: this.fingerprints,
       ids: { newId: () => randomUUID() },
-    }).execute({
+    };
+    const resolution = new ContinueQuoteAgentMissionLineResolution(deps);
+    const resolutionInput = {
       ...input.authorization.owner,
       authority: input.authorization.proof,
       missionId: input.missionId,
       parentCommandId: input.parentCommandId,
-    });
+    };
+
+    const firstResolution = await resolution.execute(resolutionInput);
+    if (!firstResolution.ok) return firstResolution;
+    let resolved = firstResolution.value;
+    let catalogue: ContinueQuoteAgentMissionLineQueueOutput | null = null;
+
+    if (resolved.outcome === 'needs_catalogue_resolution') {
+      const queued = await new ContinueQuoteAgentMissionLineQueue(deps).execute(
+        resolutionInput,
+      );
+      if (!queued.ok) return queued;
+      catalogue = queued.value;
+      const secondResolution = await resolution.execute(resolutionInput);
+      if (!secondResolution.ok) return secondResolution;
+      resolved = secondResolution.value;
+    }
+
+    if (resolved.outcome === 'needs_catalogue_resolution') {
+      return err(appConflict(
+        'agent_mission_line_continuation',
+        'continuation_non_convergent',
+      ));
+    }
+
+    let outcome: AgentMissionLineContinuationServiceOutput['outcome'] =
+      resolved.outcome;
+    let presentedChoiceCount = 0;
+    if (resolved.outcome === 'catalogue_choice_pending') {
+      const decision = resolved.mission.payload.decision;
+      if (
+        decision?.kind !== 'catalogue'
+        || decision.candidates.length < 1
+        || decision.candidates.length > 5
+      ) {
+        return err({
+          kind: 'dependency',
+          port: 'agent_mission_line_continuation',
+          cause: 'catalogue_choice_projection_unavailable',
+        });
+      }
+      presentedChoiceCount = decision.candidates.length + 1;
+      outcome = catalogue?.outcome === 'choices_presented'
+        || catalogue?.outcome === 'replayed'
+        ? catalogue.outcome
+        : resolved.outcome;
+    }
+
+    return {
+      ok: true,
+      value: Object.freeze({
+        mission: resolved.mission,
+        continuation: Object.freeze({
+          outcome,
+          pendingLineId: resolved.pendingLineId,
+          presentedChoiceCount,
+          requiredFact: resolved.requiredFact,
+          proposalId: resolved.proposalId,
+        }),
+      }),
+    };
   }
 }

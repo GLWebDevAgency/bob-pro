@@ -6,6 +6,8 @@
 
 **Train M2-A-1 : implemented, flag public OFF ; non certified**
 
+**Train M2-A-2 : implemented, flag public OFF ; non certified**
+
 **Date : 29 juillet 2026**
 
 **Objectifs servis : O4, O5, O6 et O7**
@@ -146,6 +148,7 @@ interface QuoteLineSemanticContextV1 {
   readonly availableCapabilities: readonly [
     'quote.line.stage',
     'quote.catalogue.search',
+    'quote.line.patch',
     'quote.line.confirm',
   ];
 }
@@ -223,6 +226,10 @@ type QuoteCreationSemanticOperationV2 =
     }
   | {
       readonly kind: 'patch_pending_line';
+      /**
+       * Réponse à la question persistée ou correction nommée indépendamment de cette question.
+       */
+      readonly scope: 'answer_required_fact' | 'explicit_correction';
       readonly patch: QuoteLineCandidatePatchV1;
     }
   | {
@@ -232,6 +239,7 @@ type QuoteCreationSemanticOperationV2 =
     }
   | { readonly kind: 'confirm_current_proposal' }
   | { readonly kind: 'reject_current_proposal' }
+  | { readonly kind: 'cancel_current_line' }
   | { readonly kind: 'unrelated' };
 
 interface QuoteLineCandidateV1 {
@@ -298,7 +306,7 @@ Matrice d'autorisation :
 | `awaiting_lines` | `append_line_candidates` |
 | `awaiting_catalogue_choice` | `select_presented_choice` en M2-A-1 ; correction explicite de `service_reference` en M2-A-2 |
 | `awaiting_line_details` *(M2-A-2 uniquement)* | `patch_pending_line` pour le `requiredFact` courant ou une correction explicite |
-| `awaiting_line_confirmation` *(M2-A-2 uniquement)* | confirmer, rejeter ou patch explicite |
+| `awaiting_line_confirmation` *(M2-A-2 uniquement)* | confirmer, rejeter pour modifier, annuler la ligne ou patch explicite |
 
 Toute autre combinaison échoue sans écriture. En M2-A-1, une phrase composite est représentée par
 une seule opération enrichie de ses lignes (`start`, sélection client ou sélection catalogue avec
@@ -311,8 +319,24 @@ La correction du libellé pendant un choix catalogue ne doit pas être simulée 
 refuse donc cette tournure sans mutation ; M2-A-2 l'introduit avec le patch persistant de la tête,
 la remise explicite de `catalogueResolution='pending'` et une nouvelle recherche idempotente.
 
-La commande et son fingerprint couvrent conjointement la décision client et ses lignes. Les work
-items sont insérés dans la même transaction que `customer_selected` ou la nouvelle résolution ;
+`reject_current_proposal` signifie « revenir modifier cette ligne » et consomme donc le choix
+`edit_line`. `cancel_current_line` signifie « abandonner cette ligne » et consomme le choix
+`cancel_line`. Les deux opérations restent distinctes dans la frame, le fingerprint, le journal et
+la réponse canonique : un refus de proposition ne peut jamais supprimer silencieusement la tête de
+file. Le retour générique « modifier » place le work item en `awaiting_details` avec
+`requiredFact=null` et demande quel champ changer ; aucune réponse courte (« oui », « 55 ») n'est
+alors interprétable. Dès qu'un champ explicite est patché, la continuation recalcule soit le
+premier vrai `requiredFact`, soit une nouvelle proposition.
+
+Le `scope` de `patch_pending_line` appartient à la forme fermée et au fingerprint. Le scope
+`answer_required_fact` exige que le champ du patch soit exactement le `requiredFact` non nul relu
+sous verrou ; il est le seul scope autorisé pour une réponse courte. Le scope
+`explicit_correction` peut nommer un autre champ et doit être envoyé par tout contrôle tactile.
+Une réponse issue du modèle ne peut jamais être promue silencieusement d'un scope à l'autre.
+
+La commande et son fingerprint couvrent conjointement la décision client, le scope éventuel et
+ses lignes. Les work items sont insérés dans la même transaction que `customer_selected` ou la
+nouvelle résolution ;
 un succès client ne peut donc jamais être acquitté en perdant « et ajoute… ». Cette règle vaut
 pour une référence nommée comme pour un choix ordinal.
 
@@ -371,6 +395,12 @@ interface AgentMissionQuoteLineWork {
   readonly catalogueResolution: 'pending' | 'free' | 'selected';
   readonly catalogueItemId: string | null;
   readonly expectedCatalogueRevision: number | null;
+  /**
+   * Preuves durables que l'utilisateur a explicitement conservé une valeur différente de
+   * l'entrée catalogue relue. Sans elles, la même contradiction serait redemandée après kill.
+   */
+  readonly catalogueCategoryOverrideConfirmed: boolean;
+  readonly catalogueUnitOverrideConfirmed: boolean;
   readonly proposalId: string | null;
   readonly proposalRevision: number | null;
   readonly proposalDiffHash: string | null;
@@ -391,6 +421,12 @@ Contraintes SQL :
 - `catalogueResolution='selected'` si et seulement si la fence
   `(catalogueItemId, expectedCatalogueRevision)` est complète ; `pending|free` exigent les deux
   valeurs nulles ;
+- les deux preuves d'override valent `false` par défaut et hors
+  `catalogueResolution='selected'` ; une sélection catalogue ou une nouvelle
+  `serviceReference` les remet à `false` ;
+- une preuve passe à `true` seulement après un patch `explicit_correction` de catégorie ou
+  d'unité qui conserve explicitement une valeur différente de l'item catalogue relu sous sa
+  révision ; elle revient à `false` si la valeur rejoint celle du catalogue ;
 - `awaiting_catalogue_choice` exige `catalogueResolution='pending'` ;
 - `awaiting_details + pending` n'est admis que pour
   `requiredFact='service_reference'` : toute autre question exige que la recherche ait déjà
@@ -651,6 +687,11 @@ interface LineConfirmationDecisionV1 {
   readonly expectedCatalogue:
     | { readonly itemId: string; readonly revision: number }
     | null;
+  /**
+   * SHA-256 canonique des faits fiscaux relus à la présentation. La confirmation relit puis
+   * compare cette fence même si deux contextes distincts produiraient encore le même taux.
+   */
+  readonly expectedVatContextDigest: string;
   readonly diffHash: string;
   readonly choices: readonly [
     { readonly choiceId: string; readonly action: 'confirm_line' },
@@ -662,9 +703,9 @@ interface LineConfirmationDecisionV1 {
 ```
 
 Le hash canonique couvre mission, révision, décision, ligne pending et sa révision, fences du
-brouillon, catalogue éventuel, proposition, diff et choix ordonnés. Le diff contient seulement l'ajout
-proposé par rapport au brouillon relu ; son rendu vocal et visuel provient des données réelles
-relues, pas du modèle.
+brouillon, catalogue éventuel, contexte TVA, proposition, diff et choix ordonnés. Le diff contient
+seulement l'ajout proposé par rapport au brouillon relu ; son rendu vocal et visuel provient des
+données réelles relues, pas du modèle.
 
 « le premier » résout le `choiceId` courant ; le tap transmet ce même `choiceId`.
 « oui/valide » résout le `confirm_line` du jeu courant ; le bouton **Ajouter la ligne** transmet
@@ -688,6 +729,12 @@ Un moteur pur `deriveQuoteVatDecisionOptions` partage les mêmes faits que `sugg
    pas `20` ;
 5. le choix et son contexte sont finalement validés par `suggestVatRate` avant la proposition puis
    revalidés à la confirmation.
+
+La présentation scelle aussi `computeQuoteVatContextDigest` dans
+`LineConfirmationDecisionV1`. La confirmation et la reprise froide relisent les faits fiscaux et
+comparent cette fence **avant** de déclarer la proposition disponible. Un changement de régime,
+métier, type client ou statut de sous-traitance invalide donc la proposition même lorsque son effet
+visible resterait provisoirement identique.
 
 M2-A conserve l'invariant historique d'un taux unique dans `QuoteDraftPayloadV1` afin qu'un client
 N-1 puisse toujours relire le slot. En conséquence :
@@ -754,6 +801,7 @@ line_candidates_staged
 catalogue_not_found
 catalogue_choices_presented
 catalogue_choice_selected
+line_fact_patched
 line_details_requested
 line_proposal_presented
 line_proposal_rejected
@@ -761,9 +809,30 @@ line_confirmed
 line_cancelled
 ```
 
+Le contrat de données est fermé et ne porte aucune valeur métier :
+
+| Event | Corrélation | Effet brouillon | Clés après `kind`, dans l'ordre canonique |
+|---|---|---|---|
+| `line_fact_patched` | user | no-op | `pendingLineId`, `field`, `workRevisionAfter` |
+| `line_details_requested` | system + continuation | no-op | `pendingLineId`, `requiredFact`, `workRevisionAfter` |
+| `line_proposal_presented` | system + continuation | no-op | `pendingLineId`, `proposalId`, `proposalRevision`, `expectedWorkRevision`, `diffHash`, `choiceSetHash` |
+| `line_proposal_rejected` | user | no-op | `pendingLineId`, `proposalId`, `workRevisionAfter`, `choiceId`, `choiceSetHash` |
+| `line_confirmed` | user | slot +1, content +1 | `pendingLineId`, `proposalId`, `proposalRevision`, `expectedWorkRevision`, `choiceId`, `choiceSetHash`, `diffHash` |
+| `line_cancelled` | user | no-op | `pendingLineId`, `expectedWorkRevision`, `choiceId`, `choiceSetHash` |
+
+`requiredFact` appartient à l'union fermée et peut être JSON `null` uniquement pour l'édition
+générique qui demande à l'utilisateur quel champ changer.
+
 Les données d'événement contiennent seulement identifiants, compteurs, catégories de résultat,
 révisions, acteur, `commandId`, HMAC d'empreinte et digests. Elles excluent transcript, libellé,
 quantité, unité, prix, TVA, nom client, nom catalogue et arguments d'outil.
+
+`line_fact_patched` porte exactement `pendingLineId`, `field` dans l'union fermée
+`QuoteLineRequiredFact` et `workRevisionAfter`. Il constitue le reçu idempotent d'une correction
+utilisateur sans recopier sa valeur. Une réponse courte ne peut produire ce reçu que si `field`
+égale le `requiredFact` persistant courant ; une correction explicite peut cibler un autre champ,
+mais le scope n'est pas recopié dans l'événement. Il reste scellé dans le fingerprint de commande :
+un replay avec le même `commandId` et un autre scope est refusé.
 
 Un replay exact relit son reçu et n'écrit rien. Un même `commandId` avec un autre fingerprint est
 refusé. Deux confirmations concurrentes ne peuvent produire qu'une ligne.
@@ -803,6 +872,66 @@ interface QuoteAgentMissionPresentationV1 {
   readonly schema: 'bob.agent-mission.quote-presentation';
   readonly version: 1;
   readonly requiredFact: QuoteLineRequiredFact | null;
+  /**
+   * Fence minimale permettant de construire un patch CAS après un GET froid. Nulle sans tête de
+   * file ; elle ne contient aucune valeur métier.
+   */
+  readonly pendingLine:
+    | {
+        readonly pendingLineId: string;
+        readonly expectedWorkRevision: number;
+      }
+    | null;
+  /**
+   * Décision scellée exécutable après kill/reconnexion. Le mobile ne reconstruit aucun choix à
+   * partir d'un ordinal local et ne reçoit jamais une action libre à transmettre au serveur.
+   */
+  readonly decision:
+    | null
+    | {
+        readonly kind: 'catalogue';
+        readonly decisionId: string;
+        readonly choiceSetRevision: number;
+        readonly choiceSetHash: string;
+        readonly pendingLineId: string;
+        readonly expectedDraft: {
+          readonly sessionId: string;
+          readonly slotRevision: number;
+          readonly contentRevision: number;
+        };
+        readonly expectedWorkRevision: number;
+        readonly choices: readonly {
+          readonly choiceId: string;
+          readonly catalogueItemId: string;
+          readonly expectedCatalogueRevision: number;
+        }[];
+        readonly freeLineChoiceId: string;
+      }
+    | {
+        readonly kind: 'line_confirmation';
+        readonly decisionId: string;
+        readonly choiceSetRevision: number;
+        readonly choiceSetHash: string;
+        readonly pendingLineId: string;
+        readonly proposalId: string;
+        readonly proposalRevision: 1;
+        readonly expectedDraft: {
+          readonly sessionId: string;
+          readonly slotRevision: number;
+          readonly contentRevision: number;
+        };
+        readonly expectedWorkRevision: number;
+        readonly expectedCatalogue:
+          | { readonly itemId: string; readonly revision: number }
+          | null;
+        readonly expectedVatContextDigest: string;
+        readonly diffHash: string;
+        readonly choices: readonly [
+          { readonly choiceId: string; readonly action: 'confirm_line' },
+          { readonly choiceId: string; readonly action: 'edit_line' },
+          { readonly choiceId: string; readonly action: 'cancel_line' },
+        ];
+      };
   readonly catalogueChoices: readonly {
     readonly choiceId: string;
     readonly available: boolean;
@@ -813,6 +942,13 @@ interface QuoteAgentMissionPresentationV1 {
     readonly vatRate: VatRate | null;
   }[];
   readonly freeLineChoiceId: string | null;
+  readonly proposalStatus:
+    | { readonly kind: 'absent' }
+    | { readonly kind: 'available' }
+    | {
+        readonly kind: 'stale';
+        readonly reason: 'catalogue_changed' | 'vat_context_changed';
+      };
   readonly proposal: {
     readonly proposalId: string;
     readonly diffHash: string;
@@ -829,6 +965,30 @@ client relus sous tenant. Une entrée disparue vaut `available=false` et ses cha
 `null` ; elle ne réutilise jamais le snapshot d'une réponse précédente. Les codecs API-client
 ferment toutes les unions et bornes. La projection n'est ni persistée dans la mission, ni envoyée
 au LLM.
+
+`proposalStatus.kind='available'` implique une proposition non nulle redérivée avec un `diffHash`
+identique aux fences mission + work. `absent` implique `proposal=null`. Une évolution externe du
+catalogue ou du contexte TVA produit `stale` avec `proposal=null` ; une incohérence interne entre
+mission, work item et brouillon est une indisponibilité, jamais un état vide.
+
+La reprise V1 historique reste byte-pour-byte `{ mission }`. La reprise M2-A utilise le même GET
+avec `X-Bob-Agent-Mission-Protocol-Version: 2` et retourne une enveloppe V2 distincte contenant la
+mission **réduite `ResumableQuoteAgentMissionView` déjà publiée par V1** et cette présentation.
+Elle n'expose donc ni payload persistant complet, ni binding Realtime, ni staged IDs, ni
+timestamps internes supplémentaires. L'absence du header signifie V1. La réponse porte
+`Vary: Authorization, X-Bob-Agent-Mission-Protocol-Version`. Aucun codec V1 n'accepte les champs ou
+phases M2-A.
+
+La présentation V2 est construite dans une transaction `REPEATABLE READ READ ONLY` dédiée. Ses
+ports de lecture work/catalogue/TVA n'utilisent ni `FOR UPDATE` ni `FOR SHARE`; ils appliquent les
+GUC tenant + owner et la RLS forcée dans le même snapshot. Le protocole attendu est fourni
+explicitement à l'UoW : aucun fallback silencieux V2 vers V1 n'est autorisé.
+
+Les réponses de commande V2 qui peuvent déclencher la continuation — ACK écran et décision client
+compris — portent elles aussi une `presentation` fraîche, relue après le commit et liée exactement
+à la mission finale renvoyée. Les codecs V2 refusent une nouvelle phase sans cette projection. Les
+réponses V1 conservent strictement leur forme historique, sans champ additif : un même endpoint a
+donc deux contrats exacts négociés par la capability, jamais une enveloppe ambiguë.
 
 Le mobile :
 
@@ -872,9 +1032,22 @@ Les unions JSON et CHECK PostgreSQL étant fermés, le rollout est append-only :
 6. activation bornée sur compte interne seulement ;
 7. preuve puis retrait de l'override en cas d'échec.
 
-Chaque migration commence par `SET LOCAL lock_timeout` et `statement_timeout`. Les listes de
-phases/kinds/events sont générées depuis les constantes TypeScript. Un test writer N-1 insère la
-forme exacte historique :
+M2-A-2 ouvre un nouveau train expand/validate/cutover, sans réécrire M2-A-1 :
+
+- expand additif des deux preuves d'override `BOOLEAN NOT NULL DEFAULT false`, des phases
+  `awaiting_line_details|awaiting_line_confirmation`, de la décision `line_confirmation` et des
+  événements ligne ;
+- nouvelle cohérence d'état `NOT VALID` qui autorise explicitement
+  `awaiting_details + requiredFact=null` pour l'édition générique ;
+- validation dans une migration séparée, puis cutover seulement après les preuves writer N-1 et
+  runtime N.
+
+Chaque migration commence par `SET LOCAL lock_timeout` et `statement_timeout`. Les générateurs
+lisent les constantes TypeScript du train qu'ils créent, mais le SQL et les octets de vérification
+d'un train déjà publié sont ensuite immuables. Avant d'étendre les unions vivantes pour M2-A-2, le
+générateur M2-A-1 fige et vérifie ses snapshots phases/kinds/events ; M2-A-2 possède son propre
+générateur et ne régénère jamais une migration M2-A-1. Un test writer N-1 insère la forme exacte
+historique :
 
 - après expand ;
 - après validate ;
@@ -905,11 +1078,27 @@ modifier cette colonne après insertion est refusée. Les phases M2-A et leurs �
 |---|---|---|---|
 | M2-A-0 | schéma work items + RLS + contrat core + parité catalogue SQL | `implemented` | `implemented` |
 | M2-A-1 | frame V2, staging initial, recherche 0/1/N, continuation et choix API | `implemented` | `implemented` |
-| M2-A-2 | questions persistées, TVA, proposition, primitive partagée et confirmation | `specified` | `implemented` |
+| M2-A-2 | questions persistées, TVA, proposition, primitive partagée et confirmation | `implemented` | `implemented` |
 | M2-A-3 | projection mobile, parité voix/tap, reprise et certification device/staging | `specified` | `certified` |
 
 Chaque PR est fusionnée et sa CI verte avant d'ouvrir la suivante. Aucun sous-train n'est présenté
 comme une fonctionnalité finie ; le flag reste OFF jusqu'à M2-A-3.
+
+**Bloquant explicite M2-A-3 — convergence après coupure.** Le GET V2 de M2-A-2 est strictement
+`READ ONLY` : il restitue honnêtement une tête `queued`, mais ne prétend pas la faire avancer.
+M2-A-3 doit livrer un seul mécanisme de reprise autoritaire — rejeu durable de la commande initiale
+ou commande serveur idempotente dédiée — puis prouver par un test de coupure entre le commit
+utilisateur et la continuation que la file converge sans doublon. Aucun consumer mobile ne peut
+présenter `queued` comme « repris » avant cette preuve.
+
+**Frontière explicite M2-A-2 → M2-A-3 — voix Realtime.** M2-A-2 livre les primitives, endpoints,
+wrappers voix et projections autoritaires, mais le moteur sémantique sideband reste volontairement
+sur la matrice M2-A-1 tant que le mobile publié négocie V1. M2-A-3 doit étendre atomiquement le
+schéma d'outil, son parseur, `requiredFact`, les phases de l'orchestrateur et son gateway pour
+`patch_pending_line`, confirmer, modifier et annuler. Chaque opération doit appeler les wrappers
+M2-A-2 existants avec les fences de la présentation fraîche et être prouvée jusqu'à la persistence.
+Avant ce train, aucune documentation ne peut annoncer que ces opérations A2 sont atteignables à la
+voix ; après ce train, aucun wrapper voix sans appel réel n'est admissible.
 
 ### 15.2 Preuves du train M2-A-0
 
@@ -956,6 +1145,30 @@ Les preuves locales reproductibles du 30 juillet 2026 sont :
 Ces preuves donnent à M2-A-1 le statut `implemented`, pas `certified`. Le mobile publié continue
 à négocier V1 et aucune capacité M2-A n'est exposée. La certification staging exact-SHA, la
 projection voix/toucher et la preuve appareil restent dues à M2-A-3.
+
+### 15.4 Preuves du train M2-A-2
+
+Les preuves locales reproductibles du 30 juillet 2026 sont :
+
+- suites complètes : core `3 008/3 008`, client API `490/490`, API `2 736/2 736`, avec
+  `371` certificats opt-in ignorés hors contexte ;
+- contrats de release API : `534/534`, un scénario explicitement ignoré ;
+- certificat AgentMission PostgreSQL 17 sous déployeur/runtime non-superuser : `56/56`, avec
+  writer et reader N-1 après expand, validate et cutover, FORCE RLS, anti-IDOR, CAS et reprise V2 ;
+- générateurs M2-A-1 figé et M2-A-2 en mode `--check`, migrations
+  expand/validate/cutover et `git diff --check` verts ;
+- typechecks et lint core/client/API, typecheck monorepo `17/17`, builds topologiques et gardes
+  d'artefact core/client/API verts ;
+- deux reviews adversariales indépendantes correctness et architecture/parité : aucun P0/P1
+  ouvert après correction de la reprise d'une tête `queued` dans les phases préparatoires et de
+  la projection V2 fraîche après ACK ou décision ;
+- master `BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED=false`, release flag et tous ses sujets
+  exactement OFF.
+
+Ces preuves donnent à M2-A-2 le statut `implemented`, pas `certified`. Le mobile publié continue
+à négocier V1 et les commandes sémantiques Realtime de patch, confirmation, édition et annulation
+ne sont pas encore raccordées. Leur raccord voix/toucher, la convergence après coupure, la
+certification Supabase staging exact-SHA et la preuve appareil restent dues à M2-A-3.
 
 ## 16. Observabilité M2-A
 
@@ -1027,8 +1240,12 @@ M2-A-1 est `implemented` uniquement si, flag M2-A toujours OFF :
       quantité millième `3000`, sans total calculé par le LLM ;
 - [ ] « Contrat 4 saisons » ne fabrique ni quantité ni date ;
 - [ ] « non, 450 et pas 400 » corrige seulement la proposition courante ;
+- [ ] « modifie la ligne » revient aux détails alors que « annule cette ligne » retire seulement
+      la tête ; aucune des deux formulations ne peut être confondue par le protocole ;
 - [ ] frame invalide, multiple ou hors phase : zéro écriture et clarification.
 - [ ] après kill, une réponse courte n'est acceptée que pour le `requiredFact` persisté.
+- [ ] après kill, un arbitrage explicite de catégorie ou d'unité différent du catalogue reste
+      acquis et ne déclenche pas une seconde demande identique.
 
 ### Données réelles et catalogue
 
@@ -1044,9 +1261,14 @@ M2-A-1 est `implemented` uniquement si, flag M2-A toujours OFF :
 
 - [ ] même `choiceId` sélectionné par ordinal ou tap ;
 - [ ] même `proposalId` confirmé par voix ou bouton ;
+- [ ] un GET froid restitue `pendingLineId + expectedWorkRevision` et permet le même patch CAS
+      qu'une session restée ouverte ;
 - [ ] confirmation concurrente : une seule ligne ;
 - [ ] réponse HTTP perdue : replay sans seconde ligne ;
 - [ ] ancien choix/proposal/révision : refus sans mutation ;
+- [ ] patch exact rejoué : aucun second événement ni seconde révision ; même `commandId` avec une
+      autre valeur échoue par fingerprint ;
+- [ ] même patch et même `commandId` avec un scope réponse/correction différent échoue fermé ;
 - [ ] RLS et anti-IDOR sur client, catalogue, mission et brouillon.
 - [ ] aucun work item n'est mutable sans le setting de mission courante validé.
 
