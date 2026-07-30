@@ -42,7 +42,7 @@ const CUSTOM_PRESTATION_KEYS = [
   'vatRate',
 ] as const;
 const CUSTOM_PRESTATION_ID = /^[A-Za-z0-9-]{1,128}$/u;
-const MAX_CUSTOM_PRESTATION_LABEL_LENGTH = 500;
+export const MAX_CUSTOM_PRESTATION_LABEL_LENGTH = 500 as const;
 const MAX_CUSTOM_PRESTATION_UNIT_LENGTH = 80;
 
 function isRecord(value: unknown): value is Record<string, unknown> {

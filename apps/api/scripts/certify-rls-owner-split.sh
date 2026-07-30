@@ -203,6 +203,10 @@ RESET ROLE;
 DO $rls_owner_split_exact_authority$
 DECLARE
   owner_oid OID := 'bob_rls_schema_owner_cert'::pg_catalog.regrole;
+  catalogue_sync_owner_oid OID :=
+    'bob_catalogue_search_token_sync'::pg_catalog.regrole;
+  catalogue_sync pg_catalog.pg_proc%ROWTYPE;
+  catalogue_sync_role pg_catalog.pg_roles%ROWTYPE;
   helper_count INTEGER;
 BEGIN
   IF (
@@ -231,6 +235,44 @@ BEGIN
   IF helper_count <> 2 THEN
     RAISE EXCEPTION 'RLS_OWNER_SPLIT_CERT_CABINET_HELPER_OWNER_DRIFT';
   END IF;
+
+  SELECT *
+    INTO STRICT catalogue_sync
+    FROM pg_catalog.pg_proc AS function
+   WHERE function.oid =
+     'public.sync_catalogue_prestation_search_tokens_v1()'::pg_catalog.regprocedure;
+  SELECT *
+    INTO STRICT catalogue_sync_role
+    FROM pg_catalog.pg_roles AS role
+   WHERE role.oid = catalogue_sync_owner_oid;
+  IF catalogue_sync.proowner <> catalogue_sync_owner_oid
+     OR NOT catalogue_sync.prosecdef
+     OR catalogue_sync.proconfig <> ARRAY[
+       'search_path=pg_catalog',
+       'row_security=on'
+     ]::TEXT[]
+     OR pg_catalog.md5(catalogue_sync.prosrc) <>
+       '94327712057244bbe60cc428a22df471'
+     OR catalogue_sync_role.rolcanlogin
+     OR catalogue_sync_role.rolsuper
+     OR catalogue_sync_role.rolcreatedb
+     OR catalogue_sync_role.rolcreaterole
+     OR catalogue_sync_role.rolinherit
+     OR catalogue_sync_role.rolreplication
+     OR catalogue_sync_role.rolbypassrls
+     OR EXISTS (
+       SELECT 1
+         FROM pg_catalog.pg_auth_members AS membership
+        WHERE membership.member = catalogue_sync_owner_oid
+     )
+     OR (
+       SELECT relation.relowner = catalogue_sync_owner_oid
+         FROM pg_catalog.pg_class AS relation
+        WHERE relation.oid =
+          'public.catalogue_prestation_search_tokens'::pg_catalog.regclass
+     ) THEN
+    RAISE EXCEPTION 'RLS_OWNER_SPLIT_CERT_CATALOGUE_TOKEN_AUTHORITY_DRIFT';
+  END IF;
 END;
 $rls_owner_split_exact_authority$;
 
@@ -253,6 +295,80 @@ BEGIN
   END IF;
 END;
 $rls_owner_split_schema_acl$;
+SQL
+
+# Les fixtures sont créées par le propriétaire Supabase-like, mais le trigger s'exécute déjà
+# sous son autorité NOLOGIN/NOBYPASSRLS dédiée. Un mauvais owner ou une policy sans contexte
+# tenant fait donc échouer le setup avant même la sonde runtime.
+psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '10s';
+SET LOCAL ROLE bob_rls_schema_owner_cert;
+
+INSERT INTO public.companies (
+  "id", "name", "legalForm", "siren", "siret", "trade", "vatRegime",
+  "addrLine1", "addrZip", "addrCity"
+) VALUES
+  (
+    'rls-owner-split-token-company-a',
+    'RLS token company A',
+    'EI',
+    '911000001',
+    '91100000100001',
+    'certification',
+    'reel_normal',
+    '1 rue du Test',
+    '75001',
+    'Paris'
+  ),
+  (
+    'rls-owner-split-token-company-b',
+    'RLS token company B',
+    'EI',
+    '911000002',
+    '91100000200002',
+    'certification',
+    'reel_normal',
+    '2 rue du Test',
+    '75002',
+    'Paris'
+  );
+
+SET LOCAL app.current_company_id = 'rls-owner-split-token-company-a';
+INSERT INTO public.catalogue_prestations (
+  "id", "companyId", "label", "category", "unit", "unitPriceHt", "vatRate",
+  "revision", "createdAt", "updatedAt"
+) VALUES (
+  'rls-owner-split-token-item-a',
+  'rls-owner-split-token-company-a',
+  'Inspection chaudière alpha',
+  'labor',
+  'heure',
+  5500,
+  20,
+  1,
+  CURRENT_TIMESTAMP,
+  CURRENT_TIMESTAMP
+);
+
+SET LOCAL app.current_company_id = 'rls-owner-split-token-company-b';
+INSERT INTO public.catalogue_prestations (
+  "id", "companyId", "label", "category", "unit", "unitPriceHt", "vatRate",
+  "revision", "createdAt", "updatedAt"
+) VALUES (
+  'rls-owner-split-token-item-b',
+  'rls-owner-split-token-company-b',
+  'Entretien vitrine beta',
+  'labor',
+  'heure',
+  6500,
+  20,
+  1,
+  CURRENT_TIMESTAMP,
+  CURRENT_TIMESTAMP
+);
+COMMIT;
 SQL
 
 # La preuve ne se contente pas de créer les helpers Cabinet : elle les invoque réellement via le
@@ -343,6 +459,88 @@ END AS authority_ok;
 ROLLBACK;
 SQL
 
+# Le runtime met réellement à jour chaque tenant ; le trigger remplace ses tokens dans la même
+# transaction, ne voit jamais le voisin et ne peut toucher une ligne hors contexte.
+psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '10s';
+SET LOCAL app.current_user_id = 'rls-owner-split-token-runtime-user';
+SET LOCAL app.current_company_id = 'rls-owner-split-token-company-a';
+
+UPDATE public.catalogue_prestations
+   SET label = 'Maintenance chaudière alpha',
+       revision = revision + 1,
+       "updatedAt" = CURRENT_TIMESTAMP
+ WHERE "companyId" = 'rls-owner-split-token-company-a'
+   AND id = 'rls-owner-split-token-item-a';
+
+DO $catalogue_token_tenant_a$
+BEGIN
+  IF (
+    SELECT pg_catalog.count(*)
+      FROM public.catalogue_prestation_search_tokens
+     WHERE "companyId" = 'rls-owner-split-token-company-a'
+       AND "catalogueItemId" = 'rls-owner-split-token-item-a'
+       AND token IN ('maintenance', 'chaudiere', 'alpha')
+  ) <> 3
+  OR EXISTS (
+    SELECT 1
+      FROM public.catalogue_prestation_search_tokens
+     WHERE "companyId" = 'rls-owner-split-token-company-b'
+  ) THEN
+    RAISE EXCEPTION 'RLS_OWNER_SPLIT_CERT_CATALOGUE_TOKEN_TENANT_A_DRIFT';
+  END IF;
+END;
+$catalogue_token_tenant_a$;
+
+SET LOCAL app.current_company_id = 'rls-owner-split-token-company-b';
+
+DO $catalogue_token_cross_tenant$
+DECLARE
+  affected INTEGER;
+BEGIN
+  UPDATE public.catalogue_prestations
+     SET label = 'Tentative interdite',
+         revision = revision + 1,
+         "updatedAt" = CURRENT_TIMESTAMP
+   WHERE "companyId" = 'rls-owner-split-token-company-a'
+     AND id = 'rls-owner-split-token-item-a';
+  GET DIAGNOSTICS affected = ROW_COUNT;
+  IF affected <> 0
+     OR EXISTS (
+       SELECT 1
+         FROM public.catalogue_prestation_search_tokens
+        WHERE "companyId" = 'rls-owner-split-token-company-a'
+     ) THEN
+    RAISE EXCEPTION 'RLS_OWNER_SPLIT_CERT_CATALOGUE_TOKEN_CROSS_TENANT_LEAK';
+  END IF;
+END;
+$catalogue_token_cross_tenant$;
+
+UPDATE public.catalogue_prestations
+   SET label = 'Nettoyage vitrine beta',
+       revision = revision + 1,
+       "updatedAt" = CURRENT_TIMESTAMP
+ WHERE "companyId" = 'rls-owner-split-token-company-b'
+   AND id = 'rls-owner-split-token-item-b';
+
+DO $catalogue_token_tenant_b$
+BEGIN
+  IF (
+    SELECT pg_catalog.count(*)
+      FROM public.catalogue_prestation_search_tokens
+     WHERE "companyId" = 'rls-owner-split-token-company-b'
+       AND "catalogueItemId" = 'rls-owner-split-token-item-b'
+       AND token IN ('nettoyage', 'vitrine', 'beta')
+  ) <> 3 THEN
+    RAISE EXCEPTION 'RLS_OWNER_SPLIT_CERT_CATALOGUE_TOKEN_TENANT_B_DRIFT';
+  END IF;
+END;
+$catalogue_token_tenant_b$;
+ROLLBACK;
+SQL
+
 psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
 DO $rls_owner_split_certificate$
 DECLARE
@@ -363,6 +561,19 @@ BEGIN
   END IF;
 END;
 $rls_owner_split_certificate$;
+
+SET ROLE bob_rls_schema_owner_cert;
+DELETE FROM public.catalogue_prestations
+ WHERE "companyId" IN (
+   'rls-owner-split-token-company-a',
+   'rls-owner-split-token-company-b'
+ );
+DELETE FROM public.companies
+ WHERE id IN (
+   'rls-owner-split-token-company-a',
+   'rls-owner-split-token-company-b'
+ );
+RESET ROLE;
 SQL
 
 echo "RLS owner-split replay certified with a non-superuser deployer"

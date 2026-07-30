@@ -102,6 +102,7 @@ import {
   hashRealtimeAgentMissionCapability,
   isRealtimeAgentMissionCapability,
   parseRealtimeAgentMissionNegotiation,
+  realtimeAgentMissionCapabilityProtocolVersion,
   realtimeAgentMissionBootstrapBinding,
   type RealtimeAgentMissionNegotiationRequest,
 } from './realtime-agent-mission-negotiation';
@@ -300,7 +301,7 @@ export function parseMistralRealtimeCallBody(
 }
 
 export type AgentMissionNegotiationMetricLabels = Readonly<{
-  requested: 'omitted' | 'null' | 'v1' | 'unknown';
+  requested: 'omitted' | 'null' | 'v1' | 'v2' | 'unknown';
   outcome: 'historical' | 'accepted' | 'refused' | 'error';
   provider: 'openai' | 'mistral' | 'unknown';
   transport: 'webrtc' | 'mistral_pcm' | 'unknown';
@@ -313,7 +314,8 @@ function requestedAgentMissionProtocol(
   const record = body as Record<string, unknown>;
   if (!Object.hasOwn(record, 'agentMissionProtocolVersion')) return 'omitted';
   if (record.agentMissionProtocolVersion === null) return 'null';
-  return record.agentMissionProtocolVersion === 1 ? 'v1' : 'unknown';
+  if (record.agentMissionProtocolVersion === 1) return 'v1';
+  return record.agentMissionProtocolVersion === 2 ? 'v2' : 'unknown';
 }
 
 export function agentMissionNegotiationMetricLabels(
@@ -350,8 +352,13 @@ export function agentMissionNegotiationMetricLabels(
       transport,
     });
   }
-  const accepted = requested === 'v1'
-    && result.value.agentMissionProtocolVersion === 1
+  const requestedVersion = requested === 'v1'
+    ? 1
+    : requested === 'v2'
+      ? 2
+      : null;
+  const accepted = requestedVersion !== null
+    && result.value.agentMissionProtocolVersion === requestedVersion
     && isRealtimeAgentMissionCapability(result.value.agentMissionCapability);
   return Object.freeze({
     requested,
@@ -818,6 +825,8 @@ export class RealtimeVoiceService {
 
     const acknowledgement = await this.admission.acknowledgeAgentMissionBootstrap({
       ...lookup,
+      protocolVersion:
+        realtimeAgentMissionCapabilityProtocolVersion(presentedCapability)!,
       capabilityHash: hashRealtimeAgentMissionCapability(presentedCapability),
     });
     if (!acknowledgement.ok) {
@@ -994,6 +1003,7 @@ export class RealtimeVoiceService {
             ownerUserId: principal.userId,
           }),
           proof: Object.freeze({
+            protocolVersion: admission.agentMissionProof.protocolVersion,
             subjectHashCandidates: Object.freeze([
               ...reserveInput.subjectHashCandidates,
             ]),

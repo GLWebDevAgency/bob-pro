@@ -13,6 +13,12 @@ cd "$ROOT_DIR"
 : "${RLS_CERT_CLEANUP:?RLS_CERT_CLEANUP=true is required}"
 : "${CABINET_RELEASE_ENV:?CABINET_RELEASE_ENV is required}"
 : "${BOB_RELEASE_EXPECTED_ENV:?BOB_RELEASE_EXPECTED_ENV is required}"
+: "${BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED:?BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED=false is required}"
+
+if [ "$BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED" != "false" ]; then
+  echo "BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED must remain false until M2-A-3 certification" >&2
+  exit 1
+fi
 
 case "$CABINET_RELEASE_ENV" in
   development|staging|production) ;;
@@ -133,11 +139,56 @@ SQL
       return 1
       ;;
   esac
+  m2a_release_flag_snapshot="$(
+    psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 \
+      -v release_env="$CABINET_RELEASE_ENV" <<'SQL'
+SELECT pg_catalog.format(
+         '%s|%s|%s|%s',
+         flag.version,
+         CASE WHEN flag.enabled THEN 'true' ELSE 'false' END,
+         CASE WHEN flag."killSwitch" THEN 'true' ELSE 'false' END,
+         CASE WHEN EXISTS (
+           SELECT 1
+             FROM public.release_flag_subjects AS subject
+            WHERE subject."flagId" = flag.id
+              AND subject.enabled
+         ) THEN 'true' ELSE 'false' END
+       )
+  FROM public.release_flags AS flag
+ WHERE flag.key = 'bob.agent_missions.quote.m2a'
+   AND flag.environment = :'release_env'::public."ReleaseEnvironment";
+SQL
+  )"
+  old_ifs="$IFS"
+  IFS='|'
+  set -- $m2a_release_flag_snapshot
+  IFS="$old_ifs"
+  m2a_release_flag_version="${1:-}"
+  m2a_release_flag_enabled="${2:-}"
+  m2a_release_flag_kill_switch="${3:-}"
+  m2a_enabled_subject_exists="${4:-}"
+  if [ "$#" -ne 4 ]; then
+    echo "AgentMission M2-A release flag snapshot is missing or malformed for $CABINET_RELEASE_ENV" >&2
+    return 1
+  fi
+  case "$m2a_release_flag_version" in
+    ''|*[!0-9]*|0)
+      echo "AgentMission M2-A release flag version is missing or invalid for $CABINET_RELEASE_ENV" >&2
+      return 1
+      ;;
+  esac
+  if [ "$m2a_release_flag_enabled" != "false" ] \
+     || [ "$m2a_release_flag_kill_switch" != "false" ] \
+     || [ "$m2a_enabled_subject_exists" != "false" ]; then
+    echo "AgentMission M2-A release flag and every tenant override must remain exactly OFF for $CABINET_RELEASE_ENV" >&2
+    return 1
+  fi
   psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
     -v app_role="$APP_DATABASE_ROLE" \
     -v release_env="$CABINET_RELEASE_ENV" \
     -v release_flag_version="$release_flag_version" \
     -v release_flag_kill_switch="$release_flag_kill_switch" \
+    -v m2a_release_flag_version="$m2a_release_flag_version" \
     -f apps/api/prisma/agent-mission-realtime-release-cert.sql
 }
 
@@ -2305,6 +2356,18 @@ ensure_agent_mission_fingerprint_readiness_authority_role() {
     -f apps/api/prisma/agent-mission-fingerprint-readiness-authority-role.sql
 }
 
+ensure_catalogue_search_token_authority_role() {
+  psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
+    -f apps/api/prisma/catalogue-search-token-authority-role.sql
+}
+
+provision_catalogue_search_token_authority() {
+  ensure_catalogue_search_token_authority_role
+  psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
+    -v app_role="${APP_DATABASE_ROLE:-}" \
+    -f apps/api/prisma/catalogue-search-token-authority-provision.sql
+}
+
 provision_agent_mission_fingerprint_readiness_authority() {
   ensure_agent_mission_fingerprint_readiness_authority_role
   psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
@@ -2798,6 +2861,7 @@ ensure_openai_native_maintenance_directory_role
 ensure_realtime_reaper_directory_role
 ensure_agent_mission_release_flag_authority_role
 ensure_agent_mission_fingerprint_readiness_authority_role
+ensure_catalogue_search_token_authority_role
 DIRECT_URL="$DIRECT_URL" sh apps/api/scripts/realtime-capacity-release.sh ensure
 if [ "$BOB_RELEASE_PHASE" = predeploy ]; then
   close_and_drain_realtime_before_cancellation_fence_expand
@@ -2819,6 +2883,7 @@ node apps/api/scripts/manage-mistral-conversation-key-version.mjs stage
 node apps/api/scripts/manage-bob-live-native-key-versions.mjs stage
 grant_app_role
 psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 -f apps/api/prisma/rls.sql
+provision_catalogue_search_token_authority
 provision_agent_mission_fingerprint_readiness_authority
 node apps/api/scripts/manage-agent-mission-fingerprint-key-versions.mjs stage
 certify_agent_mission_release_acl

@@ -167,6 +167,9 @@ const schema = z.object({
   // Capability métier Mission : dormant sans master. Le keyring est dédié aux fingerprints
   // append-only des missions et ne doit partager aucun matériau avec Bob Live.
   BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED: z.enum(['true', 'false']).default('false'),
+  // M2-A reste un second master explicite. Il ne peut jamais activer implicitement V1 ni
+  // réutiliser une capability bam1_* : le client, la lease et la mission doivent tous être V2.
+  BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED: z.enum(['true', 'false']).default('false'),
   BOB_AGENT_MISSION_HMAC_KEY_VERSION: z.coerce.number().int().min(1).max(2_147_483_647).optional(),
   BOB_AGENT_MISSION_HMAC_KEYRING: z.string().trim().min(1).max(16_384).optional(),
   OPENAI_REALTIME_ENABLED: z.enum(['true', 'false']).default('false'),
@@ -997,6 +1000,13 @@ export function loadEnv(): Env {
   const bobLive = resolveBobLiveEnv(parsed.data);
   const agentMissionKeyRing = resolveAgentMissionHmacKeyRing(parsed.data);
   const agentMissionsQuoteV1Enabled = parsed.data.BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED === 'true';
+  const agentMissionsQuoteM2AEnabled =
+    parsed.data.BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED === 'true';
+  if (agentMissionsQuoteM2AEnabled && !agentMissionsQuoteV1Enabled) {
+    throw new Error(
+      'BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED=true exige BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED=true.',
+    );
+  }
   if (!agentMissionsQuoteV1Enabled && agentMissionKeyRing !== null) {
     throw new Error(
       'Le keyring AgentMission doit être absent lorsque BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED=false.',

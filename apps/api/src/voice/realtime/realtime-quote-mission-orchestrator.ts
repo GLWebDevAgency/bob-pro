@@ -1,11 +1,14 @@
 import {
   understandQuoteCreationTurn,
+  understandQuoteCreationTurnV2,
   type AgentHistoryTurn,
   type LlmPort,
   type QuoteCreationUnderstandingPhase,
+  type QuoteCreationUnderstandingPhaseV2,
 } from '@bob/ai';
 import type {
   AgentMissionOwner,
+  AgentMissionQuoteLineCandidateV1,
   AgentMissionRealtimeAuthorityProof,
   AgentMissionViewV1,
   AppError,
@@ -15,6 +18,8 @@ import type {
 } from '@bob/core';
 import type {
   AgentMissionServiceAuthorization,
+  DecideQuoteAgentMissionCatalogueChoiceServiceOutput,
+  StageQuoteAgentMissionLinesServiceOutput,
 } from '../../agent-missions/agent-mission.service';
 
 export interface RealtimeQuoteMissionAuthority {
@@ -34,6 +39,7 @@ export interface RealtimeQuoteMissionGateway {
     readonly contextRevision: number;
     readonly contextDigest: string;
     readonly customerReference: string | null;
+    readonly lines: readonly AgentMissionQuoteLineCandidateV1[];
   }): Promise<Result<StartQuoteAgentMissionOutput, AppError>>;
   decideFromVoiceTurn(input: {
     readonly authorization: AgentMissionServiceAuthorization;
@@ -53,11 +59,45 @@ export interface RealtimeQuoteMissionGateway {
           readonly choiceSetRevision: number;
           readonly choiceId: string;
         }
-      | {
+        | {
           readonly action: 'resolve_customer_reference';
           readonly customerReference: string;
         };
+    readonly lines: readonly AgentMissionQuoteLineCandidateV1[];
   }): Promise<Result<DecideQuoteAgentMissionOutput, AppError>>;
+  stageLinesFromVoiceTurn(input: {
+    readonly authorization: AgentMissionServiceAuthorization;
+    readonly missionId: string;
+    readonly turnId: string;
+    readonly realtimeSessionId: string;
+    readonly contextRevision: number;
+    readonly contextDigest: string;
+    readonly expectedMissionRevision: number;
+    readonly expectedDraftSessionId: string;
+    readonly expectedDraftSlotRevision: number;
+    readonly expectedDraftContentRevision: number;
+    readonly lines: readonly AgentMissionQuoteLineCandidateV1[];
+  }): Promise<Result<StageQuoteAgentMissionLinesServiceOutput, AppError>>;
+  decideCatalogueChoiceFromVoiceTurn(input: {
+    readonly authorization: AgentMissionServiceAuthorization;
+    readonly missionId: string;
+    readonly turnId: string;
+    readonly realtimeSessionId: string;
+    readonly contextRevision: number;
+    readonly contextDigest: string;
+    readonly expectedMissionRevision: number;
+    readonly expectedDraftSessionId: string;
+    readonly expectedDraftSlotRevision: number;
+    readonly expectedDraftContentRevision: number;
+    readonly decisionId: string;
+    readonly choiceSetRevision: number;
+    readonly pendingLineId: string;
+    readonly expectedWorkRevision: number;
+    readonly choiceId: string;
+    readonly additionalLines: readonly AgentMissionQuoteLineCandidateV1[];
+  }): Promise<
+  Result<DecideQuoteAgentMissionCatalogueChoiceServiceOutput, AppError>
+  >;
 }
 
 export interface RealtimeQuoteMissionOrchestrationInput {
@@ -120,6 +160,45 @@ function understandingState(mission: AgentMissionViewV1 | null): {
   return 'mission_locked';
 }
 
+function understandingStateV2(mission: AgentMissionViewV1 | null): {
+  readonly phase: QuoteCreationUnderstandingPhaseV2;
+  readonly presentedChoiceCount: number;
+} | 'mission_locked' {
+  if (mission === null) {
+    return { phase: 'inactive', presentedChoiceCount: 0 };
+  }
+  if (mission.status !== 'active') return 'mission_locked';
+  if (mission.phase === 'awaiting_customer') {
+    return { phase: 'awaiting_customer', presentedChoiceCount: 0 };
+  }
+  if (
+    mission.phase === 'awaiting_customer_choice'
+    && mission.payload.decision?.kind === 'customer'
+    && mission.payload.decision.candidates.length >= 1
+    && mission.payload.decision.candidates.length <= 5
+  ) {
+    return {
+      phase: 'awaiting_customer_choice',
+      presentedChoiceCount: mission.payload.decision.candidates.length,
+    };
+  }
+  if (mission.phase === 'awaiting_lines') {
+    return { phase: 'awaiting_lines', presentedChoiceCount: 0 };
+  }
+  if (
+    mission.phase === 'awaiting_catalogue_choice'
+    && mission.payload.decision?.kind === 'catalogue'
+    && mission.payload.decision.candidates.length >= 1
+    && mission.payload.decision.candidates.length <= 5
+  ) {
+    return {
+      phase: 'awaiting_catalogue_choice',
+      presentedChoiceCount: mission.payload.decision.candidates.length + 1,
+    };
+  }
+  return 'mission_locked';
+}
+
 function canonicalStartSpeech(mission: AgentMissionViewV1): string {
   if (mission.phase === 'awaiting_draft_decision') {
     return 'J’ai retrouvé un brouillon en cours. Je l’ouvre pour que tu choisisses de le reprendre ou de recommencer.';
@@ -135,6 +214,71 @@ function canonicalStartSpeech(mission: AgentMissionViewV1): string {
     return 'J’ai besoin d’un nom de client plus précis. J’ouvre le devis pour que tu puisses le compléter.';
   }
   return 'Je prépare le devis. Choisis le client, ou dis-moi son nom.';
+}
+
+function currentCatalogueChoiceCount(mission: AgentMissionViewV1): number | null {
+  const decision = mission.payload.decision;
+  return mission.status === 'active'
+    && mission.phase === 'awaiting_catalogue_choice'
+    && decision?.kind === 'catalogue'
+    ? decision.candidates.length
+    : null;
+}
+
+function canonicalCatalogueChoiceSpeech(count: number): string {
+  return count > 1
+    ? `J’ai trouvé ${count} prestations réelles dans ton catalogue, plus l’option de créer une ligne libre. Elles sont conservées dans cet ordre pour ton choix.`
+    : 'J’ai trouvé une prestation réelle dans ton catalogue, plus l’option de créer une ligne libre. Les deux choix sont conservés dans cet ordre.';
+}
+
+function canonicalV2MissionState(
+  mission: AgentMissionViewV1 | null,
+): RealtimeQuoteMissionOrchestrationOutcome {
+  if (mission === null || mission.status !== 'active') {
+    return {
+      status: 'handled',
+      canonicalSpeech:
+        'Cette mission n’est plus active. J’ai actualisé son état sans exécuter une nouvelle action.',
+      speechPurpose: 'action_result',
+    };
+  }
+  const catalogueCount = currentCatalogueChoiceCount(mission);
+  if (catalogueCount !== null) {
+    return {
+      status: 'handled',
+      canonicalSpeech: canonicalCatalogueChoiceSpeech(catalogueCount),
+      speechPurpose: 'structured_choice',
+    };
+  }
+  const customerCount = currentCustomerChoiceCount(mission);
+  if (customerCount !== null) {
+    return {
+      status: 'handled',
+      canonicalSpeech: canonicalCurrentChoiceSpeech(customerCount),
+      speechPurpose: 'structured_choice',
+    };
+  }
+  if (mission.phase === 'awaiting_lines') {
+    return {
+      status: 'handled',
+      canonicalSpeech:
+        'Les informations données sont conservées dans la mission. Je poursuis à partir de l’état réellement enregistré.',
+      speechPurpose: 'action_result',
+    };
+  }
+  if (mission.phase === 'awaiting_customer') {
+    return {
+      status: 'handled',
+      canonicalSpeech:
+        'Le client reste à choisir. Dis-moi son nom pour reprendre la même mission.',
+      speechPurpose: 'structured_choice',
+    };
+  }
+  return {
+    status: 'failed',
+    canonicalSpeech:
+      'L’étape enregistrée ne permet pas encore cette action. Rien de plus n’a été exécuté.',
+  };
 }
 
 function currentCustomerChoiceCount(mission: AgentMissionViewV1): number | null {
@@ -274,8 +418,287 @@ implements RealtimeQuoteMissionOrchestratorPort {
     }
     input.signal.throwIfAborted();
     return refreshed.ok
-      ? canonicalConvergedDecision(refreshed.value.mission)
+      ? (
+          input.authorization.proof.protocolVersion === 2
+            ? canonicalV2MissionState(refreshed.value.mission)
+            : canonicalConvergedDecision(refreshed.value.mission)
+        )
       : { status: 'failed', canonicalSpeech: TEMPORARY_FAILURE };
+  }
+
+  private async runV2(input: {
+    readonly request: RealtimeQuoteMissionOrchestrationInput;
+    readonly authorization: AgentMissionServiceAuthorization;
+    readonly mission: AgentMissionViewV1 | null;
+  }): Promise<RealtimeQuoteMissionOrchestrationOutcome> {
+    const state = understandingStateV2(input.mission);
+    if (state === 'mission_locked') {
+      return {
+        status: 'failed',
+        canonicalSpeech:
+          'La mission attend la confirmation de l’étape affichée. Rien de nouveau n’a été exécuté.',
+      };
+    }
+
+    let understood: Awaited<ReturnType<typeof understandQuoteCreationTurnV2>>;
+    try {
+      understood = await understandQuoteCreationTurnV2(this.llm, {
+        transcript: input.request.transcript,
+        phase: state.phase,
+        presentedChoiceCount: state.presentedChoiceCount,
+        requiredFact: null,
+        timeZone: null,
+        locale: 'fr-FR',
+        signal: input.request.signal,
+      });
+    } catch {
+      input.request.signal.throwIfAborted();
+      return { status: 'failed', canonicalSpeech: TEMPORARY_FAILURE };
+    }
+    input.request.signal.throwIfAborted();
+    if (understood.status === 'rejected') {
+      return { status: 'failed', canonicalSpeech: UNSAFE_UNDERSTANDING };
+    }
+    const operation = understood.frame.operations[0];
+    if (operation === undefined) {
+      return { status: 'failed', canonicalSpeech: UNSAFE_UNDERSTANDING };
+    }
+    if (operation.kind === 'unrelated') return { status: 'not_applicable' };
+
+    if (operation.kind === 'start_quote_creation') {
+      let started: Awaited<ReturnType<RealtimeQuoteMissionGateway['startFromVoiceTurn']>>;
+      try {
+        started = await this.missions.startFromVoiceTurn({
+          authorization: input.authorization,
+          realtimeSessionId: input.request.authority.realtimeSessionId,
+          turnId: input.request.turnId,
+          contextRevision: input.request.contextRevision,
+          contextDigest: input.request.contextDigest,
+          customerReference: operation.customerReference,
+          lines: operation.lines,
+        });
+      } catch {
+        input.request.signal.throwIfAborted();
+        return { status: 'failed', canonicalSpeech: TEMPORARY_FAILURE };
+      }
+      input.request.signal.throwIfAborted();
+      if (!started.ok || started.value.mission.status !== 'active') {
+        return { status: 'failed', canonicalSpeech: TEMPORARY_FAILURE };
+      }
+      return {
+        status: 'ready',
+        canonicalSpeech: canonicalStartSpeech(started.value.mission),
+        navigate: '/devis/new',
+      };
+    }
+
+    const mission = input.mission;
+    const draft = mission?.payload.draft ?? null;
+    if (mission === null || draft === null) {
+      return { status: 'failed', canonicalSpeech: TEMPORARY_FAILURE };
+    }
+
+    if (operation.kind === 'append_line_candidates') {
+      let staged: Awaited<
+      ReturnType<RealtimeQuoteMissionGateway['stageLinesFromVoiceTurn']>
+      >;
+      try {
+        staged = await this.missions.stageLinesFromVoiceTurn({
+          authorization: input.authorization,
+          missionId: mission.id,
+          turnId: input.request.turnId,
+          realtimeSessionId: input.request.authority.realtimeSessionId,
+          contextRevision: input.request.contextRevision,
+          contextDigest: input.request.contextDigest,
+          expectedMissionRevision: mission.revision,
+          expectedDraftSessionId: draft.sessionId,
+          expectedDraftSlotRevision: draft.slotRevision,
+          expectedDraftContentRevision: draft.contentRevision,
+          lines: operation.lines,
+        });
+      } catch {
+        input.request.signal.throwIfAborted();
+        return this.convergeAfterUncertainDecision({
+          authorization: input.authorization,
+          signal: input.request.signal,
+        });
+      }
+      input.request.signal.throwIfAborted();
+      if (!staged.ok) {
+        return this.convergeAfterUncertainDecision({
+          authorization: input.authorization,
+          signal: input.request.signal,
+        });
+      }
+      if (staged.value.continuation.outcome === 'catalogue_not_found') {
+        return {
+          status: 'handled',
+          canonicalSpeech:
+            'Je n’ai trouvé aucune prestation correspondante dans ton catalogue. La ligne libre est conservée dans la mission, sans inventer de tarif.',
+          speechPurpose: 'action_result',
+        };
+      }
+      if (staged.value.continuation.outcome === 'deferred_to_m2a2') {
+        return {
+          status: 'failed',
+          canonicalSpeech:
+            'J’ai conservé les faits donnés, mais cette ligne nécessite une étape supplémentaire qui n’est pas encore active. Aucun devis n’a été modifié.',
+        };
+      }
+      return canonicalV2MissionState(staged.value.mission);
+    }
+
+    if (
+      operation.kind === 'set_customer_reference'
+      || (
+        operation.kind === 'select_presented_choice'
+        && mission.phase === 'awaiting_customer_choice'
+      )
+    ) {
+      const decision = operation.kind === 'select_presented_choice'
+        ? (() => {
+            const presented = mission.payload.decision;
+            const candidate = presented?.kind === 'customer'
+              ? presented.candidates[operation.ordinal - 1]
+              : undefined;
+            return presented?.kind === 'customer' && candidate !== undefined
+              ? {
+                  action: 'choose_presented_option' as const,
+                  decisionId: presented.decisionId,
+                  choiceSetRevision: presented.choiceSetRevision,
+                  choiceId: candidate.choiceId,
+                }
+              : null;
+          })()
+        : {
+            action: 'resolve_customer_reference' as const,
+            customerReference: operation.customerReference,
+          };
+      if (decision === null) {
+        return { status: 'failed', canonicalSpeech: UNSAFE_UNDERSTANDING };
+      }
+      let decided: Awaited<
+      ReturnType<RealtimeQuoteMissionGateway['decideFromVoiceTurn']>
+      >;
+      try {
+        decided = await this.missions.decideFromVoiceTurn({
+          authorization: input.authorization,
+          missionId: mission.id,
+          turnId: input.request.turnId,
+          realtimeSessionId: input.request.authority.realtimeSessionId,
+          contextRevision: input.request.contextRevision,
+          contextDigest: input.request.contextDigest,
+          expectedMissionRevision: mission.revision,
+          expectedDraftSessionId: draft.sessionId,
+          expectedDraftSlotRevision: draft.slotRevision,
+          expectedDraftContentRevision: draft.contentRevision,
+          decision,
+          lines: operation.lines,
+        });
+      } catch {
+        input.request.signal.throwIfAborted();
+        return this.convergeAfterUncertainDecision({
+          authorization: input.authorization,
+          signal: input.request.signal,
+        });
+      }
+      input.request.signal.throwIfAborted();
+      if (!decided.ok) {
+        return this.convergeAfterUncertainDecision({
+          authorization: input.authorization,
+          signal: input.request.signal,
+        });
+      }
+      return canonicalV2MissionState(decided.value.mission);
+    }
+
+    if (
+      operation.kind === 'select_presented_choice'
+      && mission.phase === 'awaiting_catalogue_choice'
+    ) {
+      const presented = mission.payload.decision;
+      if (presented?.kind !== 'catalogue') {
+        return { status: 'failed', canonicalSpeech: UNSAFE_UNDERSTANDING };
+      }
+      const choiceIds = [
+        ...presented.candidates.map((candidate) => candidate.choiceId),
+        presented.freeLineChoiceId,
+      ];
+      const choiceId = choiceIds[operation.ordinal - 1];
+      if (choiceId === undefined) {
+        return { status: 'failed', canonicalSpeech: UNSAFE_UNDERSTANDING };
+      }
+      let decided: Awaited<
+      ReturnType<
+      RealtimeQuoteMissionGateway['decideCatalogueChoiceFromVoiceTurn']
+      >
+      >;
+      try {
+        decided = await this.missions.decideCatalogueChoiceFromVoiceTurn({
+          authorization: input.authorization,
+          missionId: mission.id,
+          turnId: input.request.turnId,
+          realtimeSessionId: input.request.authority.realtimeSessionId,
+          contextRevision: input.request.contextRevision,
+          contextDigest: input.request.contextDigest,
+          expectedMissionRevision: mission.revision,
+          expectedDraftSessionId: presented.expectedDraft.sessionId,
+          expectedDraftSlotRevision: presented.expectedDraft.slotRevision,
+          expectedDraftContentRevision: presented.expectedDraft.contentRevision,
+          decisionId: presented.decisionId,
+          choiceSetRevision: presented.choiceSetRevision,
+          pendingLineId: presented.pendingLineId,
+          expectedWorkRevision: presented.expectedWorkRevision,
+          choiceId,
+          additionalLines: operation.lines,
+        });
+      } catch {
+        input.request.signal.throwIfAborted();
+        return this.convergeAfterUncertainDecision({
+          authorization: input.authorization,
+          signal: input.request.signal,
+        });
+      }
+      input.request.signal.throwIfAborted();
+      if (!decided.ok) {
+        return this.convergeAfterUncertainDecision({
+          authorization: input.authorization,
+          signal: input.request.signal,
+        });
+      }
+      if (decided.value.outcome === 'invalidated') {
+        if (decided.value.continuation.outcome === 'catalogue_not_found') {
+          return {
+            status: 'handled',
+            canonicalSpeech:
+              'Cette prestation a changé. Après relecture, aucune correspondance actuelle ne reste ; la ligne libre est conservée sans tarif inventé.',
+            speechPurpose: 'action_result',
+          };
+        }
+        if (
+          decided.value.continuation.outcome === 'choices_presented'
+          || decided.value.continuation.outcome === 'replayed'
+          || decided.value.continuation.outcome === 'superseded'
+        ) {
+          return canonicalV2MissionState(decided.value.mission);
+        }
+        return {
+          status: 'failed',
+          canonicalSpeech:
+            'Cette prestation a changé ou n’est plus disponible. Aucune valeur obsolète n’a été copiée, mais la prochaine étape n’est pas encore active.',
+        };
+      }
+      if (decided.value.continuation.outcome === 'deferred_to_m2a2') {
+        return {
+          status: 'failed',
+          canonicalSpeech:
+            'Le choix catalogue est enregistré avec sa révision, mais il n’a pas encore été transformé en ligne de devis. Aucun montant n’a été ajouté.',
+        };
+      }
+      return canonicalV2MissionState(decided.value.mission);
+    }
+
+    return { status: 'failed', canonicalSpeech: UNSAFE_UNDERSTANDING };
   }
 
   async run(
@@ -296,6 +719,13 @@ implements RealtimeQuoteMissionOrchestratorPort {
     input.signal.throwIfAborted();
     if (!current.ok) {
       return { status: 'failed', canonicalSpeech: TEMPORARY_FAILURE };
+    }
+    if (input.authority.proof.protocolVersion === 2) {
+      return this.runV2({
+        request: input,
+        authorization,
+        mission: current.value.mission,
+      });
     }
     const state = understandingState(current.value.mission);
     if (state === 'mission_locked') {
@@ -374,6 +804,7 @@ implements RealtimeQuoteMissionOrchestratorPort {
           expectedDraftSlotRevision: draft.slotRevision,
           expectedDraftContentRevision: draft.contentRevision,
           decision,
+          lines: [],
         });
       } catch {
         input.signal.throwIfAborted();
@@ -401,6 +832,7 @@ implements RealtimeQuoteMissionOrchestratorPort {
         contextRevision: input.contextRevision,
         contextDigest: input.contextDigest,
         customerReference: operation.customerReference,
+        lines: [],
       });
     } catch {
       input.signal.throwIfAborted();

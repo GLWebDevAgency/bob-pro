@@ -1,4 +1,5 @@
 import {
+  AGENT_MISSION_PROTOCOL_M2A,
   AgentMission,
   type AgentMissionTransition,
   type QuoteMissionStagedCustomerResolutionV1,
@@ -49,6 +50,14 @@ import {
   isCanonicalCustomerReference,
   resolveCustomerReference,
 } from './resolve-customer-reference';
+import {
+  type AgentMissionQuoteLineCandidateV1,
+  type NormalizedAgentMissionQuoteLineCandidateV1,
+  normalizeAgentMissionQuoteLineCandidate,
+} from './quote-line-candidate';
+import {
+  stageQuoteAgentMissionLinesInTransaction,
+} from './stage-quote-agent-mission-lines';
 
 export interface StartQuoteAgentMissionCommand extends AgentMissionOwner {
   readonly commandId: string;
@@ -59,6 +68,11 @@ export interface StartQuoteAgentMissionCommand extends AgentMissionOwner {
    * `null` signifie que le tour n'a pas nommé de client.
    */
   readonly customerReference: string | null;
+  /**
+   * Additif M2-A : optionnel pour préserver le writer V1. Toute ligne non vide exige le
+   * protocole 2 et est insérée dans la transaction du start/join, jamais après coup.
+   */
+  readonly lines?: readonly AgentMissionQuoteLineCandidateV1[];
 }
 
 export interface StartQuoteAgentMissionOutput {
@@ -96,6 +110,71 @@ function transitionValue(
 ): AgentMissionTransition {
   if (!transition.ok) abort(agentMissionDomainError(transition.error));
   return transition.value;
+}
+
+function normalizeStartLines(
+  input: unknown,
+): Result<readonly NormalizedAgentMissionQuoteLineCandidateV1[], AppError> {
+  if (!Array.isArray(input) || input.length > 20) {
+    return err({
+      kind: 'validation',
+      issues: [{ field: 'lines', message: 'Vingt lignes maximum.' }],
+    });
+  }
+  const normalized: NormalizedAgentMissionQuoteLineCandidateV1[] = [];
+  for (let index = 0; index < input.length; index += 1) {
+    const parsed = normalizeAgentMissionQuoteLineCandidate(input[index]);
+    if (!parsed.ok) {
+      return err({
+        kind: 'validation',
+        issues: [{
+          field: `lines[${index}].${parsed.error.field}`,
+          message: `Ligne invalide (${parsed.error.reason}).`,
+        }],
+      });
+    }
+    normalized.push(parsed.value);
+  }
+  return ok(Object.freeze(normalized));
+}
+
+function canonicalStartLine(
+  line: NormalizedAgentMissionQuoteLineCandidateV1,
+): readonly unknown[] {
+  return [
+    line.serviceReference,
+    line.category,
+    line.quantityMilli,
+    line.unit,
+    line.unitPriceCents,
+    line.requestedVatRate,
+    line.priceBasis,
+  ];
+}
+
+export function canonicalAgentMissionStartCommandM2A(input: {
+  readonly owner: AgentMissionOwner;
+  readonly commandId: string;
+  readonly origin: AgentMissionUserCommandOrigin;
+  readonly customerReference: string | null;
+  readonly normalizedLines: readonly NormalizedAgentMissionQuoteLineCandidateV1[];
+}): string {
+  const correlation = input.origin.correlation;
+  return JSON.stringify([
+    'bob.agent-mission.command.start-quote.m2a.v1',
+    input.owner.companyId,
+    input.owner.ownerUserId,
+    input.commandId,
+    [
+      input.origin.actor,
+      correlation?.realtimeSessionId ?? null,
+      input.origin.actor === 'user_voice' ? input.origin.correlation.turnId : null,
+      correlation?.contextRevision ?? null,
+      correlation?.contextDigest ?? null,
+    ],
+    input.customerReference,
+    input.normalizedLines.map(canonicalStartLine),
+  ]);
 }
 
 function sameDraftReference(
@@ -142,16 +221,32 @@ export class StartQuoteAgentMission {
         issues: [{ field: 'customerReference', message: 'Référence client invalide.' }],
       });
     }
+    const lines = normalizeStartLines(input.lines ?? []);
+    if (!lines.ok) return lines;
+    if (
+      lines.value.length > 0
+      && input.authority.protocolVersion !== AGENT_MISSION_PROTOCOL_M2A
+    ) {
+      return err(appConflict('agent_mission_protocol', 'upgrade_required'));
+    }
     const owner: AgentMissionOwner = {
       companyId: input.companyId,
       ownerUserId: input.ownerUserId,
     };
-    const startCanonical = canonicalAgentMissionStartCommand({
-      ...owner,
-      commandId: input.commandId,
-      origin: input.origin,
-      customerReference: input.customerReference,
-    });
+    const startCanonical = input.authority.protocolVersion === AGENT_MISSION_PROTOCOL_M2A
+      ? canonicalAgentMissionStartCommandM2A({
+          owner,
+          commandId: input.commandId,
+          origin: input.origin,
+          customerReference: input.customerReference,
+          normalizedLines: lines.value,
+        })
+      : canonicalAgentMissionStartCommand({
+          ...owner,
+          commandId: input.commandId,
+          origin: input.origin,
+          customerReference: input.customerReference,
+        });
 
     try {
       const execution = await this.deps.unitOfWork.runQuoteCreationOwner(
@@ -225,8 +320,10 @@ export class StartQuoteAgentMission {
         }
 
         const foreground = await transaction.missions.findForegroundForUpdate(owner);
-        if (foreground?.status === 'unsupported_kind') {
-          abort(appConflict('agent_mission_foreground', 'active_mission_exists'));
+        if (foreground !== null && foreground.status !== 'known') {
+          abort(foreground.status === 'unsupported_protocol'
+            ? appConflict('agent_mission_protocol', 'upgrade_required')
+            : appConflict('agent_mission_foreground', 'active_mission_exists'));
         }
         const active = foreground?.mission ?? null;
         if (active !== null) {
@@ -272,6 +369,18 @@ export class StartQuoteAgentMission {
               stagedCustomerResolution,
               occurredAt: now,
             }));
+            if (lines.value.length > 0) {
+              const staged = await stageQuoteAgentMissionLinesInTransaction({
+                transaction,
+                owner,
+                mission: active,
+                candidates: input.lines ?? [],
+                origin: input.origin.actor,
+                occurredAt: now,
+                ids: this.deps.ids,
+              });
+              if (!staged.ok) abort(staged.error);
+            }
             const updated = await transaction.missions.updateCas({
               mission: joined.mission,
               expectedRevision: active.revision,
@@ -367,6 +476,7 @@ export class StartQuoteAgentMission {
           ? AgentMission.start({
               id: missionId,
               ...owner,
+              protocolVersion: input.authority.protocolVersion,
               createdAt: now,
               stagedCustomerResolution,
               startOutcome,
@@ -380,6 +490,7 @@ export class StartQuoteAgentMission {
           : AgentMission.start({
               id: missionId,
               ...owner,
+              protocolVersion: input.authority.protocolVersion,
               createdAt: now,
               stagedCustomerResolution,
               startOutcome,
@@ -410,6 +521,18 @@ export class StartQuoteAgentMission {
             abort(appConflict('quote_draft_slot', 'claim_conflict'));
           }
           slot = claimed;
+        }
+        if (lines.value.length > 0) {
+          const staged = await stageQuoteAgentMissionLinesInTransaction({
+            transaction,
+            owner,
+            mission: transition.mission,
+            candidates: input.lines ?? [],
+            origin: input.origin.actor,
+            occurredAt: now,
+            ids: this.deps.ids,
+          });
+          if (!staged.ok) abort(staged.error);
         }
 
         const fingerprint = requireAgentMissionFingerprint(

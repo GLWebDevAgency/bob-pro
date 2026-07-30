@@ -1,5 +1,7 @@
 import {
   normalizeCustomerName,
+  AGENT_MISSION_PROTOCOL_M2A,
+  AGENT_MISSION_PROTOCOL_V1,
   AGENT_MISSION_HARD_TTL_MS,
   AGENT_MISSION_RETENTION_MS,
   QUOTE_CREATION_MISSION_PHASES,
@@ -7,6 +9,7 @@ import {
   isCanonicalAgentMissionDraftSessionId,
   isCanonicalAgentMissionUuid,
   type AcknowledgeQuoteScreenOutput,
+  type AgentMissionProtocolVersion,
   type AgentMissionViewV1,
   type CancelQuoteAgentMissionOutput,
   type CustomerMissionChoiceView,
@@ -14,6 +17,11 @@ import {
   type QuoteAgentMissionResumeView,
   type StartQuoteAgentMissionOutput,
 } from '@bob/core';
+import type {
+  RealtimeAgentMissionCatalogueChoiceOutput,
+  RealtimeAgentMissionLineContinuation,
+  RealtimeAgentMissionStageQuoteLinesOutput,
+} from './agent-mission-session';
 
 const VIEW_KEYS = [
   'id',
@@ -67,7 +75,10 @@ function futureInstant(value: string, milliseconds: number): string | null {
  * temporelle. Les identités codec ne quittent jamais cette fonction et ne deviennent donc
  * jamais des données produit.
  */
-export function decodeAgentMissionViewV1(value: unknown): AgentMissionViewV1 | null {
+function decodeAgentMissionView(
+  value: unknown,
+  protocolVersion: AgentMissionProtocolVersion,
+): AgentMissionViewV1 | null {
   const view = record(value);
   if (!view || !exactKeys(view, VIEW_KEYS)) return null;
   if (
@@ -102,6 +113,7 @@ export function decodeAgentMissionViewV1(value: unknown): AgentMissionViewV1 | n
     id: view.id,
     companyId: 'agent-mission-codec-company',
     ownerUserId: 'agent-mission-codec-user',
+    protocolVersion,
     kind: view.kind,
     status: persistedStatus,
     phase: view.phase,
@@ -143,14 +155,41 @@ export function decodeAgentMissionViewV1(value: unknown): AgentMissionViewV1 | n
   });
 }
 
-export function decodeAgentMissionCurrent(
+export function decodeAgentMissionViewV1(value: unknown): AgentMissionViewV1 | null {
+  return decodeAgentMissionView(value, AGENT_MISSION_PROTOCOL_V1);
+}
+
+export function decodeAgentMissionViewV2(value: unknown): AgentMissionViewV1 | null {
+  return decodeAgentMissionView(value, AGENT_MISSION_PROTOCOL_M2A);
+}
+
+function decodeAgentMissionCurrentForProtocol(
   value: unknown,
+  protocolVersion: AgentMissionProtocolVersion,
 ): { readonly mission: AgentMissionViewV1 | null } | null {
   const response = record(value);
   if (!response || !exactKeys(response, ['mission'])) return null;
   if (response.mission === null) return Object.freeze({ mission: null });
-  const mission = decodeAgentMissionViewV1(response.mission);
+  const mission = decodeAgentMissionView(response.mission, protocolVersion);
   return mission === null ? null : Object.freeze({ mission });
+}
+
+export function decodeAgentMissionCurrent(
+  value: unknown,
+): { readonly mission: AgentMissionViewV1 | null } | null {
+  return decodeAgentMissionCurrentForProtocol(
+    value,
+    AGENT_MISSION_PROTOCOL_V1,
+  );
+}
+
+export function decodeAgentMissionCurrentV2(
+  value: unknown,
+): { readonly mission: AgentMissionViewV1 | null } | null {
+  return decodeAgentMissionCurrentForProtocol(
+    value,
+    AGENT_MISSION_PROTOCOL_M2A,
+  );
 }
 
 const RESUME_MISSION_KEYS = [
@@ -320,12 +359,13 @@ export function decodeQuoteAgentMissionResume(
   });
 }
 
-export function decodeAgentMissionStart(
+function decodeAgentMissionStartForProtocol(
   value: unknown,
+  protocolVersion: AgentMissionProtocolVersion,
 ): StartQuoteAgentMissionOutput | null {
   const response = record(value);
   if (!response || !exactKeys(response, ['outcome', 'startOutcome', 'mission'])) return null;
-  const mission = decodeAgentMissionViewV1(response.mission);
+  const mission = decodeAgentMissionView(response.mission, protocolVersion);
   const outcome = response.outcome;
   const startOutcome = response.startOutcome;
   if (
@@ -361,12 +401,25 @@ export function decodeAgentMissionStart(
   return Object.freeze({ outcome, startOutcome, mission }) as StartQuoteAgentMissionOutput;
 }
 
-export function decodeAgentMissionCancel(
+export function decodeAgentMissionStart(
   value: unknown,
+): StartQuoteAgentMissionOutput | null {
+  return decodeAgentMissionStartForProtocol(value, AGENT_MISSION_PROTOCOL_V1);
+}
+
+export function decodeAgentMissionStartV2(
+  value: unknown,
+): StartQuoteAgentMissionOutput | null {
+  return decodeAgentMissionStartForProtocol(value, AGENT_MISSION_PROTOCOL_M2A);
+}
+
+function decodeAgentMissionCancelForProtocol(
+  value: unknown,
+  protocolVersion: AgentMissionProtocolVersion,
 ): CancelQuoteAgentMissionOutput | null {
   const response = record(value);
   if (!response || !exactKeys(response, ['outcome', 'mission'])) return null;
-  const mission = decodeAgentMissionViewV1(response.mission);
+  const mission = decodeAgentMissionView(response.mission, protocolVersion);
   if (
     mission === null
     || (response.outcome !== 'cancelled' && response.outcome !== 'replayed')
@@ -381,12 +434,25 @@ export function decodeAgentMissionCancel(
   }) as CancelQuoteAgentMissionOutput;
 }
 
-export function decodeAgentMissionScreenAck(
+export function decodeAgentMissionCancel(
   value: unknown,
+): CancelQuoteAgentMissionOutput | null {
+  return decodeAgentMissionCancelForProtocol(value, AGENT_MISSION_PROTOCOL_V1);
+}
+
+export function decodeAgentMissionCancelV2(
+  value: unknown,
+): CancelQuoteAgentMissionOutput | null {
+  return decodeAgentMissionCancelForProtocol(value, AGENT_MISSION_PROTOCOL_M2A);
+}
+
+function decodeAgentMissionScreenAckForProtocol(
+  value: unknown,
+  protocolVersion: AgentMissionProtocolVersion,
 ): AcknowledgeQuoteScreenOutput | null {
   const response = record(value);
   if (!response || !exactKeys(response, ['outcome', 'receipt', 'mission'])) return null;
-  const mission = decodeAgentMissionViewV1(response.mission);
+  const mission = decodeAgentMissionView(response.mission, protocolVersion);
   const receipt = record(response.receipt);
   if (
     mission === null
@@ -426,6 +492,10 @@ export function decodeAgentMissionScreenAck(
           mission.phase !== 'awaiting_customer'
           && mission.phase !== 'awaiting_customer_choice'
           && mission.phase !== 'awaiting_lines'
+          && (
+            protocolVersion !== AGENT_MISSION_PROTOCOL_M2A
+            || mission.phase !== 'awaiting_catalogue_choice'
+          )
         )
       )
     )
@@ -447,13 +517,32 @@ export function decodeAgentMissionScreenAck(
   }) as AcknowledgeQuoteScreenOutput;
 }
 
-export function decodeAgentMissionDecision(
+export function decodeAgentMissionScreenAck(
+  value: unknown,
+): AcknowledgeQuoteScreenOutput | null {
+  return decodeAgentMissionScreenAckForProtocol(
+    value,
+    AGENT_MISSION_PROTOCOL_V1,
+  );
+}
+
+export function decodeAgentMissionScreenAckV2(
+  value: unknown,
+): AcknowledgeQuoteScreenOutput | null {
+  return decodeAgentMissionScreenAckForProtocol(
+    value,
+    AGENT_MISSION_PROTOCOL_M2A,
+  );
+}
+
+function decodeAgentMissionDecisionForProtocol(
   value: unknown,
   expectedMissionId: string,
+  protocolVersion: AgentMissionProtocolVersion,
 ): DecideQuoteAgentMissionOutput | null {
   const response = record(value);
   if (!response || !exactKeys(response, ['outcome', 'effect', 'mission'])) return null;
-  const mission = decodeAgentMissionViewV1(response.mission);
+  const mission = decodeAgentMissionView(response.mission, protocolVersion);
   const outcome = response.outcome;
   const effect = record(response.effect);
   const decodedEffect = effect !== null
@@ -492,7 +581,13 @@ export function decodeAgentMissionDecision(
       && (
         mission.status !== 'active'
         || !mission.actionable
-        || mission.phase !== 'awaiting_lines'
+        || (
+          mission.phase !== 'awaiting_lines'
+          && (
+            protocolVersion !== AGENT_MISSION_PROTOCOL_M2A
+            || mission.phase !== 'awaiting_catalogue_choice'
+          )
+        )
       )
     )
     || (
@@ -509,4 +604,188 @@ export function decodeAgentMissionDecision(
   return Object.freeze(
     { outcome, effect: Object.freeze({ ...decodedEffect }), mission },
   ) as DecideQuoteAgentMissionOutput;
+}
+
+export function decodeAgentMissionDecision(
+  value: unknown,
+  expectedMissionId: string,
+): DecideQuoteAgentMissionOutput | null {
+  return decodeAgentMissionDecisionForProtocol(
+    value,
+    expectedMissionId,
+    AGENT_MISSION_PROTOCOL_V1,
+  );
+}
+
+export function decodeAgentMissionDecisionV2(
+  value: unknown,
+  expectedMissionId: string,
+): DecideQuoteAgentMissionOutput | null {
+  return decodeAgentMissionDecisionForProtocol(
+    value,
+    expectedMissionId,
+    AGENT_MISSION_PROTOCOL_M2A,
+  );
+}
+
+function decodeAgentMissionLineContinuation(
+  value: unknown,
+): RealtimeAgentMissionLineContinuation | null {
+  const continuation = record(value);
+  if (
+    continuation === null
+    || !exactKeys(continuation, [
+      'outcome',
+      'pendingLineId',
+      'presentedChoiceCount',
+    ])
+    || (
+      continuation.outcome !== 'catalogue_not_found'
+      && continuation.outcome !== 'choices_presented'
+      && continuation.outcome !== 'empty'
+      && continuation.outcome !== 'deferred_to_m2a2'
+      && continuation.outcome !== 'superseded'
+      && continuation.outcome !== 'replayed'
+    )
+    || !Number.isSafeInteger(continuation.presentedChoiceCount)
+    || (continuation.presentedChoiceCount as number) < 0
+    || (continuation.presentedChoiceCount as number) > 6
+  ) {
+    return null;
+  }
+  const hasPendingLine = isCanonicalAgentMissionUuid(continuation.pendingLineId);
+  if (
+    (
+      continuation.outcome === 'empty'
+      || continuation.outcome === 'superseded'
+    )
+      ? continuation.pendingLineId !== null
+        || continuation.presentedChoiceCount !== 0
+      : !hasPendingLine
+  ) {
+    return null;
+  }
+  if (
+    continuation.outcome === 'choices_presented'
+      ? (continuation.presentedChoiceCount as number) < 2
+      : continuation.outcome === 'replayed'
+        ? (
+            continuation.presentedChoiceCount !== 0
+            && (continuation.presentedChoiceCount as number) < 2
+          )
+        : continuation.presentedChoiceCount !== 0
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    outcome: continuation.outcome,
+    pendingLineId: continuation.pendingLineId as string | null,
+    presentedChoiceCount: continuation.presentedChoiceCount as number,
+  });
+}
+
+export function decodeAgentMissionStageQuoteLines(
+  value: unknown,
+  expectedMissionId: string,
+): RealtimeAgentMissionStageQuoteLinesOutput | null {
+  const response = record(value);
+  if (
+    response === null
+    || !exactKeys(response, [
+      'outcome',
+      'mission',
+      'stagedCount',
+      'firstQueueOrdinal',
+      'lastQueueOrdinal',
+      'continuation',
+    ])
+  ) {
+    return null;
+  }
+  const mission = decodeAgentMissionView(response.mission, AGENT_MISSION_PROTOCOL_M2A);
+  const continuation = decodeAgentMissionLineContinuation(response.continuation);
+  if (
+    mission === null
+    || mission.id !== expectedMissionId
+    || continuation === null
+    || (response.outcome !== 'staged' && response.outcome !== 'replayed')
+    || !positiveRevision(response.stagedCount)
+    || (response.stagedCount as number) > 20
+    || !positiveRevision(response.firstQueueOrdinal)
+    || !positiveRevision(response.lastQueueOrdinal)
+    || (
+      (response.lastQueueOrdinal as number)
+      - (response.firstQueueOrdinal as number)
+      + 1
+      !== response.stagedCount
+    )
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    outcome: response.outcome,
+    mission,
+    stagedCount: response.stagedCount,
+    firstQueueOrdinal: response.firstQueueOrdinal,
+    lastQueueOrdinal: response.lastQueueOrdinal,
+    continuation,
+  }) as RealtimeAgentMissionStageQuoteLinesOutput;
+}
+
+export function decodeAgentMissionCatalogueChoice(
+  value: unknown,
+  expectedMissionId: string,
+): RealtimeAgentMissionCatalogueChoiceOutput | null {
+  const response = record(value);
+  if (
+    response === null
+    || !exactKeys(response, [
+      'outcome',
+      'resolution',
+      'invalidationReason',
+      'mission',
+      'continuation',
+    ])
+  ) {
+    return null;
+  }
+  const mission = decodeAgentMissionView(response.mission, AGENT_MISSION_PROTOCOL_M2A);
+  const continuation = decodeAgentMissionLineContinuation(response.continuation);
+  const selectedShape = (
+    (response.resolution === 'free' || response.resolution === 'selected')
+    && response.invalidationReason === null
+  );
+  const invalidatedShape = (
+    response.resolution === null
+    && (
+      response.invalidationReason === 'candidate_unavailable'
+      || response.invalidationReason === 'choice_set_stale'
+    )
+  );
+  if (
+    mission === null
+    || mission.id !== expectedMissionId
+    || continuation === null
+    || (
+      response.outcome !== 'selected'
+      && response.outcome !== 'invalidated'
+      && response.outcome !== 'replayed'
+    )
+    || (
+      response.outcome === 'selected'
+        ? !selectedShape
+        : response.outcome === 'invalidated'
+          ? !invalidatedShape
+          : !selectedShape && !invalidatedShape
+    )
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    outcome: response.outcome,
+    resolution: response.resolution,
+    invalidationReason: response.invalidationReason,
+    mission,
+    continuation,
+  }) as RealtimeAgentMissionCatalogueChoiceOutput;
 }

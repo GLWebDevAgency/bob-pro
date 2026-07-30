@@ -216,7 +216,9 @@ import {
   type HttpAgentMissionRequester,
 } from './http-agent-mission-session';
 import {
+  REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
   REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
+  type RealtimeAgentMissionProtocolVersion,
   type RealtimeAgentMissionSession,
 } from './agent-mission-session';
 
@@ -292,7 +294,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isCanonicalBase64Url256Ticket(
   value: unknown,
-  prefix: 'b2_' | 'r2_' | 'bam1_',
+  prefix: 'b2_' | 'r2_' | 'bam1_' | 'bam2_',
 ): value is string {
   if (typeof value !== 'string' || value.length !== prefix.length + 43 || !value.startsWith(prefix)) {
     return false;
@@ -307,12 +309,16 @@ function isCanonicalBase64Url256Ticket(
 type RealtimeAgentMissionProtocolExpectation =
   | 'omitted'
   | null
-  | typeof REALTIME_AGENT_MISSION_PROTOCOL_VERSION;
+  | RealtimeAgentMissionProtocolVersion;
 
 type DecodedRealtimeAgentMissionBinding =
   | { readonly kind: 'omitted' }
   | { readonly kind: 'disabled' }
-  | { readonly kind: 'accepted'; readonly capability: string };
+  | {
+      readonly kind: 'accepted';
+      readonly protocolVersion: RealtimeAgentMissionProtocolVersion;
+      readonly capability: string;
+    };
 
 interface DecodedRealtimeVoiceCallEnvelope {
   readonly call: RealtimeVoiceCall;
@@ -341,14 +347,18 @@ function decodeRealtimeAgentMissionBinding(
   ) {
     return { kind: 'disabled' };
   }
+  const prefix = expected === REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
+    ? 'bam2_'
+    : 'bam1_';
   if (
-    value.agentMissionProtocolVersion !== REALTIME_AGENT_MISSION_PROTOCOL_VERSION
-    || !isCanonicalBase64Url256Ticket(value.agentMissionCapability, 'bam1_')
+    value.agentMissionProtocolVersion !== expected
+    || !isCanonicalBase64Url256Ticket(value.agentMissionCapability, prefix)
   ) {
     return null;
   }
   return {
     kind: 'accepted',
+    protocolVersion: expected,
     capability: value.agentMissionCapability,
   };
 }
@@ -359,6 +369,7 @@ function attachRealtimeAgentMissionSession(
   createSession: (
     realtimeSessionId: string,
     capability: string,
+    protocolVersion: RealtimeAgentMissionProtocolVersion,
   ) => RealtimeAgentMissionSession,
 ): RealtimeVoiceCall {
   if (binding.kind === 'omitted') return Object.freeze(call);
@@ -368,7 +379,11 @@ function attachRealtimeAgentMissionSession(
     writable: false,
     value: binding.kind === 'disabled'
       ? null
-      : createSession(call.sessionHandle, binding.capability),
+      : createSession(
+          call.sessionHandle,
+          binding.capability,
+          binding.protocolVersion,
+        ),
   });
   return Object.freeze(call);
 }
@@ -2568,6 +2583,7 @@ export class HttpBobClient implements BobClient {
       if (
         requested !== null
         && requested !== REALTIME_AGENT_MISSION_PROTOCOL_VERSION
+        && requested !== REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
       ) {
         return invalidRealtimeSpeechInput<RealtimeVoiceCall>(
           'agentMissionProtocolVersion',
@@ -2622,7 +2638,7 @@ export class HttpBobClient implements BobClient {
     );
     if (!bootstrap.ok) {
       if (
-        requestedAgentMissionProtocol === REALTIME_AGENT_MISSION_PROTOCOL_VERSION
+        typeof requestedAgentMissionProtocol === 'number'
         && typeof input.sessionHandle === 'string'
       ) {
         await this.terminateRealtimeBootstrapSession(input.sessionHandle);
@@ -2692,12 +2708,20 @@ export class HttpBobClient implements BobClient {
         value: attachRealtimeAgentMissionSession(
           call,
           agentMissionBinding,
-          (realtimeSessionId, capability) => (
-            createHttpRealtimeAgentMissionSession({
-              realtimeSessionId,
-              capability,
-              request,
-            })
+          (realtimeSessionId, capability, protocolVersion) => (
+            protocolVersion === REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
+              ? createHttpRealtimeAgentMissionSession({
+                  realtimeSessionId,
+                  capability,
+                  protocolVersion,
+                  request,
+                })
+              : createHttpRealtimeAgentMissionSession({
+                  realtimeSessionId,
+                  capability,
+                  protocolVersion,
+                  request,
+                })
           ),
         ),
       };

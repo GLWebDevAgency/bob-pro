@@ -13,6 +13,10 @@ import {
   Query,
   Res,
 } from '@nestjs/common';
+import {
+  normalizeAgentMissionQuoteLineCandidate,
+  type AgentMissionQuoteLineCandidateV1,
+} from '@bob/core';
 import { unwrap } from '../http/result';
 import { WithoutTenantPersistenceTransaction } from '../persistence/tenant-persistence.interceptor';
 import {
@@ -48,6 +52,23 @@ function exactBody(value: unknown, fields: readonly string[]): Record<string, un
     if (!Object.hasOwn(body, field)) invalidBody(field, 'Champ requis.');
   }
   return body;
+}
+
+function quoteLineCandidates(
+  value: unknown,
+  field: 'lines' | 'additionalLines',
+): readonly AgentMissionQuoteLineCandidateV1[] {
+  if (!Array.isArray(value)) invalidBody(field, 'Liste de lignes requise.');
+  for (let index = 0; index < value.length; index += 1) {
+    const parsed = normalizeAgentMissionQuoteLineCandidate(value[index]);
+    if (!parsed.ok) {
+      invalidBody(
+        `${field}[${index}].${parsed.error.field}`,
+        `Ligne invalide (${parsed.error.reason}).`,
+      );
+    }
+  }
+  return value as readonly AgentMissionQuoteLineCandidateV1[];
 }
 
 function decisionBody(value: unknown):
@@ -119,6 +140,76 @@ function decisionBody(value: unknown):
     };
   }
   invalidBody('action', 'Action de décision non prise en charge.');
+}
+
+function stageLinesBody(value: unknown): {
+  readonly commandId: string;
+  readonly expectedMissionRevision: number;
+  readonly expectedDraftSessionId: string;
+  readonly expectedDraftSlotRevision: number;
+  readonly expectedDraftContentRevision: number;
+  readonly lines: readonly AgentMissionQuoteLineCandidateV1[];
+} {
+  const body = exactBody(value, [
+    'commandId',
+    'expectedMissionRevision',
+    'expectedDraftSessionId',
+    'expectedDraftSlotRevision',
+    'expectedDraftContentRevision',
+    'lines',
+  ]);
+  return {
+    commandId: body.commandId as string,
+    expectedMissionRevision: body.expectedMissionRevision as number,
+    expectedDraftSessionId: body.expectedDraftSessionId as string,
+    expectedDraftSlotRevision: body.expectedDraftSlotRevision as number,
+    expectedDraftContentRevision: body.expectedDraftContentRevision as number,
+    lines: quoteLineCandidates(body.lines, 'lines'),
+  };
+}
+
+function catalogueChoiceBody(value: unknown): {
+  readonly commandId: string;
+  readonly expectedMissionRevision: number;
+  readonly expectedDraftSessionId: string;
+  readonly expectedDraftSlotRevision: number;
+  readonly expectedDraftContentRevision: number;
+  readonly decisionId: string;
+  readonly choiceSetRevision: number;
+  readonly pendingLineId: string;
+  readonly expectedWorkRevision: number;
+  readonly choiceId: string;
+  readonly additionalLines: readonly AgentMissionQuoteLineCandidateV1[];
+} {
+  const body = exactBody(value, [
+    'commandId',
+    'expectedMissionRevision',
+    'expectedDraftSessionId',
+    'expectedDraftSlotRevision',
+    'expectedDraftContentRevision',
+    'decisionId',
+    'choiceSetRevision',
+    'pendingLineId',
+    'expectedWorkRevision',
+    'choiceId',
+    'additionalLines',
+  ]);
+  return {
+    commandId: body.commandId as string,
+    expectedMissionRevision: body.expectedMissionRevision as number,
+    expectedDraftSessionId: body.expectedDraftSessionId as string,
+    expectedDraftSlotRevision: body.expectedDraftSlotRevision as number,
+    expectedDraftContentRevision: body.expectedDraftContentRevision as number,
+    decisionId: body.decisionId as string,
+    choiceSetRevision: body.choiceSetRevision as number,
+    pendingLineId: body.pendingLineId as string,
+    expectedWorkRevision: body.expectedWorkRevision as number,
+    choiceId: body.choiceId as string,
+    additionalLines: quoteLineCandidates(
+      body.additionalLines,
+      'additionalLines',
+    ),
+  };
 }
 
 function cancellationBody(value: unknown): {
@@ -267,10 +358,7 @@ export class AgentMissionController {
     @Body() value: unknown,
     @Headers('x-bob-agent-mission-capability') capability: string | undefined,
   ) {
-    const authorization = this.requireAuthority(
-      'decide_quote_creation',
-      capability,
-    );
+    const authorization = this.requireAuthority('decide_quote_creation', capability);
     const body = decisionBody(value);
     return unwrap(await this.missions.decide({
       authorization,
@@ -291,6 +379,58 @@ export class AgentMissionController {
             action: body.action,
             customerId: body.customerId,
           },
+    }));
+  }
+
+  @Post(':missionId/quote-lines')
+  @HttpCode(HttpStatus.OK)
+  @Header('Cache-Control', 'private, no-store')
+  async stageLines(
+    @Param('missionId') missionId: string,
+    @Body() value: unknown,
+    @Headers('x-bob-agent-mission-capability') capability: string | undefined,
+  ) {
+    const authorization = this.requireAuthority('stage_quote_lines', capability);
+    const body = stageLinesBody(value);
+    return unwrap(await this.missions.stageLines({
+      authorization,
+      missionId,
+      commandId: body.commandId,
+      expectedMissionRevision: body.expectedMissionRevision,
+      expectedDraftSessionId: body.expectedDraftSessionId,
+      expectedDraftSlotRevision: body.expectedDraftSlotRevision,
+      expectedDraftContentRevision: body.expectedDraftContentRevision,
+      lines: body.lines,
+    }));
+  }
+
+  @Post(':missionId/catalogue-choices')
+  @HttpCode(HttpStatus.OK)
+  @Header('Cache-Control', 'private, no-store')
+  async decideCatalogueChoice(
+    @Param('missionId') missionId: string,
+    @Body() value: unknown,
+    @Headers('x-bob-agent-mission-capability') capability: string | undefined,
+  ) {
+    const authorization = this.requireAuthority(
+      'decide_catalogue_choice',
+      capability,
+    );
+    const body = catalogueChoiceBody(value);
+    return unwrap(await this.missions.decideCatalogueChoice({
+      authorization,
+      missionId,
+      commandId: body.commandId,
+      expectedMissionRevision: body.expectedMissionRevision,
+      expectedDraftSessionId: body.expectedDraftSessionId,
+      expectedDraftSlotRevision: body.expectedDraftSlotRevision,
+      expectedDraftContentRevision: body.expectedDraftContentRevision,
+      decisionId: body.decisionId,
+      choiceSetRevision: body.choiceSetRevision,
+      pendingLineId: body.pendingLineId,
+      expectedWorkRevision: body.expectedWorkRevision,
+      choiceId: body.choiceId,
+      additionalLines: body.additionalLines,
     }));
   }
 }

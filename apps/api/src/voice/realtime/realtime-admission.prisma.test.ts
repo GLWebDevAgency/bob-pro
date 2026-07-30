@@ -1,7 +1,10 @@
 import type { Prisma } from '@prisma/client';
 import { describe, expect, it, vi } from 'vitest';
 import { PrismaService } from '../../persistence/prisma/prisma.service';
-import type { RealtimeAdmissionPolicy } from './realtime-admission';
+import type {
+  RealtimeAdmissionPolicy,
+  RealtimeAdmissionReserveInput,
+} from './realtime-admission';
 import { PrismaRealtimeAdmission } from './realtime-admission.prisma';
 
 const COMPANY = 'company-1';
@@ -69,12 +72,13 @@ function receiptLease(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function receiptInput() {
+function receiptInput(protocolVersion: 1 | 2 = 1) {
   return {
     companyId: COMPANY,
     subjectHashCandidates: [SUBJECT, 'b'.repeat(64)],
     principalBindingHash: 'd'.repeat(64),
     sessionId: SESSION,
+    protocolVersion,
     capabilityHash: CAPABILITY_HASH,
   };
 }
@@ -138,6 +142,7 @@ function reserveHarness(options: {
   cancelled?: boolean;
   flagAccepted?: boolean;
   insertedCapabilityHash?: string | null;
+  insertedProtocolVersion?: 1 | 2;
 } = {}) {
   const now = new Date('2026-07-26T12:00:00.000Z');
   const queryRaw = vi.fn(async (strings: readonly string[]) => {
@@ -175,7 +180,7 @@ function reserveHarness(options: {
       return [{
         leaseExpiresAt: new Date(now.getTime() + 15_000),
         hardExpiresAt: new Date(now.getTime() + 60_000),
-        agentMissionProtocolVersion: 1,
+        agentMissionProtocolVersion: options.insertedProtocolVersion ?? 1,
         agentMissionProtocolBoundAt: now,
         agentMissionCapabilityHash: capabilityHash,
         agentMissionReleaseFlagVersion: 7,
@@ -203,23 +208,38 @@ function reserveHarness(options: {
   };
 }
 
-function missionReserveInput() {
-  return {
+function missionReserveInput(protocolVersion: 1 | 2 = 1): RealtimeAdmissionReserveInput {
+  const common = {
     companyId: COMPANY,
     subjectHash: SUBJECT,
     subjectHashCandidates: [SUBJECT, 'b'.repeat(64)],
     principalBindingHash: 'd'.repeat(64),
-    agentMissionBinding: {
-      protocolVersion: 1 as const,
-      capabilityHash: 'c'.repeat(64),
-      releaseFlagKey: 'bob.agent_missions.quote.v1' as const,
-      releaseEnvironment: 'staging' as const,
-      releaseFlagVersion: 7,
-      principalBindingHash: 'd'.repeat(64),
-    },
     sessionId: SESSION,
     maxSessionSeconds: 60,
-  };
+  } as const;
+  const bindingCommon = {
+    capabilityHash: 'c'.repeat(64),
+    releaseEnvironment: 'staging' as const,
+    releaseFlagVersion: 7,
+    principalBindingHash: 'd'.repeat(64),
+  } as const;
+  return protocolVersion === 1
+    ? {
+        ...common,
+        agentMissionBinding: {
+          ...bindingCommon,
+          protocolVersion: 1,
+          releaseFlagKey: 'bob.agent_missions.quote.v1',
+        },
+      }
+    : {
+        ...common,
+        agentMissionBinding: {
+          ...bindingCommon,
+          protocolVersion: 2,
+          releaseFlagKey: 'bob.agent_missions.quote.m2a',
+        },
+      };
 }
 
 describe('PrismaRealtimeAdmission — preuve hard-expired', () => {
@@ -397,6 +417,40 @@ describe('PrismaRealtimeAdmission — reçu durable AgentMission', () => {
     );
   });
 
+  it('acquitte V2 avec le même protocole stocké et refuse une preuve V1 croisée', async () => {
+    const now = new Date('2026-07-26T12:00:01.000Z');
+    const acknowledgedAt = new Date('2026-07-26T12:00:01.001Z');
+    const leaseExpiresAt = new Date('2026-07-26T12:00:31.000Z');
+    const acknowledged = harness([
+      [receiptLease({ agentMissionProtocolVersion: 2 })],
+      [{ now }],
+      [{ acknowledgedAt, leaseExpiresAt }],
+    ]);
+
+    await expect(
+      acknowledged.value.acknowledgeAgentMissionBootstrap(receiptInput(2)),
+    ).resolves.toEqual({
+      ok: true,
+      status: 'acknowledged',
+      acknowledgedAt: acknowledgedAt.toISOString(),
+      leaseExpiresAt: leaseExpiresAt.toISOString(),
+    });
+    expect(JSON.stringify(acknowledged.queryRaw.mock.calls)).not.toContain('bam2_');
+
+    const crossed = harness([
+      [receiptLease({ agentMissionProtocolVersion: 2 })],
+      [{ now }],
+    ]);
+    await expect(
+      crossed.value.acknowledgeAgentMissionBootstrap(receiptInput(1)),
+    ).resolves.toEqual({ ok: false, reason: 'state' });
+    expect(
+      crossed.queryRaw.mock.calls
+        .map((_, index) => sqlAt(crossed.queryRaw, index))
+        .join('\n'),
+    ).not.toContain('UPDATE realtime_session_leases');
+  });
+
   it('rejoue sans UPDATE et sans prolonger une lease déjà acquittée', async () => {
     const acknowledgedAt = new Date('2026-07-26T12:00:01.001Z');
     const leaseExpiresAt = new Date('2026-07-26T12:00:31.000Z');
@@ -484,7 +538,7 @@ describe('PrismaRealtimeAdmission — reçu durable AgentMission', () => {
       leaseExpiresAt: shortDeadline.toISOString(),
     });
     expect(sqlAt(activated.queryRaw, 0)).toContain(
-      'WHEN "agentMissionProtocolVersion" = 1 AND "agentMissionBootstrapAcknowledgedAt" IS NULL',
+      'WHEN "agentMissionProtocolVersion" IS NOT NULL AND "agentMissionBootstrapAcknowledgedAt" IS NULL',
     );
 
     const renewed = harness([[], [{ leaseExpiresAt: shortDeadline }]]);
@@ -632,6 +686,23 @@ describe('PrismaRealtimeAdmission — capability AgentMission atomique', () => {
     expect(JSON.stringify(h.queryRaw.mock.calls)).not.toContain('bam1_');
   });
 
+  it('persiste et restitue le quartet V2 sans le rabattre sur V1', async () => {
+    const h = reserveHarness({ insertedProtocolVersion: 2 });
+
+    await expect(h.value.reserve(missionReserveInput(2))).resolves.toMatchObject({
+      allowed: true,
+      agentMissionProof: {
+        protocolVersion: 2,
+        capabilityHash: 'c'.repeat(64),
+        releaseFlagVersion: 7,
+      },
+    });
+
+    const serializedCalls = JSON.stringify(h.queryRaw.mock.calls);
+    expect(serializedCalls).toContain('bob.agent_missions.quote.m2a');
+    expect(serializedCalls).not.toContain('bam2_');
+  });
+
   it('n’appelle ni capacité ni INSERT lorsque la revalidation du flag refuse', async () => {
     const h = reserveHarness({ flagAccepted: false });
 
@@ -651,6 +722,8 @@ describe('PrismaRealtimeAdmission — capability AgentMission atomique', () => {
   it('échoue fermé avant SQL sur une identité ou une preuve partielle', async () => {
     const h = reserveHarness();
     const valid = missionReserveInput();
+    const validBinding = valid.agentMissionBinding;
+    if (validBinding === null) throw new Error('AgentMission test binding missing.');
 
     for (const invalid of [
       { ...valid, subjectHashCandidates: [] },
@@ -660,7 +733,7 @@ describe('PrismaRealtimeAdmission — capability AgentMission atomique', () => {
       {
         ...valid,
         agentMissionBinding: {
-          ...valid.agentMissionBinding,
+          ...validBinding,
           principalBindingHash: 'e'.repeat(64),
         },
       },
@@ -673,6 +746,31 @@ describe('PrismaRealtimeAdmission — capability AgentMission atomique', () => {
     }
     expect(h.withIsolatedTenant).not.toHaveBeenCalled();
   });
+
+  it.each([
+    [1, 'bob.agent_missions.quote.m2a'],
+    [2, 'bob.agent_missions.quote.v1'],
+  ] as const)(
+    'refuse avant SQL le protocole %s lié au mauvais flag %s',
+    async (protocolVersion, releaseFlagKey) => {
+      const h = reserveHarness();
+      const valid = missionReserveInput(protocolVersion);
+
+      const mismatched = {
+        ...valid,
+        agentMissionBinding: {
+          ...valid.agentMissionBinding,
+          releaseFlagKey,
+        },
+      } as unknown as RealtimeAdmissionReserveInput;
+      await expect(h.value.reserve(mismatched)).resolves.toEqual({
+        allowed: false,
+        denial: 'unavailable',
+        retryAt: null,
+      });
+      expect(h.withIsolatedTenant).not.toHaveBeenCalled();
+    },
+  );
 
   it('refuse une preuve INSERT discordante sans publier de résultat autorisé', async () => {
     const h = reserveHarness({ insertedCapabilityHash: 'e'.repeat(64) });

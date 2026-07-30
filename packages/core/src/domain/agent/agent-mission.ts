@@ -13,6 +13,11 @@ import {
 
 export const AGENT_MISSION_KIND = 'quote_creation' as const;
 export type AgentMissionKind = typeof AGENT_MISSION_KIND;
+export const AGENT_MISSION_PROTOCOL_VERSIONS = [1, 2] as const;
+export type AgentMissionProtocolVersion =
+  (typeof AGENT_MISSION_PROTOCOL_VERSIONS)[number];
+export const AGENT_MISSION_PROTOCOL_V1 = AGENT_MISSION_PROTOCOL_VERSIONS[0];
+export const AGENT_MISSION_PROTOCOL_M2A = AGENT_MISSION_PROTOCOL_VERSIONS[1];
 
 /**
  * États réellement persistables en M1. `completed` reste un état cible de la roadmap M2, mais
@@ -29,6 +34,7 @@ export const QUOTE_CREATION_MISSION_PHASES = [
   'awaiting_customer',
   'awaiting_customer_choice',
   'awaiting_lines',
+  'awaiting_catalogue_choice',
 ] as const;
 
 export type QuoteCreationMissionPhase = (typeof QUOTE_CREATION_MISSION_PHASES)[number];
@@ -39,6 +45,7 @@ export const AGENT_MISSION_IDLE_TTL_MS = 24 * 60 * 60 * 1_000;
 export const AGENT_MISSION_HARD_TTL_MS = 7 * AGENT_MISSION_IDLE_TTL_MS;
 export const AGENT_MISSION_RETENTION_MS = AGENT_MISSION_EVENT_RETENTION_MS;
 export const AGENT_MISSION_MAX_CUSTOMER_CHOICES = 5;
+export const AGENT_MISSION_MAX_CATALOGUE_CHOICES = 5;
 export const AGENT_MISSION_INT4_MAX = 2_147_483_647;
 export const AGENT_MISSION_MAX_PAYLOAD_BYTES = 64 * 1024;
 export const QUOTE_MISSION_LEGACY_PAYLOAD_KEYS = [
@@ -60,6 +67,7 @@ export const QUOTE_MISSION_DECISION_KINDS = [
   'existing_draft',
   'confirm_draft_discard',
   'customer',
+  'catalogue',
 ] as const;
 export const QUOTE_MISSION_DRAFT_DECISION_KEYS = [
   'kind',
@@ -80,6 +88,22 @@ export const QUOTE_MISSION_CUSTOMER_DECISION_KEYS = [
 ] as const;
 export const QUOTE_MISSION_ACTION_CHOICE_KEYS = ['choiceId', 'action'] as const;
 export const QUOTE_MISSION_CUSTOMER_CANDIDATE_KEYS = ['choiceId', 'customerId'] as const;
+export const QUOTE_MISSION_CATALOGUE_DECISION_KEYS = [
+  'kind',
+  'decisionId',
+  'choiceSetRevision',
+  'pendingLineId',
+  'expectedDraft',
+  'expectedWorkRevision',
+  'candidates',
+  'freeLineChoiceId',
+  'choiceSetHash',
+] as const;
+export const QUOTE_MISSION_CATALOGUE_CANDIDATE_KEYS = [
+  'choiceId',
+  'catalogueItemId',
+  'expectedCatalogueRevision',
+] as const;
 export const QUOTE_MISSION_STAGED_CUSTOMER_RESOLUTION_KINDS = [
   'none',
   'too_many',
@@ -159,6 +183,22 @@ export interface CustomerDecisionV1 {
   readonly choiceSetHash: string;
 }
 
+export interface CatalogueDecisionV1 {
+  readonly kind: 'catalogue';
+  readonly decisionId: string;
+  readonly choiceSetRevision: number;
+  readonly pendingLineId: string;
+  readonly expectedDraft: QuoteMissionDraftReferenceV1;
+  readonly expectedWorkRevision: number;
+  readonly candidates: readonly {
+    readonly choiceId: string;
+    readonly catalogueItemId: string;
+    readonly expectedCatalogueRevision: number;
+  }[];
+  readonly freeLineChoiceId: string;
+  readonly choiceSetHash: string;
+}
+
 export type QuoteMissionStagedCustomerResolutionV1 =
   | { readonly kind: 'none' }
   | { readonly kind: 'too_many' }
@@ -175,7 +215,8 @@ export type QuoteMissionStagedCustomerResolutionV1 =
 export type QuoteMissionDecisionV1 =
   | ExistingDraftDecisionV1
   | ConfirmDraftDiscardDecisionV1
-  | CustomerDecisionV1;
+  | CustomerDecisionV1
+  | CatalogueDecisionV1;
 
 export interface QuoteCreationMissionPayloadV1 {
   readonly schema: typeof AGENT_MISSION_PAYLOAD_SCHEMA;
@@ -202,6 +243,7 @@ export interface AgentMissionSnapshot {
   readonly id: string;
   readonly companyId: string;
   readonly ownerUserId: string;
+  readonly protocolVersion: AgentMissionProtocolVersion;
   readonly kind: AgentMissionKind;
   readonly status: AgentMissionStatus;
   readonly phase: QuoteCreationMissionPhase;
@@ -257,7 +299,10 @@ export type AgentMissionError =
         | 'choice_set_revision'
         | 'choice_id'
         | 'draft_reference'
-        | 'customer_reference';
+        | 'customer_reference'
+        | 'pending_line'
+        | 'work_revision'
+        | 'catalogue_revision';
     }
   | { readonly code: 'agent_mission_expired' }
   | { readonly code: 'agent_mission_clock_regression' };
@@ -277,6 +322,11 @@ export type AgentMissionAction =
   | 'present_customer_choices'
   | 'invalidate_customer_decision'
   | 'select_customer'
+  | 'stage_line_candidates'
+  | 'present_catalogue_choices'
+  | 'record_catalogue_not_found'
+  | 'select_catalogue_choice'
+  | 'invalidate_catalogue_decision'
   | 'cancel'
   | 'expire';
 
@@ -301,6 +351,8 @@ export type StartQuoteAgentMissionInput = {
   readonly id: string;
   readonly companyId: string;
   readonly ownerUserId: string;
+  /** Omission writer N-1 : normalisée strictement en V1 avant persistance. */
+  readonly protocolVersion?: AgentMissionProtocolVersion;
   readonly createdAt: Instant;
   readonly stagedCustomerResolution: QuoteMissionStagedCustomerResolutionV1 | null;
 } & (
@@ -321,18 +373,21 @@ type ChoiceSetItem =
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const SHA256 = /^[0-9a-f]{64}$/u;
+const CATALOGUE_ITEM_ID = /^[A-Za-z0-9-]{1,128}$/u;
 const MAX_IDENTIFIER_LENGTH = 200;
 const MAX_SCREEN_INSTANCE_LENGTH = 160;
 const ACTIVE_PHASES_REQUIRING_BINDING = new Set<QuoteCreationMissionPhase>([
   'awaiting_customer',
   'awaiting_customer_choice',
   'awaiting_lines',
+  'awaiting_catalogue_choice',
 ]);
 const ACKNOWLEDGEABLE_PHASES = new Set<QuoteCreationMissionPhase>([
   'awaiting_quote_screen',
   'awaiting_customer',
   'awaiting_customer_choice',
   'awaiting_lines',
+  'awaiting_catalogue_choice',
 ]);
 const CUSTOMER_RESOLUTION_STAGEABLE_PHASES = new Set<QuoteCreationMissionPhase>([
   'awaiting_draft_decision',
@@ -428,6 +483,15 @@ function cloneDecision(decision: QuoteMissionDecisionV1): QuoteMissionDecisionV1
     return Object.freeze({
       ...decision,
       candidates: Object.freeze(decision.candidates.map((candidate) => Object.freeze({ ...candidate }))),
+    });
+  }
+  if (decision.kind === 'catalogue') {
+    return Object.freeze({
+      ...decision,
+      expectedDraft: cloneDraft(decision.expectedDraft),
+      candidates: Object.freeze(
+        decision.candidates.map((candidate) => Object.freeze({ ...candidate })),
+      ),
     });
   }
   if (decision.kind === 'existing_draft') {
@@ -661,6 +725,115 @@ export function computeQuoteMissionChoiceSetHash(input: {
   ])));
 }
 
+/**
+ * Hash M2-A-1 dédié : il scelle uniquement les identifiants et révisions autoritaires.
+ * Aucun libellé, prix, quantité ou taux à faible entropie n'entre dans ce digest non secret.
+ */
+export function computeQuoteMissionCatalogueChoiceSetHash(input: {
+  readonly missionId: string;
+  readonly choiceSetRevision: number;
+  readonly decisionId: string;
+  readonly pendingLineId: string;
+  readonly expectedDraft: QuoteMissionDraftReferenceV1;
+  readonly expectedWorkRevision: number;
+  readonly candidates: readonly {
+    readonly choiceId: string;
+    readonly catalogueItemId: string;
+    readonly expectedCatalogueRevision: number;
+  }[];
+  readonly freeLineChoiceId: string;
+}): AgentMissionResult<string> {
+  if (!isPlainRecord(input) || !exactKeys(input, [
+    'missionId',
+    'choiceSetRevision',
+    'decisionId',
+    'pendingLineId',
+    'expectedDraft',
+    'expectedWorkRevision',
+    'candidates',
+    'freeLineChoiceId',
+  ])) {
+    return invalid('$', 'invalid_shape');
+  }
+  if (!isCanonicalUuid(input.missionId)) return invalid('missionId', 'invalid_uuid');
+  if (!isRevision(input.choiceSetRevision, false)) {
+    return invalid('choiceSetRevision', 'invalid_revision');
+  }
+  if (!isCanonicalUuid(input.decisionId)) return invalid('decisionId', 'invalid_uuid');
+  if (!isCanonicalUuid(input.pendingLineId)) return invalid('pendingLineId', 'invalid_uuid');
+  const draft = parseDraft(input.expectedDraft, 'expectedDraft');
+  if (!draft.ok) return draft;
+  if (!isRevision(input.expectedWorkRevision, false)) {
+    return invalid('expectedWorkRevision', 'invalid_revision');
+  }
+  if (
+    !Array.isArray(input.candidates)
+    || input.candidates.length < 1
+    || input.candidates.length > AGENT_MISSION_MAX_CATALOGUE_CHOICES
+  ) {
+    return invalid('candidates', 'invalid_value');
+  }
+  if (!isCanonicalUuid(input.freeLineChoiceId)) {
+    return invalid('freeLineChoiceId', 'invalid_uuid');
+  }
+
+  const choiceIds = new Set<string>([input.freeLineChoiceId]);
+  const catalogueItemIds = new Set<string>();
+  const candidates: Array<readonly [string, string, number]> = [];
+  for (let index = 0; index < input.candidates.length; index += 1) {
+    const candidate = input.candidates[index];
+    if (
+      !isPlainRecord(candidate)
+      || !exactKeys(candidate, QUOTE_MISSION_CATALOGUE_CANDIDATE_KEYS)
+    ) {
+      return invalid(`candidates[${index}]`, 'invalid_shape');
+    }
+    if (!isCanonicalUuid(candidate['choiceId'])) {
+      return invalid(`candidates[${index}].choiceId`, 'invalid_uuid');
+    }
+    if (choiceIds.has(candidate['choiceId'])) {
+      return invalid(`candidates[${index}].choiceId`, 'invalid_value');
+    }
+    if (
+      typeof candidate['catalogueItemId'] !== 'string'
+      || !CATALOGUE_ITEM_ID.test(candidate['catalogueItemId'])
+    ) {
+      return invalid(`candidates[${index}].catalogueItemId`, 'invalid_identifier');
+    }
+    if (catalogueItemIds.has(candidate['catalogueItemId'])) {
+      return invalid(`candidates[${index}].catalogueItemId`, 'invalid_value');
+    }
+    if (!isRevision(candidate['expectedCatalogueRevision'], false)) {
+      return invalid(
+        `candidates[${index}].expectedCatalogueRevision`,
+        'invalid_revision',
+      );
+    }
+    choiceIds.add(candidate['choiceId']);
+    catalogueItemIds.add(candidate['catalogueItemId']);
+    candidates.push([
+      candidate['choiceId'],
+      candidate['catalogueItemId'],
+      candidate['expectedCatalogueRevision'],
+    ]);
+  }
+
+  return ok(sha256Hex(JSON.stringify([
+    'bob.agent-mission.catalogue-choice-set.v1',
+    input.missionId,
+    input.choiceSetRevision,
+    input.decisionId,
+    [
+      draft.value.sessionId,
+      draft.value.slotRevision,
+      draft.value.contentRevision,
+    ],
+    [input.pendingLineId, input.expectedWorkRevision],
+    candidates,
+    input.freeLineChoiceId,
+  ])));
+}
+
 function createExistingDraftDecision(
   missionId: string,
   revision: number,
@@ -727,6 +900,35 @@ function createConfirmDraftDiscardDecision(
     choices,
     choiceSetHash: hash.value,
   }) as ConfirmDraftDiscardDecisionV1);
+}
+
+function createCatalogueDecision(
+  missionId: string,
+  choiceSetRevision: number,
+  input: Omit<CatalogueDecisionV1, 'kind' | 'choiceSetRevision' | 'choiceSetHash'>,
+): AgentMissionResult<CatalogueDecisionV1> {
+  if (!isPlainRecord(input) || !exactKeys(input, [
+    'decisionId',
+    'pendingLineId',
+    'expectedDraft',
+    'expectedWorkRevision',
+    'candidates',
+    'freeLineChoiceId',
+  ])) {
+    return invalid('decision', 'invalid_shape');
+  }
+  const hash = computeQuoteMissionCatalogueChoiceSetHash({
+    missionId,
+    choiceSetRevision,
+    ...input,
+  });
+  if (!hash.ok) return hash;
+  return ok(cloneDecision({
+    kind: 'catalogue',
+    choiceSetRevision,
+    ...input,
+    choiceSetHash: hash.value,
+  }) as CatalogueDecisionV1);
 }
 
 function parseDecision(
@@ -873,6 +1075,25 @@ function parseDecision(
     }));
   }
 
+  if (value['kind'] === 'catalogue') {
+    if (!exactKeys(value, QUOTE_MISSION_CATALOGUE_DECISION_KEYS)) {
+      return invalid('payload.decision', 'invalid_shape');
+    }
+    const expected = createCatalogueDecision(missionId, choiceSetRevision, {
+      decisionId: value['decisionId'],
+      pendingLineId: value['pendingLineId'] as string,
+      expectedDraft: value['expectedDraft'] as QuoteMissionDraftReferenceV1,
+      expectedWorkRevision: value['expectedWorkRevision'] as number,
+      candidates: value['candidates'] as CatalogueDecisionV1['candidates'],
+      freeLineChoiceId: value['freeLineChoiceId'] as string,
+    });
+    if (!expected.ok) return expected;
+    if (expected.value.choiceSetHash !== value['choiceSetHash']) {
+      return invalid('payload.decision.choiceSetHash', 'inconsistent_state');
+    }
+    return expected;
+  }
+
   return invalid('payload.decision.kind', 'invalid_value');
 }
 
@@ -951,6 +1172,7 @@ function validateStateCoherence(snapshot: AgentMissionSnapshot): AgentMissionRes
     awaiting_draft_decision: 'existing_draft',
     awaiting_draft_discard_confirmation: 'confirm_draft_discard',
     awaiting_customer_choice: 'customer',
+    awaiting_catalogue_choice: 'catalogue',
   };
   const expected = expectedDecisionKind[phase];
   if (expected === undefined ? payload.decision !== null : payload.decision?.kind !== expected) {
@@ -969,9 +1191,20 @@ function validateStateCoherence(snapshot: AgentMissionSnapshot): AgentMissionRes
 
   if (
     payload.stagedCustomerResolution !== null
-    && (phase === 'awaiting_customer_choice' || phase === 'awaiting_lines')
+    && (
+      phase === 'awaiting_customer_choice'
+      || phase === 'awaiting_lines'
+      || phase === 'awaiting_catalogue_choice'
+    )
   ) {
     return invalid('payload.stagedCustomerResolution', 'inconsistent_state');
+  }
+
+  if (
+    (phase === 'awaiting_catalogue_choice' || payload.decision?.kind === 'catalogue')
+    && snapshot.protocolVersion !== AGENT_MISSION_PROTOCOL_M2A
+  ) {
+    return invalid('protocolVersion', 'inconsistent_state');
   }
 
   return ok(undefined);
@@ -982,6 +1215,7 @@ function parseSnapshot(value: unknown): AgentMissionResult<AgentMissionSnapshot>
     'id',
     'companyId',
     'ownerUserId',
+    'protocolVersion',
     'kind',
     'status',
     'phase',
@@ -1001,6 +1235,10 @@ function parseSnapshot(value: unknown): AgentMissionResult<AgentMissionSnapshot>
   if (!isCanonicalUuid(value['id'])) return invalid('id', 'invalid_uuid');
   if (!isCanonicalIdentifier(value['companyId'])) return invalid('companyId', 'invalid_identifier');
   if (!isCanonicalIdentifier(value['ownerUserId'])) return invalid('ownerUserId', 'invalid_identifier');
+  if (
+    value['protocolVersion'] !== AGENT_MISSION_PROTOCOL_V1
+    && value['protocolVersion'] !== AGENT_MISSION_PROTOCOL_M2A
+  ) return invalid('protocolVersion', 'invalid_value');
   if (value['kind'] !== AGENT_MISSION_KIND) return invalid('kind', 'invalid_value');
   if (!AGENT_MISSION_STATUSES.includes(value['status'] as AgentMissionStatus)) return invalid('status', 'invalid_value');
   if (!QUOTE_CREATION_MISSION_PHASES.includes(value['phase'] as QuoteCreationMissionPhase)) {
@@ -1064,6 +1302,7 @@ function parseSnapshot(value: unknown): AgentMissionResult<AgentMissionSnapshot>
     id: value['id'],
     companyId: value['companyId'],
     ownerUserId: value['ownerUserId'],
+    protocolVersion: value['protocolVersion'],
     kind: AGENT_MISSION_KIND,
     status,
     phase: value['phase'] as QuoteCreationMissionPhase,
@@ -1114,6 +1353,10 @@ export class AgentMission {
     if (!isOneOf(AGENT_MISSION_START_OUTCOMES, startOutcome)) {
       return invalid('startOutcome', 'invalid_value');
     }
+    const hasProtocolVersion = Object.hasOwn(input, 'protocolVersion');
+    const protocolKey = hasProtocolVersion
+      ? ['protocolVersion'] as const
+      : [] as const;
     const shape = requireExactInput(
       input,
       startOutcome === 'draft_conflict'
@@ -1121,6 +1364,7 @@ export class AgentMission {
             'id',
             'companyId',
             'ownerUserId',
+            ...protocolKey,
             'createdAt',
             'stagedCustomerResolution',
             'startOutcome',
@@ -1131,6 +1375,7 @@ export class AgentMission {
             'id',
             'companyId',
             'ownerUserId',
+            ...protocolKey,
             'createdAt',
             'stagedCustomerResolution',
             'startOutcome',
@@ -1141,6 +1386,13 @@ export class AgentMission {
     if (!isCanonicalUuid(input.id)) return invalid('id', 'invalid_uuid');
     if (!isCanonicalIdentifier(input.companyId)) return invalid('companyId', 'invalid_identifier');
     if (!isCanonicalIdentifier(input.ownerUserId)) return invalid('ownerUserId', 'invalid_identifier');
+    const protocolVersion = hasProtocolVersion
+      ? input.protocolVersion
+      : AGENT_MISSION_PROTOCOL_V1;
+    if (
+      protocolVersion !== AGENT_MISSION_PROTOCOL_V1
+      && protocolVersion !== AGENT_MISSION_PROTOCOL_M2A
+    ) return invalid('protocolVersion', 'invalid_value');
     const createdEpoch = instantEpoch(input.createdAt);
     if (createdEpoch === null) return invalid('createdAt', 'invalid_instant');
     const idle = futureInstant(createdEpoch, AGENT_MISSION_IDLE_TTL_MS);
@@ -1183,6 +1435,7 @@ export class AgentMission {
       id: input.id,
       companyId: input.companyId,
       ownerUserId: input.ownerUserId,
+      protocolVersion,
       kind: AGENT_MISSION_KIND,
       status: 'active',
       phase,
@@ -1224,6 +1477,10 @@ export class AgentMission {
 
   get status(): AgentMissionStatus {
     return this.snapshot.status;
+  }
+
+  get protocolVersion(): AgentMissionProtocolVersion {
+    return this.snapshot.protocolVersion;
   }
 
   get phase(): QuoteCreationMissionPhase {
@@ -1673,15 +1930,23 @@ export class AgentMission {
     if (binding.value.acknowledgedAt !== input.occurredAt) {
       return invalid('binding.acknowledgedAt', 'inconsistent_state');
     }
-    let nextPhase: 'awaiting_customer' | 'awaiting_customer_choice' | 'awaiting_lines';
+    let nextPhase:
+      | 'awaiting_customer'
+      | 'awaiting_customer_choice'
+      | 'awaiting_lines'
+      | 'awaiting_catalogue_choice';
     if (this.snapshot.phase === 'awaiting_quote_screen') {
       nextPhase = input.draftHasCustomer ? 'awaiting_lines' : 'awaiting_customer';
     } else if (
       this.snapshot.phase === 'awaiting_customer'
       || this.snapshot.phase === 'awaiting_customer_choice'
       || this.snapshot.phase === 'awaiting_lines'
+      || this.snapshot.phase === 'awaiting_catalogue_choice'
     ) {
-      const expectsCustomer = this.snapshot.phase === 'awaiting_lines';
+      const expectsCustomer = (
+        this.snapshot.phase === 'awaiting_lines'
+        || this.snapshot.phase === 'awaiting_catalogue_choice'
+      );
       if (input.draftHasCustomer !== expectsCustomer) {
         return err({ code: 'agent_mission_decision_conflict', reason: 'draft_reference' });
       }
@@ -1693,7 +1958,12 @@ export class AgentMission {
       occurredAt: input.occurredAt,
       phase: nextPhase,
       draft: draft.value,
-      decision: nextPhase === 'awaiting_customer_choice' ? this.snapshot.payload.decision : null,
+      decision: (
+        nextPhase === 'awaiting_customer_choice'
+        || nextPhase === 'awaiting_catalogue_choice'
+      )
+        ? this.snapshot.payload.decision
+        : null,
       stagedCustomerResolution: input.draftHasCustomer
         ? null
         : this.snapshot.payload.stagedCustomerResolution,
@@ -1896,6 +2166,366 @@ export class AgentMission {
       choiceId,
       choiceSetHash,
       occurredAt: input.occurredAt,
+    });
+  }
+
+  recordLineCandidatesStaged(input: {
+    readonly expectedRevision: number;
+    readonly stagedCount: number;
+    readonly firstQueueOrdinal: number;
+    readonly lastQueueOrdinal: number;
+    readonly occurredAt: Instant;
+  }): AgentMissionResult<AgentMissionTransition> {
+    const shape = requireExactInput(input, [
+      'expectedRevision',
+      'stagedCount',
+      'firstQueueOrdinal',
+      'lastQueueOrdinal',
+      'occurredAt',
+    ]);
+    if (!shape.ok) return shape;
+    const ready = this.authorize(
+      'stage_line_candidates',
+      input.expectedRevision,
+      input.occurredAt,
+      'awaiting_lines',
+    );
+    if (!ready.ok) return ready;
+    if (this.protocolVersion !== AGENT_MISSION_PROTOCOL_M2A) {
+      return this.invalidTransition('stage_line_candidates');
+    }
+    if (
+      !isRevision(input.stagedCount, false)
+      || input.stagedCount > 20
+      || !isRevision(input.firstQueueOrdinal, false)
+      || !isRevision(input.lastQueueOrdinal, false)
+      || input.lastQueueOrdinal - input.firstQueueOrdinal + 1 !== input.stagedCount
+    ) {
+      return invalid('queueOrdinals', 'invalid_value');
+    }
+    return this.activeTransition({
+      occurredAt: input.occurredAt,
+      phase: 'awaiting_lines',
+      draft: this.requireDraft(),
+      decision: null,
+      stagedCustomerResolution: null,
+      currentBinding: this.snapshot.currentBinding,
+      data: {
+        kind: 'line_candidates_staged',
+        stagedCount: input.stagedCount,
+        firstQueueOrdinal: input.firstQueueOrdinal,
+        lastQueueOrdinal: input.lastQueueOrdinal,
+      },
+    });
+  }
+
+  presentCatalogueChoices(input: {
+    readonly expectedRevision: number;
+    readonly decisionId: string;
+    readonly pendingLineId: string;
+    readonly expectedWorkRevision: number;
+    readonly expectedDraft: QuoteMissionDraftReferenceV1;
+    readonly candidates: readonly {
+      readonly choiceId: string;
+      readonly catalogueItemId: string;
+      readonly expectedCatalogueRevision: number;
+    }[];
+    readonly freeLineChoiceId: string;
+    readonly occurredAt: Instant;
+  }): AgentMissionResult<AgentMissionTransition> {
+    const shape = requireExactInput(input, [
+      'expectedRevision',
+      'decisionId',
+      'pendingLineId',
+      'expectedWorkRevision',
+      'expectedDraft',
+      'candidates',
+      'freeLineChoiceId',
+      'occurredAt',
+    ]);
+    if (!shape.ok) return shape;
+    const ready = this.authorize(
+      'present_catalogue_choices',
+      input.expectedRevision,
+      input.occurredAt,
+      'awaiting_lines',
+    );
+    if (!ready.ok) return ready;
+    if (this.protocolVersion !== AGENT_MISSION_PROTOCOL_M2A) {
+      return this.invalidTransition('present_catalogue_choices');
+    }
+    const draft = parseDraft(input.expectedDraft, 'expectedDraft');
+    if (!draft.ok) return draft;
+    if (!sameDraft(this.requireDraft(), draft.value)) {
+      return err({ code: 'agent_mission_decision_conflict', reason: 'draft_reference' });
+    }
+    const nextRevision = this.nextMissionRevision();
+    if (!nextRevision.ok) return nextRevision;
+    const decision = createCatalogueDecision(this.id, nextRevision.value, {
+      decisionId: input.decisionId,
+      pendingLineId: input.pendingLineId,
+      expectedDraft: draft.value,
+      expectedWorkRevision: input.expectedWorkRevision,
+      candidates: input.candidates,
+      freeLineChoiceId: input.freeLineChoiceId,
+    });
+    if (!decision.ok) return decision;
+    return this.activeTransition({
+      occurredAt: input.occurredAt,
+      phase: 'awaiting_catalogue_choice',
+      draft: draft.value,
+      decision: decision.value,
+      stagedCustomerResolution: null,
+      currentBinding: this.snapshot.currentBinding,
+      data: {
+        kind: 'catalogue_choices_presented',
+        pendingLineId: input.pendingLineId,
+        expectedWorkRevision: input.expectedWorkRevision,
+        candidateCount: input.candidates.length,
+        choiceSetHash: decision.value.choiceSetHash,
+      },
+    });
+  }
+
+  recordCatalogueNotFound(input: {
+    readonly expectedRevision: number;
+    readonly pendingLineId: string;
+    readonly workRevisionAfter: number;
+    readonly occurredAt: Instant;
+  }): AgentMissionResult<AgentMissionTransition> {
+    const shape = requireExactInput(input, [
+      'expectedRevision',
+      'pendingLineId',
+      'workRevisionAfter',
+      'occurredAt',
+    ]);
+    if (!shape.ok) return shape;
+    const ready = this.authorize(
+      'record_catalogue_not_found',
+      input.expectedRevision,
+      input.occurredAt,
+      'awaiting_lines',
+    );
+    if (!ready.ok) return ready;
+    if (this.protocolVersion !== AGENT_MISSION_PROTOCOL_M2A) {
+      return this.invalidTransition('record_catalogue_not_found');
+    }
+    if (!isCanonicalUuid(input.pendingLineId)) {
+      return invalid('pendingLineId', 'invalid_uuid');
+    }
+    if (!isRevision(input.workRevisionAfter, false)) {
+      return invalid('workRevisionAfter', 'invalid_revision');
+    }
+    return this.activeTransition({
+      occurredAt: input.occurredAt,
+      phase: 'awaiting_lines',
+      draft: this.requireDraft(),
+      decision: null,
+      stagedCustomerResolution: null,
+      currentBinding: this.snapshot.currentBinding,
+      data: {
+        kind: 'catalogue_not_found',
+        pendingLineId: input.pendingLineId,
+        workRevisionAfter: input.workRevisionAfter,
+        result: 'none',
+      },
+    });
+  }
+
+  selectCatalogueChoice(input: {
+    readonly expectedRevision: number;
+    readonly decisionId: string;
+    readonly choiceSetRevision: number;
+    readonly choiceId: string;
+    readonly pendingLineId: string;
+    readonly expectedWorkRevision: number;
+    readonly observedDraft: QuoteMissionDraftReferenceV1;
+    readonly observedResolution:
+      | { readonly kind: 'free' }
+      | {
+          readonly kind: 'selected';
+          readonly catalogueItemId: string;
+          readonly catalogueRevision: number;
+        };
+    readonly workRevisionAfter: number;
+    readonly occurredAt: Instant;
+  }): AgentMissionResult<{
+    readonly transition: AgentMissionTransition;
+    readonly resolution:
+      | { readonly kind: 'free' }
+      | {
+          readonly kind: 'selected';
+          readonly catalogueItemId: string;
+          readonly expectedCatalogueRevision: number;
+        };
+  }> {
+    const shape = requireExactInput(input, [
+      'expectedRevision',
+      'decisionId',
+      'choiceSetRevision',
+      'choiceId',
+      'pendingLineId',
+      'expectedWorkRevision',
+      'observedDraft',
+      'observedResolution',
+      'workRevisionAfter',
+      'occurredAt',
+    ]);
+    if (!shape.ok) return shape;
+    const ready = this.authorize(
+      'select_catalogue_choice',
+      input.expectedRevision,
+      input.occurredAt,
+      'awaiting_catalogue_choice',
+    );
+    if (!ready.ok) return ready;
+    if (this.protocolVersion !== AGENT_MISSION_PROTOCOL_M2A) {
+      return this.invalidTransition('select_catalogue_choice');
+    }
+    const decision = this.snapshot.payload.decision;
+    if (decision?.kind !== 'catalogue') {
+      return this.invalidTransition('select_catalogue_choice');
+    }
+    if (!isCanonicalUuid(input.decisionId)) return invalid('decisionId', 'invalid_uuid');
+    if (!isRevision(input.choiceSetRevision, false)) {
+      return invalid('choiceSetRevision', 'invalid_revision');
+    }
+    if (!isCanonicalUuid(input.choiceId)) return invalid('choiceId', 'invalid_uuid');
+    if (!isCanonicalUuid(input.pendingLineId)) return invalid('pendingLineId', 'invalid_uuid');
+    if (!isRevision(input.expectedWorkRevision, false)) {
+      return invalid('expectedWorkRevision', 'invalid_revision');
+    }
+    if (!isRevision(input.workRevisionAfter, false)) {
+      return invalid('workRevisionAfter', 'invalid_revision');
+    }
+    if (input.decisionId !== decision.decisionId) {
+      return err({ code: 'agent_mission_decision_conflict', reason: 'decision_id' });
+    }
+    if (input.choiceSetRevision !== decision.choiceSetRevision) {
+      return err({
+        code: 'agent_mission_decision_conflict',
+        reason: 'choice_set_revision',
+      });
+    }
+    if (input.pendingLineId !== decision.pendingLineId) {
+      return err({ code: 'agent_mission_decision_conflict', reason: 'pending_line' });
+    }
+    if (input.expectedWorkRevision !== decision.expectedWorkRevision) {
+      return err({ code: 'agent_mission_decision_conflict', reason: 'work_revision' });
+    }
+    if (input.workRevisionAfter !== decision.expectedWorkRevision + 1) {
+      return err({ code: 'agent_mission_decision_conflict', reason: 'work_revision' });
+    }
+    const observedDraft = parseDraft(input.observedDraft, 'observedDraft');
+    if (!observedDraft.ok) return observedDraft;
+    if (
+      !sameDraft(decision.expectedDraft, observedDraft.value)
+      || !sameDraft(this.requireDraft(), observedDraft.value)
+    ) {
+      return err({ code: 'agent_mission_decision_conflict', reason: 'draft_reference' });
+    }
+
+    let resolution:
+      | { readonly kind: 'free' }
+      | {
+          readonly kind: 'selected';
+          readonly catalogueItemId: string;
+          readonly expectedCatalogueRevision: number;
+        };
+    if (input.choiceId === decision.freeLineChoiceId) {
+      if (
+        !isPlainRecord(input.observedResolution)
+        || !exactKeys(input.observedResolution, ['kind'])
+        || input.observedResolution['kind'] !== 'free'
+      ) {
+        return err({ code: 'agent_mission_decision_conflict', reason: 'choice_id' });
+      }
+      resolution = { kind: 'free' };
+    } else {
+      const candidate = decision.candidates.find(
+        (item) => item.choiceId === input.choiceId,
+      );
+      if (candidate === undefined) {
+        return err({ code: 'agent_mission_decision_conflict', reason: 'choice_id' });
+      }
+      if (
+        !isPlainRecord(input.observedResolution)
+        || !exactKeys(input.observedResolution, [
+          'kind',
+          'catalogueItemId',
+          'catalogueRevision',
+        ])
+        || input.observedResolution['kind'] !== 'selected'
+        || input.observedResolution['catalogueItemId'] !== candidate.catalogueItemId
+        || input.observedResolution['catalogueRevision']
+          !== candidate.expectedCatalogueRevision
+      ) {
+        return err({
+          code: 'agent_mission_decision_conflict',
+          reason: 'catalogue_revision',
+        });
+      }
+      resolution = {
+        kind: 'selected',
+        catalogueItemId: candidate.catalogueItemId,
+        expectedCatalogueRevision: candidate.expectedCatalogueRevision,
+      };
+    }
+
+    const transition = this.activeTransition({
+      occurredAt: input.occurredAt,
+      phase: 'awaiting_lines',
+      draft: observedDraft.value,
+      decision: null,
+      stagedCustomerResolution: null,
+      currentBinding: this.snapshot.currentBinding,
+      data: {
+        kind: 'catalogue_choice_selected',
+        pendingLineId: input.pendingLineId,
+        workRevisionAfter: input.workRevisionAfter,
+        resolution: resolution.kind,
+        choiceId: input.choiceId,
+        choiceSetHash: decision.choiceSetHash,
+      },
+    });
+    if (!transition.ok) return transition;
+    return ok({
+      transition: transition.value,
+      resolution,
+    });
+  }
+
+  invalidateCatalogueDecision(input: {
+    readonly expectedRevision: number;
+    readonly reason: 'candidate_unavailable' | 'choice_set_stale';
+    readonly occurredAt: Instant;
+  }): AgentMissionResult<AgentMissionTransition> {
+    const shape = requireExactInput(input, ['expectedRevision', 'reason', 'occurredAt']);
+    if (!shape.ok) return shape;
+    const ready = this.authorize(
+      'invalidate_catalogue_decision',
+      input.expectedRevision,
+      input.occurredAt,
+      'awaiting_catalogue_choice',
+    );
+    if (!ready.ok) return ready;
+    if (
+      this.protocolVersion !== AGENT_MISSION_PROTOCOL_M2A
+      || this.snapshot.payload.decision?.kind !== 'catalogue'
+    ) {
+      return this.invalidTransition('invalidate_catalogue_decision');
+    }
+    if (input.reason !== 'candidate_unavailable' && input.reason !== 'choice_set_stale') {
+      return invalid('reason', 'invalid_value');
+    }
+    return this.activeTransition({
+      occurredAt: input.occurredAt,
+      phase: 'awaiting_lines',
+      draft: this.requireDraft(),
+      decision: null,
+      stagedCustomerResolution: null,
+      currentBinding: this.snapshot.currentBinding,
+      data: { kind: 'decision_invalidated', reason: input.reason },
     });
   }
 

@@ -180,6 +180,14 @@ test('lie sans les exposer les réglages runtime et les autorités de clés', ()
       OPENAI_TTS_MODEL: 'gpt-4o-mini-tts-next',
     }),
   );
+  assert.notEqual(
+    runtimeConfigurationDigest({
+      BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED: 'false',
+    }),
+    runtimeConfigurationDigest({
+      BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED: 'true',
+    }),
+  );
   assert.equal(
     first,
     runtimeConfigurationDigest({

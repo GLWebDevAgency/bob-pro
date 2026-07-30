@@ -99,7 +99,10 @@ import type {
   InvoiceTransmissionStatus,
   TransmissionGuide,
 } from '@bob/core';
-import type { RealtimeAgentMissionSession } from './agent-mission-session';
+import type {
+  RealtimeAgentMissionProtocolVersion,
+  RealtimeAgentMissionSession,
+} from './agent-mission-session';
 
 export interface QuoteView {
   id: string;
@@ -694,7 +697,7 @@ export type RealtimeVoiceCallInput =
       configVersion: string;
       speechDelivery: 'openai-native-webrtc-v1' | 'audited-signed-url-v1';
       sessionHandle?: string;
-      agentMissionProtocolVersion?: 1 | null;
+      agentMissionProtocolVersion?: RealtimeAgentMissionProtocolVersion | null;
     }
   | {
       transport: 'mistral-pcm';
@@ -703,7 +706,7 @@ export type RealtimeVoiceCallInput =
       configVersion: string;
       speechDelivery: 'audited-signed-url-v1';
       sessionHandle?: string;
-      agentMissionProtocolVersion?: 1 | null;
+      agentMissionProtocolVersion?: RealtimeAgentMissionProtocolVersion | null;
     }
   | {
       transport: 'mistral-pcm';
@@ -712,7 +715,7 @@ export type RealtimeVoiceCallInput =
       configVersion: string;
       speechDelivery: 'audited-signed-url-v1';
       sessionHandle?: string;
-      agentMissionProtocolVersion?: 1 | null;
+      agentMissionProtocolVersion?: RealtimeAgentMissionProtocolVersion | null;
     };
 
 export interface RealtimeVoiceControlReference {

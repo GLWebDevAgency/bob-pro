@@ -157,7 +157,7 @@ describe('parseQuoteCreationSemanticToolCallV2', () => {
     })).toBeNull();
   });
 
-  it('comprend une correction comme patch et non comme nouvelle ligne', () => {
+  it('n’expose aucune opération A2 avant son train de domaine', () => {
     expect(parseQuoteCreationSemanticToolCallV2({
       call: call([{
         kind: 'patch_pending_line',
@@ -168,18 +168,24 @@ describe('parseQuoteCreationSemanticToolCallV2', () => {
           basis: 'per_unit',
         },
       }]),
-      phase: 'awaiting_line_details',
-      presentedChoiceCount: 0,
+      phase: 'awaiting_catalogue_choice',
+      presentedChoiceCount: 1,
       model: 'gpt-realtime-2.1',
-    })?.operations).toEqual([{
-      kind: 'patch_pending_line',
-      patch: {
-        field: 'unit_price',
-        decimal: '450',
-        currency: 'EUR',
-        basis: 'per_unit',
+    })).toBeNull();
+    expect(JSON.stringify(QUOTE_CREATION_UNDERSTANDING_TOOL_V2)).not.toContain(
+      'patch_pending_line',
+    );
+    expect(JSON.stringify(QUOTE_CREATION_UNDERSTANDING_TOOL_V2)).not.toContain(
+      'confirm_current_proposal',
+    );
+    expect(QUOTE_CREATION_UNDERSTANDING_TOOL_V2.parameters).toMatchObject({
+      properties: {
+        operations: {
+          minItems: 1,
+          maxItems: 1,
+        },
       },
-    }]);
+    });
   });
 
   it.each([

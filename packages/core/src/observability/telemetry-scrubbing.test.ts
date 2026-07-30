@@ -30,14 +30,22 @@ function expectNoLeak(payload: unknown): void {
 }
 
 describe('redactTelemetryText — masquage du PII et de la donnée financière', () => {
-  it('masque une capability AgentMission canonique sans laisser son matériau', () => {
-    const capability = `bam1_${Buffer.alloc(32, 71).toString('base64url')}`;
-    const redacted = redactTelemetryText(`admission=${capability}`);
-    expect(redacted).toBe('admission=[capability-agent]');
-    expect(redacted).not.toContain(capability);
-    expect(redactTelemetryText(`header_${capability}_suffix`)).toBe(
-      'header_[capability-agent]_suffix',
-    );
+  it.each([1, 2] as const)(
+    'masque une capability AgentMission V%s canonique sans laisser son matériau',
+    (protocolVersion) => {
+      const capability = `bam${protocolVersion}_${Buffer.alloc(32, 71).toString('base64url')}`;
+      const redacted = redactTelemetryText(`admission=${capability}`);
+      expect(redacted).toBe('admission=[capability-agent]');
+      expect(redacted).not.toContain(capability);
+      expect(redactTelemetryText(`header_${capability}_suffix`)).toBe(
+        'header_[capability-agent]_suffix',
+      );
+    },
+  );
+
+  it('ne masque pas un préfixe de protocole inconnu comme une capability supportée', () => {
+    const unknownCapability = `bam3_${Buffer.alloc(32, 71).toString('base64url')}`;
+    expect(redactTelemetryText(unknownCapability)).toBe(unknownCapability);
   });
 
   it('masque IBAN, e-mail, téléphone, SIREN/SIRET, montant, carte et jeton', () => {

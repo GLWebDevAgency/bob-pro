@@ -68,6 +68,7 @@ export type AgentMissionQuoteLinePriceBasis =
   (typeof AGENT_MISSION_QUOTE_LINE_PRICE_BASES)[number];
 
 export const AGENT_MISSION_QUOTE_LINE_MAX_WORK_ITEMS = 20;
+export const AGENT_MISSION_QUOTE_LINE_MAX_ORDINAL = 2_147_483_647;
 export const AGENT_MISSION_QUOTE_LINE_MAX_SERVICE_REFERENCE_LENGTH = 500;
 export const AGENT_MISSION_QUOTE_LINE_MAX_UNIT_LENGTH = 40;
 export const AGENT_MISSION_QUOTE_LINE_MAX_QUANTITY_MILLI =
@@ -335,7 +336,7 @@ export function parseAgentMissionQuoteLineWork(
   if (
     !Number.isSafeInteger(input['ordinal'])
     || (input['ordinal'] as number) < 1
-    || (input['ordinal'] as number) > AGENT_MISSION_QUOTE_LINE_MAX_WORK_ITEMS
+    || (input['ordinal'] as number) > AGENT_MISSION_QUOTE_LINE_MAX_ORDINAL
   ) {
     return fail('ordinal', 'invalid_value');
   }
@@ -505,3 +506,249 @@ export function parseAgentMissionQuoteLineWork(
  * recopiée à la main.
  */
 export const AGENT_MISSION_QUOTE_LINE_CATEGORIES = CATALOGUE_CATEGORIES;
+
+export type AgentMissionQuoteLineWorkTransitionError =
+  | AgentMissionQuoteLineWorkError
+  | {
+      readonly code: 'agent_mission_quote_line_work_revision_conflict';
+      readonly expectedRevision: number;
+      readonly actualRevision: number;
+    }
+  | {
+      readonly code: 'agent_mission_quote_line_work_invalid_transition';
+      readonly state: AgentMissionQuoteLineWorkState;
+      readonly action:
+        | 'present_catalogue_choices'
+        | 'record_catalogue_not_found'
+        | 'consume_catalogue_choice'
+        | 'invalidate_catalogue_choice';
+    }
+  | {
+      readonly code: 'agent_mission_quote_line_work_revision_overflow';
+    };
+
+export type AgentMissionQuoteLineWorkTransitionResult =
+  | { readonly ok: true; readonly value: AgentMissionQuoteLineWork }
+  | { readonly ok: false; readonly error: AgentMissionQuoteLineWorkTransitionError };
+
+export type AgentMissionQuoteLineCatalogueChoiceResolution =
+  | { readonly kind: 'free' }
+  | {
+      readonly kind: 'selected';
+      readonly catalogueItemId: string;
+      readonly expectedCatalogueRevision: number;
+    };
+
+function transitionFailure(
+  error: AgentMissionQuoteLineWorkTransitionError,
+): AgentMissionQuoteLineWorkTransitionResult {
+  return { ok: false, error };
+}
+
+function prepareTransition(input: {
+  readonly workItem: AgentMissionQuoteLineWork;
+  readonly expectedRevision: number;
+  readonly occurredAt: Instant;
+}): AgentMissionQuoteLineWorkTransitionResult | null {
+  const current = parseAgentMissionQuoteLineWork(input.workItem);
+  if (!current.ok) return current;
+  if (!isPositiveInt4(input.expectedRevision)) {
+    return transitionFailure({
+      code: 'invalid_agent_mission_quote_line_work',
+      field: 'expectedRevision',
+      reason: 'invalid_revision',
+    });
+  }
+  if (input.expectedRevision !== current.value.revision) {
+    return transitionFailure({
+      code: 'agent_mission_quote_line_work_revision_conflict',
+      expectedRevision: input.expectedRevision,
+      actualRevision: current.value.revision,
+    });
+  }
+  if (current.value.revision === INT4_MAX) {
+    return transitionFailure({
+      code: 'agent_mission_quote_line_work_revision_overflow',
+    });
+  }
+  if (
+    !isCanonicalInstant(input.occurredAt)
+    || Date.parse(input.occurredAt) < Date.parse(current.value.updatedAt)
+  ) {
+    return transitionFailure({
+      code: 'invalid_agent_mission_quote_line_work',
+      field: 'occurredAt',
+      reason: 'invalid_instant',
+    });
+  }
+  return null;
+}
+
+function transitionValue(
+  value: AgentMissionQuoteLineWork,
+): AgentMissionQuoteLineWorkTransitionResult {
+  const parsed = parseAgentMissionQuoteLineWork(value);
+  return parsed.ok ? parsed : transitionFailure(parsed.error);
+}
+
+function invalidTransition(
+  workItem: AgentMissionQuoteLineWork,
+  action: Extract<
+    AgentMissionQuoteLineWorkTransitionError,
+    { readonly code: 'agent_mission_quote_line_work_invalid_transition' }
+  >['action'],
+): AgentMissionQuoteLineWorkTransitionResult {
+  return transitionFailure({
+    code: 'agent_mission_quote_line_work_invalid_transition',
+    state: workItem.state,
+    action,
+  });
+}
+
+/**
+ * Frontière M2-A-1 : présente des choix sans copier la moindre valeur catalogue dans le work.
+ */
+export function presentCatalogueChoicesOnQuoteLineWork(input: {
+  readonly workItem: AgentMissionQuoteLineWork;
+  readonly expectedRevision: number;
+  readonly occurredAt: Instant;
+}): AgentMissionQuoteLineWorkTransitionResult {
+  const preparation = prepareTransition(input);
+  if (preparation !== null) return preparation;
+  if (
+    input.workItem.state !== 'queued'
+    || input.workItem.catalogueResolution !== 'pending'
+    || input.workItem.serviceReference === null
+  ) {
+    return invalidTransition(input.workItem, 'present_catalogue_choices');
+  }
+  return transitionValue({
+    ...input.workItem,
+    revision: input.workItem.revision + 1,
+    state: 'awaiting_catalogue_choice',
+    requiredFact: null,
+    catalogueItemId: null,
+    expectedCatalogueRevision: null,
+    proposalId: null,
+    proposalRevision: null,
+    proposalDiffHash: null,
+    updatedAt: input.occurredAt,
+  });
+}
+
+/**
+ * Zéro candidat est un fait BDD réel : la tête reste `queued`, explicitement résolue en libre.
+ */
+export function recordCatalogueNotFoundOnQuoteLineWork(input: {
+  readonly workItem: AgentMissionQuoteLineWork;
+  readonly expectedRevision: number;
+  readonly occurredAt: Instant;
+}): AgentMissionQuoteLineWorkTransitionResult {
+  const preparation = prepareTransition(input);
+  if (preparation !== null) return preparation;
+  if (
+    input.workItem.state !== 'queued'
+    || input.workItem.catalogueResolution !== 'pending'
+    || input.workItem.serviceReference === null
+  ) {
+    return invalidTransition(input.workItem, 'record_catalogue_not_found');
+  }
+  return transitionValue({
+    ...input.workItem,
+    revision: input.workItem.revision + 1,
+    state: 'queued',
+    requiredFact: null,
+    catalogueResolution: 'free',
+    catalogueItemId: null,
+    expectedCatalogueRevision: null,
+    proposalId: null,
+    proposalRevision: null,
+    proposalDiffHash: null,
+    updatedAt: input.occurredAt,
+  });
+}
+
+/**
+ * Consomme le `choiceId` déjà autorisé par l'agrégat mission. Seule la fence catalogue change.
+ */
+export function consumeCatalogueChoiceOnQuoteLineWork(input: {
+  readonly workItem: AgentMissionQuoteLineWork;
+  readonly expectedRevision: number;
+  readonly resolution: AgentMissionQuoteLineCatalogueChoiceResolution;
+  readonly occurredAt: Instant;
+}): AgentMissionQuoteLineWorkTransitionResult {
+  const preparation = prepareTransition(input);
+  if (preparation !== null) return preparation;
+  if (
+    input.workItem.state !== 'awaiting_catalogue_choice'
+    || input.workItem.catalogueResolution !== 'pending'
+  ) {
+    return invalidTransition(input.workItem, 'consume_catalogue_choice');
+  }
+  if (
+    !isRecord(input.resolution)
+    || (
+      input.resolution.kind === 'free'
+        ? !hasExactKeys(input.resolution, ['kind'])
+        : input.resolution.kind === 'selected'
+          ? !hasExactKeys(input.resolution, [
+              'kind',
+              'catalogueItemId',
+              'expectedCatalogueRevision',
+            ])
+          : true
+    )
+  ) {
+    return transitionFailure({
+      code: 'invalid_agent_mission_quote_line_work',
+      field: 'resolution',
+      reason: 'invalid_shape',
+    });
+  }
+
+  return transitionValue({
+    ...input.workItem,
+    revision: input.workItem.revision + 1,
+    state: 'queued',
+    requiredFact: null,
+    catalogueResolution: input.resolution.kind,
+    catalogueItemId: input.resolution.kind === 'selected'
+      ? input.resolution.catalogueItemId
+      : null,
+    expectedCatalogueRevision: input.resolution.kind === 'selected'
+      ? input.resolution.expectedCatalogueRevision
+      : null,
+    proposalId: null,
+    proposalRevision: null,
+    proposalDiffHash: null,
+    updatedAt: input.occurredAt,
+  });
+}
+
+export function invalidateCatalogueChoiceOnQuoteLineWork(input: {
+  readonly workItem: AgentMissionQuoteLineWork;
+  readonly expectedRevision: number;
+  readonly occurredAt: Instant;
+}): AgentMissionQuoteLineWorkTransitionResult {
+  const preparation = prepareTransition(input);
+  if (preparation !== null) return preparation;
+  if (
+    input.workItem.state !== 'awaiting_catalogue_choice'
+    || input.workItem.catalogueResolution !== 'pending'
+  ) {
+    return invalidTransition(input.workItem, 'invalidate_catalogue_choice');
+  }
+  return transitionValue({
+    ...input.workItem,
+    revision: input.workItem.revision + 1,
+    state: 'queued',
+    requiredFact: null,
+    catalogueResolution: 'pending',
+    catalogueItemId: null,
+    expectedCatalogueRevision: null,
+    proposalId: null,
+    proposalRevision: null,
+    proposalDiffHash: null,
+    updatedAt: input.occurredAt,
+  });
+}

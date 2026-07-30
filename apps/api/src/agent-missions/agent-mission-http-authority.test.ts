@@ -14,11 +14,13 @@ import type { RealtimeVoiceSettings } from '../voice/realtime/realtime.types';
 import {
   DurableAgentMissionHttpAuthority,
   agentMissionCapabilityMetricOperation,
+  type AgentMissionHttpOperation,
 } from './agent-mission-http-authority';
 
 const CURRENT_SUBJECT_SECRET = 'c'.repeat(32);
 const PREVIOUS_SUBJECT_SECRET = 'p'.repeat(32);
 const CAPABILITY = `bam1_${Buffer.alloc(32, 7).toString('base64url')}`;
+const CAPABILITY_V2 = `bam2_${Buffer.alloc(32, 8).toString('base64url')}`;
 
 function settings(
   overrides: Partial<RealtimeVoiceSettings> = {},
@@ -69,13 +71,14 @@ function prepareAs(
   authority: DurableAgentMissionHttpAuthority,
   principal: { userId: string; companyId: string | null } | undefined,
   capability: unknown,
+  operation: AgentMissionHttpOperation = 'start_quote_creation',
 ) {
   return requestContext.run(
     {
       correlationId: 'agent-mission-http-authority-test',
       ...(principal === undefined ? {} : { principal }),
     },
-    () => authority.prepare('start_quote_creation', capability),
+    () => authority.prepare(operation, capability),
   );
 }
 
@@ -98,6 +101,7 @@ describe('AgentMission HTTP authority', () => {
           ownerUserId: 'user-1',
         },
         proof: {
+          protocolVersion: 1,
           subjectHashCandidates: [
             admissionSubjectHash(CURRENT_SUBJECT_SECRET, 'company-1', 'user-1'),
             admissionSubjectHash(PREVIOUS_SUBJECT_SECRET, 'company-1', 'user-1'),
@@ -201,13 +205,70 @@ describe('AgentMission HTTP authority', () => {
     expect(inc).not.toHaveBeenCalled();
   });
 
-  it('borne exhaustivement les cinq labels operation', () => {
+  it.each([
+    'stage_quote_lines',
+    'decide_catalogue_choice',
+  ] as const)('refuse bam1 sur la surface M2-A avant toute lecture métier (%s)', (operation) => {
+    const { metrics, inc } = metricHarness();
+    const authority = new DurableAgentMissionHttpAuthority(settings(), metrics);
+
+    expect(prepareAs(authority, {
+      companyId: 'company-1',
+      userId: 'user-1',
+    }, CAPABILITY, operation)).toEqual({
+      ok: false,
+      error: {
+        kind: 'conflict',
+        entity: 'agent_mission_protocol',
+        reason: 'upgrade_required',
+      },
+    });
+    expect(inc).toHaveBeenCalledWith({
+      operation: operation === 'stage_quote_lines'
+        ? 'line_stage'
+        : 'catalogue_choice',
+      reason: 'state',
+    });
+  });
+
+  it.each([
+    'stage_quote_lines',
+    'decide_catalogue_choice',
+  ] as const)('accepte bam2 sur la surface M2-A (%s)', (operation) => {
+    const { metrics, inc } = metricHarness();
+    const authority = new DurableAgentMissionHttpAuthority(settings(), metrics);
+
+    const result = prepareAs(authority, {
+      companyId: 'company-1',
+      userId: 'user-1',
+    }, CAPABILITY_V2, operation);
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        operation,
+        proof: { protocolVersion: 2 },
+      },
+    });
+    expect(inc).not.toHaveBeenCalled();
+  });
+
+  it('borne exhaustivement les opérations historiques et M2-A', () => {
     expect([
       agentMissionCapabilityMetricOperation('get_current_quote_creation'),
       agentMissionCapabilityMetricOperation('start_quote_creation'),
       agentMissionCapabilityMetricOperation('cancel_quote_creation'),
       agentMissionCapabilityMetricOperation('acknowledge_quote_screen'),
       agentMissionCapabilityMetricOperation('decide_quote_creation'),
-    ]).toEqual(['get', 'start', 'cancel', 'screen_ack', 'decision']);
+      agentMissionCapabilityMetricOperation('stage_quote_lines'),
+      agentMissionCapabilityMetricOperation('decide_catalogue_choice'),
+    ]).toEqual([
+      'get',
+      'start',
+      'cancel',
+      'screen_ack',
+      'decision',
+      'line_stage',
+      'catalogue_choice',
+    ]);
   });
 });

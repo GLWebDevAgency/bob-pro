@@ -15,6 +15,7 @@ const OWNER = Object.freeze({
   ownerUserId: 'owner-1',
 });
 const AUTHORITY = Object.freeze({
+  protocolVersion: 1,
   subjectHashCandidates: Object.freeze(['a'.repeat(64)]),
   principalBindingHash: 'b'.repeat(64),
   capabilityHash: 'c'.repeat(64),
@@ -319,6 +320,56 @@ describe('AgentMission foreground lock — erreurs bornées', () => {
         kind: 'future_kind',
       },
     });
+    expect(findEvent).toHaveBeenCalledOnce();
+  });
+
+  it('discrimine un événement V2 avant de charger son payload avec une autorité V1', async () => {
+    const { prisma, findEvent } = authorizedPrismaWithFutureEvent();
+    findEvent.mockReset()
+      .mockResolvedValueOnce({
+        missionId: 'v2-mission',
+        mission: { kind: 'quote_creation', protocolVersion: 2 },
+      })
+      .mockRejectedValue(new Error('V2_EVENT_MUST_NOT_BE_PARSED'));
+    const unitOfWork = new PrismaAgentMissionUnitOfWork(prisma);
+
+    await expect(unitOfWork.runQuoteCreationOwner(
+      OWNER,
+      AUTHORITY,
+      (transaction) => transaction.events.findByCommandId({
+        ...OWNER,
+        commandId: 'v2-command',
+      }),
+    )).resolves.toEqual({
+      status: 'executed',
+      value: {
+        status: 'unsupported_protocol',
+        missionId: 'v2-mission',
+        kind: 'quote_creation',
+        protocolVersion: 2,
+      },
+    });
+    expect(findEvent).toHaveBeenCalledOnce();
+  });
+
+  it('refuse une version persistée inconnue comme corruption avant tout payload', async () => {
+    const { prisma, findEvent } = authorizedPrismaWithFutureEvent();
+    findEvent.mockReset()
+      .mockResolvedValueOnce({
+        missionId: 'corrupt-mission',
+        mission: { kind: 'quote_creation', protocolVersion: 3 },
+      })
+      .mockRejectedValue(new Error('CORRUPT_EVENT_MUST_NOT_BE_PARSED'));
+    const unitOfWork = new PrismaAgentMissionUnitOfWork(prisma);
+
+    await expect(unitOfWork.runQuoteCreationOwner(
+      OWNER,
+      AUTHORITY,
+      (transaction) => transaction.events.findByCommandId({
+        ...OWNER,
+        commandId: 'corrupt-command',
+      }),
+    )).rejects.toThrow('AGENT_MISSION_PROTOCOL_VERSION_CORRUPT');
     expect(findEvent).toHaveBeenCalledOnce();
   });
 });

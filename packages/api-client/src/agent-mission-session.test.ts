@@ -10,6 +10,7 @@ const CONFIG_VERSION = 'bob-live-provider-neutral-v4';
 const SESSION_ID = '22222222-2222-4222-8222-222222222222';
 const MISSION_ID = '11111111-1111-4111-8111-111111111111';
 const CAPABILITY = `bam1_${Buffer.alloc(32, 7).toString('base64url')}`;
+const CAPABILITY_V2 = `bam2_${Buffer.alloc(32, 9).toString('base64url')}`;
 const CREATED_AT = '2026-07-26T08:00:00.000Z';
 const ACKNOWLEDGED_AT = '2026-07-26T08:01:00.000Z';
 const ACK_COMMAND_ID = '55555555-5555-4555-8555-555555555555';
@@ -18,6 +19,20 @@ const DRAFT = Object.freeze({
   slotRevision: 1,
   contentRevision: 0,
 });
+const LINE = Object.freeze({
+  serviceReference: 'Main-d’œuvre plomberie',
+  categoryHint: 'labor' as const,
+  quantityDecimal: '2',
+  unitReference: 'heure',
+  unitPriceDecimal: '55',
+  currency: 'EUR' as const,
+  priceBasis: 'per_unit' as const,
+  vatRateHint: '20' as const,
+});
+const PENDING_LINE_ID = '33333333-3333-4333-8333-333333333333';
+const DECISION_ID = '88888888-8888-4888-8888-888888888888';
+const CANDIDATE_CHOICE_ID = '99999999-9999-4999-8999-999999999999';
+const FREE_CHOICE_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
 function initialMission() {
   const result = AgentMission.start({
@@ -74,6 +89,100 @@ function selectedMission() {
   return result.value.mission;
 }
 
+function selectedM2AMission() {
+  const result = AgentMission.start({
+    id: MISSION_ID,
+    companyId: 'company-1',
+    ownerUserId: 'user-1',
+    protocolVersion: 2,
+    createdAt: CREATED_AT,
+    stagedCustomerResolution: null,
+    startOutcome: 'no_slot',
+    draft: DRAFT,
+  });
+  if (!result.ok) throw new Error(`Mission M2-A invalide: ${result.error.code}`);
+  const acknowledged = result.value.mission.acknowledgeQuoteScreen({
+    expectedRevision: 1,
+    binding: {
+      realtimeSessionId: SESSION_ID,
+      contextRevision: 3,
+      contextDigest: 'a'.repeat(64),
+      screenName: '/devis/new',
+      screenInstanceId: 'quote-screen-1',
+      acknowledgedAt: ACKNOWLEDGED_AT,
+    },
+    observedDraft: DRAFT,
+    draftHasCustomer: false,
+    occurredAt: ACKNOWLEDGED_AT,
+  });
+  if (!acknowledged.ok) throw new Error(`ACK M2-A invalide: ${acknowledged.error.code}`);
+  const selected = acknowledged.value.mission.selectCustomer({
+    expectedRevision: 2,
+    source: 'screen_selection',
+    customerId: 'customer-camping',
+    updatedDraft: {
+      sessionId: DRAFT.sessionId,
+      slotRevision: 2,
+      contentRevision: 1,
+    },
+    occurredAt: '2026-07-26T08:02:00.000Z',
+  });
+  if (!selected.ok) throw new Error(`Client M2-A invalide: ${selected.error.code}`);
+  return selected.value.mission;
+}
+
+function catalogueChoiceM2AMission() {
+  const staged = selectedM2AMission().recordLineCandidatesStaged({
+    expectedRevision: 3,
+    stagedCount: 1,
+    firstQueueOrdinal: 1,
+    lastQueueOrdinal: 1,
+    occurredAt: '2026-07-26T08:03:00.000Z',
+  });
+  if (!staged.ok) throw new Error(`Staging M2-A invalide: ${staged.error.code}`);
+  const presented = staged.value.mission.presentCatalogueChoices({
+    expectedRevision: 4,
+    decisionId: DECISION_ID,
+    pendingLineId: PENDING_LINE_ID,
+    expectedWorkRevision: 2,
+    expectedDraft: {
+      sessionId: DRAFT.sessionId,
+      slotRevision: 2,
+      contentRevision: 1,
+    },
+    candidates: [{
+      choiceId: CANDIDATE_CHOICE_ID,
+      catalogueItemId: 'catalogue-main-oeuvre',
+      expectedCatalogueRevision: 1,
+    }],
+    freeLineChoiceId: FREE_CHOICE_ID,
+    occurredAt: '2026-07-26T08:04:00.000Z',
+  });
+  if (!presented.ok) throw new Error(`Choix M2-A invalide: ${presented.error.code}`);
+  return presented.value.mission;
+}
+
+function resolvedM2AMission() {
+  const resolved = catalogueChoiceM2AMission().selectCatalogueChoice({
+    expectedRevision: 5,
+    decisionId: DECISION_ID,
+    choiceSetRevision: 5,
+    choiceId: FREE_CHOICE_ID,
+    pendingLineId: PENDING_LINE_ID,
+    expectedWorkRevision: 2,
+    observedDraft: {
+      sessionId: DRAFT.sessionId,
+      slotRevision: 2,
+      contentRevision: 1,
+    },
+    observedResolution: { kind: 'free' },
+    workRevisionAfter: 3,
+    occurredAt: '2026-07-26T08:05:00.000Z',
+  });
+  if (!resolved.ok) throw new Error(`Résolution M2-A invalide: ${resolved.error.code}`);
+  return resolved.value.transition.mission;
+}
+
 function nativeBootstrap(
   negotiation: Readonly<Record<string, unknown>> = {},
 ): Record<string, unknown> {
@@ -100,7 +209,7 @@ function client(getToken?: () => Promise<string | null>): HttpBobClient {
 }
 
 function nativeCallInput(
-  agentMissionProtocolVersion?: 1 | null,
+  agentMissionProtocolVersion?: 1 | 2 | null,
 ): Parameters<HttpBobClient['createRealtimeVoiceCall']>[0] {
   return {
     transport: 'webrtc',
@@ -269,6 +378,9 @@ describe('Realtime AgentMission capability handle', () => {
     if (!handle) return;
 
     expect(handle.realtimeSessionId).toBe(SESSION_ID);
+    expect(handle.protocolVersion).toBe(1);
+    expect('stageQuoteLines' in handle).toBe(false);
+    expect('decideQuoteCatalogueChoice' in handle).toBe(false);
     expect(Object.keys(handle)).toEqual([]);
     expect({ ...handle }).toEqual({});
     expect(JSON.stringify(handle)).toBe('{}');
@@ -345,6 +457,191 @@ describe('Realtime AgentMission capability handle', () => {
     expect(getToken).toHaveBeenCalledTimes(tokenReadsBeforeDispose);
   });
 
+  it('expose les commandes M2-A uniquement sur un handle bam2 opaque et exact', async () => {
+    const catalogueView = missionView(
+      catalogueChoiceM2AMission(),
+      '2026-07-26T08:04:00.000Z',
+    );
+    const resolvedView = missionView(
+      resolvedM2AMission(),
+      '2026-07-26T08:05:00.000Z',
+    );
+    const paths: string[] = [];
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      const path = new URL(String(url)).pathname;
+      paths.push(path);
+      if (path === '/voice/realtime/calls') {
+        expect(JSON.parse(String(init?.body))).toMatchObject({
+          agentMissionProtocolVersion: 2,
+        });
+        return new Response(JSON.stringify(nativeBootstrap({
+          agentMissionProtocolVersion: 2,
+          agentMissionCapability: CAPABILITY_V2,
+        })), { headers: { 'content-type': 'application/json' } });
+      }
+      expect(init?.headers).toMatchObject({
+        'x-bob-agent-mission-capability': CAPABILITY_V2,
+      });
+      if (
+        path
+        === `/voice/realtime/calls/${SESSION_ID}/agent-mission-bootstrap-acknowledgements`
+      ) {
+        return new Response(JSON.stringify({
+          acknowledged: true,
+          replayed: false,
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      if (path === `/agent-missions/${MISSION_ID}/quote-lines`) {
+        expect(JSON.parse(String(init?.body))).toEqual({
+          commandId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          expectedMissionRevision: 3,
+          expectedDraftSessionId: DRAFT.sessionId,
+          expectedDraftSlotRevision: 2,
+          expectedDraftContentRevision: 1,
+          lines: [LINE],
+        });
+        return new Response(JSON.stringify({
+          outcome: 'staged',
+          mission: catalogueView,
+          stagedCount: 1,
+          firstQueueOrdinal: 1,
+          lastQueueOrdinal: 1,
+          continuation: {
+            outcome: 'choices_presented',
+            pendingLineId: PENDING_LINE_ID,
+            presentedChoiceCount: 2,
+          },
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      if (path === `/agent-missions/${MISSION_ID}/catalogue-choices`) {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        expect(body).toEqual({
+          commandId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+          expectedMissionRevision: 5,
+          expectedDraftSessionId: DRAFT.sessionId,
+          expectedDraftSlotRevision: 2,
+          expectedDraftContentRevision: 1,
+          decisionId: DECISION_ID,
+          choiceSetRevision: 5,
+          pendingLineId: PENDING_LINE_ID,
+          expectedWorkRevision: 2,
+          choiceId: FREE_CHOICE_ID,
+          additionalLines: [],
+        });
+        expect(body).not.toHaveProperty('missionId');
+        expect(body).not.toHaveProperty('catalogueItemId');
+        expect(body).not.toHaveProperty('realtimeSessionId');
+        return new Response(JSON.stringify({
+          outcome: 'selected',
+          resolution: 'free',
+          invalidationReason: null,
+          mission: resolvedView,
+          continuation: {
+            outcome: 'deferred_to_m2a2',
+            pendingLineId: PENDING_LINE_ID,
+            presentedChoiceCount: 0,
+          },
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      throw new Error(`Route inattendue: ${path}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const bootstrap = await client().createRealtimeVoiceCall(nativeCallInput(2));
+    expect(bootstrap.ok).toBe(true);
+    if (!bootstrap.ok) return;
+    const handle = bootstrap.value.agentMissionSession;
+    expect(handle?.protocolVersion).toBe(2);
+    if (!handle || handle.protocolVersion !== 2) return;
+    expect(Object.keys(handle)).toEqual([]);
+    expect(JSON.stringify(handle)).toBe('{}');
+    expect(JSON.stringify(bootstrap.value)).not.toContain('bam2_');
+
+    const fetchesAfterBootstrap = fetchMock.mock.calls.length;
+    await expect(handle.stageQuoteLines({
+      missionId: MISSION_ID,
+      commandId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      expectedMissionRevision: 3,
+      expectedDraftSessionId: DRAFT.sessionId,
+      expectedDraftSlotRevision: 2,
+      expectedDraftContentRevision: 1,
+      lines: [],
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'validation' },
+    });
+    await expect(handle.decideQuoteCatalogueChoice({
+      missionId: MISSION_ID,
+      commandId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      expectedMissionRevision: 5,
+      expectedDraftSessionId: DRAFT.sessionId,
+      expectedDraftSlotRevision: 2,
+      expectedDraftContentRevision: 1,
+      decisionId: DECISION_ID,
+      choiceSetRevision: 5,
+      pendingLineId: PENDING_LINE_ID,
+      expectedWorkRevision: 2,
+      choiceId: FREE_CHOICE_ID,
+      additionalLines: Array.from({ length: 21 }, () => LINE),
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'validation' },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(fetchesAfterBootstrap);
+
+    await expect(handle.stageQuoteLines({
+      missionId: MISSION_ID,
+      commandId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      expectedMissionRevision: 3,
+      expectedDraftSessionId: DRAFT.sessionId,
+      expectedDraftSlotRevision: 2,
+      expectedDraftContentRevision: 1,
+      lines: [LINE],
+    })).resolves.toMatchObject({
+      ok: true,
+      value: { outcome: 'staged' },
+    });
+    await expect(handle.decideQuoteCatalogueChoice({
+      missionId: MISSION_ID,
+      commandId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      expectedMissionRevision: 5,
+      expectedDraftSessionId: DRAFT.sessionId,
+      expectedDraftSlotRevision: 2,
+      expectedDraftContentRevision: 1,
+      decisionId: DECISION_ID,
+      choiceSetRevision: 5,
+      pendingLineId: PENDING_LINE_ID,
+      expectedWorkRevision: 2,
+      choiceId: FREE_CHOICE_ID,
+      additionalLines: [],
+    })).resolves.toMatchObject({
+      ok: true,
+      value: { outcome: 'selected', resolution: 'free' },
+    });
+    expect(paths).toEqual([
+      '/voice/realtime/calls',
+      `/voice/realtime/calls/${SESSION_ID}/agent-mission-bootstrap-acknowledgements`,
+      `/agent-missions/${MISSION_ID}/quote-lines`,
+      `/agent-missions/${MISSION_ID}/catalogue-choices`,
+    ]);
+
+    const beforeDispose = fetchMock.mock.calls.length;
+    handle.dispose();
+    await expect(handle.stageQuoteLines({
+      missionId: MISSION_ID,
+      commandId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      expectedMissionRevision: 3,
+      expectedDraftSessionId: DRAFT.sessionId,
+      expectedDraftSlotRevision: 2,
+      expectedDraftContentRevision: 1,
+      lines: [LINE],
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'unavailable' },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(beforeDispose);
+  });
+
   it('préserve explicitement null/null sans fabriquer de capability locale', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify(nativeBootstrap({
       agentMissionProtocolVersion: null,
@@ -359,6 +656,12 @@ describe('Realtime AgentMission capability handle', () => {
     expect(result.value.agentMissionSession).toBeNull();
     expect(JSON.stringify(result.value)).not.toContain('agentMission');
     expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const m2aDisabled = await client().createRealtimeVoiceCall(nativeCallInput(2));
+    expect(m2aDisabled.ok).toBe(true);
+    if (!m2aDisabled.ok) return;
+    expect(m2aDisabled.value.agentMissionSession).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('échoue fermé et termine la session avant retour si le reçu durable est refusé', async () => {
@@ -583,6 +886,18 @@ describe('Realtime AgentMission capability handle', () => {
       agentMissionCapability: 'bam1_invalide',
     }],
     ['version inconnue', 1, {
+      agentMissionProtocolVersion: 2,
+      agentMissionCapability: CAPABILITY,
+    }],
+    ['réponse bam2 après demande V1', 1, {
+      agentMissionProtocolVersion: 2,
+      agentMissionCapability: CAPABILITY_V2,
+    }],
+    ['réponse V1 après demande V2', 2, {
+      agentMissionProtocolVersion: 1,
+      agentMissionCapability: CAPABILITY,
+    }],
+    ['capability bam1 avec version V2', 2, {
       agentMissionProtocolVersion: 2,
       agentMissionCapability: CAPABILITY,
     }],

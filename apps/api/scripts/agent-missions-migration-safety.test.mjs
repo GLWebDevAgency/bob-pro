@@ -89,6 +89,18 @@ const m2aCutoverPath = path.join(
   apiDir,
   'prisma/migrations/20260729150200_agent_mission_quote_line_work_cutover/migration.sql',
 );
+const m2a1ExpandPath = path.join(
+  apiDir,
+  'prisma/migrations/20260730100000_agent_mission_catalogue_choice_expand/migration.sql',
+);
+const m2a1ValidatePath = path.join(
+  apiDir,
+  'prisma/migrations/20260730100100_agent_mission_catalogue_choice_validate/migration.sql',
+);
+const m2a1CutoverPath = path.join(
+  apiDir,
+  'prisma/migrations/20260730100200_agent_mission_catalogue_choice_cutover/migration.sql',
+);
 const schemaPath = path.join(apiDir, 'prisma/schema.prisma');
 const persistencePath = path.join(
   apiDir,
@@ -103,6 +115,10 @@ const generatorPath = path.join(scriptDir, 'generate-agent-mission-migration-val
 const m2aGeneratorPath = path.join(
   scriptDir,
   'generate-agent-mission-m2a-foundation-values.mjs',
+);
+const m2a1GeneratorPath = path.join(
+  scriptDir,
+  'generate-agent-mission-m2a1-values.mjs',
 );
 
 const [
@@ -126,12 +142,16 @@ const [
   m2aExpand,
   m2aValidate,
   m2aCutover,
+  m2a1Expand,
+  m2a1Validate,
+  m2a1Cutover,
   schema,
   persistence,
   rls,
   agentMissionRlsReplay,
   generator,
   m2aGenerator,
+  m2a1Generator,
 ] = await Promise.all([
   readFile(expandPath, 'utf8'),
   readFile(validatePath, 'utf8'),
@@ -153,47 +173,37 @@ const [
   readFile(m2aExpandPath, 'utf8'),
   readFile(m2aValidatePath, 'utf8'),
   readFile(m2aCutoverPath, 'utf8'),
+  readFile(m2a1ExpandPath, 'utf8'),
+  readFile(m2a1ValidatePath, 'utf8'),
+  readFile(m2a1CutoverPath, 'utf8'),
   readFile(schemaPath, 'utf8'),
   readFile(persistencePath, 'utf8'),
   readFile(rlsPath, 'utf8'),
   readFile(agentMissionRlsReplayPath, 'utf8'),
   readFile(generatorPath, 'utf8'),
   readFile(m2aGeneratorPath, 'utf8'),
+  readFile(m2a1GeneratorPath, 'utf8'),
 ]);
 
-test('les listes SQL AgentMission sont générées depuis les constantes du core', () => {
+test('les migrations AgentMission historiques sont immuables octet par octet', () => {
   const result = spawnSync(
     process.execPath,
     [path.join(scriptDir, 'generate-agent-mission-migration-values.mjs'), '--check'],
     { cwd: repositoryRoot, encoding: 'utf8' },
   );
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-  assert.match(generator, /\^\[0-9_,\\s\]\+\$/u);
-  assert.doesNotMatch(
-    generator.match(/function extractNumericConstArray[\s\S]*?\n\}/u)?.[0] ?? '',
-    /matchAll/u,
+  const forbiddenWrite = spawnSync(
+    process.execPath,
+    [path.join(scriptDir, 'generate-agent-mission-migration-values.mjs'), '--write'],
+    { cwd: repositoryRoot, encoding: 'utf8' },
   );
-  assert.match(generator, /frozenCapabilityExpandProtocolVersions = \['1'\]/u);
+  assert.notEqual(forbiddenWrite.status, 0);
   assert.match(
-    generator,
-    /AGENT_MISSION_PROTOCOL_MIGRATION_FROZEN: create a new expand\/validate migration/u,
+    `${forbiddenWrite.stdout}\n${forbiddenWrite.stderr}`,
+    /AGENT_MISSION_HISTORICAL_MIGRATIONS_READ_ONLY/u,
   );
-  assert.match(generator, /return extractConstArray\(source, spread\[1\], nextStack\)/u);
-  assert.match(generator, /AGENT_MISSION_SQL_SOURCE_ARRAY_CYCLE/u);
-  assert.match(generator, /AGENT_MISSION_SQL_SOURCE_ARRAY_TOKEN_INVALID/u);
-  assert.match(generator, /frozenHistoricalMigrationHashes/u);
-  assert.equal(
-    (generator.match(/\bawait writeFile\(/gmu) ?? []).length,
-    1,
-    'Le générateur ne doit écrire que la nouvelle migration M1-C.',
-  );
-  assert.match(
-    generator,
-    /await writeFile\(\s*customerResolutionExpandMigrationPath/u,
-  );
-  assert.doesNotMatch(generator, /await writeFile\(\s*migrationPath/u);
-  assert.doesNotMatch(generator, /await writeFile\(\s*capabilityMigrationPath/u);
-  assert.doesNotMatch(generator, /await writeFile\(\s*commandNamespaceMigrationPath/u);
+  assert.match(generator, /FROZEN_HISTORICAL_MIGRATIONS/u);
+  assert.doesNotMatch(generator, /\bwriteFile\b/u);
 
   for (const [name, sql, expectedHash] of [
     [
@@ -210,6 +220,21 @@ test('les listes SQL AgentMission sont générées depuis les constantes du core
       '20260727180000',
       commandNamespaceExpand,
       '5e4a07e66e047573ccb1766f6a8c844fad8bfe0a128ce9312abac17a9d4f19c5',
+    ],
+    [
+      '20260729100000',
+      customerResolutionExpand,
+      '0103db8de1c21bf9299b4439ff74b606e50777e6693b54bb2ed0bc70b9a106f9',
+    ],
+    [
+      '20260729100100',
+      customerResolutionValidate,
+      '885bebd64380ffbf1aa91109e8391e944e6a1ac39ad132b9544b2182921617e7',
+    ],
+    [
+      '20260729100200',
+      customerResolutionCutover,
+      'dff7d1a7103735a5ae257c381a159569182c5a6b6edbd034ca5f66c16d0c14bb',
     ],
   ]) {
     assert.equal(
@@ -242,6 +267,9 @@ test('chaque migration borne les verrous et le temps de statement dans sa transa
     ['M2-A expand', m2aExpand],
     ['M2-A validate', m2aValidate],
     ['M2-A cutover', m2aCutover],
+    ['M2-A-1 expand', m2a1Expand],
+    ['M2-A-1 validate', m2a1Validate],
+    ['M2-A-1 cutover', m2a1Cutover],
   ]) {
     assert.match(sql, /\bBEGIN;/u, `${name}: transaction absente`);
     assert.match(sql, /SET LOCAL lock_timeout = '[^']+';/u, `${name}: lock_timeout absent`);
@@ -254,19 +282,25 @@ test('chaque migration borne les verrous et le temps de statement dans sa transa
   }
 });
 
-test('M2-A-0 génère ses unions SQL depuis le core sans réécrire une migration historique', () => {
+test('M2-A-0 reste figé et ses unions générées demeurent traçables', () => {
   const result = spawnSync(
     process.execPath,
     [m2aGeneratorPath, '--check'],
     { cwd: repositoryRoot, encoding: 'utf8' },
   );
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-  assert.equal(
-    (m2aGenerator.match(/\bawait writeFile\(/gmu) ?? []).length,
-    1,
-    'Le générateur M2-A ne peut écrire que sa migration expand courante.',
+  const forbiddenWrite = spawnSync(
+    process.execPath,
+    [m2aGeneratorPath, '--write'],
+    { cwd: repositoryRoot, encoding: 'utf8' },
   );
-  assert.match(m2aGenerator, /await writeFile\(migrationPath, renderedMigration/u);
+  assert.notEqual(forbiddenWrite.status, 0);
+  assert.match(
+    `${forbiddenWrite.stdout}\n${forbiddenWrite.stderr}`,
+    /AGENT_MISSION_M2A_FOUNDATION_READ_ONLY/u,
+  );
+  assert.match(m2aGenerator, /FROZEN_M2A_FOUNDATION_MIGRATIONS/u);
+  assert.doesNotMatch(m2aGenerator, /\bwriteFile\b/u);
   for (const region of [
     'AGENT_MISSION_QUOTE_LINE_WORK_STATES',
     'AGENT_MISSION_QUOTE_LINE_WORK_ORIGINS',
@@ -385,14 +419,14 @@ test('M2-A-0 indexe la recherche catalogue réelle avec une normalisation tenant
   ]) {
     assert.match(m2aExpand, new RegExp(primitive.replace('.', '\\.'), 'u'));
   }
-  for (const sourceName of [
-    'CATALOGUE_SEARCH_LATIN_RANGES',
-    'CATALOGUE_SEARCH_IGNORED_MARK_RANGES',
-    'CATALOGUE_SEARCH_EXPANSIONS',
+  for (const generatedRegion of [
+    'CATALOGUE_SEARCH_EXPANSION_EXPRESSION',
+    'CATALOGUE_SEARCH_TRANSLITERATION_SOURCE',
+    'CATALOGUE_SEARCH_TRANSLITERATION_TARGET',
   ]) {
-    assert.match(m2aGenerator, new RegExp(sourceName, 'u'));
+    assert.match(m2aExpand, new RegExp(`BEGIN GENERATED ${generatedRegion}`, 'u'));
+    assert.match(m2aExpand, new RegExp(`END GENERATED ${generatedRegion}`, 'u'));
   }
-  assert.match(m2aGenerator, /character\.normalize\('NFD'\)/u);
   assert.match(
     m2aExpand,
     /catalogue_prestations_company_search_prefix_idx[\s\S]*?"companyId",[\s\S]*?"searchKey" pg_catalog\.text_pattern_ops,[\s\S]*?"id"/u,
@@ -872,7 +906,7 @@ test('le reçu bootstrap V1 reste nullable, one-shot et séparé expand/validate
   );
   assert.match(
     agentMissionRlsReplay,
-    /guard_realtime_agent_mission_bootstrap_receipt_v1\(\)[\s\S]*?exposed_role\.rolname IN \('anon', 'authenticated', 'service_role'\)/u,
+    /guard_realtime_agent_mission_bootstrap_receipt_v2\(\)[\s\S]*?exposed_role\.rolname IN \('anon', 'authenticated', 'service_role'\)/u,
   );
 });
 
@@ -1109,26 +1143,191 @@ test('chaque révision mission et event est couplée dans la même transaction',
   assert.match(expand, /CREATE CONSTRAINT TRIGGER agent_missions_event_required_v1/u);
   assert.match(expand, /DEFERRABLE INITIALLY DEFERRED/u);
   assert.match(expand, /AGENT_MISSION_EVENT_REQUIRED/u);
-  for (const functionName of [
-    'guard_agent_mission_event_append_v1',
-    'require_agent_mission_event_v1',
+  for (const { migrationFunctionName, replayFunctionName } of [
+    {
+      migrationFunctionName: 'guard_agent_mission_event_append_v1',
+      replayFunctionName: 'guard_agent_mission_event_append_v2',
+    },
+    {
+      migrationFunctionName: 'require_agent_mission_event_v1',
+      replayFunctionName: 'require_agent_mission_event_v1',
+    },
   ]) {
     assert.match(
       expand,
-      new RegExp(`REVOKE ALL ON FUNCTION public\\.${functionName}\\(\\) FROM PUBLIC`, 'u'),
+      new RegExp(
+        `REVOKE ALL ON FUNCTION public\\.${migrationFunctionName}\\(\\) FROM PUBLIC`,
+        'u',
+      ),
     );
     assert.match(
       rls,
-      new RegExp(`REVOKE ALL ON FUNCTION ${functionName}\\(\\) FROM PUBLIC`, 'u'),
-      `Le replay RLS canonique doit refermer ${functionName} pour PUBLIC.`,
+      new RegExp(`REVOKE ALL ON FUNCTION ${replayFunctionName}\\(\\) FROM PUBLIC`, 'u'),
+      `Le replay RLS canonique doit refermer ${replayFunctionName} pour PUBLIC.`,
     );
     assert.match(
       rls,
       new RegExp(
-        `REVOKE ALL PRIVILEGES ON FUNCTION ${functionName}\\(\\) FROM %I`,
+        `REVOKE ALL PRIVILEGES ON FUNCTION ${replayFunctionName}\\(\\) FROM %I`,
         'u',
       ),
-      `Le replay RLS canonique doit refermer ${functionName} pour les rôles Data API.`,
+      `Le replay RLS canonique doit refermer ${replayFunctionName} pour les rôles Data API.`,
     );
   }
+});
+
+test('M2-A-1 est généré depuis les unions vivantes sans dérive SQL', () => {
+  const result = spawnSync(
+    process.execPath,
+    [m2a1GeneratorPath, '--check'],
+    { cwd: repositoryRoot, encoding: 'utf8' },
+  );
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.match(m2a1Generator, /AGENT_MISSION_PROTOCOL_VERSIONS/u);
+  assert.match(m2a1Generator, /QUOTE_CREATION_MISSION_PHASES/u);
+  assert.match(m2a1Generator, /AGENT_MISSION_M2A1_EVENT_TYPES/u);
+  assert.match(m2a1Generator, /AGENT_MISSION_QUOTE_LINE_CATALOGUE_RESOLUTIONS/u);
+  assert.match(
+    m2a1Expand,
+    /BEGIN GENERATED AGENT_MISSION_PROTOCOL_VERSIONS[\s\S]*?\b1,[\s\S]*?\b2[\s\S]*?END GENERATED AGENT_MISSION_PROTOCOL_VERSIONS/u,
+  );
+  assert.doesNotMatch(
+    m2a1Generator,
+    /agentMissionProtocolVersion" NOT IN \(1, 2\)/u,
+    'La garde de reçu doit être rendue depuis la constante de protocoles.',
+  );
+});
+
+test('M2-A-1 respecte strictement expand puis validate puis cutover', () => {
+  assert.doesNotMatch(m2a1Expand, /VALIDATE CONSTRAINT/u);
+  assert.doesNotMatch(m2a1Expand, /\bDROP CONSTRAINT\b/u);
+  assert.doesNotMatch(m2a1Validate, /\bADD CONSTRAINT\b|\bDROP CONSTRAINT\b/u);
+  assert.match(m2a1Validate, /VALIDATE CONSTRAINT agent_missions_protocol_m2a1_check/u);
+  assert.match(
+    m2a1Validate,
+    /VALIDATE CONSTRAINT realtime_leases_agent_mission_bootstrap_receipt_m2a1_check/u,
+  );
+  assert.doesNotMatch(m2a1Cutover, /\bADD CONSTRAINT\b|\bVALIDATE CONSTRAINT\b/u);
+  assert.match(
+    m2a1Cutover,
+    /RENAME CONSTRAINT agent_missions_protocol_m2a1_check[\s\S]*?TO agent_missions_protocol_check/u,
+  );
+  assert.match(
+    m2a1Cutover,
+    /RENAME CONSTRAINT agent_mission_quote_line_work_catalogue_resolution_m2a1_check[\s\S]*?TO agent_mission_quote_line_work_catalogue_resolution_check/u,
+  );
+  assert.doesNotMatch(
+    `${m2a1Expand}\n${m2a1Validate}\n${m2a1Cutover}`,
+    /UPDATE public\.release_flags[\s\S]*?enabled\s*=\s*true/iu,
+  );
+});
+
+test('M2-A-1 ne dépend d’aucun identifiant PostgreSQL tronqué à 63 octets', () => {
+  const sql = `${m2a1Expand}\n${m2a1Validate}\n${m2a1Cutover}`;
+  const identifiers = [
+    ...sql.matchAll(
+      /\b(?:CONSTRAINT|TRIGGER|INDEX)\s+"?([a-z][a-z0-9_]*)"?/gu,
+    ),
+    ...sql.matchAll(/\bFUNCTION\s+public\.([a-z][a-z0-9_]*)\s*\(/gu),
+  ].map((match) => match[1]);
+  assert.ok(identifiers.length > 0, 'Aucun identifiant M2-A-1 détecté.');
+  for (const identifier of identifiers) {
+    assert.ok(
+      Buffer.byteLength(identifier, 'utf8') <= 63,
+      `Identifiant PostgreSQL tronqué silencieusement: ${identifier}`,
+    );
+  }
+});
+
+test('M2-A-1 garde le flag OFF sous FORCE RLS et refuse les anciennes lignes dormantes', () => {
+  assert.match(
+    m2a1Expand,
+    /ALTER TABLE public\.release_flags NO FORCE ROW LEVEL SECURITY;[\s\S]*?INSERT INTO public\.release_flags[\s\S]*?bob\.agent_missions\.quote\.m2a[\s\S]*?false, false, 1[\s\S]*?ALTER TABLE public\.release_flags ENABLE ROW LEVEL SECURITY;[\s\S]*?ALTER TABLE public\.release_flags FORCE ROW LEVEL SECURITY;/u,
+  );
+  assert.match(m2a1Expand, /AGENT_MISSION_M2A1_RELEASE_FLAG_COLLISION_OR_ENABLED/u);
+  assert.match(m2a1Expand, /AGENT_MISSION_M2A1_PREEXISTING_LINE_WORK_UNSUPPORTED/u);
+  assert.match(
+    m2a1Expand,
+    /ALTER TABLE public\.agent_mission_quote_line_work NO FORCE ROW LEVEL SECURITY;[\s\S]*?IF EXISTS \(SELECT 1 FROM public\.agent_mission_quote_line_work LIMIT 1\)[\s\S]*?ALTER TABLE public\.agent_mission_quote_line_work ENABLE ROW LEVEL SECURITY;[\s\S]*?ALTER TABLE public\.agent_mission_quote_line_work FORCE ROW LEVEL SECURITY;/u,
+  );
+});
+
+test('M2-A-1 exécute chaque DDL et fence Data API sous le propriétaire exact', () => {
+  for (const [table, label] of [
+    ['agent_missions', 'missions'],
+    ['agent_mission_events', 'events'],
+    ['agent_mission_quote_line_work', 'line_work'],
+    ['realtime_session_leases', 'realtime_leases'],
+    ['catalogue_prestations', 'catalogue'],
+  ]) {
+    assert.match(
+      m2a1Expand,
+      new RegExp(
+        `relation\\.relname = '${table}'[\\s\\S]*?pg_has_role\\(session_user, owner_oid, 'SET'\\)[\\s\\S]*?SET LOCAL ROLE %I[\\s\\S]*?has_schema_privilege\\([\\s\\S]*?current_user, 'public', 'CREATE'[\\s\\S]*?AGENT_MISSION_M2A1_${label.toUpperCase()}_SCHEMA_CREATE_REQUIRED[\\s\\S]*?bob_m2a1_${label}_data_api_fence[\\s\\S]*?REVOKE ALL PRIVILEGES ON TABLE public\\.${table} FROM %I[\\s\\S]*?REVOKE SELECT \\(%I\\), INSERT \\(%I\\), UPDATE \\(%I\\), REFERENCES \\(%I\\)[\\s\\S]*?RESET ROLE;`,
+        'u',
+      ),
+      `${table}: owner/fence/RESET incomplet`,
+    );
+  }
+  for (const role of ['anon', 'authenticated', 'service_role']) {
+    assert.match(m2a1Expand, new RegExp(`'${role}'`, 'u'));
+  }
+  assert.doesNotMatch(
+    m2a1Expand,
+    /RESET ROLE;[\s\S]{0,200}DO \$bob_m2a1_data_api_fence\$/u,
+  );
+});
+
+test('M2-A-1 ferme le protocole V2, les révisions et la recherche catalogue tenantée', () => {
+  assert.match(
+    m2a1Expand,
+    /OLD\."protocolVersion" IS DISTINCT FROM NEW\."protocolVersion"/u,
+  );
+  assert.match(m2a1Expand, /AGENT_MISSION_M2A1_EVENT_PROTOCOL_REQUIRED/u);
+  assert.match(m2a1Expand, /AGENT_MISSION_QUOTE_LINE_ACTIVE_M2A_PARENT_REQUIRED/u);
+  assert.match(
+    m2a1Expand,
+    /NEW\."revision" <> OLD\."revision" \+ 1[\s\S]*?CATALOGUE_PRESTATION_IDENTITY_OR_REVISION_INVALID/u,
+  );
+  assert.match(
+    m2a1Expand,
+    /CREATE TABLE public\.catalogue_prestation_search_tokens[\s\S]*?PRIMARY KEY \("companyId", token, "catalogueItemId"\)[\s\S]*?FOREIGN KEY \("catalogueItemId", "companyId"\)[\s\S]*?ON DELETE CASCADE/u,
+  );
+  assert.equal(
+    (
+      m2a1Expand.match(
+        /pg_catalog\.char_length\((?:split\.)?token\) BETWEEN 1 AND 1000/gu,
+      ) ?? []
+    ).length,
+    3,
+    'Le CHECK, le trigger et le backfill doivent partager la borne normalisée sourcée.',
+  );
+  assert.match(
+    m2a1Expand,
+    /CREATE FUNCTION public\.sync_catalogue_prestation_search_tokens_v1\(\)[\s\S]*?SECURITY DEFINER[\s\S]*?SET search_path = pg_catalog[\s\S]*?SET row_security = on/u,
+  );
+  assert.match(
+    m2a1Expand,
+    /CREATE TRIGGER catalogue_prestations_search_tokens_sync_v1[\s\S]*?AFTER INSERT OR UPDATE OF "label"[\s\S]*?INSERT INTO public\.catalogue_prestation_search_tokens[\s\S]*?ALTER TABLE public\.catalogue_prestation_search_tokens[\s\S]*?FORCE ROW LEVEL SECURITY[\s\S]*?CREATE POLICY tenant_isolation/u,
+  );
+  assert.match(
+    m2a1Expand,
+    /AGENT_MISSION_M2A1_CATALOGUE_FORCE_RLS_REQUIRED[\s\S]*?ALTER TABLE public\.catalogue_prestations NO FORCE ROW LEVEL SECURITY;[\s\S]*?INSERT INTO public\.catalogue_prestation_search_tokens[\s\S]*?ALTER TABLE public\.catalogue_prestations ENABLE ROW LEVEL SECURITY;[\s\S]*?ALTER TABLE public\.catalogue_prestations FORCE ROW LEVEL SECURITY;/u,
+  );
+  assert.match(
+    m2a1Expand,
+    /CREATE INDEX catalogue_search_tokens_company_item_idx[\s\S]*?\("companyId", "catalogueItemId"\)/u,
+  );
+  assert.doesNotMatch(
+    m2a1Expand,
+    /catalogue_prestations_search_tenant_tokens_idx/u,
+  );
+  assert.match(
+    m2a1Expand,
+    /bob_m2a1_catalogue_search_tokens_data_api_fence[\s\S]*?REVOKE ALL PRIVILEGES ON TABLE public\.catalogue_prestation_search_tokens FROM %I[\s\S]*?REVOKE SELECT \(%I\), INSERT \(%I\), UPDATE \(%I\), REFERENCES \(%I\)[\s\S]*?sync_catalogue_prestation_search_tokens_v1/u,
+  );
+  assert.match(
+    m2a1Expand,
+    /agent_mission_quote_line_work_ordinal_m2a1_check CHECK \([\s\S]*?"ordinal" BETWEEN 1 AND 2147483647/u,
+  );
 });

@@ -1,6 +1,8 @@
 import { timingSafeEqual } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import {
+  AGENT_MISSION_PROTOCOL_V1,
+  AGENT_MISSION_PROTOCOL_VERSIONS,
   AgentMission,
   AgentMissionEvent,
   normalizeCustomerName,
@@ -16,6 +18,7 @@ import {
   type AgentMissionForegroundUnavailableReason,
   type AgentMissionLookup,
   type AgentMissionOwner,
+  type AgentMissionProtocolVersion,
   type AgentMissionQuoteScreenAuthorityPort,
   type AgentMissionQuoteScreenFences,
   type AgentMissionQuoteScreenObservation,
@@ -48,6 +51,8 @@ import {
   type QuoteDraftSlot as QuoteDraftSlotRow,
 } from '@prisma/client';
 import { prepareRealtimeContext } from '../../voice/realtime/realtime-admission';
+import { PrismaCatalogueCandidateSearch } from './catalogue-candidate.persistence';
+import { canonicalPrismaVatRate } from './prisma-vat-rate';
 import type { PrismaService } from './prisma.service';
 
 const OWNER_TRANSACTION_OPTIONS = {
@@ -62,6 +67,7 @@ const MISSION_COLUMNS = Prisma.sql`
   "id",
   "companyId",
   "ownerUserId",
+  "protocolVersion",
   "kind",
   "status",
   "phase",
@@ -97,6 +103,7 @@ const QUOTE_LINE_WORK_COLUMNS = Prisma.sql`
   "revision",
   "state",
   "origin",
+  "catalogueResolution",
   "serviceReference",
   "category",
   "quantityMilli",
@@ -159,6 +166,18 @@ function canonicalCustomerName(value: string): string {
   return normalizeCustomerName(value) ?? value;
 }
 
+function canonicalPersistedAgentMissionProtocolVersion(
+  value: number,
+): AgentMissionProtocolVersion {
+  if (
+    !Number.isSafeInteger(value)
+    || !(AGENT_MISSION_PROTOCOL_VERSIONS as readonly number[]).includes(value)
+  ) {
+    throw new Error('AGENT_MISSION_PROTOCOL_VERSION_CORRUPT');
+  }
+  return value as AgentMissionProtocolVersion;
+}
+
 type AgentMissionAuthorityResolution =
   | {
       readonly status: 'authorized';
@@ -173,12 +192,14 @@ type AgentMissionAuthorityResolution =
 function canonicalAuthorityProof(
   proof: AgentMissionRealtimeAuthorityProof,
 ): {
+  readonly protocolVersion: AgentMissionProtocolVersion;
   readonly subjectHashCandidates: readonly string[];
   readonly principalBindingHash: string;
   readonly capabilityHash: string;
 } | null {
   if (
-    !Array.isArray(proof.subjectHashCandidates)
+    !AGENT_MISSION_PROTOCOL_VERSIONS.includes(proof.protocolVersion)
+    || !Array.isArray(proof.subjectHashCandidates)
     || proof.subjectHashCandidates.length < 1
     || proof.subjectHashCandidates.length > MAX_SUBJECT_HASH_CANDIDATES
     || !SHA256_HEX.test(proof.principalBindingHash)
@@ -191,6 +212,7 @@ function canonicalAuthorityProof(
   ) return null;
   subjectHashCandidates.sort();
   return Object.freeze({
+    protocolVersion: proof.protocolVersion,
     subjectHashCandidates: Object.freeze(subjectHashCandidates),
     principalBindingHash: proof.principalBindingHash,
     capabilityHash: proof.capabilityHash,
@@ -292,11 +314,12 @@ async function mapForegroundTransactionFailure<R>(
 function validAuthorityLeaseAt(
   row: AgentMissionAuthorityLeaseRow,
   databaseNow: Date,
+  protocolVersion: AgentMissionProtocolVersion,
 ): boolean {
   return row.state === 'active'
     && row.leaseExpiresAt.getTime() > databaseNow.getTime()
     && row.hardExpiresAt.getTime() > databaseNow.getTime()
-    && row.agentMissionProtocolVersion === 1
+    && row.agentMissionProtocolVersion === protocolVersion
     && row.agentMissionProtocolBoundAt instanceof Date
     && row.agentMissionBootstrapAcknowledgedAt instanceof Date
     && typeof row.agentMissionCapabilityHash === 'string'
@@ -329,6 +352,7 @@ function missionFromRow(row: AgentMissionRow): AgentMission {
     id: row.id,
     companyId: row.companyId,
     ownerUserId: row.ownerUserId,
+    protocolVersion: canonicalPersistedAgentMissionProtocolVersion(row.protocolVersion),
     kind: row.kind,
     status: row.status,
     phase: row.phase,
@@ -421,7 +445,12 @@ function quoteLineWorkFromRow(
     : Number(row.quantityMilli);
   const requestedVatRate = row.requestedVatRate === null
     ? null
-    : row.requestedVatRate.toNumber();
+    : canonicalPrismaVatRate(row.requestedVatRate);
+  if (row.requestedVatRate !== null && requestedVatRate === null) {
+    throw new Error(
+      'AGENT_MISSION_QUOTE_LINE_WORK_ROW_CORRUPT:requestedVatRate:invalid_value',
+    );
+  }
   const parsed = parseAgentMissionQuoteLineWork({
     id: row.id,
     companyId: row.companyId,
@@ -431,6 +460,7 @@ function quoteLineWorkFromRow(
     revision: row.revision,
     state: row.state,
     origin: row.origin,
+    catalogueResolution: row.catalogueResolution,
     serviceReference: row.serviceReference,
     category: row.category,
     quantityMilli,
@@ -471,6 +501,7 @@ async function setMissionContext(
 async function lockActiveQuoteMissionForWork(
   transaction: Prisma.TransactionClient,
   input: AgentMissionOwner & { readonly missionId: string },
+  expectedProtocolVersion: AgentMissionProtocolVersion,
 ): Promise<boolean> {
   // Le contexte est nécessaire pour satisfaire la policy UPDATE de la mission lors du
   // SELECT ... FOR UPDATE. L'identifiant seul ne confère aucune autorité : la ligne parent doit
@@ -484,6 +515,7 @@ async function lockActiveQuoteMissionForWork(
       AND "ownerUserId" = ${input.ownerUserId}
       AND "kind" = 'quote_creation'
       AND "status" = 'active'
+      AND "protocolVersion" = ${expectedProtocolVersion}
     LIMIT 1
     FOR UPDATE
   `;
@@ -649,7 +681,11 @@ async function resolveAgentMissionAuthority(
         canonical.subjectHashCandidates,
       );
   const now = await databaseClock(transaction);
-  const eligible = rows.filter((row) => validAuthorityLeaseAt(row, now));
+  const eligible = rows.filter((row) => validAuthorityLeaseAt(
+    row,
+    now,
+    canonical.protocolVersion,
+  ));
   if (eligible.length === 0) {
     return {
       status: 'rejected',
@@ -688,7 +724,10 @@ async function lockOpenCompanyForMissionWrite(
 }
 
 class PrismaAgentMissionReadRepository implements AgentMissionReadRepositoryPort {
-  constructor(protected readonly transaction: Prisma.TransactionClient) {}
+  constructor(
+    protected readonly transaction: Prisma.TransactionClient,
+    protected readonly expectedProtocolVersion: AgentMissionProtocolVersion,
+  ) {}
 
   async findActive(input: AgentMissionOwner & {
     readonly kind: 'quote_creation';
@@ -699,6 +738,7 @@ class PrismaAgentMissionReadRepository implements AgentMissionReadRepositoryPort
         ownerUserId: input.ownerUserId,
         kind: input.kind,
         status: 'active',
+        protocolVersion: this.expectedProtocolVersion,
       },
     });
     return row === null ? null : missionFromRow(row);
@@ -711,7 +751,7 @@ class PrismaAgentMissionReadRepository implements AgentMissionReadRepositoryPort
         ownerUserId: input.ownerUserId,
         status: 'active',
       },
-      select: { id: true, kind: true },
+      select: { id: true, kind: true, protocolVersion: true },
       orderBy: { id: 'asc' },
       take: 2,
     });
@@ -725,6 +765,17 @@ class PrismaAgentMissionReadRepository implements AgentMissionReadRepositoryPort
         status: 'unsupported_kind',
         missionId: reference.id,
         kind: reference.kind,
+      };
+    }
+    const protocolVersion = canonicalPersistedAgentMissionProtocolVersion(
+      reference.protocolVersion,
+    );
+    if (protocolVersion !== this.expectedProtocolVersion) {
+      return {
+        status: 'unsupported_protocol',
+        missionId: reference.id,
+        kind: 'quote_creation',
+        protocolVersion,
       };
     }
     const lookup = await this.findById({
@@ -746,7 +797,7 @@ class PrismaAgentMissionReadRepository implements AgentMissionReadRepositoryPort
         companyId: input.companyId,
         ownerUserId: input.ownerUserId,
       },
-      select: { id: true, kind: true },
+      select: { id: true, kind: true, protocolVersion: true },
     });
     if (reference === null) return null;
     if (reference.kind !== 'quote_creation') {
@@ -756,12 +807,24 @@ class PrismaAgentMissionReadRepository implements AgentMissionReadRepositoryPort
         kind: reference.kind,
       };
     }
+    const protocolVersion = canonicalPersistedAgentMissionProtocolVersion(
+      reference.protocolVersion,
+    );
+    if (protocolVersion !== this.expectedProtocolVersion) {
+      return {
+        status: 'unsupported_protocol',
+        missionId: reference.id,
+        kind: 'quote_creation',
+        protocolVersion,
+      };
+    }
     const row = await this.transaction.agentMission.findFirst({
       where: {
         id: input.missionId,
         companyId: input.companyId,
         ownerUserId: input.ownerUserId,
         kind: 'quote_creation',
+        protocolVersion: this.expectedProtocolVersion,
       },
     });
     return row === null ? null : { status: 'known', mission: missionFromRow(row) };
@@ -784,6 +847,7 @@ class PrismaAgentMissionRepository
         ownerUserId: input.ownerUserId,
         kind: input.kind,
         status: 'active',
+        protocolVersion: this.expectedProtocolVersion,
       },
       select: { id: true },
     });
@@ -797,6 +861,7 @@ class PrismaAgentMissionRepository
         AND "ownerUserId" = ${input.ownerUserId}
         AND "kind" = ${input.kind}
         AND "status" = 'active'
+        AND "protocolVersion" = ${this.expectedProtocolVersion}
       LIMIT 1
       FOR UPDATE
     `;
@@ -814,7 +879,7 @@ class PrismaAgentMissionRepository
         ownerUserId: input.ownerUserId,
         status: 'active',
       },
-      select: { id: true, kind: true },
+      select: { id: true, kind: true, protocolVersion: true },
       orderBy: { id: 'asc' },
       take: 2,
     });
@@ -845,6 +910,17 @@ class PrismaAgentMissionRepository
         kind: row.kind,
       };
     }
+    const protocolVersion = canonicalPersistedAgentMissionProtocolVersion(
+      reference.protocolVersion,
+    );
+    if (protocolVersion !== this.expectedProtocolVersion) {
+      return {
+        status: 'unsupported_protocol',
+        missionId: reference.id,
+        kind: 'quote_creation',
+        protocolVersion,
+      };
+    }
     const rows = await this.transaction.$queryRaw<AgentMissionRow[]>`
       SELECT ${MISSION_COLUMNS}
       FROM public.agent_missions
@@ -853,6 +929,7 @@ class PrismaAgentMissionRepository
         AND "ownerUserId" = ${input.ownerUserId}
         AND "kind" = 'quote_creation'
         AND "status" = 'active'
+        AND "protocolVersion" = ${this.expectedProtocolVersion}
       LIMIT 1
       FOR UPDATE
     `;
@@ -873,7 +950,7 @@ class PrismaAgentMissionRepository
         companyId: input.companyId,
         ownerUserId: input.ownerUserId,
       },
-      select: { id: true, kind: true },
+      select: { id: true, kind: true, protocolVersion: true },
     });
     if (reference === null) return null;
     // Une mission terminale d'un futur kind reste discriminée : l'appelant ne peut ni la parser
@@ -885,12 +962,24 @@ class PrismaAgentMissionRepository
         kind: reference.kind,
       };
     }
+    const protocolVersion = canonicalPersistedAgentMissionProtocolVersion(
+      reference.protocolVersion,
+    );
+    if (protocolVersion !== this.expectedProtocolVersion) {
+      return {
+        status: 'unsupported_protocol',
+        missionId: reference.id,
+        kind: 'quote_creation',
+        protocolVersion,
+      };
+    }
     const rows = await this.transaction.$queryRaw<AgentMissionRow[]>`
       SELECT ${MISSION_COLUMNS}
       FROM public.agent_missions
       WHERE "id" = ${input.missionId}::UUID
         AND "companyId" = ${input.companyId}
         AND "ownerUserId" = ${input.ownerUserId}
+        AND "protocolVersion" = ${this.expectedProtocolVersion}
       LIMIT 1
       FOR UPDATE
     `;
@@ -901,12 +990,16 @@ class PrismaAgentMissionRepository
 
   async insert(mission: AgentMission): Promise<'inserted' | 'conflict'> {
     const snapshot = mission.toSnapshot();
+    if (snapshot.protocolVersion !== this.expectedProtocolVersion) {
+      throw new Error('AGENT_MISSION_PROTOCOL_AUTHORITY_MISMATCH');
+    }
     await setMissionContext(this.transaction, snapshot.id);
     const inserted = await this.transaction.agentMission.createMany({
       data: [{
         id: snapshot.id,
         companyId: snapshot.companyId,
         ownerUserId: snapshot.ownerUserId,
+        protocolVersion: snapshot.protocolVersion,
         kind: snapshot.kind,
         status: snapshot.status,
         phase: snapshot.phase,
@@ -934,12 +1027,16 @@ class PrismaAgentMissionRepository
     readonly expectedRevision: number;
   }): Promise<'updated' | 'revision_conflict'> {
     const snapshot = input.mission.toSnapshot();
+    if (snapshot.protocolVersion !== this.expectedProtocolVersion) {
+      throw new Error('AGENT_MISSION_PROTOCOL_AUTHORITY_MISMATCH');
+    }
     await setMissionContext(this.transaction, snapshot.id);
     const updated = await this.transaction.agentMission.updateMany({
       where: {
         id: snapshot.id,
         companyId: snapshot.companyId,
         ownerUserId: snapshot.ownerUserId,
+        protocolVersion: this.expectedProtocolVersion,
         revision: input.expectedRevision,
       },
       data: {
@@ -963,7 +1060,10 @@ class PrismaAgentMissionRepository
 }
 
 class PrismaAgentMissionEventRepository implements AgentMissionEventRepositoryPort {
-  constructor(private readonly transaction: Prisma.TransactionClient) {}
+  constructor(
+    private readonly transaction: Prisma.TransactionClient,
+    private readonly expectedProtocolVersion: AgentMissionProtocolVersion,
+  ) {}
 
   async findByCommandId(input: AgentMissionOwner & {
     readonly commandId: string;
@@ -976,7 +1076,7 @@ class PrismaAgentMissionEventRepository implements AgentMissionEventRepositoryPo
       },
       select: {
         missionId: true,
-        mission: { select: { kind: true } },
+        mission: { select: { kind: true, protocolVersion: true } },
       },
     });
     if (reference === null) return null;
@@ -987,12 +1087,26 @@ class PrismaAgentMissionEventRepository implements AgentMissionEventRepositoryPo
         kind: reference.mission.kind,
       };
     }
+    const protocolVersion = canonicalPersistedAgentMissionProtocolVersion(
+      reference.mission.protocolVersion,
+    );
+    if (protocolVersion !== this.expectedProtocolVersion) {
+      return {
+        status: 'unsupported_protocol',
+        missionId: reference.missionId,
+        kind: 'quote_creation',
+        protocolVersion,
+      };
+    }
     const row = await this.transaction.agentMissionEvent.findFirst({
       where: {
         companyId: input.companyId,
         ownerUserId: input.ownerUserId,
         commandId: input.commandId,
-        mission: { kind: 'quote_creation' },
+        mission: {
+          kind: 'quote_creation',
+          protocolVersion: this.expectedProtocolVersion,
+        },
       },
     });
     return row === null ? null : { status: 'known', event: eventFromRow(row) };
@@ -1001,6 +1115,18 @@ class PrismaAgentMissionEventRepository implements AgentMissionEventRepositoryPo
   async append(event: AgentMissionEvent): Promise<void> {
     const snapshot = event.toSnapshot();
     await setMissionContext(this.transaction, snapshot.missionId);
+    const owner = await this.transaction.agentMission.findFirst({
+      where: {
+        id: snapshot.missionId,
+        companyId: snapshot.companyId,
+        ownerUserId: snapshot.ownerUserId,
+        protocolVersion: this.expectedProtocolVersion,
+      },
+      select: { id: true },
+    });
+    if (owner === null) {
+      throw new Error('AGENT_MISSION_EVENT_PROTOCOL_AUTHORITY_MISMATCH');
+    }
     await this.transaction.agentMissionEvent.create({
       data: {
         id: snapshot.id,
@@ -1158,6 +1284,7 @@ function quoteLineWorkCreateData(
     revision: workItem.revision,
     state: workItem.state,
     origin: workItem.origin,
+    catalogueResolution: workItem.catalogueResolution,
     serviceReference: workItem.serviceReference,
     category: workItem.category,
     quantityMilli: workItem.quantityMilli === null
@@ -1184,12 +1311,19 @@ function quoteLineWorkCreateData(
 
 class PrismaAgentMissionQuoteLineWorkRepository
 implements AgentMissionQuoteLineWorkRepositoryPort {
-  constructor(private readonly transaction: Prisma.TransactionClient) {}
+  constructor(
+    private readonly transaction: Prisma.TransactionClient,
+    private readonly expectedProtocolVersion: AgentMissionProtocolVersion,
+  ) {}
 
   async listForUpdate(
     input: AgentMissionOwner & { readonly missionId: string },
   ): Promise<readonly AgentMissionQuoteLineWork[]> {
-    if (!await lockActiveQuoteMissionForWork(this.transaction, input)) return [];
+    if (!await lockActiveQuoteMissionForWork(
+      this.transaction,
+      input,
+      this.expectedProtocolVersion,
+    )) return [];
     const rows = await this.transaction.$queryRaw<AgentMissionQuoteLineWorkRow[]>`
       SELECT ${QUOTE_LINE_WORK_COLUMNS}
       FROM public.agent_mission_quote_line_work
@@ -1208,7 +1342,11 @@ implements AgentMissionQuoteLineWorkRepositoryPort {
       readonly workItemId: string;
     },
   ): Promise<AgentMissionQuoteLineWork | null> {
-    if (!await lockActiveQuoteMissionForWork(this.transaction, input)) return null;
+    if (!await lockActiveQuoteMissionForWork(
+      this.transaction,
+      input,
+      this.expectedProtocolVersion,
+    )) return null;
     const rows = await this.transaction.$queryRaw<AgentMissionQuoteLineWorkRow[]>`
       SELECT ${QUOTE_LINE_WORK_COLUMNS}
       FROM public.agent_mission_quote_line_work
@@ -1229,7 +1367,11 @@ implements AgentMissionQuoteLineWorkRepositoryPort {
     },
   ): Promise<'inserted' | 'conflict'> {
     if (input.workItems.length === 0) return 'inserted';
-    if (!await lockActiveQuoteMissionForWork(this.transaction, input)) return 'conflict';
+    if (!await lockActiveQuoteMissionForWork(
+      this.transaction,
+      input,
+      this.expectedProtocolVersion,
+    )) return 'conflict';
 
     const canonical = input.workItems.map(quoteLineWorkForPersistence);
     if (
@@ -1299,11 +1441,15 @@ implements AgentMissionQuoteLineWorkRepositoryPort {
     ) {
       throw new Error('AGENT_MISSION_QUOTE_LINE_WORK_CAS_REVISION_INVALID');
     }
-    if (!await lockActiveQuoteMissionForWork(this.transaction, {
-      companyId: workItem.companyId,
-      ownerUserId: workItem.ownerUserId,
-      missionId: workItem.missionId,
-    })) {
+    if (!await lockActiveQuoteMissionForWork(
+      this.transaction,
+      {
+        companyId: workItem.companyId,
+        ownerUserId: workItem.ownerUserId,
+        missionId: workItem.missionId,
+      },
+      this.expectedProtocolVersion,
+    )) {
       return 'revision_conflict';
     }
     const updated = await this.transaction.agentMissionQuoteLineWork.updateMany({
@@ -1312,12 +1458,15 @@ implements AgentMissionQuoteLineWorkRepositoryPort {
         companyId: workItem.companyId,
         ownerUserId: workItem.ownerUserId,
         missionId: workItem.missionId,
+        ordinal: workItem.ordinal,
+        origin: workItem.origin,
+        createdAt: new Date(workItem.createdAt),
         revision: input.expectedRevision,
       },
       data: {
         revision: workItem.revision,
         state: workItem.state,
-        origin: workItem.origin,
+        catalogueResolution: workItem.catalogueResolution,
         serviceReference: workItem.serviceReference,
         category: workItem.category,
         quantityMilli: workItem.quantityMilli === null
@@ -1350,7 +1499,11 @@ implements AgentMissionQuoteLineWorkRepositoryPort {
       readonly expectedRevision: number;
     },
   ): Promise<'deleted' | 'not_found' | 'revision_conflict'> {
-    if (!await lockActiveQuoteMissionForWork(this.transaction, input)) return 'not_found';
+    if (!await lockActiveQuoteMissionForWork(
+      this.transaction,
+      input,
+      this.expectedProtocolVersion,
+    )) return 'not_found';
     const rows = await this.transaction.$queryRaw<Array<{ readonly revision: number }>>`
       SELECT "revision"
       FROM public.agent_mission_quote_line_work
@@ -1379,7 +1532,11 @@ implements AgentMissionQuoteLineWorkRepositoryPort {
   async deleteAll(
     input: AgentMissionOwner & { readonly missionId: string },
   ): Promise<number> {
-    if (!await lockActiveQuoteMissionForWork(this.transaction, input)) return 0;
+    if (!await lockActiveQuoteMissionForWork(
+      this.transaction,
+      input,
+      this.expectedProtocolVersion,
+    )) return 0;
     const deleted = await this.transaction.$queryRaw<Array<{ readonly id: string }>>`
       DELETE FROM public.agent_mission_quote_line_work
       WHERE "companyId" = ${input.companyId}
@@ -1652,17 +1809,22 @@ function createWriteTransaction(
   transaction: Prisma.TransactionClient,
   lease: AgentMissionAuthorityLeaseRow,
   databaseNow: Date,
+  protocolVersion: AgentMissionProtocolVersion,
 ): AgentMissionTransaction {
   const instant = databaseNow.toISOString();
   return {
     databaseNow: async () => instant,
     realtime: authorizedRealtimeLease(lease, databaseNow),
-    missions: new PrismaAgentMissionRepository(transaction),
-    events: new PrismaAgentMissionEventRepository(transaction),
+    missions: new PrismaAgentMissionRepository(transaction, protocolVersion),
+    events: new PrismaAgentMissionEventRepository(transaction, protocolVersion),
     quoteDrafts: new PrismaAgentMissionQuoteDraftRepository(transaction),
-    quoteLineWork: new PrismaAgentMissionQuoteLineWorkRepository(transaction),
+    quoteLineWork: new PrismaAgentMissionQuoteLineWorkRepository(
+      transaction,
+      protocolVersion,
+    ),
     quoteScreen: new PrismaAgentMissionQuoteScreenAuthority(transaction, lease),
     customers: new PrismaAgentMissionCustomerRepository(transaction),
+    catalogueCandidates: new PrismaCatalogueCandidateSearch(transaction),
   };
 }
 
@@ -1688,7 +1850,10 @@ export class PrismaAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort 
       if (resolution.status === 'rejected') {
         return { status: 'capability_rejected', reason: resolution.reason } as const;
       }
-      const missions = new PrismaAgentMissionReadRepository(transaction);
+      const missions = new PrismaAgentMissionReadRepository(
+        transaction,
+        authority.protocolVersion,
+      );
       const instant = resolution.databaseNow.toISOString();
       return {
         status: 'executed',
@@ -1744,6 +1909,7 @@ export class PrismaAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort 
                 transaction,
                 resolution.lease,
                 resolution.databaseNow,
+                authority.protocolVersion,
               )),
             } as const;
           } catch (error) {
@@ -1793,7 +1959,12 @@ implements AgentMissionResumeUnitOfWorkPort {
           status: 'executed',
           value: await work({
             databaseNow: async () => now.toISOString(),
-            missions: new PrismaAgentMissionReadRepository(transaction),
+            // Le wire de reprise publié reste V1 jusqu'au train mobile M2-A-3. Une mission V2
+            // est donc détectée par sa seule colonne avant tout décodage de payload.
+            missions: new PrismaAgentMissionReadRepository(
+              transaction,
+              AGENT_MISSION_PROTOCOL_V1,
+            ),
             quoteDrafts: new PrismaAgentMissionResumeQuoteDraftRepository(transaction),
             customers: new PrismaAgentMissionResumeCustomerRepository(transaction),
           }),
