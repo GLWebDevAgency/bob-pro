@@ -10,12 +10,17 @@ Comment reproduire **exactement** Bob Pro en RN/Expo. À lire avant d'écrire un
 npx create-expo-app bob-pro -t tabs   # expo-router déjà câblé
 # UI / rendu fidèle — PAS d'expo-blur : le défaut Bob est sans flou (voir note ci-dessous)
 npx expo install react-native-reanimated react-native-svg expo-linear-gradient \
-  react-native-safe-area-context @gorhom/bottom-sheet expo-haptics \
-  react-native-gesture-handler @shopify/react-native-skia
+  react-native-safe-area-context react-native-gesture-handler
 # fonts
 npx expo install expo-font @expo-google-fonts/schibsted-grotesk @expo-google-fonts/hanken-grotesk
 # state léger
 npm i zustand
+
+# ⛔ NE PAS LANCER — dépendances SOUS DÉCISION, aucune n'est déclarée dans le dépôt (A24) :
+#   expo-haptics             → UX-ADR-006 encore `Proposed` + certification acoustique Bob Live
+#   @gorhom/bottom-sheet     → UX-ADR-002, choix de Sheet natif vs applicative non tranché
+#   @shopify/react-native-skia → spike seulement si Bob/chart le justifie (09 § dépendances)
+#   expo-blur                → D08, et dans apps/mobile uniquement, derrière `renderBlurLayer`
 ```
 
 - **expo-router** → cf. `NAVIGATION_MAP.md` (arborescence §4).
@@ -26,6 +31,22 @@ npm i zustand
   ce guide ne le tranche pas, et aucun écran livré n'est réécrit pour lui (directive 5).
 - **@gorhom/bottom-sheet** pour les feuilles (`create`, `profile`, `catalogue`, `new-client`, `doc`).
 - **Skia** optionnel (courbe de trésorerie, anneau de score) — sinon `react-native-svg` suffit.
+- **(amendé A24 · 2026-07-30) `expo-haptics` retiré de la commande d'installation.** Il n'est
+  déclaré dans **aucun** `package.json` du dépôt, et son ajout est explicitement conditionné :
+  [09 § État de dépendances observé](../docs/mobile-experience/09-technical-architecture.md#état-de-dépendances-observé)
+  — « ajouter seulement après `UX-ADR-006` **Accepted** et **certification acoustique** » —,
+  [UX-ADR-006](../docs/mobile-experience/adr/UX-ADR-006-haptic-feedback.md) encore `Proposed`, et
+  [04 § Bornes de livraison](../docs/mobile-experience/04-navigation-scroll-surfaces.md#bornes-de-livraison)
+  qui le nomme comme « la seule dépendance réellement absente ». Le motif est celui d'A15, mot pour
+  mot : **une commande exécutable prime sur la prose qui l'entoure** — quelqu'un la lance, et la
+  dépendance entre par la porte que la décision n'a pas encore ouverte. La certification acoustique
+  n'est pas une formalité : Bob Live capture du micro, et une vibration pendant la capture est
+  précisément ce que [03 § Haptique](../docs/mobile-experience/03-motion-interaction-system.md#haptique)
+  interdit tant qu'un essai ne l'autorise pas.
+  **Même traitement, même motif** pour `@gorhom/bottom-sheet` (choix de Sheet non tranché par
+  `UX-ADR-002`) et `@shopify/react-native-skia` (« spike uniquement si Bob/chart le justifie »,
+  09) : la prose les disait optionnels, la commande les installait. Les trois restent **décrits**
+  dans ce guide — ils ne sont plus **installés** par lui.
 - **(amendé 2026-07-29 ; commande corrigée A15)** **`expo-blur` n'est pas une dépendance du
   produit** et n'est déclaré nulle part dans le dépôt. Le défaut Bob est **sans flou**. Il ne peut
   entrer que par le port injecté `renderBlurLayer` de `ProgressiveBlurBob`, depuis `apps/mobile`,
@@ -200,7 +221,7 @@ Le `marginTop:-30` **après** le dégradé fait chevaucher la couture (le header
 | Balayage OCR (scan) | ligne translateY | **(corrigé A16)** aller **1 100 ms**, retour idem (`SCAN_SWEEP_DURATION_MS`, `apps/mobile/src/scan/scan-reading-motion.ts`) ; en reduced-motion, **aucun déplacement** : battement d'opacité 0,35 → 0,9 sur `motion.ambient` = **1 500 ms** |
 | Écran succès | scale+fade check | `withSpring(1,{damping:9})` sur le cercle vert |
 | « Bob écrit… » | 3 points | opacity `withRepeat`, décalage 160 ms |
-| Toast | translateY+opacity | **(corrigé A16)** entrée `withSpring`, `bottom: 122`, sortie auto à **2,4 s** (`AUTO_DISMISS_MS = 2400`, `packages/ui/src/components/toast.tsx`) |
+| Toast | translateY+opacity | **(corrigé A16, recalé A26 · 2026-07-30)** `Animated.timing` RN avec `useNativeDriver` — **pas** un ressort et **pas** Reanimated : entrée **200 ms** (`translateY` 16 → 0 + opacité 0 → 1), sortie **180 ms**, `bottom: 122`, auto-dismiss **2 400 ms** (`AUTO_DISMISS_MS`), `pointerEvents="none"` — le toast livré **ne reçoit aucune touche**, un Undo ne peut donc pas vivre dedans. Source : `packages/ui/src/components/toast.tsx` |
 | Entrée de liste | **aucune** au repos | ⚠ jamais `opacity:0` initial sur du contenu affiché (règle d'or) |
 
 *Rédactions supersédées par A16 : « FAB / Pressable — `withTiming(0.94, {duration:90})` +
@@ -208,6 +229,22 @@ Le `marginTop:-30` **après** le dégradé fait chevaucher la couture (le header
 `PressableScale` (90 ms) et prescrivait 0,94 à toute surface pressable, là où le kit livre 0,98 ;
 « Balayage OCR — `duration:1400` » contredisait `SCAN_SWEEP_DURATION_MS = 1100` ; et la ligne Toast
 portait un identifiant corrompu, `withالسpring`, qui ne compile pas.*
+
+> **Recalage A26 · 2026-07-30 — la ligne Toast était encore fausse après A16.** A16 avait réparé
+> l'identifiant corrompu (`withالسpring` → `withSpring`) sans vérifier que le composant utilisait
+> un ressort : il n'en utilise pas. `toast.tsx` anime avec `Animated.timing` de React Native, en
+> 200 ms à l'entrée et 180 ms à la sortie. Réparer la **graphie** d'une valeur fausse la laisse
+> fausse — c'est le piège propre à un tableau qui s'annonce « figé ».
+>
+> Deux conséquences à ne pas perdre :
+>
+> - **200 et 180 ms ne sont aucun token.** Le catalogue nomme le toast à l'usage de
+>   `motionSemantic.enterFast` (180 ms) : c'est une **intention pour du neuf**, pas une description
+>   du composant livré. Aligner le `Toast` sur 180 ms serait restyler un composant livré — PR de
+>   composant avec inventaire de consommateurs, pas une ligne de guide.
+> - **`pointerEvents="none"` interdit toute action dans le toast.** L'exigence d'Undo accessible de
+>   [07 § Notifications et toasts](../docs/mobile-experience/07-content-design.md#notifications-et-toasts)
+>   se satisfait sur une **autre** surface tant que le composant n'est pas migré.
 
 ---
 
@@ -224,7 +261,11 @@ portait un identifiant corrompu, `withالسpring`, qui ne compile pas.*
 
 1. **Jamais** de `opacity:0` / `translateY` d'entrée sur du contenu au repos (ni fill-mode `both`). Le contenu est peint tout de suite.
 2. **Toujours** `tabular-nums` sur un montant (composant `Money`).
-3. Cibles tactiles **≥ 44 dp** (`hitSlop` si l'icône est plus petite).
+3. Cibles tactiles **≥ 44 pt iOS / 48 dp Android** (`hitSlop` si le visuel est plus petit).
+   **(précisé A17 · 2026-07-30)** La cible appartient au `Pressable` et à son `hitSlop` : une vue
+   `pointerEvents="none"` — dégradé de tab bar, scrim, halo — n'en porte **jamais**, même si ses
+   pixels coïncident. Et un ancêtre `overflow: 'hidden'` annule le `hitSlop` sur Android : à
+   vérifier, pas à supposer.
 4. Une carte = fond **opaque** + `borderRadius` 16–22 + ombre `e1/e2` + bordure `#EAEEF3` (pour Android).
 5. Couleurs **uniquement** depuis `tokens.ts`. Zéro hex inventé, zéro dégradé décoratif.
 6. Actions sensibles (envoyer/relancer/encaisser/mise en demeure/transmettre compta) = **confirmation utilisateur** obligatoire.
