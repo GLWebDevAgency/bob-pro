@@ -1,5 +1,8 @@
 import type { LlmPort } from '@bob/ai';
 import { describe, expect, it, vi } from 'vitest';
+// Le validateur reste volontairement un module ESM JavaScript indépendant du producteur TS.
+// @ts-expect-error — cette frontière de release n'expose pas de déclarations TypeScript.
+import { validateAgentMissionM2A3SemanticEvidence } from '../../../../scripts/validate-agent-mission-m2a3-semantic-evidence.mjs';
 import {
   M2A3_SEMANTIC_MODEL_CORPUS,
   evaluateM2A3SemanticModelCase,
@@ -7,17 +10,24 @@ import {
   isM2A3ReturnedModelCompatible,
   publicM2A3SemanticEvidence,
   runM2A3SemanticModelCase,
+  type M2A3SemanticModelEvaluationCase,
+  type M2A3SemanticModelEvaluationCaseResult,
 } from './m2a3-semantic-model-evaluation';
 
 function operationFor(caseId: string): Record<string, unknown> {
   if (
-    caseId === 'catalogue-anaphora-price'
-    || caseId === 'catalogue-stored-injection'
+    caseId === 'customer-choice-plain' ||
+    caseId === 'customer-choice-compound-remainder' ||
+    caseId === 'catalogue-anaphora-price' ||
+    caseId === 'catalogue-stored-injection' ||
+    caseId === 'catalogue-compound-remainder'
   ) {
     return {
       kind: 'select_presented_choice',
-      ordinal: 1,
-      lines: [],
+      ordinal: caseId.startsWith('customer-choice') ? 2 : 1,
+      has_unprocessed_request:
+        caseId === 'customer-choice-compound-remainder' ||
+        caseId === 'catalogue-compound-remainder',
     };
   }
   if (caseId === 'required-fact-elliptical') {
@@ -100,36 +110,51 @@ function appendedLineResult(serviceReference: string) {
   };
 }
 
+function passingPublicResults(
+  returnedModel = 'gpt-test',
+): readonly M2A3SemanticModelEvaluationCaseResult[] {
+  return M2A3_SEMANTIC_MODEL_CORPUS.map((entry) => ({
+    id: entry.id,
+    passed: true,
+    status: 'mission_frame',
+    durationMs: 42,
+    issues: [],
+    rejectionReason: null,
+    returnedModel,
+    completeAttempts: 1,
+    completeResolved: 1,
+    generateAttempts: 0,
+  }));
+}
+
 describe('M2-A-3 — corpus modèle sémantique déterministe', () => {
-  it('versionne six cas distincts, dont une injection stockée, sans donnée personnelle', () => {
+  it('versionne neuf cas distincts, dont injection stockée et suites composites, sans donnée personnelle', () => {
     expect(M2A3_SEMANTIC_MODEL_CORPUS.map((entry) => entry.id)).toEqual([
       'line-paraphrase-direct',
       'line-paraphrase-familiar',
+      'customer-choice-plain',
+      'customer-choice-compound-remainder',
       'catalogue-anaphora-price',
       'catalogue-stored-injection',
+      'catalogue-compound-remainder',
       'required-fact-elliptical',
       'confirmation-multiturn-correction',
     ]);
-    expect(new Set(M2A3_SEMANTIC_MODEL_CORPUS.map((entry) => entry.id)).size).toBe(6);
+    expect(new Set(M2A3_SEMANTIC_MODEL_CORPUS.map((entry) => entry.id)).size).toBe(9);
     expect(JSON.stringify(M2A3_SEMANTIC_MODEL_CORPUS)).not.toMatch(
       /customerId|missionId|choiceId|proposalId|diffHash|@/u,
     );
     const storedInjection = M2A3_SEMANTIC_MODEL_CORPUS.find(
       (entry) => entry.id === 'catalogue-stored-injection',
     );
-    expect(storedInjection?.input.history).toEqual([
-      expect.objectContaining({ role: 'bob' }),
-    ]);
+    expect(storedInjection?.input.history).toEqual([expect.objectContaining({ role: 'bob' })]);
   });
 
   it.each(M2A3_SEMANTIC_MODEL_CORPUS)(
     '$id passe par le planner réel avec une seule complétion et aucun generate',
     async (evaluationCase) => {
       const instrumented = instrumentM2A3Llm(fakeLlm(evaluationCase.id));
-      const result = await runM2A3SemanticModelCase(
-        instrumented.llm,
-        evaluationCase,
-      );
+      const result = await runM2A3SemanticModelCase(instrumented, evaluationCase);
 
       expect(result).toMatchObject({
         id: evaluationCase.id,
@@ -137,8 +162,11 @@ describe('M2-A-3 — corpus modèle sémantique déterministe', () => {
         status: 'mission_frame',
         returnedModel: 'gpt-eval-fake',
       });
-      expect(instrumented.completeCount()).toBe(1);
-      expect(instrumented.generateCount()).toBe(0);
+      expect(instrumented.snapshot()).toMatchObject({
+        completeAttempts: 1,
+        completeResolved: 1,
+        generateAttempts: 0,
+      });
     },
   );
 
@@ -168,7 +196,7 @@ describe('M2-A-3 — corpus modèle sémantique déterministe', () => {
     });
 
     expect(result.passed).toBe(false);
-    expect(result.issues).toContain('invented_vat');
+    expect(result.issues).toContain('vat_rate_invented');
   });
 
   it('accepte accents/apostrophes canoniques mais refuse tout contenu métier ajouté', () => {
@@ -212,43 +240,35 @@ describe('M2-A-3 — corpus modèle sémantique déterministe', () => {
 
   it('n’accepte que le modèle demandé ou son snapshot daté', () => {
     expect(isM2A3ReturnedModelCompatible('gpt-test', 'gpt-test')).toBe(true);
-    expect(
-      isM2A3ReturnedModelCompatible('gpt-test', 'gpt-test-2026-07-31'),
-    ).toBe(true);
-    expect(
-      isM2A3ReturnedModelCompatible('gpt-4.1', 'gpt-4.1-mini'),
-    ).toBe(false);
+    expect(isM2A3ReturnedModelCompatible('gpt-test', 'gpt-test-2026-07-31')).toBe(true);
+    expect(isM2A3ReturnedModelCompatible('gpt-4.1', 'gpt-4.1-mini')).toBe(false);
     expect(isM2A3ReturnedModelCompatible('gpt-test', 'gpt-other')).toBe(false);
     expect(isM2A3ReturnedModelCompatible('', 'gpt-test')).toBe(false);
+    expect(isM2A3ReturnedModelCompatible('gpt-test', ' gpt-test')).toBe(false);
+    expect(isM2A3ReturnedModelCompatible('gpt-test', 'gpt-test ')).toBe(false);
   });
 
   it('produit une preuve publique sans transcript, prompt ni arguments d’outil', () => {
     const evidence = publicM2A3SemanticEvidence({
       releaseSha: 'a'.repeat(40),
       requestedModel: 'gpt-test',
-      completionCount: 6,
+      requestedModelSource: 'versioned_default',
+      completionCount: 9,
       generateCount: 0,
-      providerRequestCount: 6,
+      providerRequestCount: 9,
       failureStage: null,
-      results: M2A3_SEMANTIC_MODEL_CORPUS.map((entry) => ({
-        id: entry.id,
-        passed: true,
-        status: 'mission_frame',
-        durationMs: 42,
-        issues: [],
-        returnedModel: 'gpt-test-2026-07-31',
-      })),
+      results: passingPublicResults('gpt-test-2026-07-31'),
     });
     const serialized = JSON.stringify(evidence);
 
     expect(evidence).toMatchObject({
       schema: 'bob.m2a3.semantic-model-eval',
-      version: 1,
+      version: 2,
       scope: 'quote_line_m2a3',
-      corpusVersion: 2,
-      completionCount: 6,
+      corpusVersion: 4,
+      completionCount: 9,
       generateCount: 0,
-      providerRequestCount: 6,
+      providerRequestCount: 9,
       outcome: 'passed',
     });
     expect(serialized).not.toContain('utterance');
@@ -257,27 +277,293 @@ describe('M2-A-3 — corpus modèle sémantique déterministe', () => {
     expect(serialized).not.toContain('plomberie');
   });
 
+  it('fait accepter la preuve publique du producteur par le validateur de release indépendant', () => {
+    const releaseSha = 'f'.repeat(40);
+    const evidence = publicM2A3SemanticEvidence({
+      releaseSha,
+      requestedModel: 'gpt-test',
+      requestedModelSource: 'versioned_default',
+      completionCount: M2A3_SEMANTIC_MODEL_CORPUS.length,
+      generateCount: 0,
+      providerRequestCount: M2A3_SEMANTIC_MODEL_CORPUS.length,
+      failureStage: null,
+      results: passingPublicResults('gpt-test-2026-07-31'),
+    });
+
+    expect(validateAgentMissionM2A3SemanticEvidence(evidence, releaseSha)).toEqual({
+      outcome: 'passed',
+    });
+  });
+
   it('rend le reçu rouge si l’adapter effectue une requête fournisseur supplémentaire', () => {
     const evidence = publicM2A3SemanticEvidence({
       releaseSha: 'b'.repeat(40),
       requestedModel: 'gpt-test',
-      completionCount: 6,
+      requestedModelSource: 'versioned_default',
+      completionCount: 9,
       generateCount: 0,
-      providerRequestCount: 7,
+      providerRequestCount: 10,
       failureStage: null,
-      results: M2A3_SEMANTIC_MODEL_CORPUS.map((entry) => ({
-        id: entry.id,
-        passed: true,
-        status: 'mission_frame',
-        durationMs: 42,
-        issues: [],
-        returnedModel: 'gpt-test',
-      })),
+      results: passingPublicResults(),
     });
 
     expect(evidence).toMatchObject({
       outcome: 'failed',
-      providerRequestCount: 7,
+      failureStage: 'semantic_result',
+      providerRequestCount: 10,
     });
+  });
+
+  it('refuse qu’un override Railway de modèle certifie la V1', () => {
+    const evidence = publicM2A3SemanticEvidence({
+      releaseSha: 'e'.repeat(40),
+      requestedModel: 'gpt-test',
+      requestedModelSource: 'environment_override',
+      completionCount: 9,
+      generateCount: 0,
+      providerRequestCount: 9,
+      failureStage: null,
+      results: passingPublicResults(),
+    });
+
+    expect(evidence).toMatchObject({
+      outcome: 'failed',
+      failureStage: 'semantic_result',
+      requestedModelSource: 'environment_override',
+    });
+  });
+
+  it('conserve le modèle fournisseur observé même quand le planner rejette la frame', async () => {
+    const base: LlmPort = {
+      id: 'openai-eval-rejected',
+      complete: vi.fn(async () => ({
+        text: null,
+        toolCalls: [
+          {
+            name: 'mettre_a_jour_mission_devis_v2',
+            arguments: {
+              operations: [
+                {
+                  kind: 'append_line_candidates',
+                  lines: [operationFor('line-paraphrase-direct').lines].flat(),
+                },
+              ],
+            },
+          },
+        ],
+        model: 'gpt-test',
+      })),
+      generate: vi.fn(async () => ({ text: '', model: 'gpt-test' })),
+      health: vi.fn(async () => ({ healthy: true })),
+    };
+    const result = await runM2A3SemanticModelCase(
+      instrumentM2A3Llm(base),
+      M2A3_SEMANTIC_MODEL_CORPUS[2],
+      'gpt-test',
+    );
+
+    expect(result).toMatchObject({
+      passed: false,
+      status: 'rejected',
+      rejectionReason: 'invalid_mission_frame',
+      returnedModel: 'gpt-test',
+      completeAttempts: 1,
+      completeResolved: 1,
+      generateAttempts: 0,
+    });
+    expect(result.issues).toContain('mission_frame_required');
+    expect(result.issues).not.toContain('returned_model_missing');
+  });
+
+  it('échoue fermé quand l’adapter ne reçoit aucun modèle attesté du fournisseur', async () => {
+    const base: LlmPort = {
+      id: 'openai-eval-unattested-model',
+      complete: vi.fn(async () => ({
+        text: null,
+        toolCalls: [
+          {
+            name: 'mettre_a_jour_mission_devis_v2',
+            arguments: { operations: [operationFor('line-paraphrase-direct')] },
+          },
+        ],
+        model: 'gpt-test',
+        providerReportedModel: null,
+      })),
+      generate: vi.fn(async () => ({ text: '', model: 'gpt-test' })),
+      health: vi.fn(async () => ({ healthy: true })),
+    };
+    const result = await runM2A3SemanticModelCase(
+      instrumentM2A3Llm(base),
+      M2A3_SEMANTIC_MODEL_CORPUS[0],
+      'gpt-test',
+    );
+
+    expect(result).toMatchObject({
+      passed: false,
+      returnedModel: null,
+      completeAttempts: 1,
+      completeResolved: 1,
+    });
+    expect(result.issues).toContain('returned_model_missing');
+  });
+
+  it('rend une panne fournisseur diagnosticable sans exposer son erreur', async () => {
+    const base: LlmPort = {
+      id: 'openai-eval-failing',
+      complete: vi.fn(async () => {
+        throw new Error('secret fournisseur non publiable');
+      }),
+      generate: vi.fn(async () => ({ text: '', model: 'gpt-test' })),
+      health: vi.fn(async () => ({ healthy: true })),
+    };
+    const result = await runM2A3SemanticModelCase(
+      instrumentM2A3Llm(base),
+      M2A3_SEMANTIC_MODEL_CORPUS[0],
+      'gpt-test',
+    );
+
+    expect(result).toMatchObject({
+      passed: false,
+      status: 'provider_error',
+      rejectionReason: 'provider_error',
+      returnedModel: null,
+      completeAttempts: 1,
+      completeResolved: 0,
+    });
+    expect(result.issues).toEqual(
+      expect.arrayContaining([
+        'provider_request_failed',
+        'completion_resolution_count_mismatch',
+        'returned_model_missing',
+      ]),
+    );
+    expect(JSON.stringify(result)).not.toContain('secret fournisseur');
+  });
+
+  it('distingue une panne locale après réponse d’une panne réseau fournisseur', async () => {
+    const providerCompletion = {
+      text: null,
+      model: 'gpt-test',
+      providerReportedModel: 'gpt-test',
+      get toolCalls(): never {
+        throw new Error('erreur locale du planner non publiable');
+      },
+    };
+    const base: LlmPort = {
+      id: 'openai-eval-planner-error',
+      complete: vi.fn(async () => providerCompletion),
+      generate: vi.fn(async () => ({ text: '', model: 'gpt-test' })),
+      health: vi.fn(async () => ({ healthy: true })),
+    };
+    const result = await runM2A3SemanticModelCase(
+      instrumentM2A3Llm(base),
+      M2A3_SEMANTIC_MODEL_CORPUS[0],
+      'gpt-test',
+    );
+
+    expect(result).toMatchObject({
+      passed: false,
+      status: 'planner_error',
+      rejectionReason: 'planner_error',
+      returnedModel: 'gpt-test',
+      completeAttempts: 1,
+      completeResolved: 1,
+    });
+    expect(result.issues).toContain('planner_processing_failed');
+    expect(result.issues).not.toContain('provider_request_failed');
+    expect(JSON.stringify(result)).not.toContain('erreur locale');
+  });
+
+  it('classe une panne du scorekeeper comme locale après un planner réussi', async () => {
+    const baseCase = M2A3_SEMANTIC_MODEL_CORPUS[0];
+    const evaluationCase: M2A3SemanticModelEvaluationCase = {
+      id: baseCase.id,
+      input: baseCase.input,
+      get oracle(): M2A3SemanticModelEvaluationCase['oracle'] {
+        throw new Error('erreur locale du scorekeeper non publiable');
+      },
+    };
+    const result = await runM2A3SemanticModelCase(
+      instrumentM2A3Llm(fakeLlm(baseCase.id)),
+      evaluationCase,
+      'gpt-eval-fake',
+    );
+
+    expect(result).toMatchObject({
+      passed: false,
+      status: 'local_error',
+      rejectionReason: 'local_error',
+      returnedModel: 'gpt-eval-fake',
+      completeAttempts: 1,
+      completeResolved: 1,
+      generateAttempts: 0,
+    });
+    expect(result.issues).toEqual(['local_evaluation_failed']);
+    expect(JSON.stringify(result)).not.toContain('scorekeeper');
+  });
+
+  it('ne sérialise jamais un modèle invalide ou incompatible dans un reçu rouge', () => {
+    for (const unsafeModel of ['gpt-test\nprivate', 'gpt-other']) {
+      const results = [...passingPublicResults()];
+      results[0] = Object.freeze({
+        ...results[0]!,
+        returnedModel: unsafeModel,
+      });
+      const evidence = publicM2A3SemanticEvidence({
+        releaseSha: 'c'.repeat(40),
+        requestedModel: 'gpt-test',
+        requestedModelSource: 'versioned_default',
+        completionCount: 9,
+        generateCount: 0,
+        providerRequestCount: 9,
+        failureStage: 'semantic_result',
+        results,
+      });
+      const serialized = JSON.stringify(evidence);
+
+      expect(evidence).toMatchObject({ outcome: 'failed', modelCompatible: false });
+      expect(serialized).not.toContain(unsafeModel);
+      expect((evidence.cases as Array<Record<string, unknown>>)[0]).toMatchObject({
+        returnedModel: null,
+        returnedModelStatus: unsafeModel === 'gpt-other' ? 'incompatible' : 'invalid_identifier',
+      });
+    }
+  });
+
+  it('refuse qu’un total global masque deux complétions dans un seul cas', () => {
+    const results = [...passingPublicResults()];
+    results[0] = Object.freeze({
+      ...results[0]!,
+      completeAttempts: 2,
+    });
+    const evidence = publicM2A3SemanticEvidence({
+      releaseSha: 'd'.repeat(40),
+      requestedModel: 'gpt-test',
+      requestedModelSource: 'versioned_default',
+      completionCount: 9,
+      generateCount: 0,
+      providerRequestCount: 9,
+      failureStage: null,
+      results,
+    });
+
+    expect(evidence).toMatchObject({ outcome: 'failed' });
+  });
+
+  it('détecte un modèle de frame différent du modèle réellement observé', () => {
+    const result = evaluateM2A3SemanticModelCase(
+      M2A3_SEMANTIC_MODEL_CORPUS[0],
+      appendedLineResult('Main-d’œuvre plomberie'),
+      1,
+      {
+        completeAttempts: 1,
+        completeResolved: 1,
+        generateAttempts: 0,
+        observedModel: 'gpt-other',
+      },
+    );
+
+    expect(result.passed).toBe(false);
+    expect(result.issues).toContain('planner_model_mismatch');
   });
 });

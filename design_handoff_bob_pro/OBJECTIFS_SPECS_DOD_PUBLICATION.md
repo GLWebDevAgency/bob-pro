@@ -263,7 +263,11 @@ l'intégration.
       figé au bootstrap de session. Une préférence absente ou invalide ferme Bob Live au lieu
       d'inventer `Europe/Paris`.
 - [ ] Le planner unique passe le corpus français versionné sur l'adapter et le modèle exacts de
-      staging avec une seule complétion, sans retry/fallback, et publie une preuve exact-SHA non-PII.
+      staging avec une seule complétion par cas, sans retry/fallback, et publie une preuve
+      exact-SHA non-PII après garde confidentialité indépendante. Le schéma exposé est borné à la
+      phase, une TVA absente reste nulle, un choix ordinal ne peut recopier une ligne du contexte
+      et signale toute demande restante sans l'exécuter silencieusement ; le modèle fournisseur
+      observé reste prouvé même lorsqu'une sortie est rejetée, avec sa source de configuration.
 - [ ] Le fournisseur reçoit un unique message `user` JSON : seule la parole courante porte une
       demande ; historique Bob, contexte UI et labels tenant restent des données non fiables
       redigées, jamais des tours `assistant`.

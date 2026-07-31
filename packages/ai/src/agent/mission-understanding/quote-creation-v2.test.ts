@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   parseQuoteCreationSemanticToolCallV2,
-  QUOTE_CREATION_UNDERSTANDING_TOOL_V2,
+  quoteCreationUnderstandingToolV2ForPhase,
 } from './quote-creation-v2';
 
 const TOOL_NAME = 'mettre_a_jour_mission_devis_v2';
@@ -24,10 +24,33 @@ function line(overrides: Readonly<Record<string, unknown>> = {}) {
   };
 }
 
+function expectStrictObjectSchemas(value: unknown): void {
+  if (Array.isArray(value)) {
+    for (const nested of value) expectStrictObjectSchemas(nested);
+    return;
+  }
+  if (typeof value !== 'object' || value === null) return;
+  const record = value as Record<string, unknown>;
+  expect(record).not.toHaveProperty('oneOf');
+  if (record['type'] === 'object') {
+    expect(record['additionalProperties']).toBe(false);
+    const properties = record['properties'];
+    expect(typeof properties).toBe('object');
+    expect(properties).not.toBeNull();
+    expect(Array.isArray(properties)).toBe(false);
+    expect([...(record['required'] as string[])].sort()).toEqual(
+      Object.keys(properties as Record<string, unknown>).sort(),
+    );
+  }
+  for (const nested of Object.values(record)) expectStrictObjectSchemas(nested);
+}
+
 describe('parseQuoteCreationSemanticToolCallV2', () => {
   it('conserve client et plusieurs lignes dans la phrase canonique', () => {
-    expect(parseQuoteCreationSemanticToolCallV2({
-      call: call([{
+    expect(
+      parseQuoteCreationSemanticToolCallV2({
+        call: call([
+          {
         kind: 'start_quote_creation',
         customer_reference: 'Camping les Pins',
         lines: [
@@ -40,15 +63,18 @@ describe('parseQuoteCreationSemanticToolCallV2', () => {
             unit_price_decimal: '400',
           }),
         ],
-      }]),
+          },
+        ]),
       phase: 'inactive',
       presentedChoiceCount: 0,
       requiredFact: null,
       model: 'gpt-realtime-2.1',
-    })).toMatchObject({
+      }),
+    ).toMatchObject({
       schema: 'bob.semantic.quote-creation',
       version: 2,
-      operations: [{
+      operations: [
+        {
         kind: 'start_quote_creation',
         customerReference: 'Camping les Pins',
         lines: [
@@ -63,97 +89,137 @@ describe('parseQuoteCreationSemanticToolCallV2', () => {
             unitPriceDecimal: '400',
           },
         ],
-      }],
+        },
+      ],
     });
   });
 
   it('représente 400 balles par machine sans calculer le total', () => {
     const frame = parseQuoteCreationSemanticToolCallV2({
-      call: call([{
+      call: call([
+        {
         kind: 'append_line_candidates',
-        lines: [line({
+          lines: [
+            line({
           service_reference: 'Contrat fontaines RATP',
           category_hint: 'subscription',
           quantity_decimal: '3',
           unit_reference: 'machine',
           unit_price_decimal: '400',
           price_basis: 'per_unit',
-        })],
-      }]),
+            }),
+          ],
+        },
+      ]),
       phase: 'awaiting_lines',
       presentedChoiceCount: 0,
       requiredFact: null,
       model: 'gpt-realtime-2.1',
     });
     expect(frame?.operations[0]).toMatchObject({
-      lines: [{
+      lines: [
+        {
         serviceReference: 'Contrat fontaines RATP',
         quantityDecimal: '3',
         unitPriceDecimal: '400',
         priceBasis: 'per_unit',
-      }],
+        },
+      ],
     });
   });
 
   it('ne transforme pas le chiffre de Contrat 4 saisons en quantité', () => {
     const frame = parseQuoteCreationSemanticToolCallV2({
-      call: call([{
+      call: call([
+        {
         kind: 'append_line_candidates',
-        lines: [line({
+          lines: [
+            line({
           service_reference: 'Contrat 4 saisons',
           quantity_decimal: null,
           unit_reference: null,
           unit_price_decimal: null,
           currency: null,
           price_basis: null,
-        })],
-      }]),
+            }),
+          ],
+        },
+      ]),
       phase: 'awaiting_lines',
       presentedChoiceCount: 0,
       requiredFact: null,
       model: 'gpt-realtime-2.1',
     });
     expect(frame?.operations[0]).toMatchObject({
-      lines: [{
+      lines: [
+        {
         serviceReference: 'Contrat 4 saisons',
         quantityDecimal: null,
-      }],
+        },
+      ],
     });
   });
 
-  it('lie un ordinal au nombre exact de choix et conserve les lignes suivantes', () => {
-    expect(parseQuoteCreationSemanticToolCallV2({
-      call: call([{
+  it('lie un ordinal au nombre exact de choix sans ouvrir un canal de lignes', () => {
+    expect(
+      parseQuoteCreationSemanticToolCallV2({
+        call: call([
+          {
         kind: 'select_presented_choice',
         ordinal: 2,
-        lines: [line()],
-      }]),
+            has_unprocessed_request: false,
+          },
+        ]),
       phase: 'awaiting_customer_choice',
       presentedChoiceCount: 3,
       requiredFact: null,
       model: 'gpt-realtime-2.1',
-    })?.operations[0]).toMatchObject({
+      })?.operations[0],
+    ).toMatchObject({
       kind: 'select_presented_choice',
       ordinal: 2,
-      lines: [{ quantityDecimal: '2' }],
+      hasUnprocessedRequest: false,
     });
 
-    expect(parseQuoteCreationSemanticToolCallV2({
-      call: call([{
+    expect(
+      parseQuoteCreationSemanticToolCallV2({
+        call: call([
+          {
         kind: 'select_presented_choice',
         ordinal: 4,
-        lines: [],
-      }]),
+            has_unprocessed_request: false,
+          },
+        ]),
       phase: 'awaiting_customer_choice',
       presentedChoiceCount: 3,
       requiredFact: null,
       model: 'gpt-realtime-2.1',
-    })).toBeNull();
+      }),
+    ).toBeNull();
+
+    expect(
+      parseQuoteCreationSemanticToolCallV2({
+        call: call([
+          {
+            kind: 'select_presented_choice',
+            ordinal: 2,
+            has_unprocessed_request: true,
+            lines: [line()],
+          },
+        ]),
+        phase: 'awaiting_customer_choice',
+        presentedChoiceCount: 3,
+        requiredFact: null,
+        model: 'gpt-realtime-2.1',
+      }),
+    ).toBeNull();
   });
 
   it('ferme le patch réponse au requiredFact persistant', () => {
-    expect(parseQuoteCreationSemanticToolCallV2({
-      call: call([{
+    expect(
+      parseQuoteCreationSemanticToolCallV2({
+        call: call([
+          {
         kind: 'patch_pending_line',
         scope: 'answer_required_fact',
         patch: {
@@ -162,12 +228,14 @@ describe('parseQuoteCreationSemanticToolCallV2', () => {
           currency: 'EUR',
           basis: 'per_unit',
         },
-      }]),
+          },
+        ]),
       phase: 'awaiting_line_details',
       presentedChoiceCount: 0,
       requiredFact: 'unit_price',
       model: 'gpt-realtime-2.1',
-    })?.operations[0]).toEqual({
+      })?.operations[0],
+    ).toEqual({
       kind: 'patch_pending_line',
       scope: 'answer_required_fact',
       patch: {
@@ -177,24 +245,50 @@ describe('parseQuoteCreationSemanticToolCallV2', () => {
         basis: 'per_unit',
       },
     });
-    expect(parseQuoteCreationSemanticToolCallV2({
-      call: call([{
+    expect(
+      parseQuoteCreationSemanticToolCallV2({
+        call: call([
+          {
         kind: 'patch_pending_line',
         scope: 'answer_required_fact',
         patch: { field: 'quantity', decimal: '2' },
-      }]),
+          },
+        ]),
       phase: 'awaiting_line_details',
       presentedChoiceCount: 0,
       requiredFact: 'unit_price',
       model: 'gpt-realtime-2.1',
-    })).toBeNull();
-    expect(JSON.stringify(QUOTE_CREATION_UNDERSTANDING_TOOL_V2)).toContain(
-      'patch_pending_line',
+      }),
+    ).toBeNull();
+    const tool = quoteCreationUnderstandingToolV2ForPhase(
+      'awaiting_line_details',
+      'unit_price',
     );
-    expect(JSON.stringify(QUOTE_CREATION_UNDERSTANDING_TOOL_V2)).toContain(
-      'confirm_current_proposal',
+    expect(JSON.stringify(tool)).toContain('patch_pending_line');
+    expect(JSON.stringify(tool)).not.toContain('confirm_current_proposal');
+    const parameters = tool.parameters as {
+      readonly properties: {
+        readonly operations: {
+          readonly items: {
+            readonly anyOf: readonly {
+              readonly properties?: {
+                readonly scope?: { readonly const?: unknown };
+                readonly patch?: {
+                  readonly properties?: {
+                    readonly field?: { readonly const?: unknown };
+                  };
+                };
+              };
+            }[];
+          };
+        };
+      };
+    };
+    const answerVariant = parameters.properties.operations.items.anyOf.find(
+      (variant) => variant.properties?.scope?.const === 'answer_required_fact',
     );
-    expect(QUOTE_CREATION_UNDERSTANDING_TOOL_V2.parameters).toMatchObject({
+    expect(answerVariant?.properties?.patch?.properties?.field?.const).toBe('unit_price');
+    expect(tool.parameters).toMatchObject({
       properties: {
         operations: {
           minItems: 1,
@@ -202,6 +296,49 @@ describe('parseQuoteCreationSemanticToolCallV2', () => {
         },
       },
     });
+  });
+
+  it('n’expose que les opérations de la phase dans un schéma OpenAI strict compatible', () => {
+    const linesTool = quoteCreationUnderstandingToolV2ForPhase('awaiting_lines');
+    const catalogueTool = quoteCreationUnderstandingToolV2ForPhase('awaiting_catalogue_choice');
+    const confirmationTool = quoteCreationUnderstandingToolV2ForPhase('awaiting_line_confirmation');
+    const detailsWithoutQuestion = quoteCreationUnderstandingToolV2ForPhase(
+      'awaiting_line_details',
+      null,
+    );
+
+    expect(linesTool.schemaAdherence).toBe('strict');
+    expect(JSON.stringify(linesTool)).toContain('append_line_candidates');
+    expect(JSON.stringify(linesTool)).not.toContain('start_quote_creation');
+    expect(JSON.stringify(linesTool)).not.toContain('select_presented_choice');
+    expect(JSON.stringify(catalogueTool)).toContain('select_presented_choice');
+    expect(JSON.stringify(catalogueTool)).toContain('service_reference');
+    expect(JSON.stringify(catalogueTool)).not.toContain('quantity_decimal');
+    expect(JSON.stringify(catalogueTool)).not.toContain('"lines"');
+    expect(JSON.stringify(catalogueTool)).toContain('has_unprocessed_request');
+    expect(JSON.stringify(confirmationTool)).toContain('confirm_current_proposal');
+    expect(JSON.stringify(confirmationTool)).not.toContain('append_line_candidates');
+    expect(JSON.stringify(confirmationTool)).not.toContain('answer_required_fact');
+    expect(JSON.stringify(detailsWithoutQuestion)).not.toContain('answer_required_fact');
+    expect(JSON.stringify(confirmationTool)).not.toContain('"oneOf"');
+
+    for (const phase of [
+      'inactive',
+      'awaiting_customer',
+      'awaiting_customer_choice',
+      'awaiting_lines',
+      'awaiting_catalogue_choice',
+      'awaiting_line_details',
+      'awaiting_line_confirmation',
+    ] as const) {
+      expectStrictObjectSchemas(quoteCreationUnderstandingToolV2ForPhase(phase).parameters);
+    }
+    expectStrictObjectSchemas(
+      quoteCreationUnderstandingToolV2ForPhase(
+        'awaiting_line_details',
+        'housing_older_than_2y',
+      ).parameters,
+    );
   });
 
   it('limite le choix catalogue à la sélection ou à la correction explicite du service', () => {

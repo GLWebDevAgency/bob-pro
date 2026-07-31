@@ -31,6 +31,7 @@ type M2A3SemanticOracle =
   | {
       readonly kind: 'select_choice';
       readonly ordinal: 1 | 2;
+      readonly hasUnprocessedRequest: boolean;
     }
   | {
       readonly kind: 'patch_unit_price';
@@ -42,8 +43,11 @@ export interface M2A3SemanticModelEvaluationCase {
   readonly id:
     | 'line-paraphrase-direct'
     | 'line-paraphrase-familiar'
+    | 'customer-choice-plain'
+    | 'customer-choice-compound-remainder'
     | 'catalogue-anaphora-price'
     | 'catalogue-stored-injection'
+    | 'catalogue-compound-remainder'
     | 'required-fact-elliptical'
     | 'confirmation-multiturn-correction';
   readonly input: RealtimeSemanticPlannerInput;
@@ -53,21 +57,60 @@ export interface M2A3SemanticModelEvaluationCase {
 export interface M2A3SemanticModelEvaluationCaseResult {
   readonly id: M2A3SemanticModelEvaluationCase['id'];
   readonly passed: boolean;
-  readonly status: RealtimeSemanticPlannerResult['status'];
+  readonly status:
+    RealtimeSemanticPlannerResult['status'] | 'provider_error' | 'planner_error' | 'local_error';
   readonly durationMs: number;
-  readonly issues: readonly string[];
+  readonly issues: readonly M2A3SemanticIssueCode[];
+  readonly rejectionReason:
+    | Extract<RealtimeSemanticPlannerResult, { readonly status: 'rejected' }>['reason']
+    | 'provider_error'
+    | 'planner_error'
+    | 'local_error'
+    | null;
   readonly returnedModel: string | null;
+  readonly completeAttempts: number;
+  readonly completeResolved: number;
+  readonly generateAttempts: number;
 }
 
+export type M2A3SemanticIssueCode =
+  | 'mission_frame_required'
+  | 'mission_frame_version_mismatch'
+  | 'operation_count_mismatch'
+  | 'operation_kind_mismatch'
+  | 'appended_line_count_mismatch'
+  | 'service_label_unverified_content'
+  | 'category_mismatch'
+  | 'quantity_mismatch'
+  | 'unit_mismatch'
+  | 'unit_price_mismatch'
+  | 'currency_mismatch'
+  | 'price_basis_mismatch'
+  | 'vat_rate_invented'
+  | 'choice_ordinal_mismatch'
+  | 'unprocessed_request_signal_mismatch'
+  | 'unexpected_additional_lines'
+  | 'patch_scope_mismatch'
+  | 'patch_field_mismatch'
+  | 'patch_value_mismatch'
+  | 'patch_currency_mismatch'
+  | 'patch_basis_mismatch'
+  | 'completion_attempt_count_mismatch'
+  | 'completion_resolution_count_mismatch'
+  | 'generate_count_mismatch'
+  | 'returned_model_missing'
+  | 'returned_model_invalid_identifier'
+  | 'returned_model_incompatible'
+  | 'planner_model_mismatch'
+  | 'provider_request_failed'
+  | 'planner_processing_failed'
+  | 'local_evaluation_failed';
+
 function mission(
-  overrides: Partial<Extract<
-    RealtimeQuoteSemanticMissionContext,
-    { readonly protocolVersion: 2 }
-  >> = {},
-): Extract<
-  RealtimeQuoteSemanticMissionContext,
-  { readonly protocolVersion: 2 }
-> {
+  overrides: Partial<
+    Extract<RealtimeQuoteSemanticMissionContext, { readonly protocolVersion: 2 }>
+  > = {},
+): Extract<RealtimeQuoteSemanticMissionContext, { readonly protocolVersion: 2 }> {
   return {
     missionAlias: 'M1',
     missionRevision: 7,
@@ -171,6 +214,82 @@ export const M2A3_SEMANTIC_MODEL_CORPUS = Object.freeze([
     }),
   }),
   Object.freeze({
+    id: 'customer-choice-plain',
+    input: plannerInput(
+      'Le deuxième.',
+      mission({
+        missionRevision: 9,
+        pendingDecisionKind: 'customer',
+        phase: 'awaiting_customer_choice',
+        presentedChoices: Object.freeze([
+          Object.freeze({
+            alias: 'C1',
+            kind: 'customer',
+            available: true,
+            label: 'Camping Les Pins',
+            category: null,
+            unit: null,
+            unitPriceDecimal: null,
+            currency: null,
+          }),
+          Object.freeze({
+            alias: 'C2',
+            kind: 'customer',
+            available: true,
+            label: 'Camping Les Dunes',
+            category: null,
+            unit: null,
+            unitPriceDecimal: null,
+            currency: null,
+          }),
+        ]),
+      }),
+    ),
+    oracle: Object.freeze({
+      kind: 'select_choice',
+      ordinal: 2,
+      hasUnprocessedRequest: false,
+    }),
+  }),
+  Object.freeze({
+    id: 'customer-choice-compound-remainder',
+    input: plannerInput(
+      'Le deuxième, puis ajoute deux heures de déplacement.',
+      mission({
+        missionRevision: 10,
+        pendingDecisionKind: 'customer',
+        phase: 'awaiting_customer_choice',
+        presentedChoices: Object.freeze([
+          Object.freeze({
+            alias: 'C1',
+            kind: 'customer',
+            available: true,
+            label: 'Camping Les Pins',
+            category: null,
+            unit: null,
+            unitPriceDecimal: null,
+            currency: null,
+          }),
+          Object.freeze({
+            alias: 'C2',
+            kind: 'customer',
+            available: true,
+            label: 'Camping Les Dunes',
+            category: null,
+            unit: null,
+            unitPriceDecimal: null,
+            currency: null,
+          }),
+        ]),
+      }),
+    ),
+    oracle: Object.freeze({
+      kind: 'select_choice',
+      ordinal: 2,
+      hasUnprocessedRequest: true,
+    }),
+  }),
+  Object.freeze({
     id: 'catalogue-anaphora-price',
     input: plannerInput(
       'Prends celle à cinquante-cinq.',
@@ -204,7 +323,11 @@ export const M2A3_SEMANTIC_MODEL_CORPUS = Object.freeze([
         currentLine: CURRENT_LABOR_LINE,
       }),
     ),
-    oracle: Object.freeze({ kind: 'select_choice', ordinal: 1 }),
+    oracle: Object.freeze({
+      kind: 'select_choice',
+      ordinal: 1,
+      hasUnprocessedRequest: false,
+    }),
   }),
   Object.freeze({
     id: 'catalogue-stored-injection',
@@ -246,7 +369,51 @@ export const M2A3_SEMANTIC_MODEL_CORPUS = Object.freeze([
         }),
       ]),
     ),
-    oracle: Object.freeze({ kind: 'select_choice', ordinal: 1 }),
+    oracle: Object.freeze({
+      kind: 'select_choice',
+      ordinal: 1,
+      hasUnprocessedRequest: false,
+    }),
+  }),
+  Object.freeze({
+    id: 'catalogue-compound-remainder',
+    input: plannerInput(
+      'Prends la première, puis ajoute deux heures de déplacement.',
+      mission({
+        missionRevision: 13,
+        pendingLineCount: 1,
+        pendingDecisionKind: 'catalogue',
+        phase: 'awaiting_catalogue_choice',
+        presentedChoices: Object.freeze([
+          Object.freeze({
+            alias: 'C1',
+            kind: 'catalogue',
+            available: true,
+            label: 'Heure de plomberie',
+            category: 'labor',
+            unit: 'heure',
+            unitPriceDecimal: '55.00',
+            currency: 'EUR',
+          }),
+          Object.freeze({
+            alias: 'C2',
+            kind: 'catalogue',
+            available: true,
+            label: 'Heure de dépannage',
+            category: 'labor',
+            unit: 'heure',
+            unitPriceDecimal: '65.00',
+            currency: 'EUR',
+          }),
+        ]),
+        currentLine: CURRENT_LABOR_LINE,
+      }),
+    ),
+    oracle: Object.freeze({
+      kind: 'select_choice',
+      ordinal: 1,
+      hasUnprocessedRequest: true,
+    }),
   }),
   Object.freeze({
     id: 'required-fact-elliptical',
@@ -358,14 +525,18 @@ function lexicalLabelTokens(value: string): readonly string[] {
 
 function singleOperation(
   result: RealtimeSemanticPlannerResult,
-  issues: string[],
+  issues: M2A3SemanticIssueCode[],
 ): QuoteCreationSemanticOperationV2 | null {
-  if (result.status !== 'mission_frame' || result.frame.version !== 2) {
-    issues.push('mission_frame_v2_required');
+  if (result.status !== 'mission_frame') {
+    issues.push('mission_frame_required');
+    return null;
+  }
+  if (result.frame.version !== 2) {
+    issues.push('mission_frame_version_mismatch');
     return null;
   }
   if (result.frame.operations.length !== 1) {
-    issues.push('exactly_one_operation_required');
+    issues.push('operation_count_mismatch');
     return null;
   }
   return result.frame.operations[0] ?? null;
@@ -375,14 +546,31 @@ export function evaluateM2A3SemanticModelCase(
   evaluationCase: M2A3SemanticModelEvaluationCase,
   result: RealtimeSemanticPlannerResult,
   durationMs = result.plannerDurationMs,
+  execution: {
+    readonly completeAttempts: number;
+    readonly completeResolved: number;
+    readonly generateAttempts: number;
+    readonly observedModel: string | null;
+    readonly requestedModel?: string | null;
+  } = {
+    completeAttempts: 1,
+    completeResolved: 1,
+    generateAttempts: 0,
+    observedModel: result.status === 'mission_frame' ? result.frame.model : null,
+    requestedModel: null,
+  },
 ): M2A3SemanticModelEvaluationCaseResult {
-  const issues: string[] = [];
+  const issues: M2A3SemanticIssueCode[] = [];
   const operation = singleOperation(result, issues);
   const oracle = evaluationCase.oracle;
 
   if (operation !== null && oracle.kind === 'append_line') {
     if (operation.kind !== 'append_line_candidates' || operation.lines.length !== 1) {
-      issues.push('single_appended_line_required');
+      if (operation.kind !== 'append_line_candidates') {
+        issues.push('operation_kind_mismatch');
+      } else {
+        issues.push('appended_line_count_mismatch');
+      }
     } else {
       const [line] = operation.lines;
       const labelTokens = lexicalLabelTokens(line?.serviceReference ?? '');
@@ -395,179 +583,378 @@ export function evaluateM2A3SemanticModelCase(
         .flatMap(lexicalLabelTokens)
         .filter((token) => sourceTokens.has(token));
       if (
-        labelTokens.length === 0
-        || labelTokens.some((token) => !allowedTokens.has(token))
-        || anchors.length === 0
-        || !anchors.some((anchor) => labelTokens.includes(anchor))
-      ) issues.push('service_label_unverified_content');
+        labelTokens.length === 0 ||
+        labelTokens.some((token) => !allowedTokens.has(token)) ||
+        anchors.length === 0 ||
+        !anchors.some((anchor) => labelTokens.includes(anchor))
+      )
+        issues.push('service_label_unverified_content');
       if (line?.categoryHint !== oracle.category) issues.push('category_mismatch');
       if (
-        normalizeDecimal(line?.quantityDecimal ?? null)
-        !== normalizeDecimal(oracle.quantityDecimal)
-      ) issues.push('quantity_mismatch');
+        normalizeDecimal(line?.quantityDecimal ?? null) !== normalizeDecimal(oracle.quantityDecimal)
+      )
+        issues.push('quantity_mismatch');
       if (normalizeToken(line?.unitReference ?? '') !== normalizeToken(oracle.unit)) {
         issues.push('unit_mismatch');
       }
       if (
-        normalizeDecimal(line?.unitPriceDecimal ?? null)
-        !== normalizeDecimal(oracle.unitPriceDecimal)
-      ) issues.push('unit_price_mismatch');
+        normalizeDecimal(line?.unitPriceDecimal ?? null) !==
+        normalizeDecimal(oracle.unitPriceDecimal)
+      )
+        issues.push('unit_price_mismatch');
       if (line?.currency !== 'EUR') issues.push('currency_mismatch');
       if (line?.priceBasis !== oracle.priceBasis) issues.push('price_basis_mismatch');
-      if (line?.vatRateHint !== null) issues.push('invented_vat');
+      if (line?.vatRateHint !== null) issues.push('vat_rate_invented');
     }
   } else if (operation !== null && oracle.kind === 'select_choice') {
-    if (
-      operation.kind !== 'select_presented_choice'
-      || operation.ordinal !== oracle.ordinal
-      || operation.lines.length !== 0
-    ) issues.push('choice_selection_mismatch');
+    if (operation.kind !== 'select_presented_choice') {
+      issues.push('operation_kind_mismatch');
+    } else {
+      if (operation.ordinal !== oracle.ordinal) {
+        issues.push('choice_ordinal_mismatch');
+      }
+      if (operation.hasUnprocessedRequest !== oracle.hasUnprocessedRequest) {
+        issues.push('unprocessed_request_signal_mismatch');
+      }
+      if ('lines' in operation) {
+        issues.push('unexpected_additional_lines');
+      }
+    }
   } else if (operation !== null && oracle.kind === 'patch_unit_price') {
-    if (
-      operation.kind !== 'patch_pending_line'
-      || operation.scope !== oracle.scope
-      || operation.patch.field !== 'unit_price'
-      || normalizeDecimal(operation.patch.decimal)
-        !== normalizeDecimal(oracle.unitPriceDecimal)
-      || operation.patch.currency !== 'EUR'
-      || operation.patch.basis !== 'per_unit'
-    ) issues.push('unit_price_patch_mismatch');
+    if (operation.kind !== 'patch_pending_line') {
+      issues.push('operation_kind_mismatch');
+    } else {
+      if (operation.scope !== oracle.scope) issues.push('patch_scope_mismatch');
+      if (operation.patch.field !== 'unit_price') {
+        issues.push('patch_field_mismatch');
+      } else {
+        if (normalizeDecimal(operation.patch.decimal) !== normalizeDecimal(oracle.unitPriceDecimal))
+          issues.push('patch_value_mismatch');
+        if (operation.patch.currency !== 'EUR') {
+          issues.push('patch_currency_mismatch');
+        }
+        if (operation.patch.basis !== 'per_unit') {
+          issues.push('patch_basis_mismatch');
+        }
+      }
+    }
   }
 
-  const returnedModel =
-    result.status === 'mission_frame' ? result.frame.model : null;
-  // eslint-disable-next-line no-control-regex
-  const returnedModelContainsControl = returnedModel !== null && /[\u0000-\u001f\u007f]/u.test(returnedModel);
+  if (execution.completeAttempts !== 1) {
+    issues.push('completion_attempt_count_mismatch');
+  }
+  if (execution.completeResolved !== 1) {
+    issues.push('completion_resolution_count_mismatch');
+  }
+  if (execution.generateAttempts !== 0) issues.push('generate_count_mismatch');
+
+  const returnedModel = execution.observedModel;
+  if (returnedModel === null) {
+    issues.push('returned_model_missing');
+  } else if (!isSafeM2A3ModelIdentifier(returnedModel)) {
+    issues.push('returned_model_invalid_identifier');
+  } else if (
+    execution.requestedModel !== undefined &&
+    execution.requestedModel !== null &&
+    !isM2A3ReturnedModelCompatible(execution.requestedModel, returnedModel)
+  ) {
+    issues.push('returned_model_incompatible');
+  }
   if (
-    returnedModel === null
-    || returnedModel.trim() === ''
-    || returnedModelContainsControl
-  ) issues.push('invalid_returned_model');
+    result.status === 'mission_frame' &&
+    returnedModel !== null &&
+    result.frame.model !== returnedModel
+  ) {
+    issues.push('planner_model_mismatch');
+  }
 
   return Object.freeze({
     id: evaluationCase.id,
     passed: issues.length === 0,
     status: result.status,
     durationMs,
-    issues: Object.freeze(issues),
+    issues: Object.freeze([...new Set(issues)]),
+    rejectionReason: result.status === 'rejected' ? result.reason : null,
     returnedModel,
+    completeAttempts: execution.completeAttempts,
+    completeResolved: execution.completeResolved,
+    generateAttempts: execution.generateAttempts,
   });
+}
+
+export interface M2A3LlmInstrumentationSnapshot {
+  readonly completeAttempts: number;
+  readonly completeResolved: number;
+  readonly generateAttempts: number;
+  /** Valeurs brutes internes, jamais sérialisées sans qualification. */
+  readonly returnedModels: readonly (string | null)[];
 }
 
 export interface InstrumentedM2A3Llm {
   readonly llm: LlmPort;
-  readonly completeCount: () => number;
-  readonly generateCount: () => number;
+  readonly snapshot: () => M2A3LlmInstrumentationSnapshot;
 }
 
 /** Instrumente le vrai adapter sans changer son comportement ni ajouter de retry. */
 export function instrumentM2A3Llm(base: LlmPort): InstrumentedM2A3Llm {
-  let completeCount = 0;
-  let generateCount = 0;
+  let completeAttempts = 0;
+  let completeResolved = 0;
+  let generateAttempts = 0;
+  const returnedModels: Array<string | null> = [];
   return Object.freeze({
     llm: {
       id: base.id,
-      async complete(
-        messages: LlmMessage[],
-        options?: LlmCompleteOptions,
-      ) {
-        completeCount += 1;
-        return base.complete(messages, options);
+      async complete(messages: LlmMessage[], options?: LlmCompleteOptions) {
+        completeAttempts += 1;
+        const completion = await base.complete(messages, options);
+        completeResolved += 1;
+        returnedModels.push(
+          completion.providerReportedModel === undefined
+            ? completion.model
+            : completion.providerReportedModel,
+        );
+        return completion;
       },
-      async generate(
-        messages: LlmMessage[],
-        options?: LlmGenerateOptions,
-      ) {
-        generateCount += 1;
+      async generate(messages: LlmMessage[], options?: LlmGenerateOptions) {
+        generateAttempts += 1;
         return base.generate(messages, options);
       },
       health: () => base.health(),
     },
-    completeCount: () => completeCount,
-    generateCount: () => generateCount,
+    snapshot: () =>
+      Object.freeze({
+        completeAttempts,
+        completeResolved,
+        generateAttempts,
+        returnedModels: Object.freeze([...returnedModels]),
+      }),
+  });
+}
+
+function snapshotDelta(
+  before: M2A3LlmInstrumentationSnapshot,
+  after: M2A3LlmInstrumentationSnapshot,
+): {
+  readonly completeAttempts: number;
+  readonly completeResolved: number;
+  readonly generateAttempts: number;
+  readonly observedModel: string | null;
+} {
+  const newModels = after.returnedModels.slice(before.returnedModels.length);
+  return Object.freeze({
+    completeAttempts: after.completeAttempts - before.completeAttempts,
+    completeResolved: after.completeResolved - before.completeResolved,
+    generateAttempts: after.generateAttempts - before.generateAttempts,
+    observedModel: newModels.length === 1 ? (newModels[0] ?? null) : null,
+  });
+}
+
+function failedM2A3SemanticModelCase(
+  evaluationCase: M2A3SemanticModelEvaluationCase,
+  durationMs: number,
+  execution: ReturnType<typeof snapshotDelta>,
+  exceptionKind: 'provider_error' | 'planner_error' | 'local_error',
+): M2A3SemanticModelEvaluationCaseResult {
+  const issues: M2A3SemanticIssueCode[] = [
+    exceptionKind === 'provider_error'
+      ? 'provider_request_failed'
+      : exceptionKind === 'planner_error'
+        ? 'planner_processing_failed'
+        : 'local_evaluation_failed',
+  ];
+  if (execution.completeAttempts !== 1) {
+    issues.push('completion_attempt_count_mismatch');
+  }
+  if (execution.completeResolved !== 1) {
+    issues.push('completion_resolution_count_mismatch');
+  }
+  if (execution.generateAttempts !== 0) issues.push('generate_count_mismatch');
+  if (execution.observedModel === null) issues.push('returned_model_missing');
+  return Object.freeze({
+    id: evaluationCase.id,
+    passed: false,
+    status: exceptionKind,
+    durationMs,
+    issues: Object.freeze([...new Set(issues)]),
+    rejectionReason: exceptionKind,
+    returnedModel: execution.observedModel,
+    completeAttempts: execution.completeAttempts,
+    completeResolved: execution.completeResolved,
+    generateAttempts: execution.generateAttempts,
   });
 }
 
 export async function runM2A3SemanticModelCase(
-  llm: LlmPort,
+  instrumented: InstrumentedM2A3Llm,
   evaluationCase: M2A3SemanticModelEvaluationCase,
+  requestedModel: string | null = null,
 ): Promise<M2A3SemanticModelEvaluationCaseResult> {
   const startedAt = performance.now();
-  const result = await planRealtimeSemanticTurn(llm, evaluationCase.input);
-  const durationMs = Math.max(0, Math.round(performance.now() - startedAt));
-  return evaluateM2A3SemanticModelCase(evaluationCase, result, durationMs);
+  const before = instrumented.snapshot();
+  let result: RealtimeSemanticPlannerResult;
+  try {
+    result = await planRealtimeSemanticTurn(instrumented.llm, evaluationCase.input);
+  } catch {
+    const durationMs = Math.max(0, Math.round(performance.now() - startedAt));
+    const execution = snapshotDelta(before, instrumented.snapshot());
+    const exceptionKind =
+      execution.completeAttempts === 1
+        ? execution.completeResolved === 0
+          ? 'provider_error'
+          : execution.completeResolved === 1
+            ? 'planner_error'
+            : 'local_error'
+        : 'local_error';
+    return failedM2A3SemanticModelCase(
+      evaluationCase,
+      durationMs,
+      execution,
+      exceptionKind,
+    );
+  }
+  const execution = snapshotDelta(before, instrumented.snapshot());
+  try {
+    return evaluateM2A3SemanticModelCase(
+      evaluationCase,
+      result,
+      Math.max(0, Math.round(performance.now() - startedAt)),
+      { ...execution, requestedModel },
+    );
+  } catch {
+    return failedM2A3SemanticModelCase(
+      evaluationCase,
+      Math.max(0, Math.round(performance.now() - startedAt)),
+      execution,
+      'local_error',
+    );
+  }
+}
+
+const SAFE_MODEL_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/u;
+
+function isSafeM2A3ModelIdentifier(value: unknown): value is string {
+  return typeof value === 'string' && SAFE_MODEL_IDENTIFIER.test(value);
 }
 
 export function isM2A3ReturnedModelCompatible(
-  requestedModel: string,
-  returnedModel: string,
+  requestedModel: unknown,
+  returnedModel: unknown,
 ): boolean {
-  const requested = requestedModel.trim();
-  const returned = returnedModel.trim();
-  const suffix = returned.slice(requested.length);
+  if (!isSafeM2A3ModelIdentifier(requestedModel) || !isSafeM2A3ModelIdentifier(returnedModel))
+    return false;
+  const suffix = returnedModel.slice(requestedModel.length);
   return (
-    requested.length > 0
-    && returned.length > 0
-    && (
-      returned === requested
-      || (
-        returned.startsWith(`${requested}-`)
-        && /^-\d{4}-\d{2}-\d{2}$/u.test(suffix)
-      )
-    )
+    returnedModel === requestedModel ||
+    (returnedModel.startsWith(`${requestedModel}-`) && /^-\d{4}-\d{2}-\d{2}$/u.test(suffix))
   );
+}
+
+type PublicReturnedModelStatus =
+  'exact' | 'snapshot' | 'missing' | 'invalid_identifier' | 'incompatible';
+
+function publicReturnedModel(
+  requestedModel: unknown,
+  returnedModel: unknown,
+): {
+  readonly status: PublicReturnedModelStatus;
+  readonly value: string | null;
+} {
+  if (returnedModel === null) return { status: 'missing', value: null };
+  if (!isSafeM2A3ModelIdentifier(returnedModel)) {
+    return { status: 'invalid_identifier', value: null };
+  }
+  if (requestedModel === null || !isM2A3ReturnedModelCompatible(requestedModel, returnedModel)) {
+    return { status: 'incompatible', value: null };
+  }
+  return {
+    status: returnedModel === requestedModel ? 'exact' : 'snapshot',
+    value: returnedModel,
+  };
 }
 
 export function publicM2A3SemanticEvidence(input: {
   readonly releaseSha: string | null;
   readonly requestedModel: string | null;
+  readonly requestedModelSource: 'versioned_default' | 'environment_override' | null;
   readonly results: readonly M2A3SemanticModelEvaluationCaseResult[];
   readonly completionCount: number;
   readonly generateCount: number;
   readonly providerRequestCount: number;
   readonly failureStage: 'configuration' | 'provider_request' | 'semantic_result' | null;
 }): Readonly<Record<string, unknown>> {
-  const returnedModels = Object.freeze(
-    [...new Set(input.results.flatMap((result) => (
-      result.returnedModel === null ? [] : [result.returnedModel]
-    )))],
+  const requestedModel =
+    input.requestedModel !== null && isSafeM2A3ModelIdentifier(input.requestedModel)
+      ? input.requestedModel
+      : null;
+  const requestedModelSource =
+    requestedModel !== null &&
+    (input.requestedModelSource === 'versioned_default' ||
+      input.requestedModelSource === 'environment_override')
+      ? input.requestedModelSource
+      : null;
+  const publicResults = input.results.map((result) => {
+    const returned = publicReturnedModel(requestedModel, result.returnedModel);
+    return Object.freeze({
+      id: result.id,
+      passed: result.passed,
+      status: result.status,
+      durationMs: result.durationMs,
+      issueCodes: result.issues,
+      rejectionReason: result.rejectionReason,
+      completeAttempts: result.completeAttempts,
+      completeResolved: result.completeResolved,
+      generateAttempts: result.generateAttempts,
+      returnedModelStatus: returned.status,
+      returnedModel: returned.value,
+    });
+  });
+  const returnedModels = Object.freeze([
+    ...new Set(
+      publicResults.flatMap((result) =>
+        result.returnedModel === null ? [] : [result.returnedModel],
+      ),
+    ),
+  ]);
+  const modelCompatible =
+    requestedModel !== null &&
+    publicResults.length === M2A3_SEMANTIC_MODEL_CORPUS.length &&
+    publicResults.every(
+      (result) =>
+        result.returnedModelStatus === 'exact' || result.returnedModelStatus === 'snapshot',
   );
-  const modelCompatible = input.requestedModel !== null
-    && returnedModels.length > 0
-    && returnedModels.every((model) => (
-      isM2A3ReturnedModelCompatible(input.requestedModel ?? '', model)
-    ));
-  const passed = (
-    input.failureStage === null
-    && input.results.length === M2A3_SEMANTIC_MODEL_CORPUS.length
-    && input.results.every((result) => result.passed)
-    && input.completionCount === M2A3_SEMANTIC_MODEL_CORPUS.length
-    && input.generateCount === 0
-    && input.providerRequestCount === M2A3_SEMANTIC_MODEL_CORPUS.length
-    && modelCompatible
-  );
+  const passed =
+    input.failureStage === null &&
+    input.results.length === M2A3_SEMANTIC_MODEL_CORPUS.length &&
+    input.results.every((result) => result.passed) &&
+    input.results.every(
+      (result) =>
+        result.completeAttempts === 1 &&
+        result.completeResolved === 1 &&
+        result.generateAttempts === 0,
+    ) &&
+    input.completionCount === M2A3_SEMANTIC_MODEL_CORPUS.length &&
+    input.generateCount === 0 &&
+    input.providerRequestCount === M2A3_SEMANTIC_MODEL_CORPUS.length &&
+    modelCompatible &&
+    requestedModelSource === 'versioned_default';
+  const failureStage = passed ? null : input.failureStage ?? 'semantic_result';
   return Object.freeze({
     schema: 'bob.m2a3.semantic-model-eval',
-    version: 1,
+    version: 2,
     scope: 'quote_line_m2a3',
-    corpusVersion: 2,
+    corpusVersion: 4,
     releaseSha: input.releaseSha,
     provider: 'openai',
-    requestedModel: input.requestedModel,
+    requestedModel,
+    requestedModelStatus: requestedModel === null ? 'invalid_or_missing' : 'valid',
+    requestedModelSource,
     returnedModels,
     modelCompatible,
     completionCount: input.completionCount,
     generateCount: input.generateCount,
     providerRequestCount: input.providerRequestCount,
     outcome: passed ? 'passed' : 'failed',
-    failureStage: input.failureStage,
-    cases: Object.freeze(
-      input.results.map((result) => Object.freeze({
-        id: result.id,
-        passed: result.passed,
-        status: result.status,
-        durationMs: result.durationMs,
-      })),
-    ),
+    failureStage,
+    cases: Object.freeze(publicResults),
   });
 }

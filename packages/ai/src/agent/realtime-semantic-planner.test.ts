@@ -130,6 +130,83 @@ describe('planRealtimeSemanticTurn — monobrain strict', () => {
     ]);
   });
 
+  it('borne le tool-calling à un appel uniquement quand aucune action globale n’est exposée', async () => {
+    const model = fakeLlm({
+      text: null,
+      toolCalls: [
+        {
+          name: 'mettre_a_jour_mission_devis_v2',
+          arguments: {
+            operations: [{ kind: 'append_line_candidates', lines: [line] }],
+          },
+        },
+      ],
+      model: 'gpt-semantic-planner',
+    });
+
+    await planRealtimeSemanticTurn(
+      model.llm,
+      input({
+        hostManifest: {
+          schema: 'bob.realtime-semantic-host-manifest',
+          version: 1,
+          globalToolNames: [],
+        },
+      }),
+    );
+
+    const options = model.complete.mock.calls[0]?.[1];
+    expect(options?.toolCallConcurrency).toBe('single');
+    expect(options?.tools).toHaveLength(1);
+    expect(options?.tools?.[0]?.schemaAdherence).toBe('strict');
+  });
+
+  it('borne une réponse elliptique au seul requiredFact autoritaire', async () => {
+    const model = fakeLlm({
+      text: null,
+      toolCalls: [],
+      model: 'gpt-semantic-planner',
+    });
+
+    await planRealtimeSemanticTurn(
+      model.llm,
+      input({
+        transcript: '55 euros.',
+        quoteMission: {
+          missionAlias: 'M1',
+          missionRevision: 10,
+          confirmedLineCount: 1,
+          pendingLineCount: 1,
+          pendingDecisionKind: null,
+          protocolVersion: 2,
+          phase: 'awaiting_line_details',
+          requiredFact: 'unit_price',
+          currentLine: {
+            label: 'Main-d’œuvre plomberie',
+            category: 'labor',
+            quantityDecimal: '2',
+            unit: 'heure',
+            unitPriceDecimal: null,
+            currency: 'EUR',
+            vatRate: null,
+            priceBasis: 'per_unit',
+            housingOlderThan2y: null,
+            energyRenovation: null,
+          },
+          presentedChoices: [],
+        },
+      }),
+    );
+
+    const missionTool = model.complete.mock.calls[0]?.[1]?.tools?.find(
+      (tool) => tool.name === 'mettre_a_jour_mission_devis_v2',
+    );
+    const serialized = JSON.stringify(missionTool);
+    expect(serialized).toContain('"scope":{"const":"answer_required_fact"}');
+    expect(serialized).toContain('"field":{"const":"unit_price"}');
+    expect(serialized).not.toContain('confirm_current_proposal');
+  });
+
   it('produit un plan global multi-étapes sans appeler un deuxième cerveau', async () => {
     const model = fakeLlm({
       text: null,
@@ -305,20 +382,26 @@ describe('planRealtimeSemanticTurn — monobrain strict', () => {
   it('projette écran, historique et choix réels sans identifiants autoritaires', async () => {
     const model = fakeLlm({
       text: null,
-      toolCalls: [{
+      toolCalls: [
+        {
         name: 'mettre_a_jour_mission_devis_v2',
         arguments: {
-          operations: [{
+            operations: [
+              {
             kind: 'select_presented_choice',
             ordinal: 1,
-            lines: [],
-          }],
+                has_unprocessed_request: false,
         },
-      }],
+            ],
+          },
+        },
+      ],
       model: 'gpt-semantic-planner',
     });
 
-    const result = await planRealtimeSemanticTurn(model.llm, input({
+    const result = await planRealtimeSemanticTurn(
+      model.llm,
+      input({
       transcript: 'Celle à cinquante-cinq euros.',
       quoteMission: {
         missionAlias: 'M1',
@@ -364,13 +447,20 @@ describe('planRealtimeSemanticTurn — monobrain strict', () => {
           },
         ],
       },
-    }));
+      }),
+    );
 
     expect(result.status).toBe('mission_frame');
     if (result.status === 'mission_frame') {
       expect(result.frame).toMatchObject({
         version: 2,
-        operations: [{ kind: 'select_presented_choice', ordinal: 1 }],
+        operations: [
+          {
+            kind: 'select_presented_choice',
+            ordinal: 1,
+            hasUnprocessedRequest: false,
+          },
+        ],
       });
     }
     const messages = model.complete.mock.calls[0]?.[0] ?? [];
@@ -396,6 +486,15 @@ describe('planRealtimeSemanticTurn — monobrain strict', () => {
     expect(prompt).not.toContain('choiceId');
     expect(prompt).not.toContain('diffHash');
     expect(prompt).not.toContain('proposalId');
+    const options = model.complete.mock.calls[0]?.[1];
+    expect(options?.toolCallConcurrency).toBeUndefined();
+    const missionTool = options?.tools?.find(
+      (tool) => tool.name === 'mettre_a_jour_mission_devis_v2',
+    );
+    expect(missionTool?.schemaAdherence).toBe('strict');
+    expect(JSON.stringify(missionTool?.parameters)).toContain('select_presented_choice');
+    expect(JSON.stringify(missionTool?.parameters)).not.toContain('append_line_candidates');
+    expect(JSON.stringify(missionTool?.parameters)).not.toContain('"lines"');
   });
 
   it('minimise toutes les données projetées avant le fournisseur externe', async () => {

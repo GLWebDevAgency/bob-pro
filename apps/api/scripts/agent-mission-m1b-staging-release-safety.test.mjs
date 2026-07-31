@@ -14,6 +14,17 @@ const m2a3SemanticWorkflow = readFileSync(
   resolve(repositoryRoot, '.github/workflows/agent-mission-m2a3-semantic-staging.yml'),
   'utf8',
 );
+const m2a3SemanticEvidenceValidator = readFileSync(
+  resolve(repositoryRoot, 'apps/api/scripts/validate-agent-mission-m2a3-semantic-evidence.mjs'),
+  'utf8',
+);
+const m2a3SemanticLiveEvaluation = readFileSync(
+  resolve(
+    repositoryRoot,
+    'apps/api/src/voice/realtime/evaluation/m2a3-semantic-model-evaluation.live.test.ts',
+  ),
+  'utf8',
+);
 const reportSource = readFileSync(
   resolve(repositoryRoot, 'apps/api/scripts/agent-mission-m1b-staging-report.mjs'),
   'utf8',
@@ -133,15 +144,44 @@ test('le certificat M2-A-3 est manuel, exact-SHA, staging et sans clé OpenAI Gi
   );
   assert.doesNotMatch(m2a3SemanticWorkflow, /secrets\.OPENAI_API_KEY/u);
   assert.doesNotMatch(m2a3SemanticWorkflow, /railway\s+link/u);
-  assert.match(m2a3SemanticWorkflow, /receipt\.corpusVersion !== 2/u);
-  assert.match(m2a3SemanticWorkflow, /receipt\.providerRequestCount !== 6/u);
-  assert.match(m2a3SemanticWorkflow, /'catalogue-stored-injection'/u);
+  assert.match(m2a3SemanticEvidenceValidator, /receipt\.corpusVersion !== 4/u);
+  assert.match(
+    m2a3SemanticEvidenceValidator,
+    /receipt\.providerRequestCount === CASE_IDS\.length/u,
+  );
+  assert.match(m2a3SemanticEvidenceValidator, /'catalogue-stored-injection'/u);
   assert.match(
     m2a3SemanticWorkflow,
     /railway run[\s\S]*?env[\s\S]*?BOB_LIVE_PROVIDER=openai[\s\S]*?RUN_BOB_LIVE_M2A3_MODEL_EVAL=true/u,
   );
-  assert.match(m2a3SemanticWorkflow, /receipt\.generateCount !== 0/u);
-  assert.match(m2a3SemanticWorkflow, /entry\.status !== 'mission_frame'/u);
+  assert.match(m2a3SemanticEvidenceValidator, /receipt\.generateCount === 0/u);
+  assert.match(m2a3SemanticEvidenceValidator, /entry\.status !== 'mission_frame'/u);
+  assert.match(m2a3SemanticWorkflow, /id: live_eval[\s\S]*?continue-on-error: true/u);
+  assert.match(m2a3SemanticWorkflow, /id: receipt_guard[\s\S]*?if: \$\{\{ always\(\) \}\}/u);
+  assert.match(
+    m2a3SemanticWorkflow,
+    /Preserve exact-SHA semantic evidence[\s\S]*?if: \$\{\{ always\(\) && steps\.receipt_guard\.outcome == 'success' \}\}/u,
+  );
+  assert.match(
+    m2a3SemanticWorkflow,
+    /LIVE_OUTCOME: \$\{\{ steps\.live_eval\.outcome \}\}[\s\S]*?RECEIPT_GUARD_OUTCOME: \$\{\{ steps\.receipt_guard\.outcome \}\}[\s\S]*?test "\$\{LIVE_OUTCOME:-missing\}" = "success"[\s\S]*?test "\$\{RECEIPT_GUARD_OUTCOME:-missing\}" = "success"/u,
+  );
+  assert.match(m2a3SemanticWorkflow, /validate-agent-mission-m2a3-semantic-evidence\.mjs/u);
+  assert.match(
+    m2a3SemanticWorkflow,
+    /path: \.release-evidence\/agent-mission-m2a3\/semantic-model\.json/u,
+  );
+  assert.doesNotMatch(m2a3SemanticWorkflow, /path: \.release-evidence\/agent-mission-m2a3\/\s*$/mu);
+  assert.match(m2a3SemanticEvidenceValidator, /returnedModelStatus/u);
+  assert.match(m2a3SemanticEvidenceValidator, /issueCodes/u);
+  assert.match(
+    m2a3SemanticEvidenceValidator,
+    /receipt\.requestedModelSource === 'versioned_default'/u,
+  );
+  assert.match(
+    m2a3SemanticLiveEvaluation,
+    /process\.env\.OPENAI_MODEL !== undefined[\s\S]*?la V1 certifie exclusivement le défaut versionné/u,
+  );
   assert.match(m2a3SemanticWorkflow, /if-no-files-found: error/u);
   assert.match(m2a3SemanticWorkflow, /retention-days: 90/u);
 });

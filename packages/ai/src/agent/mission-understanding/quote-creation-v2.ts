@@ -64,7 +64,8 @@ export type QuoteCreationSemanticOperationV2 =
   | {
       readonly kind: 'select_presented_choice';
       readonly ordinal: 1 | 2 | 3 | 4 | 5 | 6;
-      readonly lines: readonly QuoteLineCandidateV1[];
+      /** Une autre demande existe dans le tour et doit être redemandée sans la recopier. */
+      readonly hasUnprocessedRequest: boolean;
     }
   | {
       readonly kind: 'patch_pending_line';
@@ -113,9 +114,7 @@ const LINES_SCHEMA = {
   maxItems: MAX_LINES,
 } as const;
 
-const PATCH_SCHEMA = {
-  oneOf: [
-    {
+const SERVICE_REFERENCE_PATCH_SCHEMA = {
       type: 'object',
       properties: {
         field: { const: 'service_reference' },
@@ -123,8 +122,9 @@ const PATCH_SCHEMA = {
       },
       required: ['field', 'value'],
       additionalProperties: false,
-    },
-    {
+} as const;
+
+const CATEGORY_PATCH_SCHEMA = {
       type: 'object',
       properties: {
         field: { const: 'category' },
@@ -132,8 +132,9 @@ const PATCH_SCHEMA = {
       },
       required: ['field', 'value'],
       additionalProperties: false,
-    },
-    {
+} as const;
+
+const QUANTITY_PATCH_SCHEMA = {
       type: 'object',
       properties: {
         field: { const: 'quantity' },
@@ -141,8 +142,9 @@ const PATCH_SCHEMA = {
       },
       required: ['field', 'decimal'],
       additionalProperties: false,
-    },
-    {
+} as const;
+
+const UNIT_PATCH_SCHEMA = {
       type: 'object',
       properties: {
         field: { const: 'unit' },
@@ -150,8 +152,9 @@ const PATCH_SCHEMA = {
       },
       required: ['field', 'value'],
       additionalProperties: false,
-    },
-    {
+} as const;
+
+const UNIT_PRICE_PATCH_SCHEMA = {
       type: 'object',
       properties: {
         field: { const: 'unit_price' },
@@ -161,8 +164,9 @@ const PATCH_SCHEMA = {
       },
       required: ['field', 'decimal', 'currency', 'basis'],
       additionalProperties: false,
-    },
-    {
+} as const;
+
+const VAT_RATE_PATCH_SCHEMA = {
       type: 'object',
       properties: {
         field: { const: 'vat_rate' },
@@ -170,8 +174,9 @@ const PATCH_SCHEMA = {
       },
       required: ['field', 'value'],
       additionalProperties: false,
-    },
-    {
+} as const;
+
+const HOUSING_OLDER_THAN_2Y_PATCH_SCHEMA = {
       type: 'object',
       properties: {
         field: { const: 'housing_older_than_2y' },
@@ -179,8 +184,9 @@ const PATCH_SCHEMA = {
       },
       required: ['field', 'value'],
       additionalProperties: false,
-    },
-    {
+} as const;
+
+const ENERGY_RENOVATION_PATCH_SCHEMA = {
       type: 'object',
       properties: {
         field: { const: 'energy_renovation' },
@@ -188,123 +194,244 @@ const PATCH_SCHEMA = {
       },
       required: ['field', 'value'],
       additionalProperties: false,
-    },
+} as const;
+
+const PATCH_SCHEMA_BY_REQUIRED_FACT = {
+  service_reference: SERVICE_REFERENCE_PATCH_SCHEMA,
+  category: CATEGORY_PATCH_SCHEMA,
+  quantity: QUANTITY_PATCH_SCHEMA,
+  unit: UNIT_PATCH_SCHEMA,
+  unit_price: UNIT_PRICE_PATCH_SCHEMA,
+  vat_rate: VAT_RATE_PATCH_SCHEMA,
+  housing_older_than_2y: HOUSING_OLDER_THAN_2Y_PATCH_SCHEMA,
+  energy_renovation: ENERGY_RENOVATION_PATCH_SCHEMA,
+} as const satisfies Readonly<
+  Record<AgentMissionQuoteLineRequiredFact, Readonly<Record<string, unknown>>>
+>;
+
+const PATCH_SCHEMA = {
+  anyOf: [
+    SERVICE_REFERENCE_PATCH_SCHEMA,
+    CATEGORY_PATCH_SCHEMA,
+    QUANTITY_PATCH_SCHEMA,
+    UNIT_PATCH_SCHEMA,
+    UNIT_PRICE_PATCH_SCHEMA,
+    VAT_RATE_PATCH_SCHEMA,
+    HOUSING_OLDER_THAN_2Y_PATCH_SCHEMA,
+    ENERGY_RENOVATION_PATCH_SCHEMA,
   ],
 } as const;
 
 const QUOTE_CREATION_V2_TOOL_NAME = 'mettre_a_jour_mission_devis_v2';
 
-export const QUOTE_CREATION_UNDERSTANDING_TOOL_V2: LlmToolSpec = Object.freeze({
-  name: QUOTE_CREATION_V2_TOOL_NAME,
+const START_OPERATION_SCHEMA = {
+  type: 'object',
   description:
-    "Comprendre une mission de devis en français et restituer uniquement les faits explicitement dits, dans leur ordre. Ne jamais choisir d'identifiant ni calculer un total.",
-  parameters: {
+    'Démarrer un devis depuis une demande explicite. Extraire le client et toutes les lignes dites dans le même énoncé, sans compléter les faits absents.',
+  properties: {
+    kind: { const: 'start_quote_creation' },
+    customer_reference: {
+      type: ['string', 'null'],
+      maxLength: MAX_REFERENCE_LENGTH,
+    },
+    lines: LINES_SCHEMA,
+  },
+  required: ['kind', 'customer_reference', 'lines'],
+  additionalProperties: false,
+} as const;
+
+const SET_CUSTOMER_OPERATION_SCHEMA = {
+  type: 'object',
+  description:
+    'Renseigner une référence client explicitement prononcée pendant une mission déjà ouverte ; conserver aussi les lignes dites dans le même tour.',
+  properties: {
+    kind: { const: 'set_customer_reference' },
+    customer_reference: { type: 'string', maxLength: MAX_REFERENCE_LENGTH },
+    lines: LINES_SCHEMA,
+  },
+  required: ['kind', 'customer_reference', 'lines'],
+  additionalProperties: false,
+} as const;
+
+const APPEND_LINES_OPERATION_SCHEMA = {
+  type: 'object',
+  description:
+    "Ajouter dans l'ordre une ou plusieurs lignes explicitement décrites dans la parole courante. Un chiffre contenu dans un nom métier ne devient jamais une quantité. Une TVA absente reste null et ne devient jamais 0.",
+  properties: {
+    kind: { const: 'append_line_candidates' },
+    lines: LINES_SCHEMA,
+  },
+  required: ['kind', 'lines'],
+  additionalProperties: false,
+} as const;
+
+const SELECT_CHOICE_OPERATION_SCHEMA = {
+  type: 'object',
+  description:
+    "Choisir uniquement parmi C1…C6 actuellement présentés. Une description comme « celle à 55 euros » doit être résolue vers l'ordinal correspondant aux données visibles. Ne jamais recopier une ligne, un choix ou le contexte dans cette opération.",
+  properties: {
+    kind: { const: 'select_presented_choice' },
+    ordinal: {
+      type: 'integer',
+      minimum: 1,
+      maximum: MAX_PRESENTED_CHOICES,
+    },
+    has_unprocessed_request: {
+      type: 'boolean',
+      description:
+        'true uniquement si la parole courante contient une autre demande en plus du choix ; cette demande ne doit jamais être recopiée dans cette opération.',
+    },
+  },
+  required: ['kind', 'ordinal', 'has_unprocessed_request'],
+  additionalProperties: false,
+} as const;
+
+const EXPLICIT_PATCH_OPERATION_SCHEMA = {
+  type: 'object',
+  description:
+    'Corriger spontanément un seul fait nommé de la ligne courante.',
+  properties: {
+    kind: { const: 'patch_pending_line' },
+    scope: { const: 'explicit_correction' },
+    patch: PATCH_SCHEMA,
+  },
+  required: ['kind', 'scope', 'patch'],
+  additionalProperties: false,
+} as const;
+
+function answerRequiredFactPatchOperationSchema(
+  requiredFact: AgentMissionQuoteLineRequiredFact,
+) {
+  return {
     type: 'object',
+    description:
+      'Répondre uniquement au fait précis demandé par Bob. Le champ est imposé par la mission persistée.',
     properties: {
-      operations: {
-        type: 'array',
-        minItems: 1,
-        maxItems: MAX_OPERATIONS,
-        items: {
-          oneOf: [
-            {
-              type: 'object',
-              description:
-                "Démarrer un devis depuis une demande explicite. Extraire le client et toutes les lignes dites dans le même énoncé, sans compléter les faits absents.",
-              properties: {
-                kind: { const: 'start_quote_creation' },
-                customer_reference: {
-                  type: ['string', 'null'],
-                  maxLength: MAX_REFERENCE_LENGTH,
-                },
-                lines: LINES_SCHEMA,
-              },
-              required: ['kind', 'customer_reference', 'lines'],
-              additionalProperties: false,
-            },
-            {
-              type: 'object',
-              description:
-                "Renseigner une référence client explicitement prononcée pendant une mission déjà ouverte ; conserver aussi les lignes dites dans le même tour.",
-              properties: {
-                kind: { const: 'set_customer_reference' },
-                customer_reference: { type: 'string', maxLength: MAX_REFERENCE_LENGTH },
-                lines: LINES_SCHEMA,
-              },
-              required: ['kind', 'customer_reference', 'lines'],
-              additionalProperties: false,
-            },
-            {
-              type: 'object',
-              description:
-                "Ajouter dans l'ordre une ou plusieurs lignes explicitement décrites. Un chiffre contenu dans un nom métier ne devient jamais une quantité.",
-              properties: {
-                kind: { const: 'append_line_candidates' },
-                lines: LINES_SCHEMA,
-              },
-              required: ['kind', 'lines'],
-              additionalProperties: false,
-            },
-            {
-              type: 'object',
-              description:
-                "Choisir uniquement parmi C1…C6 actuellement présentés. Une description comme « celle à 55 euros » doit être résolue vers l'ordinal correspondant aux données visibles.",
-              properties: {
-                kind: { const: 'select_presented_choice' },
-                ordinal: {
-                  type: 'integer',
-                  minimum: 1,
-                  maximum: MAX_PRESENTED_CHOICES,
-                },
-                lines: LINES_SCHEMA,
-              },
-              required: ['kind', 'ordinal', 'lines'],
-              additionalProperties: false,
-            },
-            {
-              type: 'object',
-              description:
-                "Corriger un seul fait de la ligne courante. answer_required_fact répond à la question ciblée de Bob ; explicit_correction exprime une correction spontanée.",
-              properties: {
-                kind: { const: 'patch_pending_line' },
-                scope: { type: 'string', enum: [...PATCH_SCOPES] },
-                patch: PATCH_SCHEMA,
-              },
-              required: ['kind', 'scope', 'patch'],
-              additionalProperties: false,
-            },
-            {
-              type: 'object',
-              description:
-                'Confirmer la proposition courante uniquement quand elle est présentée.',
-              properties: { kind: { const: 'confirm_current_proposal' } },
-              required: ['kind'],
-              additionalProperties: false,
-            },
-            {
-              type: 'object',
-              description:
-                'Refuser la proposition courante tout en conservant la ligne à corriger.',
-              properties: { kind: { const: 'reject_current_proposal' } },
-              required: ['kind'],
-              additionalProperties: false,
-            },
-            {
-              type: 'object',
-              description:
-                'Annuler uniquement la ligne courante, jamais la session Bob entière.',
-              properties: { kind: { const: 'cancel_current_line' } },
-              required: ['kind'],
-              additionalProperties: false,
-            },
-          ],
+      kind: { const: 'patch_pending_line' },
+      scope: { const: 'answer_required_fact' },
+      patch: PATCH_SCHEMA_BY_REQUIRED_FACT[requiredFact],
+    },
+    required: ['kind', 'scope', 'patch'],
+    additionalProperties: false,
+  } as const;
+}
+
+const CATALOGUE_REFERENCE_PATCH_OPERATION_SCHEMA = {
+  type: 'object',
+  description:
+    'Corriger explicitement le libellé de la ligne avant de relancer la recherche catalogue.',
+  properties: {
+    kind: { const: 'patch_pending_line' },
+    scope: { const: 'explicit_correction' },
+    patch: {
+      type: 'object',
+      properties: {
+        field: { const: 'service_reference' },
+        value: { type: 'string', maxLength: MAX_REFERENCE_LENGTH },
+      },
+      required: ['field', 'value'],
+      additionalProperties: false,
+    },
+  },
+  required: ['kind', 'scope', 'patch'],
+  additionalProperties: false,
+} as const;
+
+const CONFIRM_OPERATION_SCHEMA = {
+  type: 'object',
+  description: 'Confirmer la proposition courante uniquement quand elle est présentée.',
+  properties: { kind: { const: 'confirm_current_proposal' } },
+  required: ['kind'],
+  additionalProperties: false,
+} as const;
+
+const REJECT_OPERATION_SCHEMA = {
+  type: 'object',
+  description: 'Refuser la proposition courante tout en conservant la ligne à corriger.',
+  properties: { kind: { const: 'reject_current_proposal' } },
+  required: ['kind'],
+  additionalProperties: false,
+} as const;
+
+const CANCEL_OPERATION_SCHEMA = {
+  type: 'object',
+  description: 'Annuler uniquement la ligne courante, jamais la session Bob entière.',
+  properties: { kind: { const: 'cancel_current_line' } },
+  required: ['kind'],
+  additionalProperties: false,
+} as const;
+
+type OperationSchema =
+  | typeof START_OPERATION_SCHEMA
+  | typeof SET_CUSTOMER_OPERATION_SCHEMA
+  | typeof APPEND_LINES_OPERATION_SCHEMA
+  | typeof SELECT_CHOICE_OPERATION_SCHEMA
+  | typeof EXPLICIT_PATCH_OPERATION_SCHEMA
+  | ReturnType<typeof answerRequiredFactPatchOperationSchema>
+  | typeof CATALOGUE_REFERENCE_PATCH_OPERATION_SCHEMA
+  | typeof CONFIRM_OPERATION_SCHEMA
+  | typeof REJECT_OPERATION_SCHEMA
+  | typeof CANCEL_OPERATION_SCHEMA;
+
+function operationSchemasForPhase(
+  phase: QuoteCreationUnderstandingPhaseV2,
+  requiredFact: AgentMissionQuoteLineRequiredFact | null,
+): readonly OperationSchema[] {
+  switch (phase) {
+    case 'inactive':
+      return [START_OPERATION_SCHEMA];
+    case 'awaiting_customer':
+      return [SET_CUSTOMER_OPERATION_SCHEMA];
+    case 'awaiting_customer_choice':
+      return [SET_CUSTOMER_OPERATION_SCHEMA, SELECT_CHOICE_OPERATION_SCHEMA];
+    case 'awaiting_lines':
+      return [APPEND_LINES_OPERATION_SCHEMA];
+    case 'awaiting_catalogue_choice':
+      return [SELECT_CHOICE_OPERATION_SCHEMA, CATALOGUE_REFERENCE_PATCH_OPERATION_SCHEMA];
+    case 'awaiting_line_details':
+      return [
+        ...(requiredFact === null
+          ? []
+          : [answerRequiredFactPatchOperationSchema(requiredFact)]),
+        EXPLICIT_PATCH_OPERATION_SCHEMA,
+        CANCEL_OPERATION_SCHEMA,
+      ];
+    case 'awaiting_line_confirmation':
+      return [
+        EXPLICIT_PATCH_OPERATION_SCHEMA,
+        CONFIRM_OPERATION_SCHEMA,
+        REJECT_OPERATION_SCHEMA,
+        CANCEL_OPERATION_SCHEMA,
+      ];
+  }
+}
+
+export function quoteCreationUnderstandingToolV2ForPhase(
+  phase: QuoteCreationUnderstandingPhaseV2,
+  requiredFact: AgentMissionQuoteLineRequiredFact | null = null,
+): LlmToolSpec {
+  const operationSchemas = operationSchemasForPhase(phase, requiredFact);
+  const items = operationSchemas.length === 1 ? operationSchemas[0] : { anyOf: operationSchemas };
+  return Object.freeze({
+    name: QUOTE_CREATION_V2_TOOL_NAME,
+    description:
+      "Comprendre la prochaine transition autorisée d'une mission de devis en français et restituer uniquement les faits explicitement dits. Ne jamais choisir d'identifiant, calculer un total ou convertir une absence en valeur.",
+    schemaAdherence: 'strict',
+    parameters: {
+      type: 'object',
+      properties: {
+        operations: {
+          type: 'array',
+          minItems: 1,
+          maxItems: MAX_OPERATIONS,
+          items,
         },
       },
+      required: ['operations'],
+      additionalProperties: false,
     },
-    required: ['operations'],
-    additionalProperties: false,
-  },
-});
+  });
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -489,26 +616,29 @@ function phaseAllows(
     case 'inactive':
       return operation.kind === 'start_quote_creation';
     case 'awaiting_customer':
+      return operation.kind === 'set_customer_reference';
     case 'awaiting_customer_choice':
-      return operation.kind === 'set_customer_reference'
-        || operation.kind === 'select_presented_choice';
+      return (
+        operation.kind === 'set_customer_reference' || operation.kind === 'select_presented_choice'
+      );
     case 'awaiting_lines':
       return operation.kind === 'append_line_candidates';
     case 'awaiting_catalogue_choice':
-      return operation.kind === 'select_presented_choice'
-        || (
-          operation.kind === 'patch_pending_line'
-          && operation.scope === 'explicit_correction'
-          && operation.patch.field === 'service_reference'
+      return (
+        operation.kind === 'select_presented_choice' ||
+        (operation.kind === 'patch_pending_line' &&
+          operation.scope === 'explicit_correction' &&
+          operation.patch.field === 'service_reference')
         );
     case 'awaiting_line_details':
-      return operation.kind === 'patch_pending_line'
-        || operation.kind === 'cancel_current_line';
+      return operation.kind === 'patch_pending_line' || operation.kind === 'cancel_current_line';
     case 'awaiting_line_confirmation':
-      return operation.kind === 'patch_pending_line'
-        || operation.kind === 'confirm_current_proposal'
-        || operation.kind === 'reject_current_proposal'
-        || operation.kind === 'cancel_current_line';
+      return (
+        operation.kind === 'patch_pending_line' ||
+        operation.kind === 'confirm_current_proposal' ||
+        operation.kind === 'reject_current_proposal' ||
+        operation.kind === 'cancel_current_line'
+      );
   }
 }
 
@@ -552,34 +682,26 @@ function parseOperation(
     }
   } else if (value['kind'] === 'select_presented_choice') {
     if (
-      !exactKeys(value, ['kind', 'ordinal', 'lines'])
-      || !Number.isInteger(value['ordinal'])
-      || (value['ordinal'] as number) < 1
-      || (value['ordinal'] as number) > input.presentedChoiceCount
-    ) return null;
-    const lines = parseLines(value['lines']);
-    if (lines !== null) {
+      !exactKeys(value, ['kind', 'ordinal', 'has_unprocessed_request']) ||
+      !Number.isInteger(value['ordinal']) ||
+      (value['ordinal'] as number) < 1 ||
+      (value['ordinal'] as number) > input.presentedChoiceCount ||
+      typeof value['has_unprocessed_request'] !== 'boolean'
+    )
+      return null;
       operation = Object.freeze({
         kind: value['kind'],
         ordinal: value['ordinal'] as 1 | 2 | 3 | 4 | 5 | 6,
-        lines,
+      hasUnprocessedRequest: value['has_unprocessed_request'],
       });
-    }
   } else if (value['kind'] === 'patch_pending_line') {
-    if (
-      !exactKeys(value, ['kind', 'scope', 'patch'])
-      || !isOneOf(PATCH_SCOPES, value['scope'])
-    ) return null;
+    if (!exactKeys(value, ['kind', 'scope', 'patch']) || !isOneOf(PATCH_SCOPES, value['scope']))
+      return null;
     const patch = parsePatch(value['patch']);
     if (
-      patch !== null
-      && (
-        value['scope'] === 'explicit_correction'
-        || (
-          input.requiredFact !== null
-          && patch.field === input.requiredFact
-        )
-      )
+      patch !== null &&
+      (value['scope'] === 'explicit_correction' ||
+        (input.requiredFact !== null && patch.field === input.requiredFact))
     ) {
       operation = Object.freeze({
         kind: value['kind'],

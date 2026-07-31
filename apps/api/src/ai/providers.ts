@@ -33,6 +33,7 @@ const MAX_TTS_STREAM_AUDIO_CHUNK_BYTES = 256 * 1024;
 const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
 const SAFE_OPENAI_CHAT_MODEL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/u;
 export const DEFAULT_OPENAI_CHAT_MODEL = 'gpt-4o-mini';
+const OPENAI_CHAT_BASE_URL = 'https://api.openai.com/v1';
 const OPENAI_AUDIO_SPEECH_ENDPOINT = 'https://api.openai.com/v1/audio/speech';
 const OPENAI_REALTIME_TTS_MODEL = 'gpt-4o-mini-tts-2025-12-15';
 const OPENAI_REALTIME_TTS_VOICE = 'marin';
@@ -435,7 +436,18 @@ async function readMistralSpeechStream(response: Response, signal: AbortSignal):
  * GLM (Zhipu), DeepSeek, OpenAI, Mistral. Diffèrent seulement par baseUrl + modèle + clé.
  */
 export class OpenAiCompatibleLlmAdapter implements LlmPort {
-  constructor(private readonly cfg: { id: string; baseUrl: string; apiKey: string; model: string }) {}
+  constructor(
+    private readonly cfg: {
+      id: string;
+      baseUrl: string;
+      apiKey: string;
+      model: string;
+      /**
+       * Capacité wire qualifiée, jamais déduite d'un identifiant ou d'une URL « compatible ».
+       */
+      nativeOpenAiToolControls?: true;
+    },
+  ) {}
   get id(): string {
     return this.cfg.id;
   }
@@ -451,9 +463,20 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
     if (opts.tools?.length) {
       body.tools = opts.tools.map((t) => ({
         type: 'function',
-        function: { name: t.name, description: t.description, parameters: t.parameters },
+        function: {
+          name: t.name,
+          description: t.description,
+          parameters: t.parameters,
+          ...(this.cfg.nativeOpenAiToolControls === true && t.schemaAdherence === 'strict'
+            ? { strict: true }
+            : {}),
+        },
       }));
-      body.tool_choice = opts.toolChoice === 'required' ? 'required' : opts.toolChoice === 'none' ? 'none' : 'auto';
+      body.tool_choice =
+        opts.toolChoice === 'required' ? 'required' : opts.toolChoice === 'none' ? 'none' : 'auto';
+      if (this.cfg.nativeOpenAiToolControls === true && opts.toolCallConcurrency === 'single') {
+        body.parallel_tool_calls = false;
+      }
     }
     const data = (await fetchJson(
       `${this.cfg.baseUrl}/chat/completions`,
@@ -468,7 +491,12 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
     const toolCalls: LlmToolCall[] = (msg?.tool_calls ?? [])
       .filter((c) => c.function?.name)
       .map((c) => ({ name: c.function.name, arguments: safeParseArgs(c.function.arguments) }));
-    return { text: msg?.content ?? null, toolCalls, model: data.model ?? this.cfg.model };
+    return {
+      text: msg?.content ?? null,
+      toolCalls,
+      model: data.model ?? this.cfg.model,
+      providerReportedModel: typeof data.model === 'string' ? data.model : null,
+    };
   }
 
   async generate(messages: LlmMessage[], opts: LlmGenerateOptions = {}): Promise<LlmResult> {
@@ -572,15 +600,20 @@ export function buildLlmForProvider(provider: Provider): LlmPort | undefined {
             model: env.MISTRAL_MODEL ?? 'mistral-small-latest',
           })
         : undefined;
-    case 'openai':
+    case 'openai': {
+      const baseUrl = env.OPENAI_URL ?? OPENAI_CHAT_BASE_URL;
       return env.OPENAI_API_KEY
         ? new OpenAiCompatibleLlmAdapter({
             id: 'openai',
-            baseUrl: env.OPENAI_URL ?? 'https://api.openai.com/v1',
+            baseUrl,
             apiKey: env.OPENAI_API_KEY,
             model: resolveOpenAiChatModel(env.OPENAI_MODEL),
+            ...(baseUrl === OPENAI_CHAT_BASE_URL
+              ? { nativeOpenAiToolControls: true as const }
+              : {}),
           })
         : undefined;
+    }
   }
 }
 

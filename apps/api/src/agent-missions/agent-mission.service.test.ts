@@ -1534,7 +1534,7 @@ describe('AgentMissionService metrics', () => {
       pendingLineId: '60000000-0000-4000-8000-000000000001',
       expectedWorkRevision: 2,
       choiceId: '40000000-0000-4000-8000-000000000001',
-      additionalLines: [],
+      additionalLines: [LINE],
     } as const;
 
     const tap = await service.decideCatalogueChoice({
@@ -1571,15 +1571,15 @@ describe('AgentMissionService metrics', () => {
         },
       },
     });
-    const calls = vi.mocked(
-      DecideQuoteAgentMissionCatalogueChoice.prototype.execute,
-    ).mock.calls;
+    const calls = vi.mocked(DecideQuoteAgentMissionCatalogueChoice.prototype.execute).mock.calls;
     expect(calls[0]?.[0]).toMatchObject({
       choiceId: common.choiceId,
+      additionalLines: [LINE],
       origin: { actor: 'user_tap', correlation: null },
     });
     expect(calls[1]?.[0]).toMatchObject({
       choiceId: common.choiceId,
+      additionalLines: [],
       commandId: '10000000-0000-4000-8000-000000000031',
       origin: {
         actor: 'user_voice',

@@ -114,10 +114,7 @@ export interface RealtimeQuoteMissionGateway {
     readonly pendingLineId: string;
     readonly expectedWorkRevision: number;
     readonly choiceId: string;
-    readonly additionalLines: readonly AgentMissionQuoteLineCandidateV1[];
-  }): Promise<
-  Result<DecideQuoteAgentMissionCatalogueChoiceServiceOutput, AppError>
-  >;
+  }): Promise<Result<DecideQuoteAgentMissionCatalogueChoiceServiceOutput, AppError>>;
   patchLineFromVoiceTurn(input: {
     readonly authorization: AgentMissionServiceAuthorization;
     readonly missionId: string;
@@ -237,28 +234,42 @@ const TEMPORARY_FAILURE =
   'Je rencontre un souci temporaire et je ne peux pas vérifier l’état de la mission. Consulte l’écran avant de réessayer.';
 const UNSAFE_UNDERSTANDING =
   'Je n’ai pas pu sécuriser cette demande. Rien n’a été exécuté. Reformule-la simplement.';
-const QUOTE_LINE_LIMIT_REACHED =
-  `Ce devis contient déjà ${MAX_BILLING_LINES} lignes, soit la limite autorisée. Je n’ai ajouté aucune nouvelle ligne. Pour modifier ses lignes, arrête cette mission Bob : le brouillon restera enregistré et l’édition manuelle sera libérée.`;
+const QUOTE_LINE_LIMIT_REACHED = `Ce devis contient déjà ${MAX_BILLING_LINES} lignes, soit la limite autorisée. Je n’ai ajouté aucune nouvelle ligne. Pour modifier ses lignes, arrête cette mission Bob : le brouillon restera enregistré et l’édition manuelle sera libérée.`;
+const UNPROCESSED_REQUEST_REMINDER =
+  'J’ai aussi entendu une autre demande dans cette phrase, mais je ne l’ai pas exécutée avec ce choix. Termine cette étape, puis redis-la pour que je la traite séparément.';
+
+function discloseUnprocessedRequest(
+  outcome: RealtimeQuoteMissionOrchestrationOutcome,
+  hasUnprocessedRequest: boolean,
+): RealtimeQuoteMissionOrchestrationOutcome {
+  if (!hasUnprocessedRequest || outcome.status === 'failed') return outcome;
+  return Object.freeze({
+    ...outcome,
+    canonicalSpeech: `${outcome.canonicalSpeech} ${UNPROCESSED_REQUEST_REMINDER}`,
+  });
+}
 const QUOTE_SEMANTIC_CAPABILITIES_V2 = Object.freeze([
   'quote.line.stage',
   'quote.catalogue.search',
   'quote.line.patch',
   'quote.line.confirm',
 ] as const);
-const QUOTE_SEMANTIC_CAPABILITIES_V1 = Object.freeze([
-  'quote.customer.resolve',
-] as const);
+const QUOTE_SEMANTIC_CAPABILITIES_V1 = Object.freeze(['quote.customer.resolve'] as const);
 
 function isQuoteLineLimitReached(error: AppError): boolean {
-  return error.kind === 'conflict'
-    && error.entity === 'agent_mission_quote_draft'
-    && error.reason === 'line_limit_reached';
+  return (
+    error.kind === 'conflict' &&
+    error.entity === 'agent_mission_quote_draft' &&
+    error.reason === 'line_limit_reached'
+  );
 }
 
-function understandingState(mission: AgentMissionViewV1 | null): {
+function understandingState(mission: AgentMissionViewV1 | null):
+  | {
   readonly phase: QuoteCreationUnderstandingPhase;
   readonly presentedCustomerCount: number;
-} | 'mission_locked' {
+    }
+  | 'mission_locked' {
   if (mission === null) {
     return { phase: 'inactive', presentedCustomerCount: 0 };
   }
@@ -1229,26 +1240,22 @@ implements RealtimeQuoteMissionOrchestratorPort {
           speechPurpose: 'action_result',
         };
       }
-      return canonicalLineContinuationState(
-        staged.value.continuation,
-        {
+      return canonicalLineContinuationState(staged.value.continuation, {
           mission: staged.value.mission,
           presentation: staged.value.presentation,
-        },
-      );
+      });
     }
 
     if (
-      operation.kind === 'set_customer_reference'
-      || (
-        operation.kind === 'select_presented_choice'
-        && mission.phase === 'awaiting_customer_choice'
-      )
+      operation.kind === 'set_customer_reference' ||
+      (operation.kind === 'select_presented_choice' && mission.phase === 'awaiting_customer_choice')
     ) {
-      const decision = operation.kind === 'select_presented_choice'
+      const decision =
+        operation.kind === 'select_presented_choice'
         ? (() => {
             const presented = mission.payload.decision;
-            const candidate = presented?.kind === 'customer'
+              const candidate =
+                presented?.kind === 'customer'
               ? presented.candidates[operation.ordinal - 1]
               : undefined;
             return presented?.kind === 'customer' && candidate !== undefined
@@ -1264,12 +1271,11 @@ implements RealtimeQuoteMissionOrchestratorPort {
             action: 'resolve_customer_reference' as const,
             customerReference: operation.customerReference,
           };
+      const lines = operation.kind === 'set_customer_reference' ? operation.lines : [];
       if (decision === null) {
         return { status: 'failed', canonicalSpeech: UNSAFE_UNDERSTANDING };
       }
-      let decided: Awaited<
-      ReturnType<RealtimeQuoteMissionGateway['decideFromVoiceTurn']>
-      >;
+      let decided: Awaited<ReturnType<RealtimeQuoteMissionGateway['decideFromVoiceTurn']>>;
       try {
         decided = await this.missions.decideFromVoiceTurn({
           authorization: input.authorization,
@@ -1283,33 +1289,48 @@ implements RealtimeQuoteMissionOrchestratorPort {
           expectedDraftSlotRevision: draft.slotRevision,
           expectedDraftContentRevision: draft.contentRevision,
           decision,
-          lines: operation.lines,
+          lines,
         });
       } catch {
         input.request.signal.throwIfAborted();
-        return this.convergeAfterUncertainDecision({
+        const converged = await this.convergeAfterUncertainDecision({
           authorization: input.authorization,
           signal: input.request.signal,
         });
+        return discloseUnprocessedRequest(
+          converged,
+          operation.kind === 'select_presented_choice' && operation.hasUnprocessedRequest,
+        );
       }
       input.request.signal.throwIfAborted();
       if (!decided.ok) {
         if (isQuoteLineLimitReached(decided.error)) {
-          return {
+          return discloseUnprocessedRequest(
+            {
             status: 'handled',
             canonicalSpeech: QUOTE_LINE_LIMIT_REACHED,
             speechPurpose: 'action_result',
-          };
+            },
+            operation.kind === 'select_presented_choice' && operation.hasUnprocessedRequest,
+          );
         }
-        return this.convergeAfterUncertainDecision({
+        const converged = await this.convergeAfterUncertainDecision({
           authorization: input.authorization,
           signal: input.request.signal,
         });
+        return discloseUnprocessedRequest(
+          converged,
+          operation.kind === 'select_presented_choice' && operation.hasUnprocessedRequest,
+        );
       }
-      return this.convergeAfterUncertainDecision({
+      const converged = await this.convergeAfterUncertainDecision({
         authorization: input.authorization,
         signal: input.request.signal,
       });
+      return discloseUnprocessedRequest(
+        converged,
+        operation.kind === 'select_presented_choice' && operation.hasUnprocessedRequest,
+      );
     }
 
     if (
@@ -1328,29 +1349,25 @@ implements RealtimeQuoteMissionOrchestratorPort {
       if (choiceId === undefined) {
         return { status: 'failed', canonicalSpeech: UNSAFE_UNDERSTANDING };
       }
-      const catalogueChoice =
-        presentation.catalogueChoices[operation.ordinal - 1];
+      const catalogueChoice = presentation.catalogueChoices[operation.ordinal - 1];
       if (
-        operation.ordinal <= presented.choices.length
-        && (
-          catalogueChoice === undefined
-          || catalogueChoice.choiceId !== choiceId
-        )
+        operation.ordinal <= presented.choices.length &&
+        (catalogueChoice === undefined || catalogueChoice.choiceId !== choiceId)
       ) {
         return { status: 'failed', canonicalSpeech: UNSAFE_UNDERSTANDING };
       }
       if (catalogueChoice?.available === false) {
-        return {
+        return discloseUnprocessedRequest(
+          {
           status: 'handled',
-          canonicalSpeech:
-            `La prestation numéro ${operation.ordinal} n’est plus disponible dans ton catalogue. Rien n’a été sélectionné. Choisis une autre option affichée ou la ligne libre.`,
+            canonicalSpeech: `La prestation numéro ${operation.ordinal} n’est plus disponible dans ton catalogue. Rien n’a été sélectionné. Choisis une autre option affichée ou la ligne libre.`,
           speechPurpose: 'structured_choice',
-        };
+          },
+          operation.hasUnprocessedRequest,
+        );
       }
       let decided: Awaited<
-      ReturnType<
-      RealtimeQuoteMissionGateway['decideCatalogueChoiceFromVoiceTurn']
-      >
+        ReturnType<RealtimeQuoteMissionGateway['decideCatalogueChoiceFromVoiceTurn']>
       >;
       try {
         decided = await this.missions.decideCatalogueChoiceFromVoiceTurn({
@@ -1369,52 +1386,59 @@ implements RealtimeQuoteMissionOrchestratorPort {
           pendingLineId: presented.pendingLineId,
           expectedWorkRevision: presented.expectedWorkRevision,
           choiceId,
-          additionalLines: operation.lines,
         });
       } catch {
         input.request.signal.throwIfAborted();
-        return this.convergeAfterUncertainDecision({
+        const converged = await this.convergeAfterUncertainDecision({
           authorization: input.authorization,
           signal: input.request.signal,
         });
+        return discloseUnprocessedRequest(converged, operation.hasUnprocessedRequest);
       }
       input.request.signal.throwIfAborted();
       if (!decided.ok) {
         if (isQuoteLineLimitReached(decided.error)) {
-          return {
+          return discloseUnprocessedRequest(
+            {
             status: 'handled',
             canonicalSpeech: QUOTE_LINE_LIMIT_REACHED,
             speechPurpose: 'action_result',
-          };
+            },
+            operation.hasUnprocessedRequest,
+          );
         }
-        return this.convergeAfterUncertainDecision({
+        const converged = await this.convergeAfterUncertainDecision({
           authorization: input.authorization,
           signal: input.request.signal,
         });
+        return discloseUnprocessedRequest(converged, operation.hasUnprocessedRequest);
       }
       if (decided.value.outcome === 'invalidated') {
         if (decided.value.continuation.outcome === 'catalogue_not_found') {
-          return {
+          return discloseUnprocessedRequest(
+            {
             status: 'handled',
             canonicalSpeech:
               'Cette prestation a changé. Après relecture, aucune correspondance actuelle ne reste ; la ligne libre est conservée sans tarif inventé.',
             speechPurpose: 'action_result',
-          };
+            },
+            operation.hasUnprocessedRequest,
+          );
         }
-        return canonicalLineContinuationState(
-          decided.value.continuation,
-          {
+        return discloseUnprocessedRequest(
+          canonicalLineContinuationState(decided.value.continuation, {
             mission: decided.value.mission,
             presentation: decided.value.presentation,
-          },
+          }),
+          operation.hasUnprocessedRequest,
         );
       }
-      return canonicalLineContinuationState(
-        decided.value.continuation,
-        {
+      return discloseUnprocessedRequest(
+        canonicalLineContinuationState(decided.value.continuation, {
           mission: decided.value.mission,
           presentation: decided.value.presentation,
-        },
+        }),
+        operation.hasUnprocessedRequest,
       );
     }
 

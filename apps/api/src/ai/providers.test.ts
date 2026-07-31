@@ -1,3 +1,4 @@
+import { planRealtimeSemanticTurn } from '@bob/ai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   buildLlmForProvider,
@@ -69,32 +70,273 @@ describe('OpenAI chat model runtime contract', () => {
     delete process.env.OPENAI_MODEL;
     const fetchMock = vi.fn(
       async (_url: string | URL | Request, _init?: RequestInit) =>
-        new Response(JSON.stringify({
+        new Response(
+          JSON.stringify({
           model: DEFAULT_OPENAI_CHAT_MODEL,
           choices: [{ message: { content: 'ok', tool_calls: [] } }],
-        }), {
+          }),
+          {
           status: 200,
           headers: { 'content-type': 'application/json' },
-        }),
+          },
+        ),
     );
     vi.stubGlobal('fetch', fetchMock);
 
     const llm = buildLlmForProvider('openai');
-    await expect(llm?.complete([{ role: 'user', content: 'Bonjour' }]))
-      .resolves.toMatchObject({ model: DEFAULT_OPENAI_CHAT_MODEL });
+    await expect(llm?.complete([{ role: 'user', content: 'Bonjour' }])).resolves.toMatchObject({
+      model: DEFAULT_OPENAI_CHAT_MODEL,
+    });
 
-    const body = JSON.parse(
-      (fetchMock.mock.calls[0]?.[1] as RequestInit).body as string,
-    ) as { readonly model?: unknown };
+    const body = JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string) as {
+      readonly model?: unknown;
+    };
     expect(body.model).toBe(DEFAULT_OPENAI_CHAT_MODEL);
+  });
+
+  it('distingue le modèle produit du modèle réellement attesté par le fournisseur', async () => {
+    process.env.OPENAI_API_KEY = 'openai-test-key';
+    process.env.OPENAI_MODEL = 'gpt-test';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              choices: [{ message: { content: 'ok', tool_calls: [] } }],
+            }),
+            {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            },
+          ),
+      ),
+    );
+
+    await expect(
+      buildLlmForProvider('openai')?.complete([{ role: 'user', content: 'Bonjour' }]),
+    ).resolves.toMatchObject({
+      model: 'gpt-test',
+      providerReportedModel: null,
+    });
+  });
+
+  it('émet les contrôles stricts uniquement sur l’adapter OpenAI natif qualifié', async () => {
+    const fetchMock = vi.fn(
+      async (_url: string | URL | Request, _init?: RequestInit) =>
+        new Response(
+          JSON.stringify({
+            model: 'gpt-test',
+            choices: [{ message: { content: null, tool_calls: [] } }],
+          }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    process.env.OPENAI_API_KEY = 'openai-test-key';
+    process.env.OPENAI_MODEL = 'gpt-test';
+    const tool = {
+      name: 'mission_test',
+      description: 'Test',
+      schemaAdherence: 'strict' as const,
+      parameters: {
+        type: 'object',
+        properties: { value: { type: ['string', 'null'] } },
+        required: ['value'],
+        additionalProperties: false,
+      },
+    };
+
+    await buildLlmForProvider('openai')?.complete([{ role: 'user', content: 'Bonjour' }], {
+      tools: [tool],
+      toolChoice: 'auto',
+      toolCallConcurrency: 'single',
+    });
+    const openAiBody = JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string) as {
+      readonly parallel_tool_calls?: unknown;
+      readonly tools?: Array<{ readonly function?: Record<string, unknown> }>;
+    };
+    expect(openAiBody.parallel_tool_calls).toBe(false);
+    expect(openAiBody.tools?.[0]?.function?.strict).toBe(true);
+
+    fetchMock.mockClear();
+    await new OpenAiCompatibleLlmAdapter({
+      id: 'mistral-compatible-test',
+      baseUrl: 'https://mistral-compatible.test/v1',
+      apiKey: 'mistral-key',
+      model: 'mistral-test',
+    }).complete([{ role: 'user', content: 'Bonjour' }], {
+      tools: [tool],
+      toolChoice: 'auto',
+      toolCallConcurrency: 'single',
+    });
+    const compatibleBody = JSON.parse(
+      (fetchMock.mock.calls[0]?.[1] as RequestInit).body as string,
+    ) as {
+      readonly parallel_tool_calls?: unknown;
+      readonly tools?: Array<{ readonly function?: Record<string, unknown> }>;
+    };
+    expect(compatibleBody).not.toHaveProperty('parallel_tool_calls');
+    expect(compatibleBody.tools?.[0]?.function).not.toHaveProperty('strict');
+
+    fetchMock.mockClear();
+    process.env.OPENAI_URL = 'https://proxy-openai-compatible.test/v1';
+    await buildLlmForProvider('openai')?.complete([{ role: 'user', content: 'Bonjour' }], {
+      tools: [tool],
+      toolChoice: 'auto',
+      toolCallConcurrency: 'single',
+    });
+    const proxiedOpenAiBody = JSON.parse(
+      (fetchMock.mock.calls[0]?.[1] as RequestInit).body as string,
+    ) as {
+      readonly parallel_tool_calls?: unknown;
+      readonly tools?: Array<{ readonly function?: Record<string, unknown> }>;
+    };
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      'https://proxy-openai-compatible.test/v1/chat/completions',
+    );
+    expect(proxiedOpenAiBody).not.toHaveProperty('parallel_tool_calls');
+    expect(proxiedOpenAiBody.tools?.[0]?.function).not.toHaveProperty('strict');
+  });
+
+  it('préserve le strict mission et le multi-actions global dans le wire OpenAI réel', async () => {
+    process.env.OPENAI_API_KEY = 'openai-test-key';
+    process.env.OPENAI_MODEL = 'gpt-test';
+    delete process.env.OPENAI_URL;
+    const fetchMock = vi.fn(
+      async (_url: string | URL | Request, _init?: RequestInit) =>
+        new Response(
+          JSON.stringify({
+            model: 'gpt-test',
+            choices: [{
+              message: {
+                content: null,
+                tool_calls: [{
+                  function: {
+                    name: 'mettre_a_jour_mission_devis_v2',
+                    arguments: JSON.stringify({
+                      operations: [{
+                        kind: 'select_presented_choice',
+                        ordinal: 1,
+                        has_unprocessed_request: false,
+                      }],
+                    }),
+                  },
+                }],
+              },
+            }],
+          }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const llm = buildLlmForProvider('openai');
+    if (llm === undefined) throw new Error('Adapter OpenAI attendu.');
+
+    await expect(
+      planRealtimeSemanticTurn(llm, {
+        transcript: 'Prends la première.',
+        history: [],
+        context: {
+          screen: { name: '/devis/new', instanceId: 'quote-test' },
+          entities: [],
+          capabilities: ['quote.read', 'quote.line.update'],
+        },
+        screen: {
+          route: '/devis/new',
+          revision: 1,
+          digest: 'a'.repeat(64),
+        },
+        quoteMission: {
+          missionAlias: 'M1',
+          missionRevision: 1,
+          confirmedLineCount: 0,
+          pendingLineCount: 1,
+          pendingDecisionKind: 'catalogue',
+          protocolVersion: 2,
+          phase: 'awaiting_catalogue_choice',
+          requiredFact: null,
+          currentLine: {
+            label: 'Main-d’œuvre',
+            category: 'labor',
+            quantityDecimal: '2',
+            unit: 'heure',
+            unitPriceDecimal: null,
+            currency: 'EUR',
+            vatRate: null,
+            priceBasis: 'per_unit',
+            housingOlderThan2y: null,
+            energyRenovation: null,
+          },
+          presentedChoices: [{
+            alias: 'C1',
+            kind: 'catalogue',
+            available: true,
+            label: 'Main-d’œuvre atelier',
+            category: 'labor',
+            unit: 'heure',
+            unitPriceDecimal: '55.00',
+            currency: 'EUR',
+          }],
+        },
+        hostManifest: {
+          schema: 'bob.realtime-semantic-host-manifest',
+          version: 1,
+          globalToolNames: ['factures_impayees', 'ouvrir_cloture'],
+        },
+        missionCapabilities: [
+          'quote.line.stage',
+          'quote.catalogue.search',
+          'quote.line.patch',
+          'quote.line.confirm',
+        ],
+        locale: 'fr-FR',
+        timeZone: 'Europe/Paris',
+        now: '2026-07-31T08:00:00.000Z',
+      }),
+    ).resolves.toMatchObject({ status: 'mission_frame' });
+
+    const body = JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string) as {
+      readonly parallel_tool_calls?: unknown;
+      readonly tools?: Array<{
+        readonly function?: {
+          readonly name?: unknown;
+          readonly strict?: unknown;
+        };
+      }>;
+    };
+    const missionTool = body.tools?.find(
+      (tool) => tool.function?.name === 'mettre_a_jour_mission_devis_v2',
+    );
+    expect(body.tools?.map((tool) => tool.function?.name)).toEqual([
+      'mettre_a_jour_mission_devis_v2',
+      'factures_impayees',
+      'ouvrir_cloture',
+    ]);
+    expect(missionTool?.function?.strict).toBe(true);
+    expect(body).not.toHaveProperty('parallel_tool_calls');
   });
 });
 
 describe('Mistral Voxtral providers', () => {
   it('transcrit via audio/transcriptions avec langue fr et context bias', async () => {
-    const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify({ text: ' Bonjour Bob ' }), { status: 200 }));
+    const fetchMock = vi.fn(
+      async (_url: string | URL | Request, _init?: RequestInit) =>
+        new Response(JSON.stringify({ text: ' Bonjour Bob ' }), { status: 200 }),
+    );
     vi.stubGlobal('fetch', fetchMock);
-    const adapter = new MistralVoxtralSttAdapter('mistral-key', 'voxtral-test', 'https://api.test/v1', 'Durand,F-2026-001');
+    const adapter = new MistralVoxtralSttAdapter(
+      'mistral-key',
+      'voxtral-test',
+      'https://api.test/v1',
+      'Durand,F-2026-001',
+    );
 
     const r = await adapter.transcribe(Buffer.from([1, 2, 3]).toString('base64'), 'audio/webm');
 

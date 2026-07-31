@@ -1067,10 +1067,7 @@ export class AgentMissionService {
     readonly pendingLineId: string;
     readonly expectedWorkRevision: number;
     readonly choiceId: string;
-    readonly additionalLines: readonly AgentMissionQuoteLineCandidateV1[];
-  }): Promise<
-  Result<DecideQuoteAgentMissionCatalogueChoiceServiceOutput, AppError>
-  > {
+  }): Promise<Result<DecideQuoteAgentMissionCatalogueChoiceServiceOutput, AppError>> {
     return this.executeCatalogueChoice({
       authorization: input.authorization,
       missionId: input.missionId,
@@ -1084,7 +1081,10 @@ export class AgentMissionService {
       pendingLineId: input.pendingLineId,
       expectedWorkRevision: input.expectedWorkRevision,
       choiceId: input.choiceId,
-      additionalLines: input.additionalLines,
+      // La voix ne peut pas transporter une ligne additionnelle avec un choix ordinal : le modèle
+      // voit la ligne courante et les choix, donc ce canal permettrait une recopie indétectable du
+      // contexte. Le parcours tactile garde son contrat explicite et autoritaire.
+      additionalLines: [],
       origin: {
         actor: 'user_voice',
         correlation: {

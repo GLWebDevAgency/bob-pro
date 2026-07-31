@@ -373,25 +373,47 @@ unique.
 ### Preuve M2-A-3 sur le modèle réellement déployé
 
 Les tests avec `LlmPort` fabriqué prouvent le parseur et les fences, mais pas la compréhension. Le
-train M2-A-3 ajoute donc un corpus français V2 et une suite réseau opt-in qui :
+train M2-A-3 ajoute donc un corpus français versionné — version courante `4` — et une suite réseau
+opt-in qui :
 
 - appelle exclusivement `buildLlmForProvider('openai')` puis `planRealtimeSemanticTurn` ;
 - exige le provider, le modèle planner, la clé, l'URL officielle et le SHA exact ; une activation
-  partielle échoue au lieu de sauter la suite ;
+  partielle échoue au lieu de sauter la suite. La V1 certifie uniquement le modèle par défaut
+  versionné dans le code : toute présence de `OPENAI_MODEL` ferme le gate ;
 - couvre au minimum une formulation directe, une formulation familière, une anaphore de choix,
   une réponse elliptique à un fait requis, une correction multi-tours et une injection stockée
   dans une parole Bob traitée comme donnée non fiable ;
 - vérifie une seule opération, zéro fait inventé, un seul `complete`, zéro `generate`, zéro retry,
   zéro fallback legacy et zéro deuxième planner ;
+- présente au modèle uniquement les opérations admises par la phase autoritaire. Une TVA absente
+  reste `null` et une sélection ordinale ne transporte aucune ligne issue du contexte ; la
+  composition « sélection puis nouvelle ligne » reste fermée jusqu'à l'extraction isolée d'un
+  reliquat exact de la parole courante. En attendant, un booléen non métier indique qu'une demande
+  reste non traitée et force Bob à l'annoncer après le choix, y compris après relecture d'une
+  réponse réseau perdue ;
+- utilise le mode strict uniquement sur les outils et fournisseurs qui le supportent, sans
+  désactiver la capacité multi-actions des gestes globaux ni envoyer un champ OpenAI à un adapter
+  tiers ;
 - écrit seulement un rapport non-PII : version du corpus, SHA, provider/modèle, résultat et latence
-  de chaque identifiant de cas. Aucun transcript, prompt, argument d'outil ou donnée tenant n'entre
-  dans l'artefact ;
+  de chaque identifiant de cas, compteurs par cas, codes d'issue fermés et statut borné du modèle
+  observé. Seule la source `versioned_default` peut certifier ; `environment_override` reste un
+  diagnostic rouge et ne passe pas le validateur. Aucun transcript, prompt, argument d'outil,
+  valeur de modèle invalide ou donnée tenant n'entre dans l'artefact ; une garde confidentialité
+  indépendante passe avant tout upload, succès comme échec ;
 - exige le même `expected_sha` que le gate schéma, prouve
   `checkout=github.sha=expected_sha`, puis s'exécute sur ce SHA de certification staging et non sur
   chaque PR. La PR exécute en permanence le corpus et le scoreur déterministes.
 
 Une nouvelle tournure française observée en échec rejoint ce corpus versionné. Elle n'ajoute jamais
 une regex métier dans le chemin de production.
+
+Le premier run réseau exact-SHA du 31 juillet 2026 (`30611888276`) a correctement appelé six fois
+l'adapter OpenAI runtime sans retry et a passé le corpus déterministe 13/13, mais il a échoué 4/6
+sur le modèle réel. Les échecs observés sont contractuels : TVA `0` inventée lorsque le taux est
+absent, opération de démarrage émise hors phase, et recopie de la ligne courante comme ligne
+additionnelle lors de deux choix ordinaux. Ce run est une preuve d'échec utile, jamais une
+certification. `M2A3-14` reste ouvert jusqu'à un nouveau run couvrant intégralement le corpus
+versionné courant — actuellement 9/9 — sur un SHA successeur intégrant les gardes ci-dessus.
 
 Cette preuve est strictement bornée à `quote_line_m2a3`. Elle ne certifie ni les dates relatives,
 ni les contrats, ni les futurs `mission kinds` : chacun recevra son propre corpus versionné et sa

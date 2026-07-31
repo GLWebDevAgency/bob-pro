@@ -293,7 +293,8 @@ type QuoteCreationSemanticOperationV2 =
   | {
       readonly kind: 'select_presented_choice';
       readonly ordinal: 1 | 2 | 3 | 4 | 5 | 6;
-      readonly lines: readonly QuoteLineCandidateV1[];
+      /** Une autre demande du même tour reste à redemander après ce choix scellé. */
+      readonly hasUnprocessedRequest: boolean;
     }
   | { readonly kind: 'confirm_current_proposal' }
   | { readonly kind: 'reject_current_proposal' }
@@ -338,7 +339,15 @@ type QuoteLineCandidatePatchV1 =
 Règles :
 
 - un tool call exact et unique, `additionalProperties: false`, contenant exactement une opération
-  autoritaire enrichie d'au plus 20 lignes ;
+  autoritaire enrichie d'au plus 20 lignes lorsque cette opération porte elle-même une parole
+  courante (`start_quote_creation`, `set_customer_reference`, `append_line_candidates`) ;
+- le JSON Schema présenté au modèle est calculé depuis la phase autoritaire et n'expose jamais une
+  opération interdite dans cette phase ; le parseur conserve la même matrice comme défense
+  indépendante ;
+- sur OpenAI, les outils mission compatibles utilisent le mode strict du fournisseur. Leur schéma
+  reste dans le sous-ensemble Structured Outputs documenté (`anyOf`, objets fermés, propriétés
+  requises et null explicite). Cette option n'est jamais envoyée aveuglément aux adapters qui ne
+  la supportent pas ;
 - chaînes bornées, trimées, sans caractères de contrôle ; frame totale ≤ 32 KiB ;
 - les nombres et montants restent des chaînes décimales canoniques dans la frame, puis deviennent
   quantité millième et centimes par résolveurs purs ;
@@ -348,6 +357,8 @@ Règles :
   par la quantité est exacte ; sinon Bob demande le prix unitaire ou la répartition et ne fait
   aucun arrondi caché ;
 - `deux heures` doit produire quantité `2` et unité `heure` ;
+- une TVA absente de la parole courante reste `vatRateHint=null` ; `0` signifie exclusivement que
+  l'utilisateur a réellement donné un taux nul dans ce tour ;
 - `Contrat 4 saisons` reste un `serviceReference` complet et ne fabrique ni quantité ni date ;
 - `non, 450 et pas 400` est un patch du prix courant, jamais une nouvelle ligne ;
 - une sortie invalide, multiple, hors phase ou dépassant une borne est rejetée sans écriture et
@@ -358,19 +369,32 @@ Règles :
 Matrice d'autorisation :
 
 | Phase | Opérations sémantiques admises |
-|---|---|
+| -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | inactive | `start_quote_creation` ; les lignes sont staged mais non exécutées |
-| étapes client | `set_customer_reference`, `select_presented_choice` ; leurs lignes sont staged dans la même commande |
+| étapes client                                      | `set_customer_reference`, `select_presented_choice` ; seul `set_customer_reference` peut porter les lignes dictées dans le même tour   |
 | `awaiting_lines` | `append_line_candidates` |
 | `awaiting_catalogue_choice` | `select_presented_choice` en M2-A-1 ; correction explicite de `service_reference` en M2-A-2 |
-| `awaiting_line_details` *(M2-A-2 uniquement)* | `patch_pending_line` pour le `requiredFact` courant ou une correction explicite ; `cancel_current_line` pour retirer seulement la tête |
-| `awaiting_line_confirmation` *(M2-A-2 uniquement)* | confirmer, rejeter pour modifier, annuler la ligne ou patch explicite |
+| `awaiting_line_details` _(M2-A-2 uniquement)_      | `patch_pending_line` pour le `requiredFact` courant ou une correction explicite ; `cancel_current_line` pour retirer seulement la tête |
+| `awaiting_line_confirmation` _(M2-A-2 uniquement)_ | confirmer, rejeter pour modifier, annuler la ligne ou patch explicite                                                                  |
 
-Toute autre combinaison échoue sans écriture. En M2-A-1, une phrase composite est représentée par
-une seule opération enrichie de ses lignes (`start`, sélection client ou sélection catalogue avec
-`lines`) ; le serveur applique au plus une transition autoritaire par commande puis poursuit par
-des continuations système idempotentes. Les séquences de plusieurs transitions sémantiques dans
-un même tool call restent fermées jusqu'au train qui saura toutes les consommer dans l'ordre.
+Toute autre combinaison échoue sans écriture. Une phrase composite est représentée par une seule
+opération enrichie de ses lignes pour `start_quote_creation` ou `set_customer_reference` ; le
+serveur applique au plus une transition autoritaire par commande puis poursuit par des
+continuations système idempotentes.
+
+`select_presented_choice` ne transporte que l'ordinal. Le choix catalogue/client est scellé depuis
+les choix autoritaires présentés ; il ne peut pas transporter une ligne tirée du contexte, de
+l'historique ou d'un choix. Le LLM doit rendre `hasUnprocessedRequest=true` lorsque le même tour
+contient une autre demande : après l'effet autoritaire, Bob annonce explicitement que cette seconde
+action n'a pas été exécutée et demande de la redire après l'étape courante. Cette fermeture est
+volontaire et temporaire : « le deuxième, puis ajoute deux heures » sélectionne le deuxième choix
+sans perdre silencieusement la seconde intention. La composition en un seul tour ne sera rouverte
+qu'avec un reliquat textuel exact validé comme sous-chaîne de la parole courante, puis une extraction
+séparée par le même planner sur ce seul reliquat, sans historique, ligne courante ni choix
+présentés. Fermer cette capacité est un impact produit explicite, pas un correctif transparent.
+
+Les séquences de plusieurs transitions sémantiques dans un même tool call restent fermées jusqu'au
+train qui saura toutes les consommer dans l'ordre avec cette provenance bornée.
 
 La correction du libellé pendant un choix catalogue ne doit pas être simulée par
 `append_line_candidates` : cela créerait une seconde ligne au lieu de corriger la tête. M2-A-1
@@ -1417,8 +1441,10 @@ M2-A-1 est `implemented` uniquement si, flag M2-A toujours OFF :
 - [ ] la phrase canonique Camping conserve client + ligne après navigation ;
 - [ ] en phase client, « Camping Les Pins » puis « le deuxième » conservent exactement le
       comportement M1-C tout en préservant les lignes staged ;
-- [ ] « Camping Les Pins, et ajoute deux heures à 55 € » et « le deuxième, puis ajoute deux
-      heures à 55 € » sélectionnent le client et stagent la ligne dans une seule transaction ;
+- [ ] « Camping Les Pins, et ajoute deux heures à 55 € » sélectionne le client et stage la ligne
+      dans une seule transaction ; « le deuxième, puis ajoute deux heures à 55 € » sélectionne
+      seulement le choix, ne recopie aucune ligne du contexte et poursuit la demande dans la même
+      session sans mutation silencieuse ;
 - [ ] `400 balles par machine`, quantité `3` et unité `machine` deviennent 40 000 centimes,
       quantité millième `3000`, sans total calculé par le LLM ;
 - [ ] « Contrat 4 saisons » ne fabrique ni quantité ni date ;
@@ -1650,7 +1676,15 @@ intents et reçus preflight/certified.
       fournisseur ne reçoit qu'une enveloppe JSON de rôle `user` : seul
       `currentUserUtterance` porte la demande actuelle ; `recentTurns`, `uiContext` et les labels
       sont redigés et restent des données non fiables, y compris lorsqu'une parole Bob mémorisée
-      reprend un label catalogue hostile ;
+      reprend un label catalogue hostile. Le schéma mission est borné à la phase autoritaire, une
+      TVA absente reste nulle et une sélection ordinale ne peut transporter aucune ligne. Chaque
+      cas du reçu prouve exactement un appel `complete` résolu, zéro `generate`, le modèle
+      fournisseur observé même si le planner rejette la sortie, ainsi que des codes d'issue fermés
+      sans transcript, prompt, argument, label ni identifiant métier. Le reçu n'est téléversé
+      qu'après une garde confidentialité indépendante, y compris lorsque l'eval live échoue. Il
+      exige la source `versioned_default` ; tout `OPENAI_MODEL` Railway, même valide, ferme la
+      certification V1 et reste seulement diagnosticable comme `environment_override` dans le
+      reçu rouge local ;
 - [x] `M2A3-15` : un tour n'est jamais envoyé séquentiellement à deux cerveaux. Le planner unique
       choisit le `mission kind` ou le geste global ; aucun `unrelated → askBob` ne double la latence
       et aucun fallback regex ne conserve une autorité d'écriture.

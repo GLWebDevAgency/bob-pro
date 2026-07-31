@@ -1065,7 +1065,8 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
       status: 'handled',
       speechPurpose: 'action_result',
     });
-    expect(h.decideFromVoiceTurn).toHaveBeenCalledWith(expect.objectContaining({
+    expect(h.decideFromVoiceTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
       missionId: current.id,
       expectedMissionRevision: 3,
       decision: {
@@ -1074,9 +1075,68 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
         choiceSetRevision: 3,
         choiceId: '50000000-0000-4000-8000-000000000002',
       },
-    }));
-    expect(h.decideFromVoiceTurn.mock.calls[0]?.[0].decision).not.toHaveProperty(
-      'customerId',
+      }),
+    );
+    expect(h.decideFromVoiceTurn.mock.calls[0]?.[0].decision).not.toHaveProperty('customerId');
+  });
+
+  it('V2 signale la suite non exécutée après le choix client canonique composite', async () => {
+    const current = mission({
+      phase: 'awaiting_customer_choice',
+      revision: 3,
+      payload: {
+        schema: 'bob.agent-mission.quote-creation',
+        version: 1,
+        draft: {
+          sessionId: 'draft-session-1',
+          slotRevision: 1,
+          contentRevision: 0,
+        },
+        decision: {
+          kind: 'customer',
+          decisionId: '40000000-0000-4000-8000-000000000001',
+          choiceSetRevision: 3,
+          candidates: [
+            {
+              choiceId: '50000000-0000-4000-8000-000000000001',
+              customerId: 'customer-first',
+            },
+            {
+              choiceId: '50000000-0000-4000-8000-000000000002',
+              customerId: 'customer-second',
+            },
+          ],
+          choiceSetHash: 'e'.repeat(64),
+        },
+        stagedCustomerResolution: null,
+      },
+    });
+    const h = harness({
+      call: toolCallV2({
+        kind: 'select_presented_choice',
+        ordinal: 2,
+        has_unprocessed_request: true,
+      }),
+      current,
+    });
+
+    const outcome = await h.orchestrator.run(inputV2());
+    expect(outcome).toMatchObject({
+      status: 'handled',
+      canonicalSpeech: expect.stringContaining(
+        'J’ai aussi entendu une autre demande dans cette phrase, mais je ne l’ai pas exécutée avec ce choix.',
+      ),
+    });
+    expect(h.decideFromVoiceTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        decision: {
+          action: 'choose_presented_option',
+          decisionId: '40000000-0000-4000-8000-000000000001',
+          choiceSetRevision: 3,
+          choiceId: '50000000-0000-4000-8000-000000000002',
+        },
+        lines: [],
+      }),
     );
   });
 
@@ -1420,7 +1480,7 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
       call: toolCallV2({
         kind: 'select_presented_choice',
         ordinal: 2,
-        lines: [LINE_ARGUMENTS],
+        has_unprocessed_request: false,
       }),
       current,
     });
@@ -1446,33 +1506,82 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
       pendingLineId: '60000000-0000-4000-8000-000000000001',
       expectedWorkRevision: 2,
       choiceId: '50000000-0000-4000-8000-000000000011',
-      additionalLines: [LINE_CANDIDATE],
     });
-    expect(
-      h.decideCatalogueChoiceFromVoiceTurn.mock.calls[0]?.[0],
-    ).not.toHaveProperty('catalogueItemId');
+    expect(h.decideCatalogueChoiceFromVoiceTurn.mock.calls[0]?.[0]).not.toHaveProperty(
+      'catalogueItemId',
+    );
   });
 
-  it('V2 annonce la capacité quand un choix catalogue transporte des lignes supplémentaires', async () => {
+  it('V2 signale sans mutation la demande restante après un choix composite', async () => {
     const current = catalogueMission();
     const h = harness({
       call: toolCallV2({
         kind: 'select_presented_choice',
         ordinal: 2,
-        lines: [LINE_ARGUMENTS],
+        has_unprocessed_request: true,
       }),
       current,
-      catalogueChoiceFailure: 'line_limit_reached',
     });
 
     await expect(h.orchestrator.run(inputV2())).resolves.toEqual({
       status: 'handled',
       canonicalSpeech:
-        'Ce devis contient déjà 100 lignes, soit la limite autorisée. Je n’ai ajouté aucune nouvelle ligne. Pour modifier ses lignes, arrête cette mission Bob : le brouillon restera enregistré et l’édition manuelle sera libérée.',
-      speechPurpose: 'action_result',
+        'Quel prix unitaire dois-je appliquer à cette ligne ? J’ai aussi entendu une autre demande dans cette phrase, mais je ne l’ai pas exécutée avec ce choix. Termine cette étape, puis redis-la pour que je la traite séparément.',
+      speechPurpose: 'structured_choice',
     });
     expect(h.decideCatalogueChoiceFromVoiceTurn).toHaveBeenCalledOnce();
-    expect(h.getCurrentV2).toHaveBeenCalledTimes(2);
+    expect(h.decideCatalogueChoiceFromVoiceTurn.mock.calls[0]?.[0]).not.toHaveProperty(
+      'additionalLines',
+    );
+  });
+
+  it('V2 conserve le signal de suite après une réponse perdue puis une relecture autoritaire', async () => {
+    const current = catalogueMission();
+    const afterDecision = mission({
+      phase: 'awaiting_line_details',
+      revision: 7,
+    });
+    const h = harness({
+      call: toolCallV2({
+        kind: 'select_presented_choice',
+        ordinal: 2,
+        has_unprocessed_request: true,
+      }),
+      current,
+      catalogueChoiceFailure: 'throws',
+      currentAfterDecision: afterDecision,
+      currentPresentationAfterDecision: presentationForMission(afterDecision),
+    });
+
+    await expect(h.orchestrator.run(inputV2())).resolves.toEqual({
+      status: 'handled',
+      canonicalSpeech:
+        'Quel prix unitaire dois-je appliquer à cette ligne ? J’ai aussi entendu une autre demande dans cette phrase, mais je ne l’ai pas exécutée avec ce choix. Termine cette étape, puis redis-la pour que je la traite séparément.',
+      speechPurpose: 'structured_choice',
+    });
+    expect(h.decideCatalogueChoiceFromVoiceTurn).toHaveBeenCalledOnce();
+    expect(h.getCurrentV2).toHaveBeenCalledTimes(3);
+  });
+
+  it('V2 refuse avant mutation un choix catalogue qui tente de transporter une ligne', async () => {
+    const current = catalogueMission();
+    const h = harness({
+      call: toolCallV2({
+        kind: 'select_presented_choice',
+        ordinal: 2,
+        has_unprocessed_request: true,
+        lines: [LINE_ARGUMENTS],
+      }),
+      current,
+    });
+
+    await expect(h.orchestrator.run(inputV2())).resolves.toEqual({
+      status: 'failed',
+      canonicalSpeech:
+        'Je n’ai pas pu sécuriser cette demande. Rien n’a été exécuté. Reformule-la simplement.',
+    });
+    expect(h.decideCatalogueChoiceFromVoiceTurn).not.toHaveBeenCalled();
+    expect(h.getCurrentV2).toHaveBeenCalledOnce();
   });
 
   it('V2 refuse sans mutation un ordinal catalogue devenu indisponible', async () => {
@@ -1483,7 +1592,7 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
       call: toolCallV2({
         kind: 'select_presented_choice',
         ordinal: 1,
-        lines: [],
+        has_unprocessed_request: false,
       }),
       current,
       currentPresentation,
@@ -1504,7 +1613,7 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
       call: toolCallV2({
         kind: 'select_presented_choice',
         ordinal: 3,
-        lines: [],
+        has_unprocessed_request: false,
       }),
       current,
       catalogueChoiceValue: {
@@ -1527,7 +1636,6 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
     expect(h.decideCatalogueChoiceFromVoiceTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         choiceId: '50000000-0000-4000-8000-000000000012',
-        additionalLines: [],
       }),
     );
   });
