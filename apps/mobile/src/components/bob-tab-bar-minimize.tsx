@@ -113,8 +113,9 @@ export function setMinimized(state: TabBarMinimizeState, next: 0 | 1): void {
  *
  * CE QUI EMPÊCHE LES DEUX ÉCRITURES DE DIVERGER — et c'est la seule chose qui compte : le test
  * `bob-tab-bar-minimize.test.tsx` EXÉCUTE ce worklet sur une course dense d'offsets (plateaux,
- * inversions, zone morte, sur-défilement des deux côtés) et compare, à CHAQUE pas, DEUX choses à
- * `minimizeDecision` : la cible du ressort ET l'offset clampé mémorisé. Comparer la seule cible
+ * inversions, zone morte, sur-défilement des deux côtés — et une plage NULLE, celle d'un contenu
+ * plus court que la fenêtre, où seul le plancher de `maxY` tient l'offset à 0) et compare, à
+ * CHAQUE pas, DEUX choses à `minimizeDecision` : la cible du ressort ET l'offset clampé mémorisé. Comparer la seule cible
  * laisserait passer une divergence de clamp — exactement le défaut que le clamp existe pour
  * corriger. Les deux seuils, eux, sont IMPORTÉS : aucune constante n'est recopiée dans un thread
  * où personne ne pourrait la relire.

@@ -14,6 +14,13 @@ import { motionSemantic } from '@bob/tokens';
 
 const hoisted = vi.hoisted(() => ({
   timings: [] as { target: number; duration: number; easing: unknown }[],
+  /**
+   * TOUTES les écritures faites sur la valeur partagée, dans l'ordre. « L'entrant fond DE 0 À
+   * 1 » (§ 5) a deux moitiés : la COURSE (l'appel à `withTiming`) et son POINT DE DÉPART (la
+   * pose de `opacityFrom` juste avant). L'état final ne distingue pas les deux — seule la suite
+   * des écritures le peut.
+   */
+  writes: [] as unknown[],
   isReduceMotionEnabled: vi.fn<() => Promise<boolean>>(),
 }));
 
@@ -99,7 +106,21 @@ vi.mock('react-native-reanimated', async () => {
       return o0 + (o1 - o0) * t;
     },
     useAnimatedStyle: (updater: () => unknown) => updater(),
-    useSharedValue: (initial: unknown) => react.useRef({ value: initial }).current,
+    // La boîte ENREGISTRE ses écritures : c'est ce qui rend la POSE du point de départ
+    // observable — l'état final, lui, est le même avec ou sans elle.
+    useSharedValue: (initial: unknown) => {
+      const box = { current: initial };
+      const recorded = {
+        get value(): unknown {
+          return box.current;
+        },
+        set value(next: unknown) {
+          box.current = next;
+          hoisted.writes.push(next);
+        },
+      };
+      return react.useRef(recorded).current;
+    },
     withTiming: (target: number, config: { duration: number; easing: unknown }) => {
       hoisted.timings.push({ target, duration: config.duration, easing: config.easing });
       return target;
@@ -137,6 +158,7 @@ async function update(renderer: ReactTestRenderer, focused: boolean): Promise<vo
 
 beforeEach(() => {
   hoisted.timings.length = 0;
+  hoisted.writes.length = 0;
   hoisted.isReduceMotionEnabled.mockResolvedValue(false);
 });
 
@@ -220,5 +242,39 @@ describe('5 · fade-through — l’entrant fond, le sortant disparaît', () => 
     // 0,985, pas 0. Un écran qui entre depuis une échelle nulle donnerait un « pop » de zoom.
     expect(style['opacity']).toBe(0);
     expect(style['transform']).toEqual([{ scale: 0.985 }]);
+  });
+
+  it('POSE le départ (0) avant de lancer la course — « fond de 0 à 1 » est un fait, pas un espoir', async () => {
+    const renderer = await mount(false);
+    hoisted.writes.length = 0;
+    await update(renderer, true);
+    expect(hoisted.timings, 'aucune course lancée : le test n’observe rien').toHaveLength(1);
+    /*
+     * DEUX écritures, dans CET ordre : la position de départ (`opacityFrom` = 0), puis la
+     * valeur rendue par `withTiming` (sa cible, dans ce doublon). Sans la pose, la course
+     * partirait de l'état COURANT de la valeur partagée — aujourd'hui 0 par accident de
+     * l'historique (l'écran sortant vient d'être masqué), demain n'importe quoi : « l'entrant
+     * fond de 0 à 1 » du § 5 pose le 0 comme un fait, ce test l'exige comme tel.
+     */
+    expect(hoisted.writes).toEqual([0, 1]);
+  });
+
+  it('la progression NAÎT à 1 — le premier écran est visible dès la PREMIÈRE frame, avant tout effet', async () => {
+    /*
+     * Préférence JAMAIS résolue : aucun re-rendu ne vient « rattraper » la première frame. Ce
+     * qu'on lit est donc le style du PREMIER rendu — celui que l'utilisateur voit au lancement.
+     * Une progression née à 0 ferait CLIGNOTER l'écran d'accueil : invisible une frame, posé à
+     * 1 par l'effet, visible ensuite. Ce test lit la frame d'AVANT l'effet.
+     */
+    hoisted.isReduceMotionEnabled.mockReturnValue(new Promise(() => undefined));
+    const renderer = await mount(true);
+    const root = renderer.toJSON() as unknown as { props: { style: unknown[] } } | null;
+    expect(root, 'rien n’a été rendu : le test n’observe rien').not.toBeNull();
+    const style = Object.assign(
+      {},
+      ...(root as { props: { style: unknown[] } }).props.style,
+    ) as Record<string, unknown>;
+    expect(style['opacity'], 'le premier écran doit être visible AVANT tout effet').toBe(1);
+    expect(style['transform']).toEqual([{ scale: 1 }]);
   });
 });

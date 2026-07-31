@@ -127,6 +127,43 @@ describe('1 · le repli au scroll est RÉELLEMENT branché — et seulement sous
     expect(view?.props['contentContainerStyle']).toEqual({ paddingBottom: 120 });
     expect(view?.props['keyboardShouldPersistTaps']).toBe('handled');
   });
+
+  it('RELAIE la ref de l’appelant — fonction et objet, celle dont l’écran pilote sa vue', async () => {
+    /*
+     * La couture intercepte la `ref` pour s'enregistrer comme cible du retour en haut. Si elle
+     * ne la RELAYAIT pas, tout écran qui pilote sa vue (un `scrollToEnd` de fil de chat, une
+     * restauration de position) garderait une ref vide — silencieusement.
+     */
+    const seen: unknown[] = [];
+    let renderer: ReactTestRenderer | undefined;
+    await act(async () => {
+      renderer = create(
+        createElement(TabsScrollView, {
+          ref: (node: unknown) => {
+            seen.push(node);
+          },
+          testID: 'scroll',
+        }),
+        { createNodeMock: () => ({ scrollTo: () => undefined }) },
+      );
+    });
+    expect(renderer?.toJSON(), 'rien n’a été rendu : le test n’observe rien').toBeDefined();
+    const instances = seen.filter((node) => node !== null);
+    expect(instances, 'la ref de l’appelant n’a jamais reçu l’instance').toHaveLength(1);
+    expect(instances[0]).toMatchObject({ scrollTo: expect.any(Function) });
+
+    // La forme OBJET aussi — les deux formes de ref existent chez React.
+    const objectRef: { current: unknown } = { current: null };
+    await act(async () => {
+      (renderer as ReactTestRenderer).update(
+        createElement(TabsScrollView, {
+          ref: objectRef as never,
+          testID: 'scroll',
+        }),
+      );
+    });
+    expect(objectRef.current).toMatchObject({ scrollTo: expect.any(Function) });
+  });
 });
 
 describe('retap sur l’onglet actif — retour en haut, ce que la référence ne fait pas', () => {
@@ -160,6 +197,7 @@ describe('retap sur l’onglet actif — retour en haut, ce que la référence n
     calls: Record<string, { y: number }[]>;
     scrollToTop: () => void;
     focus: (next: string) => Promise<void>;
+    prune: (gone: string) => Promise<void>;
   }> {
     const calls: Record<string, { y: number }[]> = Object.fromEntries(
       TABS.map((name) => [name, [] as { y: number }[]]),
@@ -169,13 +207,14 @@ describe('retap sur l’onglet actif — retour en haut, ce que la référence n
       scrollToTop = useTabScrollTop();
       return null;
     }
-    const tree = (current: string): ReturnType<typeof createElement> =>
+    const tree = (current: string, without?: string): ReturnType<typeof createElement> =>
       createElement(
         TabScrollTopProvider,
         null,
         createElement(Probe),
         // CINQ écrans montés EN MÊME TEMPS : c'est l'arbre réel d'un navigateur d'onglets.
-        ...TABS.map((name) =>
+        // `without` en DÉMONTE un — une route détachée, pas un simple changement de focus.
+        ...TABS.filter((name) => name !== without).map((name) =>
           createElement(Screen, { key: name, focused: name === current, testID: name }),
         ),
       );
@@ -199,6 +238,11 @@ describe('retap sur l’onglet actif — retour en haut, ce que la référence n
       focus: async (next: string) => {
         await act(async () => {
           (renderer as ReactTestRenderer).update(tree(next));
+        });
+      },
+      prune: async (gone: string) => {
+        await act(async () => {
+          (renderer as ReactTestRenderer).update(tree(gone, gone));
         });
       },
     };
@@ -227,6 +271,113 @@ describe('retap sur l’onglet actif — retour en haut, ce que la référence n
     // l'effet) laisserait `argent` inscrit pour toujours.
     expect(app.calls['clients']).toEqual([{ y: 0, animated: true }]);
     expect(app.calls['argent']).toEqual([]);
+  });
+
+  it('un écran DÉMONTÉ rend sa case — le retour en haut ne pilote pas un mort', async () => {
+    const app = await mountFive('argent');
+    /*
+     * TÉMOIN D'OBSERVATION d'abord : monté et focusé, le retap le remonte RÉELLEMENT — la
+     * chaîne enregistrement → registre → `scrollTo` fonctionne, le test voit quelque chose.
+     */
+    await act(async () => {
+      app.scrollToTop();
+    });
+    expect(
+      app.calls['argent'],
+      'le témoin n’a rien observé : l’enregistrement n’a jamais eu lieu',
+    ).toEqual([{ y: 0, animated: true }]);
+    /*
+     * L'écran focusé est DÉMONTÉ (route détachée par le navigateur). Sa vue, elle, existe
+     * toujours côté test — si le registre la gardait (nettoyage d'effet retiré, ou `register`
+     * qui IGNORE `null`), `scrollTo` répondrait encore : c'est exactement ce qu'on guette.
+     */
+    await app.prune('argent');
+    await act(async () => {
+      app.scrollToTop();
+    });
+    // Aucune NOUVELLE remontée : ni sur le démonté, ni sur un voisin.
+    expect(app.calls['argent']).toEqual([{ y: 0, animated: true }]);
+    for (const name of TABS.filter((tab) => tab !== 'argent')) {
+      expect(app.calls[name], `${name} ne doit pas bouger`).toEqual([]);
+    }
+  });
+
+  it('le NO-OP documenté d’`assistant` : personne d’enregistré, le retap ne remonte pas l’écran d’à côté', async () => {
+    /*
+     * `assistant` n'emploie pas la couture (son fil de chat se recale tout seul — la raison est
+     * écrite dans `bob-tab-bar-minimize.tsx`). Quand il est focusé, PERSONNE n'est enregistré :
+     * les quatre autres écrans sont flous, et leur garde `!focused` les tient hors du registre.
+     * Le retap doit alors ne rien faire — surtout pas remonter un écran voisin.
+     */
+    const calls: Record<string, { y: number }[]> = Object.fromEntries(
+      TABS.map((name) => [name, [] as { y: number }[]]),
+    );
+    let scrollToTop: (() => void) | undefined;
+    function Probe(): null {
+      scrollToTop = useTabScrollTop();
+      return null;
+    }
+    let renderer: ReactTestRenderer | undefined;
+    await act(async () => {
+      renderer = create(
+        createElement(
+          TabScrollTopProvider,
+          null,
+          createElement(Probe),
+          // Les quatre écrans À COUTURE, tous flous — et `assistant`, sans couture, focusé.
+          ...TABS.filter((name) => name !== 'assistant').map((name) =>
+            createElement(Screen, { key: name, focused: false, testID: name }),
+          ),
+          createElement('AssistantChat', { testID: 'assistant' }),
+        ),
+        {
+          createNodeMock: (element) => {
+            const id = String((element.props as { testID?: string }).testID);
+            return { scrollTo: (options: { y: number }) => calls[id]?.push(options) };
+          },
+        },
+      );
+    });
+    // Témoin : l'arbre est là, la sonde a bien reçu le retour en haut du provider.
+    expect(renderer?.toJSON(), 'rien n’a été rendu : le test n’observe rien').toBeDefined();
+    expect(scrollToTop, 'la sonde n’a pas reçu `useTabScrollTop`').toBeTypeOf('function');
+    await act(async () => {
+      scrollToTop?.();
+    });
+    for (const name of TABS) {
+      expect(calls[name], `${name} ne doit pas bouger`).toEqual([]);
+    }
+  });
+
+  it('hors navigateur, le focus VAUT VRAI par défaut — un écran seul est le seul à l’écran', async () => {
+    /*
+     * Galerie de composants, écran rendu sans `TabSceneFocus` au-dessus : le défaut du contexte
+     * doit être `true`. À `false`, un écran rendu seul ne s'enregistrerait JAMAIS et le retour
+     * en haut deviendrait inerte partout hors du navigateur — en silence.
+     */
+    const calls: { y: number }[] = [];
+    let scrollToTop: (() => void) | undefined;
+    function Probe(): null {
+      scrollToTop = useTabScrollTop();
+      return null;
+    }
+    let renderer: ReactTestRenderer | undefined;
+    await act(async () => {
+      renderer = create(
+        createElement(
+          TabScrollTopProvider,
+          null,
+          createElement(Probe),
+          createElement(TabsScrollView, { testID: 'seul' }),
+        ),
+        { createNodeMock: () => ({ scrollTo: (options: { y: number }) => calls.push(options) }) },
+      );
+    });
+    expect(renderer?.toJSON(), 'rien n’a été rendu : le test n’observe rien').toBeDefined();
+    await act(async () => {
+      scrollToTop?.();
+    });
+    expect(calls).toEqual([{ y: 0, animated: true }]);
   });
 
   it('ne jette pas hors provider — un écran rendu seul reste utilisable', async () => {

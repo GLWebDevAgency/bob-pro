@@ -101,7 +101,9 @@ vi.mock('react', async (importOriginal) => {
   };
 });
 
-const { setMinimized, useMinimizeOnScroll } = await import('./bob-tab-bar-minimize');
+const { TabBarMinimizeProvider, setMinimized, useMinimizeOnScroll } = await import(
+  './bob-tab-bar-minimize'
+);
 
 /** Le doublon rend l'objet de handlers tel quel ; le type publié, lui, est opaque. */
 type ScrollHandler = { onScroll: (event: ScrollEvent) => void };
@@ -209,6 +211,61 @@ describe('1 · pilote de scroll — la même décision que la spécification pur
     handler.onScroll(scroll(9999));
     // Deux frames au même offset clampé : `dy` vaut 0, donc zone morte, donc rien ne bouge.
     expect(hoisted.boxes[0]?.value).toBe(1);
+  });
+
+  it('PLANCHERE la plage : un contenu plus COURT que la fenêtre borne l’offset à 0', () => {
+    /*
+     * Contenu 500, fenêtre 800 : la plage réellement défilable est NULLE — `maxY =
+     * max(500 − 800, 0) = 0`, jamais −300. Sans ce plancher, l'offset mémorisé descendrait à
+     * −300 et le `dy` de la frame suivante serait faussé de 300 points : un simple rebond de
+     * rubber-band replierait la barre. C'est l'angle mort exact de la course dense ci-dessus,
+     * qui garde `maxY` positif de bout en bout — ici on tient les DEUX écritures ensemble sur
+     * la plage nulle, offset mémorisé compris.
+     */
+    const handler = useMinimizeOnScroll() as unknown as ScrollHandler;
+    const [progress, , animated, previousBox] = hoisted.boxes as { value: unknown }[];
+    expect(previousBox, 'le pilote n’a pas créé son offset mémorisé : rien à observer').toBeDefined();
+    if (animated) animated.value = true;
+    for (const y of [0, 40, 130, -60, 25, 9999]) {
+      handler.onScroll(scroll(y, 500, 800));
+      const expected = minimizeDecision({
+        contentOffsetY: y,
+        contentHeight: 500,
+        layoutHeight: 800,
+        previousY: 0,
+      });
+      // La spécification pure dit 0 — en littéral, pas « ce que rend l'autre écriture ».
+      expect(expected.y, `y=${y} : spécification`).toBe(0);
+      expect(previousBox?.value, `y=${y} : offset mémorisé`).toBe(0);
+      // Et 0 est sous le garde-haut (24) : la barre reste ÉTENDUE, quoi qu'on fasse.
+      expect(progress?.value, `y=${y} : cible`).toBe(0);
+    }
+  });
+});
+
+describe('le fournisseur — l’état de DÉPART est l’état sûr', () => {
+  it('démarre `animated` à FAUX : pendant la fenêtre où Reduce Motion est inconnu, on n’anime pas', () => {
+    hoisted.boxes.length = 0;
+    /*
+     * Le fournisseur est une fonction : on l'appelle avec les doublons de hooks en place (le
+     * `useMemo` doublé évalue, le `useSharedValue` doublé enregistre). Les trois valeurs créées
+     * sont, dans l'ordre du code : `progress`, `target`, `animated`.
+     */
+    const element = TabBarMinimizeProvider({ children: null });
+    expect(element, 'le fournisseur n’a rien rendu : le test n’observe rien').toBeDefined();
+    expect(hoisted.boxes, 'aucune valeur partagée créée : rien à observer').toHaveLength(3);
+    /*
+     * `animated` naît à FAUX. Au montage, la préférence Reduce Motion n'est pas encore revenue
+     * (`AccessibilityInfo` n'a pas de lecture synchrone) : démarrer à vrai ferait ANIMER la
+     * barre pendant la fenêtre inconnue — le fail-open exact que la règle A18 interdit. C'est
+     * la barre qui, une fois la préférence connue, écrit la vraie valeur.
+     */
+    expect(hoisted.boxes.map((box) => box.value)).toEqual([0, 0, false]);
+    // Et la valeur poussée dans le contexte EST ce trio — identité, pas copie.
+    const value = (element as unknown as { props: { value: Record<string, unknown> } }).props.value;
+    expect(value['progress']).toBe(hoisted.boxes[0]);
+    expect(value['target']).toBe(hoisted.boxes[1]);
+    expect(value['animated']).toBe(hoisted.boxes[2]);
   });
 });
 
