@@ -606,15 +606,19 @@ export function mixTint(from: string, to: string, t: number): string {
  *     rôles livrées ;
  *  2. `packages/tokens/src/surface-veil.test.ts`, `relativeLuminance` (l. 46) — certifie les
  *     voiles de surface ;
- *  3. `scripts/check-mobile-experience-docs.mjs`, `lin`/`lum` (l. 131-134, contrôle `C4`) —
- *     RECALCULE la table de contraste du socle 04 § 2 depuis `@bob/tokens`, en Node pur ;
- *  4. `apps/mobile/src/components/bob-tab-bar.test.tsx`, `wcagContrast` (l. 414) — recalcule le
+ *  3. `scripts/check-mobile-experience-docs.mjs`, `lin` (l. 131) et `luminance` (l. 132,
+ *     contrôle `C4`) — RECALCULE la table de contraste du socle 04 § 2 depuis `@bob/tokens`,
+ *     en Node pur ;
+ *  4. `apps/mobile/src/components/bob-tab-bar.test.tsx`, `wcagContrast` (l. 413) — recalcule le
  *     contraste sur les couleurs LUES DANS L'ARBRE RENDU, ce qu'aucune des autres ne fait ;
  *  5. celle-ci.
  *
  * *(Rédaction précédente : « C'EST LA QUATRIÈME COPIE DU DÉPÔT […] Les quatre : » suivi d'une
  * énumération de quatre, présentée comme exhaustive. Elle omettait la n° 4, écrite par ce lot
- * même. Une énumération se recompte avant d'être publiée : `grep -rn "0.03928\|0\.2126"`.)*
+ * même. Une énumération se recompte avant d'être publiée : `grep -rn "0.03928\|0\.2126"`.
+ * Et ses citations de ligne ont dû être recorrigées ENCORE une fois — « l. 414 » pour une
+ * fonction qui ouvrait à 415, « lum » pour une fonction nommée `luminance` : une ligne citée se
+ * revérifie au `grep -n` à CHAQUE édition du fichier cité, jamais de mémoire.)*
  *
  * POURQUOI ON N'A PAS FACTORISÉ. Les quatre autres sont des SECONDES OPINIONS délibérées : un
  * test qui importerait la fonction qu'il vérifie ne vérifierait plus rien, et le script de docs
