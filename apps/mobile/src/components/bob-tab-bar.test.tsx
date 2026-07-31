@@ -39,14 +39,10 @@ import {
   TAB_BAR_MINIMIZE_SPRING,
   TAB_BAR_ROW_PAD_H,
   TAB_BAR_SLIDE_SPRING,
-  boundaryTick,
   defineTabHapticPort,
-  highlightProximity,
   minimumWindowWidth,
   mixTint,
   tabBarGeometry,
-  tabIndexAtX,
-  tabTintPalette,
   touchTargetFloor,
   type TabBarMetrics,
   type TabBarPlatform,
@@ -323,6 +319,8 @@ vi.mock('react-native-reanimated', async () => {
 });
 
 const { BobTabBar } = await import('./bob-tab-bar');
+// Le VRAI fournisseur de repli — pas un doublon : le témoin « 1ter » monte la barre sous lui.
+const { TabBarMinimizeProvider } = await import('./bob-tab-bar-minimize');
 
 // ── Outils d'inspection d'arbre ─────────────────────────────────────────────────────────────
 
@@ -658,6 +656,78 @@ describe('1 · minimize-on-scroll — les worklets rendent EXACTEMENT la géomé
 });
 
 /**
+ * ─── 1ter · LE REPLI VIENT DU FOURNISSEUR — IDENTITÉ, PAS FORME ─────────────────────────────
+ *
+ * `useTabBarMinimizeState` rend `shared ?? local` : hors provider, un doublon LOCAL garde le
+ * composant fonctionnel — et c'est le mode de TOUS les autres tests de ce fichier, qui ne
+ * montent aucun provider. En production, la barre vit SOUS `TabBarMinimizeProvider`, et le
+ * worklet de scroll des écrans écrit dans l'état du PROVIDER : une barre qui lirait son doublon
+ * local resterait étendue pour toujours, et aucun test hors provider ne pourrait le voir — le
+ * comportement 1 mourrait EN SILENCE. Ici on monte le VRAI provider autour de la VRAIE barre,
+ * et on prouve que pousser la progression DU PROVIDER replie la barre RENDUE : ce n'est possible
+ * que si l'état qu'elle consomme EST celui du provider.
+ */
+describe('1ter · la barre consomme l’état du PROVIDER, pas son doublon local', () => {
+  it('pousser la progression du provider replie la barre rendue — le doublon local, lui, ne bouge pas', async () => {
+    hoisted.shared.length = 0;
+    hoisted.springs.length = 0;
+    hoisted.isReduceMotionEnabled.mockResolvedValue(false);
+    hoisted.isScreenReaderEnabled.mockResolvedValue(false);
+    const element = (): ReturnType<typeof createElement> =>
+      createElement(
+        ThemeProvider,
+        null,
+        createElement(
+          TabBarMinimizeProvider,
+          null,
+          createElement(BobTabBar, {
+            items: ITEMS,
+            activeKey: 'argent',
+            onSelect: () => undefined,
+            testID: 'bar',
+          }),
+        ),
+      );
+    let renderer: ReactTestRenderer | undefined;
+    await act(async () => {
+      renderer = create(element());
+    });
+    const tree = renderer as ReactTestRenderer;
+
+    /*
+     * TÉMOIN D'OBSERVATION — l'ordre de création des valeurs partagées est VÉRIFIÉ avant d'être
+     * exploité : trio du PROVIDER (progress 0, target 0, animated false), puis trio du doublon
+     * LOCAL du hook (les hooks ne sont pas conditionnels : il est toujours créé), puis
+     * `slideIndex` à l'index actif (argent = 2). Si cet ordre change un jour, on veut un rouge
+     * ICI — pas une lecture silencieuse du mauvais carton.
+     */
+    expect(
+      hoisted.shared.slice(0, 7).map((entry) => entry.initial),
+      'l’ordre des valeurs partagées n’est pas celui attendu : le témoin lirait le mauvais carton',
+    ).toEqual([0, 0, false, 0, 0, false, 2]);
+    const providerProgress = hoisted.shared[0]?.box as unknown as Mutable;
+    const localProgress = hoisted.shared[3]?.box as unknown as Mutable;
+    const before = styleOf(byTestID(tree, 'bar-pill'));
+    expect(before['height'], 'la pilule n’a pas été rendue : le test n’observe rien').toBeDefined();
+    // Étendue au départ : 50 + 2×4 + 2×1 = 60 pt (littéral du socle).
+    expect(before['height']).toBe(60);
+
+    // On pousse la progression DU PROVIDER — ce que fait le pilote de scroll d'un écran.
+    providerProgress.value = 1;
+    await act(async () => {
+      tree.update(element());
+    });
+    const pill = styleOf(byTestID(tree, 'bar-pill'));
+    // Repliée : max(44 ; 35) + 2×0 + 2×1 = 46 pt, retrait latéral 34. Une barre branchée sur
+    // son doublon local serait restée à 60 — c'est EXACTEMENT le silence qu'on interdit ici.
+    expect(pill['height']).toBe(46);
+    expect(pill['marginHorizontal']).toBe(34);
+    // Et le doublon local n'a pas bougé : personne ne l'écrit, personne ne le lit.
+    expect(localProgress.value).toBe(0);
+  });
+});
+
+/**
  * B1 — LA LARGEUR EST UNE CIBLE, PAS UNE DIVISION.
  *
  * Le critère d'acceptation n° 1 du socle exige `height ≥ CIBLE` **ET** `width ≥ CIBLE` sur les
@@ -907,19 +977,29 @@ describe('2 · highlight glissant — un seul bloc, transform-only, suivi live d
     expect(Object.keys(animated)).toEqual(['transform']);
   });
 
-  it('se déplace par `translateX` seul et suit la largeur d’item calculée', async () => {
+  it('se déplace par `translateX` seul, d’un pas de 71,2 pt par onglet — littéraux, plus la fonction', async () => {
+    /*
+     * TOUT EST CALCULÉ À LA MAIN — fenêtre 390, repos (progress 0), cinq onglets :
+     *   pilule  = 390 − 2×12 = 366 ; contenu = 366 − 2×1 − 2×4 = 356 ; onglet = 356 / 5 = 71,2.
+     * Le voyage part du retrait de rangée : translateX(i) = 4 + 71,2 × i. La rédaction
+     * précédente posait `TAB_BAR_ROW_PAD_H + tabBarGeometry(…).itemWidth × i` — la fonction qui
+     * produit cette valeur DANS le composant : elle comparait A à A.
+     */
     const harness = await mount();
-    for (const index of [0, 2, 4, 1.5]) {
+    for (const [index, expectedX] of [
+      [0, 4],
+      [2, 146.4],
+      [4, 288.8],
+      [1.5, 110.8],
+    ] as const) {
       harness.slideIndex.value = index;
       await harness.refresh();
       const travel = styleOf(byTestID(harness.renderer, 'bar-highlight-travel'));
       const style = styleOf(byTestID(harness.renderer, 'bar-highlight'));
-      const expected = tabBarGeometry(harness.progress.value as number, METRICS);
-      const transform = travel['transform'] as { translateX: number }[];
-      expect(transform).toEqual([
-        { translateX: TAB_BAR_ROW_PAD_H + expected.itemWidth * index },
-      ]);
-      expect(style['width']).toBeCloseTo(expected.itemWidth, 10);
+      const transform = travel['transform'] as { translateX: number }[] | undefined;
+      expect(transform?.[0], `index ${index} : aucun transform rendu — rien à observer`).toBeDefined();
+      expect(transform?.[0]?.translateX, `index ${index}`).toBeCloseTo(expectedX, 10);
+      expect(style['width'], `index ${index}`).toBeCloseTo(71.2, 10);
       // Rien d'autre ne bouge horizontalement : ni `left`, ni `marginLeft`.
       expect(travel['left']).toBe(0);
       expect(style['marginLeft']).toBeUndefined();
@@ -941,18 +1021,27 @@ describe('2 · highlight glissant — un seul bloc, transform-only, suivi live d
     expect(closedTravel['transform']).not.toEqual(openTravel['transform']);
   });
 
-  it('reste CENTRÉ dans la boîte intérieure de la pilule, à tout instant', async () => {
+  it('reste CENTRÉ dans la boîte intérieure de la pilule — aux littéraux du socle', async () => {
+    /*
+     * visuel(p) = 50 + (35 − 50) × p ; boîte intérieure = max(44 ; visuel) + 2 × rythme(p) ;
+     * marginTop = (boîte − visuel) / 2. À la main :
+     *   p=0   → visuel 50   ; boîte 50 + 8 = 58 ; marginTop 4
+     *   p=0,5 → visuel 42,5 ; boîte 44 + 4 = 48 ; marginTop 2,75
+     *   p=1   → visuel 35   ; boîte 44 + 0 = 44 ; marginTop 4,5
+     * (Rédaction précédente : l'attendu sortait de `tabBarGeometry(…)` — la fonction testée.)
+     */
     const harness = await mount();
-    for (const p of [0, 0.5, 1]) {
-      harness.setProgress(p);
+    for (const row of [
+      { p: 0, height: 50, top: 4 },
+      { p: 0.5, height: 42.5, top: 2.75 },
+      { p: 1, height: 35, top: 4.5 },
+    ]) {
+      harness.setProgress(row.p);
       await harness.refresh();
-      const expected = tabBarGeometry(p, METRICS);
       const style = styleOf(byTestID(harness.renderer, 'bar-highlight'));
-      expect(style['height']).toBeCloseTo(expected.innerVisualHeight, 10);
-      expect(style['marginTop']).toBeCloseTo(
-        (expected.pillInnerHeight - expected.innerVisualHeight) / 2,
-        10,
-      );
+      expect(style['height'], `p=${row.p} : rien de rendu — rien à observer`).toBeDefined();
+      expect(style['height'], `p=${row.p}`).toBeCloseTo(row.height, 10);
+      expect(style['marginTop'], `p=${row.p}`).toBeCloseTo(row.top, 10);
     }
   });
 });
@@ -1287,6 +1376,39 @@ describe('les ressorts — lesquels partent, avec quels paramètres, et à quel 
     expect(hoisted.springs[0]?.config).toBe(TAB_BAR_SLIDE_SPRING);
   });
 
+  it('pendant un DRAG, la navigation programmatique ne recale JAMAIS le doigt', async () => {
+    /*
+     * Le doigt est PROPRIÉTAIRE du highlight pendant un drag. Si un deep link (ou une action
+     * Bob à la voix) change l'onglet actif à ce moment-là, recaler l'indicateur SOUS le doigt
+     * le ferait sauter — c'est la garde `isDragging` de l'effet de navigation.
+     */
+    const harness = await mount({ activeKey: 'index' });
+    const pan = hoisted.gestures['pan'] as Record<string, Handler> | undefined;
+    expect(pan?.['onStart'], 'aucun worklet de pan : le test n’observe rien').toBeTypeOf('function');
+    (pan?.['onStart'] as () => void)();
+    // Doigt au centre de l'onglet 1 : x = 5 + 71,2 × 1,5 = 111,8 → index 1 (mapping 1:1).
+    (pan?.['onUpdate'] as (event: { x: number }) => void)({ x: 111.8 });
+    expect(harness.slideIndex.value as number).toBeCloseTo(1, 10);
+    hoisted.springs.length = 0;
+    await act(async () => {
+      harness.renderer.update(
+        createElement(
+          ThemeProvider,
+          null,
+          createElement(BobTabBar, {
+            items: ITEMS,
+            activeKey: 'assistant',
+            onSelect: () => undefined,
+            testID: 'bar',
+          }),
+        ),
+      );
+    });
+    // Ni ressort, ni recalage : le doigt garde la main jusqu'au relâchement.
+    expect(hoisted.springs).toEqual([]);
+    expect(harness.slideIndex.value as number).toBeCloseTo(1, 10);
+  });
+
   it('sous Reduce Motion, la position est POSÉE — aucun ressort, jamais', async () => {
     const harness = await mount({ activeKey: 'index', reduceMotion: true });
     hoisted.springs.length = 0;
@@ -1301,22 +1423,50 @@ describe('les ressorts — lesquels partent, avec quels paramètres, et à quel 
     expect(harness.selected).toEqual(['argent']);
     expect(harness.slideIndex.value).toBe(2);
   });
+
+  it('sous Reduce Motion, le RELÂCHEMENT du scrub POSE l’index — pas de ressort là non plus', async () => {
+    /*
+     * Le test précédent couvre le TAP ; celui-ci couvre l'autre chemin de recalage, le
+     * `onFinalize` du pan — celui qui recale l'indicateur sur l'entier le plus proche. Sous
+     * Reduce Motion il doit POSER la valeur, jamais lancer un ressort.
+     */
+    const harness = await mount({ activeKey: 'index', reduceMotion: true });
+    const pan = hoisted.gestures['pan'] as Record<string, Handler> | undefined;
+    expect(pan?.['onFinalize'], 'aucun worklet de pan : le test n’observe rien').toBeTypeOf('function');
+    (pan?.['onStart'] as () => void)();
+    // Doigt au centre de l'onglet 3 : x = 5 + 71,2 × 3,5 = 254,2 → index 3 (mapping 1:1).
+    (pan?.['onUpdate'] as (event: { x: number }) => void)({ x: 254.2 });
+    hoisted.springs.length = 0;
+    (pan?.['onFinalize'] as () => void)();
+    expect(hoisted.springs).toEqual([]);
+    expect(harness.slideIndex.value).toBe(3);
+    expect(harness.selected).toEqual(['documents']);
+  });
 });
 
 describe('3 · scrub — le worklet de geste, exécuté', () => {
-  it('mappe le doigt 1:1 sur la MÊME formule que `tabIndexAtX`', async () => {
+  it('mappe le doigt 1:1 — sur les littéraux de la spécification, posés à la main', async () => {
+    /*
+     * Fenêtre 390, repos : onglet 71,2 pt (pilule 366, contenu 356 — calcul au bloc « 2 »), et
+     * le contenu commence à 1 (bordure) + 4 (rangée) = 5. Un doigt à `5 + 71,2 × f` tombe donc
+     * à l'index `f − 0,5`, borné à [0 ; 4] :
+     *   f = 0,5 → 0 ; 1,5 → 1 ; 2,2 → 1,7 ; 3,9 → 3,4 ; 4,5 → 4 (borne haute).
+     * Ces littéraux sont LES MÊMES que ceux qui épinglent `tabIndexAtX` dans la logique pure :
+     * c'est par eux que les deux écritures restent d'accord — plus par un appel à la fonction
+     * qui produirait l'attendu (la rédaction précédente comparait A à A).
+     */
     const harness = await mount();
     const onUpdate = hoisted.gestures['pan']?.['onUpdate'];
-    expect(onUpdate).toBeTypeOf('function');
-    const geometry = tabBarGeometry(0, METRICS);
-    const contentLeft = TAB_BAR_BORDER_WIDTH + TAB_BAR_ROW_PAD_H;
-    for (const factor of [0.5, 1.5, 2.2, 3.9, 4.5]) {
-      const x = contentLeft + geometry.itemWidth * factor;
-      (onUpdate as (event: { x: number }) => void)({ x });
-      expect(harness.slideIndex.value as number).toBeCloseTo(
-        tabIndexAtX(x, geometry, TAB_COUNT),
-        10,
-      );
+    expect(onUpdate, 'aucun worklet de pan : le test n’observe rien').toBeTypeOf('function');
+    for (const [factor, expected] of [
+      [0.5, 0],
+      [1.5, 1],
+      [2.2, 1.7],
+      [3.9, 3.4],
+      [4.5, 4],
+    ] as const) {
+      (onUpdate as (event: { x: number }) => void)({ x: 5 + 71.2 * factor });
+      expect(harness.slideIndex.value as number, `f=${factor}`).toBeCloseTo(expected, 10);
     }
   });
 
@@ -1336,25 +1486,19 @@ describe('3 · scrub — le worklet de geste, exécuté', () => {
     const onUpdate = hoisted.gestures['pan']?.['onUpdate'] as
       | ((event: { x: number }) => void)
       | undefined;
+    expect(onUpdate, 'aucun worklet de pan : le test n’observe rien').toBeTypeOf('function');
     onStart?.();
-    const geometry = tabBarGeometry(0, METRICS);
-    const contentLeft = TAB_BAR_BORDER_WIDTH + TAB_BAR_ROW_PAD_H;
-    let lastTicked = 0;
-    const expectedTicks: number[] = [];
+    /*
+     * SOIXANTE-ET-UNE frames balaient l'index de 0 à 4 : le doigt va de `5 + 71,2 × 0,5` à
+     * `5 + 71,2 × 4,5` (mêmes littéraux que le mapping ci-dessus). L'index ARRONDI ne change
+     * qu'aux QUATRE demi-frontières — 0,5 ; 1,5 ; 2,5 ; 3,5 — donc quatre ticks, posés à la
+     * main, et pas un de plus. (La rédaction précédente construisait l'attendu avec
+     * `boundaryTick(…, tabIndexAtX(…))` — les fonctions testées elles-mêmes.)
+     */
     for (let step = 0; step <= 60; step += 1) {
-      const factor = 0.5 + (step / 60) * (TAB_COUNT - 1);
-      const x = contentLeft + geometry.itemWidth * factor;
-      onUpdate?.({ x });
-      const boundary = boundaryTick(lastTicked, tabIndexAtX(x, geometry, TAB_COUNT));
-      if (boundary !== null) {
-        expectedTicks.push(boundary);
-        lastTicked = boundary;
-      }
+      const factor = 0.5 + (step / 60) * 4;
+      onUpdate?.({ x: 5 + 71.2 * factor });
     }
-    // Un balayage d'un bout à l'autre franchit exactement quatre frontières…
-    expect(expectedTicks).toEqual([1, 2, 3, 4]);
-    // … et le port en a reçu EXACTEMENT autant. Soixante-et-une frames, quatre ticks.
-    expect(harness.ticks).toHaveLength(4);
     expect(harness.ticks).toEqual(['selection', 'selection', 'selection', 'selection']);
   });
 
@@ -1403,6 +1547,26 @@ describe('3 · scrub — le worklet de geste, exécuté', () => {
     // Second `onFinalize` sans `onStart` : le geste était un tap, la garde tient.
     (pan['onFinalize'] as () => void)();
     expect(harness.selected).toEqual(['documents']);
+  });
+
+  it('borne la sélection aux onglets RÉELS — un index hors bornes choisit le plus proche', async () => {
+    /*
+     * Une valeur partagée peut revenir HORS BORNES du pont natif — overshoot d'un ressort
+     * sous-amorti, écriture étrangère. `selectIndex` doit alors choisir l'onglet réel le PLUS
+     * PROCHE, jamais lire `items[10]` (undefined → aucune sélection, en silence).
+     */
+    const harness = await mount({ activeKey: 'index' });
+    const pan = hoisted.gestures['pan'] as Record<string, Handler> | undefined;
+    expect(pan?.['onFinalize'], 'aucun worklet de pan : le test n’observe rien').toBeTypeOf('function');
+    (pan?.['onStart'] as () => void)();
+    harness.slideIndex.value = 9.7;
+    (pan?.['onFinalize'] as () => void)();
+    expect(harness.selected).toEqual(['assistant']);
+    // Et par le bas : −3,2 arrondi à −3, borné à 0 → le premier onglet.
+    (pan?.['onStart'] as () => void)();
+    harness.slideIndex.value = -3.2;
+    (pan?.['onFinalize'] as () => void)();
+    expect(harness.selected).toEqual(['assistant', 'index']);
   });
 
   it('le tap sélectionne l’onglet sous le doigt et ré-étend la barre', async () => {
@@ -1491,6 +1655,23 @@ describe('4 · flou de bord — la retombée du kit, déclarée AVANT le chrome'
     expect(falloff?.props['pointerEvents']).toBe('none');
   });
 
+  it('son enveloppe est dimensionnée sur l’état le PLUS HAUT du chrome — 122 pt, et elle ne bouge pas', async () => {
+    /*
+     * `edgeFalloffHeight = inset + hauteur ÉTENDUE du chrome + débord` : inset bas
+     * `max(34 − 16, 12)` = 18, chrome ÉTENDU 60 (jamais les 46 du repli), débord 44 (token
+     * livré) → 18 + 60 + 44 = 122. Le repli se produit À L'INTÉRIEUR de l'enveloppe : une
+     * enveloppe qui suivrait l'état replié (18 + 46 + 44 = 108) serait recalculée par frame —
+     * une animation de layout que la règle « jamais animée » interdit.
+     */
+    const harness = await mount();
+    const falloff = byTestID(harness.renderer, 'bar-falloff');
+    expect(falloff, 'aucune retombée rendue : le test n’observe rien').toBeDefined();
+    expect(styleOf(falloff)['height']).toBe(122);
+    harness.setProgress(1);
+    await harness.refresh();
+    expect(styleOf(byTestID(harness.renderer, 'bar-falloff'))['height']).toBe(122);
+  });
+
   it('est déclarée AVANT la pilule — l’ordre de peinture ne tient qu’à cela', async () => {
     const harness = await mount();
     const flat = nodes(harness.renderer);
@@ -1511,34 +1692,39 @@ describe('4 · flou de bord — la retombée du kit, déclarée AVANT le chrome'
 describe('6 · teinte pilotée par le highlight — mesurée sur la couleur rendue', () => {
   it('la couleur du label suit la DISTANCE au highlight, pas le focus', async () => {
     const harness = await mount({ activeKey: 'index' });
-    const palette = tabTintPalette('light');
     const labelColor = (key: string): unknown => {
       const tab = byTestID(harness.renderer, `bar-tab-${key}`);
       const label = flatten(tab ?? null).find((node) => node.type === 'Animated.Text');
+      expect(label, `${key} : aucun label rendu — le test n’observe rien`).toBeDefined();
       return styleOf(label)['color'];
     };
 
     harness.slideIndex.value = 1.5;
     await harness.refresh();
-    // À mi-course, DEUX onglets sont à mi-teinte — ce qu'un booléen de focus ne produit jamais.
-    expect(labelColor('clients')).toBe(
-      mixTint(palette.inactive, palette.active, highlightProximity(1.5, 1)),
-    );
-    expect(labelColor('argent')).toBe(
-      mixTint(palette.inactive, palette.active, highlightProximity(1.5, 2)),
-    );
-    // Et l'onglet FOCUSÉ (index 0) est éteint, parce que le highlight n'est plus sur lui.
-    expect(labelColor('index')).toBe(palette.inactive);
+    /*
+     * À mi-course, DEUX onglets sont à MI-TEINTE — ce qu'un booléen de focus ne produit jamais.
+     * Le mélange sRGB à t = 0,5 entre l'encre inactive #5B6B7B (91, 107, 123) et l'encre active
+     * #0C2340 (12, 35, 64), composante par composante et À LA MAIN :
+     *   R (91 + 12) / 2 = 51,5 → 52 = 0x34 ; V (107 + 35) / 2 = 71 = 0x47 ;
+     *   B (123 + 64) / 2 = 93,5 → 94 = 0x5E   →   #34475E.
+     * (La rédaction précédente posait `mixTint(…, highlightProximity(…))` — les fonctions
+     * mêmes que ce test veut surveiller, jusque dans le doublon d'`interpolateColor`.)
+     */
+    expect(labelColor('clients')).toBe('#34475E');
+    expect(labelColor('argent')).toBe('#34475E');
+    // Et l'onglet FOCUSÉ (index 0) est éteint — l'encre inactive du socle, en littéral.
+    expect(labelColor('index')).toBe('#5B6B7B');
   });
 
   it('l’indigo de l’Assistant survit à l’interpolation', async () => {
     const harness = await mount({ activeKey: 'index' });
-    const palette = tabTintPalette('light');
     harness.slideIndex.value = 4;
     await harness.refresh();
     const tab = byTestID(harness.renderer, 'bar-tab-assistant');
     const label = flatten(tab ?? null).find((node) => node.type === 'Animated.Text');
-    expect(styleOf(label)['color']).toBe(palette.assistantActive);
+    expect(label, 'aucun label rendu : le test n’observe rien').toBeDefined();
+    // Le littéral du socle : `semantic.ai` — la règle Bob que la référence n'a pas.
+    expect(styleOf(label)['color']).toBe('#4338CA');
   });
 
   it('monte DEUX glyphes par onglet, et les retire de l’arbre d’accessibilité', async () => {
@@ -1561,7 +1747,10 @@ describe('6 · teinte pilotée par le highlight — mesurée sur la couleur rend
     const overlay = flatten(tab ?? null).find(
       (node) => node.type === 'Animated.View' && 'opacity' in styleOf(node),
     );
-    expect(styleOf(overlay)['opacity']).toBeCloseTo(highlightProximity(2.25, 2), 10);
+    expect(overlay, 'aucun calque de glyphe actif : le test n’observe rien').toBeDefined();
+    // 1 − min(|2,25 − 2| ; 1) = 0,75 — un quart de largeur d'onglet, trois quarts d'allumage.
+    // (Rédaction précédente : l'attendu sortait de `highlightProximity(…)`, la fonction testée.)
+    expect(styleOf(overlay)['opacity']).toBeCloseTo(0.75, 10);
   });
 });
 
@@ -1666,6 +1855,28 @@ describe('accessibilité — fail-closed, rôles, et scrub coupé sous lecteur d
     }
   });
 
+  it('le `Pressable` RE-ÉTEND la barre — le chemin unique de VoiceOver, TalkBack et du clavier', async () => {
+    /*
+     * Sous lecteur d'écran, le détecteur de geste n'est pas monté : `onPress` est le SEUL
+     * chemin de sélection. Toute interaction délibérée avec la barre la ré-étend — sans le
+     * `setMinimized(minimize, 0)` de ce chemin, un utilisateur de VoiceOver garderait une barre
+     * repliée après avoir navigué, sans aucun geste pour la rouvrir.
+     */
+    const harness = await mount({ activeKey: 'index', screenReaderActive: true });
+    harness.setProgress(1);
+    await harness.refresh();
+    const tab = byTestID(harness.renderer, 'bar-tab-argent');
+    const onPress = tab?.props['onPress'] as (() => void) | undefined;
+    expect(onPress, 'aucun `onPress` sur l’onglet : le test n’observe rien').toBeTypeOf('function');
+    await act(async () => {
+      (onPress as () => void)();
+    });
+    // Progression ET cible reviennent à 0 : la barre s'est ré-étendue — et la sélection a eu lieu.
+    expect(harness.progress.value).toBe(0);
+    expect(harness.target.value).toBe(0);
+    expect(harness.selected).toEqual(['argent']);
+  });
+
   it('déclare AUCUN `hitSlop` — contrôle statique, pas revue visuelle', () => {
     expect(strippedSource('bob-tab-bar.tsx')).not.toMatch(/hitSlop/);
   });
@@ -1722,6 +1933,46 @@ describe('Dynamic Type — la sonde mesure, puis disparaît', () => {
     await feedProbes(harness, { width: 30, height: 12 });
     // Le coût au REPOS redevient celui de la barre seule — ce que `PERF-13 · P13-A` mesure.
     expect(byTestID(harness.renderer, 'bob-tab-bar-label-probes')).toBeUndefined();
+  });
+
+  it('la sonde du MOT LE PLUS LONG rend le MOT — jamais le label entier', async () => {
+    /*
+     * Les cinq destinations réelles n'ont que des labels d'UN seul mot : sur elles, mot le plus
+     * long et label entier se confondent, et une sonde qui rendrait le label entier resterait
+     * invisible à tous les tests qui les emploient. La barre est GÉNÉRIQUE : un label à deux
+     * mots la démasque. « Suivi chantier » → le mot le plus long est « chantier » (8 lettres
+     * contre 5), posé ici en LITTÉRAL.
+     */
+    const items = [
+      ...ITEMS.slice(0, 1),
+      { key: 'chantiers', label: 'Suivi chantier', icon: glyph('crane') },
+      ...ITEMS.slice(2),
+    ];
+    hoisted.isReduceMotionEnabled.mockResolvedValue(false);
+    hoisted.isScreenReaderEnabled.mockResolvedValue(false);
+    let renderer: ReactTestRenderer | undefined;
+    await act(async () => {
+      renderer = create(
+        createElement(
+          ThemeProvider,
+          null,
+          createElement(BobTabBar, {
+            items,
+            activeKey: 'index',
+            onSelect: () => undefined,
+            testID: 'bar',
+          }),
+        ),
+      );
+    });
+    const probes = flatten(
+      byTestID(renderer as ReactTestRenderer, 'bob-tab-bar-label-probes') ?? null,
+    ).filter((node) => node.type === 'Text');
+    expect(probes, 'aucune sonde rendue : le test n’observe rien').toHaveLength(10);
+    const texts = probes.map((probe) => (probe.children ?? [])[0]);
+    // Famille 1 (largeur NATURELLE) : le label entier. Famille 2 : le MOT le plus long.
+    expect(texts[1]).toBe('Suivi chantier');
+    expect(texts[6]).toBe('chantier');
   });
 
   it('RETIRE le label quand il ne tient plus, sans jamais le tronquer', async () => {
