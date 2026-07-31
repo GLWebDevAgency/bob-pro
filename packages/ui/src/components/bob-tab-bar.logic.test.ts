@@ -30,6 +30,7 @@ import {
   TAB_BAR_SIDE_INSET,
   TAB_BAR_SLIDE_SPRING,
   TAB_LABEL_MAX_LINES,
+  TOUCH_WIDTH_EPSILON,
   affordableSideInset,
   boundaryTick,
   contrastRatio,
@@ -37,6 +38,7 @@ import {
   fadeThroughPlan,
   highlightProximity,
   highlightTranslateX,
+  longestWord,
   minimizeDecision,
   minimumWindowWidth,
   mixTint,
@@ -75,16 +77,33 @@ describe('cible tactile — plancher absolu, porté par le `Pressable` et par ri
     expect(touchTargetFloor('android')).toBe(48);
   });
 
-  it.each<TabBarPlatform>(['ios', 'android'])(
-    'n’est jamais franchi sur %s, à AUCUN instant de l’animation',
-    (platform) => {
-      const floor = touchTargetFloor(platform);
-      for (let i = 0; i <= 100; i += 1) {
-        const geometry = tabBarGeometry(i / 100, metrics(platform));
-        expect(geometry.pressableHeight).toBeGreaterThanOrEqual(floor);
-      }
-    },
-  );
+  /**
+   * LES SEPT GRANDEURS DÉCLARÉES, ÉPINGLÉES UNE FOIS POUR TOUTES. Tout le reste du fichier
+   * raisonne désormais en LITTÉRAUX calculés à la main : c'est ICI, et seulement ici, que les
+   * constantes du module sont confrontées aux chiffres du socle. Sans ce bloc, un `50` devenu
+   * `52` ne serait plus lu nulle part — les tests le liraient dans leurs propres attendus.
+   */
+  it('porte les grandeurs déclarées du socle — 50/35 de visuel, 4 de rythme, 1/34/12/4 en largeur', () => {
+    expect(TAB_BAR_EXPANDED_VISUAL).toBe(50);
+    expect(TAB_BAR_MINIMIZED_VISUAL).toBe(35);
+    expect(TAB_BAR_OUTER_RHYTHM).toBe(4);
+    expect(TAB_BAR_BORDER_WIDTH).toBe(1);
+    expect(TAB_BAR_SIDE_INSET).toBe(34);
+    expect(TAB_BAR_MARGIN).toBe(12);
+    expect(TAB_BAR_ROW_PAD_H).toBe(4);
+  });
+
+  // LE PLANCHER EST UN LITTÉRAL, pas `touchTargetFloor(platform)` : comparer la géométrie à la
+  // fonction qui lui donne son plancher, c'est comparer A à A — un plancher faux resterait vert.
+  it.each<[TabBarPlatform, number]>([
+    ['ios', 44],
+    ['android', 48],
+  ])('n’est jamais franchi sur %s, à AUCUN instant de l’animation', (platform, floor) => {
+    for (let i = 0; i <= 100; i += 1) {
+      const geometry = tabBarGeometry(i / 100, metrics(platform));
+      expect(geometry.pressableHeight, `${platform} @ ${i}%`).toBeGreaterThanOrEqual(floor);
+    }
+  });
 
   it('reproduit la table normative du socle — étendu : visuel 50, pilule 58 intérieure, 60 mesurée', () => {
     for (const platform of ['ios', 'android'] as const) {
@@ -139,24 +158,86 @@ describe('cible tactile — plancher absolu, porté par le `Pressable` et par ri
     const big = tabBarGeometry(0, metrics('ios', { expandedContentHeight: 78 }));
     expect(big.innerVisualHeight).toBe(78);
     expect(big.pressableHeight).toBe(78);
-    expect(big.pillMeasuredHeight).toBe(78 + 2 * TAB_BAR_OUTER_RHYTHM + 2 * TAB_BAR_BORDER_WIDTH);
+    // 78 + 2 × rythme extérieur (4) + 2 × bordure (1) = 88. Littéral : recomposer l'attendu avec
+    // les constantes du module rendrait le test vert quelle que soit leur valeur.
+    expect(big.pillMeasuredHeight).toBe(88);
 
     const small = tabBarGeometry(0, metrics('ios', { expandedContentHeight: 12 }));
-    expect(small.innerVisualHeight).toBe(TAB_BAR_EXPANDED_VISUAL);
+    expect(small.innerVisualHeight).toBe(50);
     // Symétrique au repli : le plancher du visuel replié tient lui aussi.
     expect(tabBarGeometry(1, metrics('ios', { minimizedContentHeight: 8 })).innerVisualHeight).toBe(
-      TAB_BAR_MINIMIZED_VISUAL,
+      35,
     );
   });
 
+  it('une mesure repliée PLUS HAUTE que l’étendue ne fait pas grandir la barre au repli', () => {
+    // Rien ne garantit l'ordre d'arrivée des deux mesures `onLayout`. Sans le `Math.min` de
+    // `tabBarGeometryBounds`, `visual[1]` (60) dépasserait `visual[0]` (50) et la barre
+    // GRANDIRAIT en se repliant — un repli qui pousse est un repli faux.
+    const bounds = tabBarGeometryBounds(
+      metrics('ios', { expandedContentHeight: 50, minimizedContentHeight: 60 }),
+    );
+    expect(bounds.visual).toEqual([50, 50]);
+    const collapsed = tabBarGeometry(
+      1,
+      metrics('ios', { expandedContentHeight: 50, minimizedContentHeight: 60 }),
+    );
+    expect(collapsed.innerVisualHeight).toBe(50);
+    expect(collapsed.pillMeasuredHeight).toBe(52); // max(44, 50) + 2×0 + 2×1
+  });
+
   it('deux onglets voisins ne se recouvrent pas : la largeur d’item divise EXACTEMENT le contenu', () => {
-    for (const progress of [0, 0.37, 1]) {
+    /**
+     * TABLE CALCULÉE À LA MAIN, fenêtre 390 pt, iOS, cinq onglets. Retrait latéral maximal
+     * `min(34, (390 − 254)/2) = 34`, donc la course complète du socle :
+     *   p = 0   → retrait 0  ; pilule 390 − 24 − 0  = 366 ; contenu 366 − 2 − 8 = 356 ; /5 = 71,2
+     *   p = 0,5 → retrait 17 ; pilule 390 − 24 − 34 = 332 ; contenu 332 − 2 − 8 = 322 ; /5 = 64,4
+     *   p = 1   → retrait 34 ; pilule 390 − 24 − 68 = 298 ; contenu 298 − 2 − 8 = 288 ; /5 = 57,6
+     * L'attendu n'est plus `geometry.pillWidth − …` : c'était la fonction testée qui le
+     * fabriquait, et une largeur de pilule fausse restait verte.
+     */
+    const table: readonly (readonly [number, number, number])[] = [
+      [0, 366, 71.2],
+      [0.5, 332, 64.4],
+      [1, 298, 57.6],
+    ];
+    for (const [progress, pillWidth, itemWidth] of table) {
       const geometry = tabBarGeometry(progress, metrics('ios'));
-      const contentWidth =
-        geometry.pillWidth - 2 * TAB_BAR_BORDER_WIDTH - 2 * TAB_BAR_ROW_PAD_H;
-      expect(geometry.itemWidth * TABS).toBeCloseTo(contentWidth, 10);
-      expect(geometry.itemWidth).toBeGreaterThan(0);
+      expect(geometry.pillWidth, `p=${progress}`).toBe(pillWidth);
+      expect(geometry.itemWidth, `p=${progress}`).toBe(itemWidth);
+      // Les cinq onglets pavent le contenu SANS trou ni recouvrement.
+      expect(geometry.itemWidth * TABS, `p=${progress}`).toBe(pillWidth - 10);
     }
+  });
+
+  it('une progression hors [0, 1] ou NON FINIE est CLAMPÉE — jamais extrapolée', () => {
+    const expanded = tabBarGeometry(0, metrics('ios'));
+    const collapsed = tabBarGeometry(1, metrics('ios'));
+    // Sans clamp, `p = 2` donnerait un visuel de 20 pt et un retrait de 68 pt par côté : une
+    // pilule de 230 pt de large sur une fenêtre de 390.
+    expect(tabBarGeometry(2, metrics('ios'))).toEqual(collapsed);
+    expect(tabBarGeometry(-1, metrics('ios'))).toEqual(expanded);
+    // `NaN` retombe sur 0, pas sur 1 : la barre s'ouvre, elle ne se replie pas dans le doute.
+    expect(tabBarGeometry(Number.NaN, metrics('ios'))).toEqual(expanded);
+    expect(tabBarGeometry(Number.POSITIVE_INFINITY, metrics('ios'))).toEqual(expanded);
+  });
+
+  it('une fenêtre ou un nombre d’onglets ABSURDES ne produisent pas de géométrie négative', () => {
+    // Une largeur négative n'existe pas ; `useWindowDimensions` peut rendre 0 avant la première
+    // mesure. La géométrie doit rester une géométrie, pas devenir un miroir.
+    const empty = tabBarGeometry(0, metrics('ios', { windowWidth: -100 }));
+    expect(empty.pillWidth).toBe(0);
+    expect(empty.itemWidth).toBe(0);
+    expect(empty.touchWidthHeld).toBe(false);
+    // Une fenêtre trop étroite pour la bordure et le retrait de rangée : le contenu est plancheré
+    // à 0, pas ramené à −6.
+    expect(tabBarGeometry(0, metrics('ios', { windowWidth: 28 })).itemWidth).toBe(0);
+    // Zéro onglet, c'est un onglet : jamais une division par zéro.
+    const none = tabBarGeometry(0, metrics('ios', { tabCount: 0 }));
+    expect(none.itemWidth).toBe(356);
+    expect(Number.isFinite(none.itemWidth)).toBe(true);
+    // Un nombre fractionnaire est PLANCHÉRÉ vers le bas : 5,7 onglets, c'est cinq onglets.
+    expect(tabBarGeometry(0, metrics('ios', { tabCount: 5.7 })).itemWidth).toBe(71.2);
   });
 });
 
@@ -174,17 +255,21 @@ describe('cible tactile EN LARGEUR — la moitié du critère qui n’était ni 
    */
   const REAL_WIDTHS = [280, 320, 360, 375, 390, 393, 412, 430];
 
-  it.each<TabBarPlatform>(['ios', 'android'])(
+  // LES DEUX PLANCHERS SONT DES LITTÉRAUX. `touchTargetFloor(platform)` est la fonction qui
+  // fournit ce plancher À LA GÉOMÉTRIE : s'en servir comme attendu comparerait A à A.
+  it.each<[TabBarPlatform, number]>([
+    ['ios', 44],
+    ['android', 48],
+  ])(
     'sur %s, `itemWidth ≥ CIBLE` sur 101 points de la course, à TOUTES les largeurs réelles',
-    (platform) => {
-      const floor = touchTargetFloor(platform);
+    (platform, floor) => {
       for (const windowWidth of REAL_WIDTHS) {
         for (let i = 0; i <= 100; i += 1) {
           const geometry = tabBarGeometry(i / 100, metrics(platform, { windowWidth }));
           expect(geometry.touchWidthHeld, `${platform} ${windowWidth} @ ${i}%`).toBe(true);
           // Le `Pressable` est `flex: 1` : `itemWidth` EST sa largeur mesurée.
           expect(geometry.itemWidth, `${platform} ${windowWidth} @ ${i}%`).toBeGreaterThanOrEqual(
-            floor - 1e-9,
+            floor,
           );
           // Et l'autre moitié du critère tient en même temps.
           expect(geometry.pressableHeight).toBeGreaterThanOrEqual(floor);
@@ -193,9 +278,37 @@ describe('cible tactile EN LARGEUR — la moitié du critère qui n’était ni 
     },
   );
 
+  /**
+   * ─── LA TOLÉRANCE, ET CE QU'ELLE NE MASQUE PAS ────────────────────────────────────────────
+   *
+   * La comparaison ci-dessus n'accorde AUCUNE tolérance : sur des largeurs entières, l'arithmétique
+   * est exacte, jusqu'au point exact où le clamp mord. C'est le témoin de ce que vaut réellement
+   * `TOUCH_WIDTH_EPSILON` — une borne de bruit d'arrondi, pas un coussin de confort.
+   */
+  it('au point où le clamp MORD, la largeur d’onglet vaut EXACTEMENT la cible — pas 44 − ε', () => {
+    // iOS, 280 pt : seuil 254, marge disponible 26, retrait rabotté à 13 par côté.
+    // (280 − 24 − 2×13 − 2 − 8) / 5 = 220 / 5 = 44, en arithmétique exacte comme en IEEE-754.
+    expect(tabBarGeometry(1, metrics('ios', { windowWidth: 280 })).itemWidth).toBe(44);
+    // Android, 300 dp : seuil 274, marge 26, retrait 13. (300 − 24 − 26 − 10) / 5 = 48.
+    expect(tabBarGeometry(1, metrics('android', { windowWidth: 300 })).itemWidth).toBe(48);
+  });
+
+  it('la tolérance est trop FINE pour masquer un manque réel — un millième de point le fait tomber', () => {
+    // 273,995 dp : sous le seuil de 274, retrait déjà nul.
+    // (273,995 − 24 − 2 − 8) / 5 = 239,995 / 5 = 47,999 — il manque UN MILLIÈME de point.
+    const short = tabBarGeometry(1, metrics('android', { windowWidth: 273.995 }));
+    expect(short.itemWidth).toBeCloseTo(47.999, 9);
+    expect(short.touchWidthHeld).toBe(false);
+    // Et la borne elle-même est mille milliards de fois sous le point : elle ne peut pas être
+    // le lieu où une cible se perd.
+    expect(TOUCH_WIDTH_EPSILON).toBe(1e-12);
+    expect(TOUCH_WIDTH_EPSILON).toBeLessThan(0.001);
+  });
+
   it('CE QUI CÈDE est le retrait latéral — nommément, et seulement lui', () => {
-    // Écran large : rien ne cède, le retrait vaut les 34 pt du socle.
-    expect(affordableSideInset('ios', 390, 5)).toBe(TAB_BAR_SIDE_INSET);
+    // Écran large : rien ne cède, le retrait vaut les 34 pt du socle. Littéral, pas
+    // `TAB_BAR_SIDE_INSET` : la constante est ce qu'on vérifie, pas ce avec quoi on vérifie.
+    expect(affordableSideInset('ios', 390, 5)).toBe(34);
     expect(tabBarGeometry(1, metrics('ios', { windowWidth: 390 })).sideInset).toBe(34);
 
     // Écran étroit : il est RABOTÉ, exactement de ce qu'il faut et pas plus.
@@ -204,10 +317,26 @@ describe('cible tactile EN LARGEUR — la moitié du critère qui n’était ni 
     expect(affordableSideInset('android', 280, 5)).toBe(3);
 
     // Et la marge de safe area, elle, ne bouge JAMAIS : c'est l'autre grandeur horizontale, et
-    // elle n'entre pas dans le troc.
+    // elle n'entre pas dans le troc. 12 pt à toutes les largeurs, littéral.
     for (const windowWidth of REAL_WIDTHS) {
-      expect(tabBarGeometryBounds(metrics('android', { windowWidth })).margin).toBe(TAB_BAR_MARGIN);
+      expect(tabBarGeometryBounds(metrics('android', { windowWidth })).margin).toBe(12);
     }
+    expect(TAB_BAR_MARGIN).toBe(12);
+    expect(TAB_BAR_SIDE_INSET).toBe(34);
+  });
+
+  it('une fenêtre NÉGATIVE ne fabrique pas de retrait, et un demi-onglet n’est pas un onglet', () => {
+    // Sans le plancher à 0, `affordableSideInset('android', −200, 5)` rendrait un retrait
+    // NÉGATIF : la pilule s'élargirait au repli au lieu de se resserrer.
+    expect(affordableSideInset('android', -200, 5)).toBe(0);
+    expect(affordableSideInset('android', 0, 5)).toBe(0);
+    expect(tabBarGeometryBounds(metrics('android', { windowWidth: -200 })).windowWidth).toBe(0);
+    // Le nombre d'onglets est plancheré à 1 et arrondi vers le bas — sinon `minimumWindowWidth`
+    // rendrait un seuil sous la marge, et `itemWidth` diviserait par zéro.
+    expect(minimumWindowWidth('android', 0)).toBe(274 - 4 * 48);
+    expect(minimumWindowWidth('android', -3)).toBe(274 - 4 * 48);
+    expect(minimumWindowWidth('android', 5.9)).toBe(274);
+    expect(tabBarGeometryBounds(metrics('android', { tabCount: 0 })).tabCount).toBe(1);
   });
 
   it('le retrait clampé reste une INTERPOLATION propre : 0 au repos, son maximum au repli', () => {
@@ -223,9 +352,11 @@ describe('cible tactile EN LARGEUR — la moitié du critère qui n’était ni 
     // Sous ce seuil, un retrait NUL ne suffit plus : la barre n'a plus rien à céder.
     expect(minimumWindowWidth('ios', 5)).toBe(254);
     expect(minimumWindowWidth('android', 5)).toBe(274);
-    // Aucune largeur du parc réel ne s'y trouve — c'est plus étroit que tout écran vendu.
+    // Aucune largeur du parc réel ne s'y trouve — c'est plus étroit que tout écran vendu. Le
+    // seuil est le LITTÉRAL 274, pas `minimumWindowWidth(…)` : un seuil faux rendrait cette
+    // boucle verte en s'abaissant sous toutes les largeurs.
     for (const windowWidth of REAL_WIDTHS) {
-      expect(windowWidth).toBeGreaterThanOrEqual(minimumWindowWidth('android', 5));
+      expect(windowWidth, `${windowWidth}`).toBeGreaterThanOrEqual(274);
     }
     // En deçà, le drapeau tombe à `false` : c'est une DÉCLARATION, pas un silence.
     expect(tabBarGeometry(1, metrics('android', { windowWidth: 260 })).touchWidthHeld).toBe(false);
@@ -249,25 +380,45 @@ describe('cible tactile EN LARGEUR — la moitié du critère qui n’était ni 
 describe('1 · minimize-on-scroll — la signature de la barre', () => {
   const base = { contentHeight: 4000, layoutHeight: 800, previousY: 300 };
 
+  // LES DEUX SEUILS SONT DES LITTÉRAUX — 3 pt de zone morte, 24 pt de retour haut. Écrire
+  // `300 + MINIMIZE_DEAD_ZONE + 1` déplacerait l'entrée AVEC la constante : une zone morte
+  // portée à 30 pt resterait verte.
   it('minimise au-delà de la zone morte descendante, étend au-delà de la montante', () => {
-    expect(minimizeDecision({ ...base, contentOffsetY: 300 + MINIMIZE_DEAD_ZONE + 1 }).target).toBe(1);
-    expect(minimizeDecision({ ...base, contentOffsetY: 300 - MINIMIZE_DEAD_ZONE - 1 }).target).toBe(0);
+    expect(MINIMIZE_DEAD_ZONE).toBe(3);
+    expect(minimizeDecision({ ...base, contentOffsetY: 304 }).target).toBe(1);
+    expect(minimizeDecision({ ...base, contentOffsetY: 296 }).target).toBe(0);
   });
 
   it('ne bouge à RIEN dans la zone morte — sinon la barre vibre au moindre tremblement', () => {
-    for (const dy of [-MINIMIZE_DEAD_ZONE, -1, 0, 1, MINIMIZE_DEAD_ZONE]) {
-      expect(minimizeDecision({ ...base, contentOffsetY: 300 + dy }).target).toBeNull();
+    // dy ∈ {−3, −1, 0, +1, +3} autour de `previousY = 300` : les bornes INCLUSES sont mortes.
+    for (const y of [297, 299, 300, 301, 303]) {
+      expect(minimizeDecision({ ...base, contentOffsetY: y }).target, `y=${y}`).toBeNull();
     }
   });
 
   it('force le dépli sous le seuil de retour haut, même en scrollant vers le bas', () => {
-    const decision = minimizeDecision({
-      contentHeight: 4000,
-      layoutHeight: 800,
-      previousY: 0,
-      contentOffsetY: MINIMIZE_TOP_GUARD - 1,
-    });
-    expect(decision.target).toBe(0);
+    expect(MINIMIZE_TOP_GUARD).toBe(24);
+    // 23 pt : sous le seuil, et pourtant `dy = +23` — la garde prime sur la direction.
+    expect(
+      minimizeDecision({ contentHeight: 4000, layoutHeight: 800, previousY: 0, contentOffsetY: 23 })
+        .target,
+    ).toBe(0);
+    // 24 pt exactement : la garde ne mord plus, et c'est la direction qui décide.
+    expect(
+      minimizeDecision({ contentHeight: 4000, layoutHeight: 800, previousY: 0, contentOffsetY: 24 })
+        .target,
+    ).toBe(1);
+  });
+
+  it('un offset NON FINI retombe sur 0 — la barre s’ouvre, elle ne se fige pas', () => {
+    // `contentOffset.y` peut arriver `NaN` d'un pont natif. Sans la garde, `Math.min/max` le
+    // propagerait : `y` vaudrait `NaN`, `dy` aussi, et AUCUNE des trois branches ne prendrait —
+    // la barre resterait bloquée dans son dernier état, sans que rien ne le signale.
+    for (const offset of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      const decision = minimizeDecision({ ...base, contentOffsetY: offset });
+      expect(decision.y, `${offset}`).toBe(0);
+      expect(decision.target, `${offset}`).toBe(0);
+    }
   });
 
   it('CLAMPE l’offset : le rubber-band d’overscroll ne peut pas inverser la direction une frame', () => {
@@ -292,18 +443,40 @@ describe('1 · minimize-on-scroll — la signature de la barre', () => {
   });
 
   it('rétrécit dans les DEUX dimensions : hauteur ET retrait latéral animé de 0 à 34 pt par côté', () => {
+    // Fenêtre 390, iOS : pilule 366 étendue, 298 repliée (390 − 24 − 2×34), hauteurs 60 → 46.
     const expanded = tabBarGeometry(0, metrics('ios'));
     const collapsed = tabBarGeometry(1, metrics('ios'));
     expect(expanded.sideInset).toBe(0);
-    expect(collapsed.sideInset).toBe(TAB_BAR_SIDE_INSET);
-    expect(collapsed.pillWidth).toBe(expanded.pillWidth - 2 * TAB_BAR_SIDE_INSET);
-    expect(collapsed.pillMeasuredHeight).toBeLessThan(expanded.pillMeasuredHeight);
+    expect(collapsed.sideInset).toBe(34);
+    expect(expanded.pillWidth).toBe(366);
+    expect(collapsed.pillWidth).toBe(298);
+    expect(expanded.pillMeasuredHeight).toBe(60);
+    expect(collapsed.pillMeasuredHeight).toBe(46);
   });
 
   it('recalcule `borderRadius = hauteur / 2` — une formule, jamais une constante', () => {
-    for (const progress of [0, 0.25, 0.5, 0.75, 1]) {
+    /**
+     * TABLE CALCULÉE À LA MAIN, Android (cible 48), fenêtre 390 :
+     *   p      visuel = lerp(50,35,p)   Pressable = max(48, visuel)   rythme = lerp(4,0,p)
+     *   0      50                        50                            4   → 60 mesurée → r 30
+     *   0,25   46,25                     48                            3   → 56          → r 28
+     *   0,5    42,5                      48                            2   → 54          → r 27
+     *   0,75   38,75                     48                            1   → 52          → r 26
+     *   1      35                        48                            0   → 50          → r 25
+     * L'attendu n'est plus `geometry.pillMeasuredHeight / 2` : cette écriture-là redisait la
+     * formule au lieu de la vérifier, et un rayon calculé sur la boîte INTÉRIEURE l'aurait passée.
+     */
+    const table: readonly (readonly [number, number, number])[] = [
+      [0, 60, 30],
+      [0.25, 56, 28],
+      [0.5, 54, 27],
+      [0.75, 52, 26],
+      [1, 50, 25],
+    ];
+    for (const [progress, measured, radius] of table) {
       const geometry = tabBarGeometry(progress, metrics('android'));
-      expect(geometry.borderRadius).toBe(geometry.pillMeasuredHeight / 2);
+      expect(geometry.pillMeasuredHeight, `p=${progress}`).toBe(measured);
+      expect(geometry.borderRadius, `p=${progress}`).toBe(radius);
     }
   });
 
@@ -324,25 +497,48 @@ describe('1 · minimize-on-scroll — la signature de la barre', () => {
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
 describe('2 · highlight glissant — un seul bloc, transform-only, ressort interruptible', () => {
+  /**
+   * LES POSITIONS SONT DES LITTÉRAUX. Fenêtre 390, iOS, barre ÉTENDUE : largeur d'onglet 71,2
+   * (voir la table du bloc « cible tactile »), retrait de rangée 4.
+   *   index 0   → 4 + 0 × 71,2   = 4
+   *   index 1   → 4 + 1 × 71,2   = 75,2
+   *   index 1,5 → 4 + 1,5 × 71,2 = 110,8
+   *   index 4   → 4 + 4 × 71,2   = 288,8
+   * Écrire `TAB_BAR_ROW_PAD_H + geometry.itemWidth` faisait recalculer l'attendu PAR LA
+   * GÉOMÉTRIE TESTÉE : une largeur d'onglet fausse restait verte.
+   */
   it('se positionne par `translateX` pur, calculé depuis la largeur d’item', () => {
     const geometry = tabBarGeometry(0, metrics('ios'));
-    expect(highlightTranslateX(0, geometry)).toBe(TAB_BAR_ROW_PAD_H);
-    expect(highlightTranslateX(1, geometry)).toBe(TAB_BAR_ROW_PAD_H + geometry.itemWidth);
-    expect(highlightTranslateX(4, geometry)).toBe(TAB_BAR_ROW_PAD_H + 4 * geometry.itemWidth);
+    expect(geometry.itemWidth).toBe(71.2);
+    expect(highlightTranslateX(0, geometry)).toBe(4);
+    expect(highlightTranslateX(1, geometry)).toBe(75.2);
+    expect(highlightTranslateX(4, geometry)).toBe(288.8);
   });
 
   it('accepte une position CONTINUE — le highlight voyage, il ne saute pas d’onglet en onglet', () => {
     const geometry = tabBarGeometry(0, metrics('ios'));
-    const midpoint = highlightTranslateX(1.5, geometry);
-    expect(midpoint).toBeGreaterThan(highlightTranslateX(1, geometry));
-    expect(midpoint).toBeLessThan(highlightTranslateX(2, geometry));
+    // 110,8 tombe exactement à mi-chemin entre 75,2 et 146,4 — le highlight est ENTRE deux
+    // onglets, ce qu'un positionnement par index arrondi ne pourrait pas produire.
+    expect(highlightTranslateX(1.5, geometry)).toBeCloseTo(110.8, 10);
+    expect(highlightTranslateX(2, geometry)).toBeCloseTo(146.4, 10);
+  });
+
+  it('une position NON FINIE retombe sur l’onglet 0 — jamais un `translateX` NaN', () => {
+    // Un `translateX` NaN ne lève pas : il fait DISPARAÎTRE le nœud, et l'indicateur s'évapore
+    // sans un mot. La garde le ramène au premier onglet, qui est un état visible.
+    const geometry = tabBarGeometry(0, metrics('ios'));
+    expect(highlightTranslateX(Number.NaN, geometry)).toBe(4);
+    expect(highlightTranslateX(Number.POSITIVE_INFINITY, geometry)).toBe(4);
   });
 
   it('suit la barre PENDANT qu’elle s’ouvre : la géométrie est recalculée live sur `progress`', () => {
+    // Barre REPLIÉE : largeur d'onglet 57,6 → index 4 à 4 + 4 × 57,6 = 234,4, contre 288,8
+    // étendue. Le highlight ne se contente pas de « bouger » : il bouge de 54,4 pt.
     const open = tabBarGeometry(0, metrics('ios'));
     const closed = tabBarGeometry(1, metrics('ios'));
-    expect(highlightTranslateX(4, closed)).not.toBe(highlightTranslateX(4, open));
-    expect(closed.itemWidth).toBeLessThan(open.itemWidth);
+    expect(closed.itemWidth).toBe(57.6);
+    expect(highlightTranslateX(4, closed)).toBeCloseTo(234.4, 10);
+    expect(highlightTranslateX(4, open)).toBe(288.8);
   });
 
   it('anime avec un ressort SOUS-AMORTI — sans danger, puisque transform-only', () => {
@@ -364,32 +560,51 @@ describe('2 · highlight glissant — un seul bloc, transform-only, ressort inte
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
 describe('3 · scrub au doigt — mapping 1:1 et ticks au FRANCHISSEMENT', () => {
+  /**
+   * LES ABSCISSES SONT DES LITTÉRAUX. Barre ÉTENDUE, fenêtre 390, iOS : largeur d'onglet 71,2 ;
+   * le contenu commence à `bordure + retrait de rangée` = 1 + 4 = 5 pt du bord MESURÉ.
+   *   centre du 1er onglet  : 5 + 71,2/2       = 40,6   → index 0
+   *   centre du 5e onglet   : 5 + 4,5 × 71,2   = 325,4  → index 4
+   *   1,2 largeur d'onglet  : 5 + 1,2 × 71,2   = 90,44  → index 0,7
+   *   1,3 largeur d'onglet  : 5 + 1,3 × 71,2   = 97,56  → index 0,8
+   * Les entrées ne sont plus fabriquées avec `geometry.itemWidth` : une largeur d'onglet fausse
+   * décalait l'ENTRÉE et l'ATTENDU en même temps, et le test restait vert.
+   */
   const geometry = tabBarGeometry(0, metrics('ios'));
-  const contentLeft = TAB_BAR_BORDER_WIDTH + TAB_BAR_ROW_PAD_H;
 
   it('rend 0 au centre du premier onglet et `tabCount − 1` au centre du dernier', () => {
-    expect(tabIndexAtX(contentLeft + geometry.itemWidth / 2, geometry, TABS)).toBeCloseTo(0, 10);
-    expect(
-      tabIndexAtX(contentLeft + geometry.itemWidth * (TABS - 0.5), geometry, TABS),
-    ).toBeCloseTo(TABS - 1, 10);
+    expect(tabIndexAtX(40.6, geometry, TABS)).toBeCloseTo(0, 10);
+    expect(tabIndexAtX(325.4, geometry, TABS)).toBeCloseTo(4, 10);
   });
 
   it('reste BORNÉ aux onglets réels : le doigt qui sort de la pilule ne crée pas d’index fantôme', () => {
     expect(tabIndexAtX(-500, geometry, TABS)).toBe(0);
-    expect(tabIndexAtX(5000, geometry, TABS)).toBe(TABS - 1);
+    expect(tabIndexAtX(5000, geometry, TABS)).toBe(4);
   });
 
   it('retranche la BORDURE en plus du retrait intérieur — la référence n’a pas de bordure', () => {
     // Si l’on recopiait `raw = (x − ROW_PAD_H) / itemWidth − 0.5` (l. 154 de la référence), le
-    // mapping serait décalé d’exactement 1 pt : invisible à l’œil, faux à la mesure.
-    const naif = (contentLeft + geometry.itemWidth / 2 - TAB_BAR_ROW_PAD_H) / geometry.itemWidth - 0.5;
-    expect(naif).not.toBeCloseTo(0, 10);
+    // mapping serait décalé d’exactement une bordure : (40,6 − 4) / 71,2 − 0,5 = 0,0140449…,
+    // soit 1 pt en abscisse. Invisible à l’œil, faux à la mesure.
+    const naif = (40.6 - 4) / 71.2 - 0.5;
+    expect(naif).toBeCloseTo(0.0140449, 7);
+    expect(tabIndexAtX(40.6, geometry, TABS)).toBeCloseTo(0, 10);
   });
 
   it('est CONTINU — mapping 1:1, aucun cran, aucun ressort pendant le drag', () => {
-    const a = tabIndexAtX(contentLeft + geometry.itemWidth * 1.2, geometry, TABS);
-    const b = tabIndexAtX(contentLeft + geometry.itemWidth * 1.3, geometry, TABS);
-    expect(b - a).toBeCloseTo(0.1, 10);
+    expect(tabIndexAtX(90.44, geometry, TABS)).toBeCloseTo(0.7, 10);
+    expect(tabIndexAtX(97.56, geometry, TABS)).toBeCloseTo(0.8, 10);
+  });
+
+  it('un index NON FINI retombe sur le premier onglet — jamais un index fantôme', () => {
+    // Avant la première mesure de fenêtre, `itemWidth` vaut 0 et `contentX / 0` rend ±Infinity ;
+    // un `x` non fini venu du pont de gestes fait de même. Sans la garde, `Math.min/max`
+    // laisserait passer `NaN` (le highlight disparaît) ou le dernier onglet (il saute au bout).
+    const flat = tabBarGeometry(0, metrics('ios', { windowWidth: 0 }));
+    expect(flat.itemWidth).toBe(0);
+    expect(tabIndexAtX(120, flat, TABS)).toBe(0);
+    expect(tabIndexAtX(Number.NaN, geometry, TABS)).toBe(0);
+    expect(tabIndexAtX(Number.POSITIVE_INFINITY, geometry, TABS)).toBe(0);
   });
 
   it('ne tick QU’au franchissement de frontière, jamais par frame', () => {
@@ -490,6 +705,24 @@ describe('6 · teinte pilotée par le highlight — l’EFFET, celui qu’un bac
       expect(tabTintPalette(appearance).highlight).toMatch(/^#[0-9A-F]{6}$/);
     }
   });
+
+  it('en apparence SOMBRE, chaque rôle a sa source — et l’Assistant n’est pas l’encre neutre', () => {
+    // Rien n'épinglait la palette sombre : n'importe lequel de ses six champs pouvait pointer
+    // vers n'importe quelle autre encre du même ton sans qu'un test bouge. Les rôles
+    // `navigation.*` sont des primitives d'apparence CLAIRE et n'ont RIEN à faire ici.
+    const dark = tabTintPalette('dark');
+    expect(dark.active).toBe(surfaceTint.dark.neutral.ink);
+    expect(dark.assistantActive).toBe(surfaceTint.dark.ai.ink);
+    expect(dark.inactive).toBe(surfaceTint.dark.neutral.inkMuted);
+    expect(dark.pill).toBe(surfaceTint.dark.neutral.flat);
+    expect(dark.highlight).toBe(surfaceTint.dark.neutral.raised);
+    expect(dark.border).toBe(surfaceTint.dark.neutral.border);
+    // Les trois encres sont DISTINCTES : une palette qui les confond éteint le comportement 6.
+    expect(new Set([dark.active, dark.assistantActive, dark.inactive]).size).toBe(3);
+    // Et aucune primitive d'apparence claire n'a fui dans la palette sombre.
+    expect(dark.active).not.toBe(resolveColorRole('navigation.active'));
+    expect(dark.inactive).not.toBe(resolveColorRole('navigation.inactive'));
+  });
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════════
@@ -501,6 +734,20 @@ describe('contraste AA — prouvé par échantillonnage, jamais par raisonnement
     expect(mixTint('#000000', '#FFFFFF', 0.5)).toBe('#808080');
     expect(mixTint('#0C2340', '#5B6B7B', 0)).toBe('#0C2340');
     expect(mixTint('#0C2340', '#5B6B7B', 1)).toBe('#5B6B7B');
+  });
+
+  it('BORNE la position de mélange : hors [0, 1] ou non finie, la couleur reste une couleur', () => {
+    // La proximité arrive d'une valeur partagée pilotée par un RESSORT sous-amorti : elle
+    // dépasse 1 en fin de course, et un pont natif peut la rendre `NaN`.
+    //
+    // DEUX BORNES DIFFÉRENTES, et il faut les distinguer : le DÉPASSEMENT est rattrapé par le
+    // clamp de composante de `toHex` (0..255), qui suffirait seul ; le NON FINI, lui, ne l'est
+    // que par `clamp01`. Sans lui, `lerp(a, b, NaN)` rend `NaN`, `NaN.toString(16)` rend « NaN »
+    // et la couleur peinte devient `#NANNANNAN` — une chaîne que la plateforme ne sait pas lire.
+    expect(mixTint('#000000', '#FFFFFF', 1.5)).toBe('#FFFFFF');
+    expect(mixTint('#000000', '#FFFFFF', -0.5)).toBe('#000000');
+    expect(mixTint('#0C2340', '#5B6B7B', Number.NaN)).toBe('#0C2340');
+    expect(mixTint('#0C2340', '#5B6B7B', Number.POSITIVE_INFINITY)).toBe('#0C2340');
   });
 
   /**
@@ -516,10 +763,33 @@ describe('contraste AA — prouvé par échantillonnage, jamais par raisonnement
    * LA TOLÉRANCE EST CELLE DU CONTRÔLE `C4`, pas une tolérance de confort : `0,011`, exactement
    * la valeur qu'il applique à la même table (`Math.abs(actual - printed[i]) > 0.011`). Les
    * nombres du socle sont publiés arrondis au centième ; élargir au-delà laisserait passer une
-   * dérive, resserrer en deçà rendrait rouge un couple parfaitement conforme. C'est assez serré
-   * pour qu'une dérive d'exposant (2,4 → 2,2) ou de coefficient fasse rougir — c'est vérifié.
+   * dérive, resserrer en deçà rendrait rouge un couple parfaitement conforme.
+   *
+   * CE QUE CETTE TABLE ÉPINGLE, vérifié en appliquant chaque mutation : l'exposant `2,4`, les
+   * trois coefficients, la paire `0,055 / 1,055`, le `+ 0,05` du rapport. CE QU'ELLE N'ÉPINGLE
+   * PAS : la BRANCHE LINÉAIRE (`s / 12,92`), qu'aucune couleur de la table n'atteint — le canal
+   * le plus sombre de la palette est le `0x0C` de `#0C2340`, au-dessus du genou. Le test de sonde
+   * ci-dessous l'atteint ; le seuil `0,03928`, lui, reste hors de portée (voir la note du
+   * fichier de logique : la fonction de transfert sRGB est CONTINUE au genou).
    */
   const C4_TOLERANCE = 0.011;
+
+  it('ATTEINT la branche linéaire du calcul WCAG, que la table A23 ne touche jamais', () => {
+    /**
+     * SONDE `#0A0A0A` — canal 10, donc 10/255 = 0,039215… ≤ 0,03928 : la branche LINÉAIRE.
+     *   luminance = (0,2126 + 0,7152 + 0,0722) × (10/255) / 12,92 = 0,0030352698354883…
+     *   blanc     = 1 (les trois coefficients somment à 1, et (1 + 0,055)/1,055 = 1)
+     *   rapport   = (1 + 0,05) / (0,0030352698354883 + 0,05) = 19,79814571052481
+     * Un `/ 12,92` devenu `/ 12` rendrait 19,7116… — 0,087 d'écart, très au-dessus de la
+     * tolérance ci-dessous.
+     */
+    expect(contrastRatio('#0A0A0A', '#FFFFFF')).toBeCloseTo(19.79814571052481, 10);
+    // Le témoin des deux bouts : noir sur blanc vaut EXACTEMENT 21, la borne du barème WCAG.
+    expect(contrastRatio('#000000', '#FFFFFF')).toBe(21);
+    // Et le rapport est SYMÉTRIQUE : c'est le plus clair qui passe au numérateur, pas le premier
+    // argument. Sans le tri, `contrastRatio(blanc, noir)` rendrait 1/21.
+    expect(contrastRatio('#FFFFFF', '#000000')).toBe(21);
+  });
 
   it('ÉPINGLE les 18 cellules de la table A23 du socle, à la tolérance du contrôle `C4`', () => {
     const roles = [
@@ -562,12 +832,55 @@ describe('contraste AA — prouvé par échantillonnage, jamais par raisonnement
     }
   });
 
+  /**
+   * ─── L'ÉCHANTILLONNAGE EST LA RAISON D'ÊTRE DE `sampleTintCourse` : ON LE VÉRIFIE ────────
+   *
+   * La boucle « tous les échantillons sont AA » ne regarde QUE les échantillons rendus. Elle
+   * restait donc verte si la fonction n'en rendait que DEUX (les extrémités) ou n'en rendait
+   * qu'un FOND sur deux — c'est-à-dire exactement les deux dimensions que le § 6 exige et que la
+   * documentation de la fonction revendique. Les deux mutations le confirmaient : l'une et
+   * l'autre survivaient. Ce test-ci les tue, et il doit passer AVANT la preuve AA.
+   */
+  it('échantillonne RÉELLEMENT toute la course, et sur les DEUX fonds', () => {
+    const palette = tabTintPalette('light');
+    const samples = sampleTintCourse(palette, palette.active, 200);
+    // 201 positions × 2 fonds = 402 échantillons. Un « 200 » ignoré en rendrait 4.
+    expect(samples).toHaveLength(402);
+    const positions = [...new Set(samples.map((sample) => sample.t))];
+    expect(positions).toHaveLength(201);
+    expect(positions[0]).toBe(0);
+    expect(positions[200]).toBe(1);
+    expect(positions[100]).toBe(0.5);
+    // LES DEUX FONDS, à CHAQUE position — pas la pilule seule.
+    expect([...new Set(samples.map((sample) => sample.background))].sort()).toEqual(
+      [palette.highlight, palette.pill].sort(),
+    );
+    for (const t of [0, 0.5, 1]) {
+      const at = samples.filter((sample) => sample.t === t);
+      expect(at.map((sample) => sample.background), `t=${t}`).toEqual([
+        palette.pill,
+        palette.highlight,
+      ]);
+    }
+    // La COULEUR bouge le long de la course : aux deux bouts ce sont les deux teintes, au milieu
+    // leur mélange sRGB — sinon « échantillonner la course » ne voudrait rien dire.
+    expect(samples[0]?.color).toBe(palette.inactive);
+    expect(samples[400]?.color).toBe(palette.active);
+    expect(samples[200]?.color).toBe(mixTint(palette.inactive, palette.active, 0.5));
+    expect(samples[200]?.color).not.toBe(palette.inactive);
+    // Un nombre de pas absurde ne fabrique ni division par zéro ni tableau vide.
+    expect(sampleTintCourse(palette, palette.active, 0)).toHaveLength(4);
+    expect(sampleTintCourse(palette, palette.active, -7)).toHaveLength(4);
+  });
+
   it.each(['light', 'dark'] as const)(
     'reste AA sur TOUTE la course et sur les DEUX fonds, en apparence %s',
     (appearance) => {
       const palette = tabTintPalette(appearance);
       for (const target of [palette.active, palette.assistantActive]) {
-        for (const sample of sampleTintCourse(palette, target, 200)) {
+        const samples = sampleTintCourse(palette, target, 200);
+        expect(samples).toHaveLength(402);
+        for (const sample of samples) {
           expect(
             sample.ratio,
             `${sample.color} sur ${sample.background} à t=${sample.t}`,
@@ -669,6 +982,37 @@ describe('Dynamic Type — le label passe sur deux lignes, puis DISPARAÎT, jama
     expect(
       resolveTabLabelTier({ naturalWidth: 10, longestWordWidth: 10, availableWidth: 0 }),
     ).toBe('icon-only');
+    // LE CAS QUI DÉMASQUE LA GARDE : un label VIDE dans un onglet de largeur nulle. Sans le
+    // `!(availableWidth > 0)`, `0 ≤ 0` serait vrai et la barre annoncerait « une ligne » pour un
+    // onglet qui n'a pas un point de large.
+    expect(
+      resolveTabLabelTier({ naturalWidth: 0, longestWordWidth: 0, availableWidth: 0 }),
+    ).toBe('icon-only');
+    // Une largeur NÉGATIVE (mesure aberrante) ne rouvre pas la porte non plus.
+    expect(
+      resolveTabLabelTier({ naturalWidth: 0, longestWordWidth: 0, availableWidth: -12 }),
+    ).toBe('icon-only');
+  });
+
+  it('le MOT LE PLUS LONG est bien le plus long — et un trait d’union n’est pas une coupure', () => {
+    /**
+     * `longestWord` n'était appelée par AUCUN test, alors qu'elle décide seule du rang
+     * « icônes seules » : c'est elle qui alimente la sonde de mesure du mot dans
+     * `bob-tab-bar.tsx`. Une version qui rendrait le PREMIER mot passait inaperçue.
+     */
+    expect(longestWord('Aujourd’hui')).toBe('Aujourd’hui');
+    expect(longestWord('Mes documents')).toBe('documents');
+    expect(longestWord('Fin de mois')).toBe('mois');
+    // Découpage sur les BLANCS uniquement. Les traits d'union ne sont pas des points de coupure
+    // garantis d'une plateforme à l'autre : les traiter comme tels rendrait la mesure OPTIMISTE,
+    // donc fausse dans le sens qui TRONQUE — « Sous-traitance » compte pour un seul mot.
+    expect(longestWord('Sous-traitance TVA')).toBe('Sous-traitance');
+    // Les blancs multiples, les tabulations et les bords ne fabriquent pas de mot vide.
+    expect(longestWord('  Argent \t net  ')).toBe('Argent');
+    expect(longestWord('')).toBe('');
+    expect(longestWord('   ')).toBe('');
+    // À longueur ÉGALE, le premier gagne — c'est arbitraire, mais c'est déterministe et dit.
+    expect(longestWord('abc xyz')).toBe('abc');
   });
 
   it('un seul label qui ne tient pas fait passer TOUTE la barre en icônes', () => {

@@ -240,9 +240,31 @@ export function minimumWindowWidth(platform: TabBarPlatform, tabCount: number): 
  * largeur. Jamais plus que les 34 pt du socle, jamais moins que 0.
  */
 export function affordableSideInset(platform: TabBarPlatform, windowWidth: number, tabCount: number): number {
+  // Le `Math.max(windowWidth, 0)` est REDONDANT et il faut le dire : le `Math.max(slack / 2, 0)`
+  // de la ligne suivante ramène déjà toute largeur négative à un retrait nul. Aucun test ne peut
+  // distinguer les deux écritures — c'est un mutant ÉQUIVALENT, pas un trou de couverture. Il
+  // reste parce qu'il exprime l'intention (« une fenêtre n'a pas de largeur négative ») au point
+  // où elle se lit, pas parce qu'il change une sortie.
   const slack = Math.max(windowWidth, 0) - minimumWindowWidth(platform, tabCount);
   return Math.min(TAB_BAR_SIDE_INSET, Math.max(slack / 2, 0));
 }
+
+/**
+ * TOLÉRANCE de la comparaison `itemWidth ≥ CIBLE`. Elle ne couvre QUE le bruit d'arrondi de la
+ * chaîne de calcul, et ce bruit se BORNE — il ne s'estime pas au doigt mouillé.
+ *
+ * LA CHAÎNE : `((fenêtre − 2×marge − 2×retrait) − 2×bordure − 2×rythme) / onglets`. Quatre
+ * arrondis IEEE-754 au plus, sur des grandeurs inférieures à 512 pt, où un demi-ULP vaut
+ * `Number.EPSILON × 512 / 2 ≈ 5,7e-14` : le cumul reste sous 2,3e-13, et cette borne-ci laisse
+ * encore un facteur quatre.
+ *
+ * ELLE NE PEUT PAS MASQUER UN VRAI MANQUE : 1e-12 pt, c'est mille milliards de fois moins qu'un
+ * point. Une fenêtre qui rate la cible d'un MILLIÈME de point fait tomber le drapeau, et un test
+ * le pose. *(Rédaction précédente : une tolérance de `1e-9` justifiée par un
+ * « 43,999999999999996 » qui n'existe pas — `(320 − 24 − 2×33 − 2 − 8) / 5` vaut exactement 44
+ * en IEEE-754 comme en arithmétique exacte.)*
+ */
+export const TOUCH_WIDTH_EPSILON = 1e-12;
 
 function clamp01(value: number): number {
   if (!Number.isFinite(value)) return 0;
@@ -322,10 +344,11 @@ export function tabBarGeometry(progress: number, metrics: TabBarMetrics): TabBar
     pillWidth,
     itemWidth,
     borderRadius: pillMeasuredHeight / 2,
-    // Arrondi de flottant : `(320 − 24 − 2×33 − 2 − 8) / 5` vaut 44 en arithmétique exacte et
-    // 43,999999999999996 en IEEE-754. Une cible n'est pas ratée d'un milliardième de point ; le
-    // socle tolère déjà ± 0,5 pt de pixel. On tolère ici le seul bruit de calcul.
-    touchWidthHeld: itemWidth >= bounds.touchFloor - 1e-9,
+    // Sur les largeurs ENTIÈRES la tolérance n'est JAMAIS consommée : au point exact où le clamp
+    // mord, `(280 − 24 − 2×13 − 2 − 8) / 5` vaut 44 en arithmétique exacte ET en IEEE-754 — un
+    // test le pose en littéral. Elle ne couvre que le bruit d'arrondi des largeurs fractionnaires
+    // (voir `TOUCH_WIDTH_EPSILON`), et elle est trop fine pour masquer un manque réel.
+    touchWidthHeld: itemWidth >= bounds.touchFloor - TOUCH_WIDTH_EPSILON,
   });
 }
 
@@ -429,6 +452,11 @@ export const SCRUB_TAP_MAX_DURATION = 400;
  */
 export function tabIndexAtX(x: number, geometry: TabBarGeometry, tabCount: number): number {
   const count = Math.max(Math.floor(tabCount), 1);
+  // SORTIE ANTICIPÉE REDONDANTE, et il faut le dire : `itemWidth` ne vaut jamais moins que 0
+  // (c'est un `Math.max(…, 0)` divisé par un compte ≥ 1), donc ce test ne prend que pour 0 ou
+  // `NaN` — deux cas où la division ci-dessous rend ±Infinity ou NaN, que la garde de non-finité
+  // ramène au MÊME `0`. Aucun test ne peut distinguer les deux écritures : mutant ÉQUIVALENT, pas
+  // trou de couverture. Elle reste parce qu'elle nomme le cas « pas encore mesuré ».
   if (!(geometry.itemWidth > 0)) return 0;
   const contentX = x - TAB_BAR_BORDER_WIDTH - TAB_BAR_ROW_PAD_H;
   const raw = contentX / geometry.itemWidth - 0.5;
@@ -571,30 +599,50 @@ export function mixTint(from: string, to: string, t: number): string {
 /**
  * ─── ROUE DÉCLARÉE n° 1 · LE CALCUL DE CONTRASTE WCAG 2.x ───────────────────────────────────
  *
- * C'EST LA QUATRIÈME COPIE DU DÉPÔT, et la seule expédiée dans le barrel PUBLIC `@bob/ui`. Elle
- * se déclare, elle ne se cache pas. Les quatre :
+ * C'est une copie PARMI CINQ dans le dépôt, et la seule expédiée dans le barrel PUBLIC
+ * `@bob/ui`. Elle se déclare, elle ne se cache pas. Les cinq, au 31/07/2026 :
  *
  *  1. `packages/tokens/src/index.test.ts` (l. 19-35) — certifie les paires de rôles livrées ;
- *  2. `packages/tokens/src/surface-veil.test.ts` — certifie les voiles de surface ;
- *  3. `scripts/check-mobile-experience-docs.mjs` (l. 132, contrôle `C4`) — RECALCULE la table de
- *     contraste du socle 04 § 2 depuis `@bob/tokens`, en Node pur ;
- *  4. celle-ci.
+ *  2. `packages/tokens/src/surface-veil.test.ts` (l. 47-51) — certifie les voiles de surface ;
+ *  3. `scripts/check-mobile-experience-docs.mjs` (l. 131-134, contrôle `C4`) — RECALCULE la table
+ *     de contraste du socle 04 § 2 depuis `@bob/tokens`, en Node pur ;
+ *  4. `apps/mobile/src/components/bob-tab-bar.test.tsx` (l. 417-421) — recalcule le contraste sur
+ *     les couleurs LUES DANS L'ARBRE RENDU, ce qu'aucune des autres ne fait ;
+ *  5. celle-ci.
  *
- * POURQUOI ON N'A PAS FACTORISÉ. Les trois autres sont des SECONDES OPINIONS délibérées : un
+ * *(Rédaction précédente : « C'EST LA QUATRIÈME COPIE DU DÉPÔT […] Les quatre : » suivi d'une
+ * énumération de quatre, présentée comme exhaustive. Elle omettait la n° 4, écrite par ce lot
+ * même. Une énumération se recompte avant d'être publiée : `grep -rn "0.03928\|0\.2126"`.)*
+ *
+ * POURQUOI ON N'A PAS FACTORISÉ. Les quatre autres sont des SECONDES OPINIONS délibérées : un
  * test qui importerait la fonction qu'il vérifie ne vérifierait plus rien, et le script de docs
  * tourne en `.mjs` hors de tout paquet TypeScript. Les factoriser ne supprimerait pas une
- * duplication : elle supprimerait la CONTRE-EXPERTISE. Aucune des trois n'est d'ailleurs
- * exportable — deux sont des fichiers de test, la troisième un script.
+ * duplication : elle supprimerait la CONTRE-EXPERTISE. Aucune des quatre n'est d'ailleurs
+ * exportable — trois sont des fichiers de test, la quatrième un script.
  *
  * POURQUOI CELLE-CI EXISTE QUAND MÊME. Le § 6 exige un échantillonnage du contraste **sur toute
  * la course d'interpolation** et sur **deux fonds** — pas sur deux extrémités. C'est du code de
  * PRODUCTION (`sampleTintCourse`), pas de test : il lui faut une fonction, pas un helper de
  * suite.
  *
- * CE QUI EMPÊCHE LA QUATRIÈME VÉRITÉ. Un test ÉPINGLE cette implémentation sur les **dix-huit
- * cellules** de la table A23 du socle — la même table que le contrôle `C4` recalcule depuis
- * `@bob/tokens`. La chaîne est fermée : notre fonction → table du socle ← `C4` ← tokens. Une
- * dérive de constante (le `0,03928`, le `2,4`, les trois coefficients) fait rougir ce test.
+ * ─── CE QUE L'ÉPINGLE TIENT, ET CE QU'ELLE NE TIENT PAS ─────────────────────────────────────
+ * Un test ÉPINGLE cette implémentation sur les **dix-huit cellules** de la table A23 du socle —
+ * la même table que le contrôle `C4` recalcule depuis `@bob/tokens`. La chaîne est fermée :
+ * notre fonction → table du socle ← `C4` ← tokens.
+ *
+ * CE QU'ELLE TIENT, vérifié en appliquant la mutation : l'exposant `2,4`, les trois coefficients
+ * `0,2126 / 0,7152 / 0,0722`, la paire `0,055 / 1,055` et le `+ 0,05` du rapport. Chacune de ces
+ * dérives fait rougir la table A23. Le diviseur `12,92` de la branche LINÉAIRE, lui, ne l'a
+ * jamais fait — aucune couleur de la table n'a de canal sous 11/255, la branche était donc du
+ * code MORT pour ce test. Une sonde `#0A0A0A` l'atteint désormais, avec un rapport littéral.
+ *
+ * CE QU'ELLE NE TIENT PAS, et il faut le dire plutôt que de le laisser croire : le SEUIL
+ * `0,03928`. Le quintuplet sRGB est choisi pour que la fonction de transfert soit CONTINUE au
+ * genou ; déplacer le seuil d'un cran de 8 bits change la luminance d'un canal de moins de
+ * 3e-5 — sous la tolérance de `C4`, et sous toute tolérance raisonnable. Seule une dérive
+ * GROSSIÈRE (0,03928 → 0,5, qui bascule la moitié de la palette dans la branche linéaire) est
+ * détectée. Cette constante-là n'est donc pas verrouillée au cran près, et aucun test du dépôt
+ * ne peut le faire.
  */
 function linearize(component: number): number {
   const s = component / 255;
