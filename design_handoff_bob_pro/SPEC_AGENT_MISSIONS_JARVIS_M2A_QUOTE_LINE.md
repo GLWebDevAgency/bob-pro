@@ -1592,6 +1592,37 @@ réel : `S(n)` autorise uniquement
 `migrate resolve --applied` avant recertification. Toute autre forme, migration ou état échoue
 fermé.
 
+**Perte du control plane Railway avant exécution.** Le CLI Railway reste épinglé à une version et
+un digest immuables. Pour cette version, `railway run` relit d'abord projet, environnement, service
+et variables, puis seulement démarre le processus enfant. Le wrapper M2-A-3 peut donc rejouer au
+plus trois fois **uniquement** les erreurs Railway exactes et documentées de décodage/réponse du
+control plane, à condition que la tentative n'ait émis aucun octet sur stdout **et** qu'un lanceur
+isolé n'ait pas encore créé atomiquement son marqueur `child-started` juste avant de démarrer le
+vrai processus. La classification porte sur la totalité d'un stderr borné, jamais sur une
+sous-chaîne.
+L'allowlist est sourcée par les runs `30626014174` (`Problem processing request`) et
+`30626237262`, tentative 2 (enveloppe de décodage à cinq lignes), exécutés avec le binaire Railway
+`5.26.0` épinglé et vérifié par digest ; toute variation de version ou de forme est inconnue et
+échoue fermée.
+Les attentes sont bornées et croissantes. Une sortie stdout, une autre classe d'erreur, un marqueur,
+un signal, un reçu présent ou l'épuisement du budget échoue immédiatement et conserve un diagnostic
+borné ; aucune erreur Prisma, Supabase, modèle ou processus enfant n'est rejouée. Cette reprise
+pré-exécution ne constitue ni un second appel modèle ni un retry métier. Les workflows schéma et
+évaluation sémantique utilisent le même wrapper et ses tests exécutables ; le workflow conserve le
+même SHA, le même run, le même `run_attempt` et le même digest de phase. À épuisement, une preuve
+JSON à forme fermée atteste la classe Railway, le nombre de tentatives et
+`childStarted=false` ; elle est validée avant archivage.
+
+Le superviseur unique possède toute terminaison du groupe de processus Railway, qui contient le
+lanceur et l'opérateur. Sur interruption, il envoie le signal une seule fois au groupe. Sur toute
+sortie directe de Railway — succès, erreur ou signal — il vérifie que le groupe est vide et termine
+les descendants résiduels. Il attend une grâce bornée de deux secondes, escalade le groupe entier
+en `SIGKILL` si un descendant résiste, puis attend encore deux secondes la disparition du groupe
+avant de rendre le statut initial. Tout signal spontané est rendu comme `128 + signal` ou comme
+l'erreur technique 70 si son identité n'est pas reconnue : jamais comme le statut 1 rejouable. Une
+quiescence non prouvée devient également une erreur technique 70, jamais une sortie faussement
+acquittée.
+
 L'inventaire relu immédiatement après `resolve` devient la base append-only de l'opération. Une
 réapplication doit préserver byte-for-byte toutes ses lignes et ajouter exactement une tentative
 cible terminale `applied_steps_count=1`, strictement postérieure à tout le préfixe. Une
@@ -1665,7 +1696,9 @@ intents et reçus preflight/certified.
 - [ ] `M2A3-12` : Supabase staging exact-SHA sous déployeur/runtime non-superuser restitue la preuve
       non-PII complète, flags publics OFF ; après un premier train `S0→S3`, un SHA successeur aux
       migrations byte-identiques obtient un manifest `finalized-recertification` sans commande
-      Prisma mutante ni changement d'inventaire ;
+      Prisma mutante ni changement d'inventaire ; une panne du control plane Railway antérieure au
+      processus enfant ne peut être rejouée que par le wrapper borné ci-dessus, sans masquer ni
+      réexécuter une panne de l'opérateur ;
 - [ ] `M2A3-13` : sur iPhone et Android physiques, parler pendant Bob coupe localement le son avant
       le réseau et capture le nouveau tour ; tant que cette preuve manque, M2-A reste non certified.
 - [ ] `M2A3-14` : le planner reçoit le contexte écran, la mission, le fuseau confirmé, l'historique

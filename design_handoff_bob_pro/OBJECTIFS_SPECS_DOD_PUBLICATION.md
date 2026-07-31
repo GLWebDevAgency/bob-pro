@@ -291,6 +291,12 @@ l'intégration.
 - [ ] Chaque one-shot Railway démarré est réconcilié avant toute activation irréversible :
       annulation/arrêt corrélé au SHA, puis deux observations sans instance active, que le scanner
       ait réussi, refusé ou été interrompu.
+- [ ] Une panne du control plane Railway antérieure au démarrage d'un processus enfant n'est
+      rejouée que sur une enveloppe stderr complète exacte, sans stdout et sans marqueur atomique
+      `child-started`, avec un budget et des attentes bornés ; toute erreur de l'enfant, tout
+      signal, tout début de reçu ou toute classe inconnue échoue sans retry et laisse une preuve
+      bornée validée avant archivage ; toute sortie Railway, réussie ou non, prouve la disparition
+      de son groupe de processus avant de rendre son statut.
 - [ ] Cold onboarding, données réelles, devis, facture, document et Bob Live passent sur appareils.
 - [ ] CGU/confidentialité/support, crash reporting, alertes et runbook sont actifs.
 - [ ] Zéro P0/P1 ouvert ; les limites restantes sont écrites et non présentées comme fonctionnelles.

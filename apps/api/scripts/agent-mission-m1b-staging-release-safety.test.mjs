@@ -142,6 +142,10 @@ test('le certificat M2-A-3 est manuel, exact-SHA, staging et sans clé OpenAI Gi
     m2a3SemanticWorkflow,
     /railway run --project "\$RAILWAY_PROJECT_ID"[\s\S]*?--service "\$RAILWAY_API_SERVICE_ID"[\s\S]*?--environment "\$RAILWAY_ENVIRONMENT_ID" --no-local/u,
   );
+  assert.match(
+    m2a3SemanticWorkflow,
+    /BOB_RAILWAY_RETRY_GUARD_PATH="\$GITHUB_WORKSPACE\/\.release-evidence\/agent-mission-m2a3"[\s\S]*?apps\/api\/scripts\/run-m2a3-railway-with-bounded-fetch-retry\.sh[\s\S]*?railway run --project/u,
+  );
   assert.doesNotMatch(m2a3SemanticWorkflow, /secrets\.OPENAI_API_KEY/u);
   assert.doesNotMatch(m2a3SemanticWorkflow, /railway\s+link/u);
   assert.match(m2a3SemanticEvidenceValidator, /receipt\.corpusVersion !== 4/u);
@@ -157,6 +161,14 @@ test('le certificat M2-A-3 est manuel, exact-SHA, staging et sans clé OpenAI Gi
   assert.match(m2a3SemanticEvidenceValidator, /receipt\.generateCount === 0/u);
   assert.match(m2a3SemanticEvidenceValidator, /entry\.status !== 'mission_frame'/u);
   assert.match(m2a3SemanticWorkflow, /id: live_eval[\s\S]*?continue-on-error: true/u);
+  assert.match(
+    m2a3SemanticWorkflow,
+    /id: transport_guard[\s\S]*?if: \$\{\{ always\(\) \}\}[\s\S]*?validate-m2a3-railway-transport-evidence\.mjs[\s\S]*?>> "\$GITHUB_OUTPUT"/u,
+  );
+  assert.match(
+    m2a3SemanticWorkflow,
+    /Preserve bounded Railway transport evidence[\s\S]*?steps\.transport_guard\.outputs\.present == 'true'[\s\S]*?agent-mission-m2a3-railway-transport-\$\{\{ github\.sha \}\}-\$\{\{ github\.run_attempt \}\}[\s\S]*?path: \.release-evidence\/agent-mission-m2a3\/railway-control-plane-fetch-failure\.json[\s\S]*?if-no-files-found: error/u,
+  );
   assert.match(m2a3SemanticWorkflow, /id: receipt_guard[\s\S]*?if: \$\{\{ always\(\) \}\}/u);
   assert.match(
     m2a3SemanticWorkflow,
@@ -164,7 +176,7 @@ test('le certificat M2-A-3 est manuel, exact-SHA, staging et sans clé OpenAI Gi
   );
   assert.match(
     m2a3SemanticWorkflow,
-    /LIVE_OUTCOME: \$\{\{ steps\.live_eval\.outcome \}\}[\s\S]*?RECEIPT_GUARD_OUTCOME: \$\{\{ steps\.receipt_guard\.outcome \}\}[\s\S]*?test "\$\{LIVE_OUTCOME:-missing\}" = "success"[\s\S]*?test "\$\{RECEIPT_GUARD_OUTCOME:-missing\}" = "success"/u,
+    /LIVE_OUTCOME: \$\{\{ steps\.live_eval\.outcome \}\}[\s\S]*?TRANSPORT_GUARD_OUTCOME: \$\{\{ steps\.transport_guard\.outcome \}\}[\s\S]*?RECEIPT_GUARD_OUTCOME: \$\{\{ steps\.receipt_guard\.outcome \}\}[\s\S]*?test "\$\{LIVE_OUTCOME:-missing\}" = "success"[\s\S]*?test "\$\{TRANSPORT_GUARD_OUTCOME:-missing\}" = "success"[\s\S]*?test "\$\{RECEIPT_GUARD_OUTCOME:-missing\}" = "success"/u,
   );
   assert.match(m2a3SemanticWorkflow, /validate-agent-mission-m2a3-semantic-evidence\.mjs/u);
   assert.match(
@@ -362,9 +374,7 @@ test('activation, override et cleanup sont bornés par ownership et preuve HMAC 
 });
 
 test('le cleanup récupère le résidu borné avant de retirer override et variables', () => {
-  const recovery = workflow.indexOf(
-    'Recover the exact technical residue before disabling M1-B',
-  );
+  const recovery = workflow.indexOf('Recover the exact technical residue before disabling M1-B');
   const removeOverride = workflow.indexOf(
     'Remove only the user override durably owned by this run',
   );

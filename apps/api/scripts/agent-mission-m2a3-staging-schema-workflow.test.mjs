@@ -5,14 +5,15 @@ import test from 'node:test';
 
 const repositoryRoot = resolve(import.meta.dirname, '../../..');
 const workflow = readFileSync(
-  resolve(
-    repositoryRoot,
-    '.github/workflows/agent-mission-m2a3-staging-schema.yml',
-  ),
+  resolve(repositoryRoot, '.github/workflows/agent-mission-m2a3-staging-schema.yml'),
   'utf8',
 );
 const railwayWorkflow = readFileSync(
   resolve(repositoryRoot, '.github/workflows/railway-api.yml'),
+  'utf8',
+);
+const boundedRailwayWrapper = readFileSync(
+  resolve(repositoryRoot, 'apps/api/scripts/run-m2a3-railway-with-bounded-fetch-retry.sh'),
   'utf8',
 );
 
@@ -37,10 +38,7 @@ test('le workflow est uniquement manuel/réutilisable, read-only et sérialisé 
   assert.match(workflow, /^permissions:\n[ ]{2}contents: read$/mu);
   assert.match(workflow, /^on:\n[ ]{2}workflow_dispatch:/mu);
   assert.match(workflow, /^[ ]{2}workflow_call:/mu);
-  assert.doesNotMatch(
-    workflow,
-    /^\s+(?:push|pull_request|schedule):/mu,
-  );
+  assert.doesNotMatch(workflow, /^\s+(?:push|pull_request|schedule):/mu);
   assert.match(workflow, /group: railway-api-staging/u);
   assert.match(workflow, /cancel-in-progress: false/u);
   assert.equal(occurrences(workflow, /^\s{4}environment: staging$/gmu), 4);
@@ -58,28 +56,16 @@ test('le graphe est strictement expand, validate, cutover puis finalize', () => 
   assert.doesNotMatch(expand, /^\s{4}needs:/mu);
   assert.match(validate, /^\s{4}needs: expand$/mu);
   assert.match(cutover, /^\s{4}needs: validate$/mu);
-  assert.match(
-    finalize,
-    /^\s{4}needs:\n\s{6}- expand\n\s{6}- validate\n\s{6}- cutover$/mu,
-  );
+  assert.match(finalize, /^\s{4}needs:\n\s{6}- expand\n\s{6}- validate\n\s{6}- cutover$/mu);
 });
 
 test('chaque job cible le checkout et le SHA exact avant toute opération', () => {
-  assert.equal(
-    occurrences(workflow, /ref: \$\{\{ github\.sha \}\}/gu),
-    4,
-  );
-  assert.equal(
-    occurrences(workflow, /persist-credentials: false/gu),
-    4,
-  );
+  assert.equal(occurrences(workflow, /ref: \$\{\{ github\.sha \}\}/gu), 4);
+  assert.equal(occurrences(workflow, /persist-credentials: false/gu), 4);
   for (const name of ['expand', 'validate', 'cutover', 'finalize']) {
     const source = workflowJob(name);
     assert.match(source, /EXPECTED_SHA: \$\{\{ inputs\.expected_sha \}\}/u);
-    assert.match(
-      source,
-      /test "\$\(git rev-parse HEAD\)" = "\$EXPECTED_SHA"/u,
-    );
+    assert.match(source, /test "\$\(git rev-parse HEAD\)" = "\$EXPECTED_SHA"/u);
     assert.match(source, /test "\$EXPECTED_SHA" = "\$GITHUB_SHA"/u);
   }
   assert.match(workflowJob('expand'), /\^\[a-f0-9\]\{40\}\$/u);
@@ -88,20 +74,26 @@ test('chaque job cible le checkout et le SHA exact avant toute opération', () =
 test('les trois phases Railway sont épinglées et chaînent un digest hex64 exact', () => {
   assert.equal(occurrences(workflow, /railway run --project/gu), 3);
   assert.equal(
+    occurrences(workflow, /apps\/api\/scripts\/run-m2a3-railway-with-bounded-fetch-retry\.sh/gu),
+    3,
+  );
+  assert.equal(occurrences(workflow, /BOB_RAILWAY_RETRY_GUARD_PATH=/gu), 3);
+  assert.equal(
+    occurrences(
+      workflow,
+      /node apps\/api\/scripts\/validate-m2a3-railway-transport-evidence\.mjs/gu,
+    ),
+    3,
+  );
+  assert.equal(
     occurrences(
       workflow,
       /railway run --project "\$RAILWAY_PROJECT_ID"[\s\S]*?--service "\$RAILWAY_API_SERVICE_ID"[\s\S]*?--environment "\$RAILWAY_ENVIRONMENT_ID" --no-local --/gu,
     ),
     3,
   );
-  assert.equal(
-    occurrences(workflow, /BOB_M2A3_PREVIOUS_RECEIPT_DIGEST=/gu),
-    3,
-  );
-  assert.match(
-    workflowJob('expand'),
-    /BOB_M2A3_PREVIOUS_RECEIPT_DIGEST=none/u,
-  );
+  assert.equal(occurrences(workflow, /BOB_M2A3_PREVIOUS_RECEIPT_DIGEST=/gu), 3);
+  assert.match(workflowJob('expand'), /BOB_M2A3_PREVIOUS_RECEIPT_DIGEST=none/u);
   assert.match(
     workflowJob('validate'),
     /PREVIOUS_RECEIPT_DIGEST: \$\{\{ needs\.expand\.outputs\.receipt_digest \}\}/u,
@@ -117,6 +109,33 @@ test('les trois phases Railway sont épinglées et chaînent un digest hex64 exa
   );
 });
 
+test('le retry Railway prouve atomiquement que le processus enfant n’a pas démarré', () => {
+  assert.match(boundedRailwayWrapper, /child-started-\$attempt/u);
+  assert.match(boundedRailwayWrapper, /fs\.openSync\(markerPath, "wx", 0o600\)/u);
+  assert.match(boundedRailwayWrapper, /detached: true/u);
+  assert.match(boundedRailwayWrapper, /process\.kill\(-processGroupId, initialSignal\)/u);
+  assert.match(boundedRailwayWrapper, /GRACE_MILLISECONDS = 2_000/u);
+  assert.match(boundedRailwayWrapper, /KILL_MILLISECONDS = 2_000/u);
+  assert.match(boundedRailwayWrapper, /process\.kill\(-processGroupId, "SIGKILL"\)/u);
+  assert.match(boundedRailwayWrapper, /waitForGroupExit/u);
+  assert.match(boundedRailwayWrapper, /osConstants\.signals\[signal\]/u);
+  assert.match(
+    boundedRailwayWrapper,
+    /const exitStatus = signal === null \? code \?\? 1 : statusForSignal\(signal\)/u,
+  );
+  assert.match(boundedRailwayWrapper, /terminateGroup\(exitStatus, "SIGTERM"\)/u);
+  assert.doesNotMatch(boundedRailwayWrapper, /process\.exitCode = code \?\? 1/u);
+  assert.doesNotMatch(boundedRailwayWrapper, /child\?\.kill\(signal\)/u);
+  assert.match(boundedRailwayWrapper, /\(\(runner_status == 70\)\)/u);
+  assert.match(boundedRailwayWrapper, /\[\[ -e "\$child_started_marker" \]\]/u);
+  assert.match(boundedRailwayWrapper, /cmp -s "\$normalized_path"/u);
+  assert.doesNotMatch(boundedRailwayWrapper, /\bgrep\b/u);
+  assert.match(boundedRailwayWrapper, /trap 'forward_signal_and_exit INT 130' INT/u);
+  assert.match(boundedRailwayWrapper, /trap 'forward_signal_and_exit TERM 143' TERM/u);
+  assert.match(boundedRailwayWrapper, /readonly maximum_attempts=3/u);
+  assert.match(boundedRailwayWrapper, /"childStarted":false/u);
+});
+
 test('les preuves sont nommées par SHA, phase et tentative puis téléchargées exactement', () => {
   for (const phase of ['expand', 'validate', 'cutover']) {
     const source = workflowJob(phase);
@@ -127,7 +146,14 @@ test('les preuves sont nommées par SHA, phase et tentative puis téléchargées
         'u',
       ),
     );
-    assert.match(source, /if: \$\{\{ always\(\) \}\}/u);
+    assert.match(
+      source,
+      /id: transport_guard[\s\S]*?if: \$\{\{ always\(\) \}\}[\s\S]*?validate-m2a3-railway-transport-evidence\.mjs/u,
+    );
+    assert.match(
+      source,
+      /if: \$\{\{ always\(\) && steps\.transport_guard\.outcome == 'success' \}\}[\s\S]*?actions\/upload-artifact/u,
+    );
     assert.match(source, /if-no-files-found: error/u);
     assert.match(source, /include-hidden-files: true/u);
     assert.match(source, /retention-days: 90/u);
@@ -137,23 +163,14 @@ test('les preuves sont nommées par SHA, phase et tentative puis téléchargées
   for (const phase of ['expand', 'validate', 'cutover']) {
     assert.match(
       finalize,
-      new RegExp(
-        `name: \\$\\{\\{ needs\\.${phase}\\.outputs\\.artifact_name \\}\\}`,
-        'u',
-      ),
+      new RegExp(`name: \\$\\{\\{ needs\\.${phase}\\.outputs\\.artifact_name \\}\\}`, 'u'),
     );
   }
   assert.equal(
-    occurrences(
-      finalize,
-      /actions\/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093/gu,
-    ),
+    occurrences(finalize, /actions\/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093/gu),
     3,
   );
-  assert.match(
-    finalize,
-    /echo "manifest_digest=\$digest" >> "\$GITHUB_OUTPUT"/u,
-  );
+  assert.match(finalize, /echo "manifest_digest=\$digest" >> "\$GITHUB_OUTPUT"/u);
 });
 
 test('le workflow schema-only interdit déploiement, activation et contournement migration', () => {
@@ -176,10 +193,7 @@ test('le workflow schema-only interdit déploiement, activation et contournement
 
 test('Railway route le purpose schema-only au SHA exact sans ouvrir la release', () => {
   assert.match(railwayWorkflow, /- m2a3-staging-schema/u);
-  assert.match(
-    railwayWorkflow,
-    /expected_sha:[\s\S]*?required: false[\s\S]*?default: ''/u,
-  );
+  assert.match(railwayWorkflow, /expected_sha:[\s\S]*?required: false[\s\S]*?default: ''/u);
   assert.match(
     railwayWorkflow,
     /route-m2a3-staging-schema:[\s\S]*?test "\$RELEASE_ENVIRONMENT" = staging[\s\S]*?test "\$RELEASE_SERVICE" = "\$EXPECTED_SERVICE"[\s\S]*?\^\[a-f0-9\]\{40\}\$[\s\S]*?EXPECTED_SHA[\s\S]*?GITHUB_SHA/u,
@@ -192,8 +206,5 @@ test('Railway route le purpose schema-only au SHA exact sans ouvrir la release',
     railwayWorkflow,
     /m2a3_schema_manifest_digest:[\s\S]*?jobs\.certify-agent-mission-m2a3-staging-schema\.outputs\.manifest_digest/u,
   );
-  assert.match(
-    railwayWorkflow,
-    /release-api:[\s\S]*?inputs\.purpose == 'release'/u,
-  );
+  assert.match(railwayWorkflow, /release-api:[\s\S]*?inputs\.purpose == 'release'/u);
 });

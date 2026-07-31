@@ -106,17 +106,37 @@ jobs:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
           mkdir -p "$GITHUB_WORKSPACE/.release-evidence/agent-mission-m2a3"
-          railway run --project "$RAILWAY_PROJECT_ID" \
-            --service "$RAILWAY_API_SERVICE_ID" \
-            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-            env \
-              BOB_LIVE_PROVIDER=openai \
-              RUN_BOB_LIVE_M2A3_MODEL_EVAL=true \
-              BOB_LIVE_M2A3_EVAL_RELEASE_SHA="$GITHUB_SHA" \
-              BOB_LIVE_M2A3_EVAL_EVIDENCE_PATH="$GITHUB_WORKSPACE/.release-evidence/agent-mission-m2a3/semantic-model.json" \
-              pnpm --filter @bob/api exec vitest run \
-                src/voice/realtime/evaluation/m2a3-semantic-model-evaluation.live.test.ts \
-                --reporter=verbose
+          BOB_RAILWAY_RETRY_GUARD_PATH="$GITHUB_WORKSPACE/.release-evidence/agent-mission-m2a3" \
+            apps/api/scripts/run-m2a3-railway-with-bounded-fetch-retry.sh \
+            railway run --project "$RAILWAY_PROJECT_ID" \
+              --service "$RAILWAY_API_SERVICE_ID" \
+              --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+              env \
+                BOB_LIVE_PROVIDER=openai \
+                RUN_BOB_LIVE_M2A3_MODEL_EVAL=true \
+                BOB_LIVE_M2A3_EVAL_RELEASE_SHA="$GITHUB_SHA" \
+                BOB_LIVE_M2A3_EVAL_EVIDENCE_PATH="$GITHUB_WORKSPACE/.release-evidence/agent-mission-m2a3/semantic-model.json" \
+                pnpm --filter @bob/api exec vitest run \
+                  src/voice/realtime/evaluation/m2a3-semantic-model-evaluation.live.test.ts \
+                  --reporter=verbose
+      - name: Validate any bounded Railway transport evidence
+        id: transport_guard
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          evidence="$GITHUB_WORKSPACE/.release-evidence/agent-mission-m2a3/railway-control-plane-fetch-failure.json"
+          node apps/api/scripts/validate-m2a3-railway-transport-evidence.mjs \
+            "$evidence" \
+            >> "$GITHUB_OUTPUT"
+      - name: Preserve bounded Railway transport evidence
+        if: ${{ always() && steps.transport_guard.outcome == 'success' && steps.transport_guard.outputs.present == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: agent-mission-m2a3-railway-transport-${{ github.sha }}-${{ github.run_attempt }}
+          path: .release-evidence/agent-mission-m2a3/railway-control-plane-fetch-failure.json
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 90
       - name: Guard the receipt schema and confidentiality before any upload
         id: receipt_guard
         if: ${{ always() }}
@@ -137,8 +157,10 @@ jobs:
         if: ${{ always() }}
         env:
           LIVE_OUTCOME: ${{ steps.live_eval.outcome }}
+          TRANSPORT_GUARD_OUTCOME: ${{ steps.transport_guard.outcome }}
           RECEIPT_GUARD_OUTCOME: ${{ steps.receipt_guard.outcome }}
         run: |
           set -euo pipefail
           test "${LIVE_OUTCOME:-missing}" = "success"
+          test "${TRANSPORT_GUARD_OUTCOME:-missing}" = "success"
           test "${RECEIPT_GUARD_OUTCOME:-missing}" = "success"

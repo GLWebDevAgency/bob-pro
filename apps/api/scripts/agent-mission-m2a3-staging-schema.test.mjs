@@ -1178,6 +1178,8 @@ test('une phase récupère exactement les interruptions Prisma avant et après C
         );
         assert.equal(reconstructed.evidence.operation, 'recertify');
         if (scenario.recoveryAction === 'rolled_back') {
+          const nextObservedEpochMilliseconds =
+            Date.parse(reconstructed.evidence.observedAt) + 60_000;
           let previousReceiptDigest = reconstructed.digest;
           previousReceiptDigest = writeEvidencePair({
             directory: reconstructedDirectory,
@@ -1185,7 +1187,7 @@ test('une phase récupère exactement les interruptions Prisma avant et après C
             operation: 'apply',
             previousReceiptDigest,
             runAttempt: 2,
-            observedMinute: 10,
+            observedEpochMilliseconds: nextObservedEpochMilliseconds,
             rolledBackCount: 2,
             stateFingerprints: expectedSchemaFingerprints(),
           });
@@ -1195,7 +1197,7 @@ test('une phase récupère exactement les interruptions Prisma avant et après C
             operation: 'apply',
             previousReceiptDigest,
             runAttempt: 3,
-            observedMinute: 20,
+            observedEpochMilliseconds: nextObservedEpochMilliseconds + 60_000,
             rolledBackCount: 2,
             stateFingerprints: expectedSchemaFingerprints(),
           });
@@ -1702,6 +1704,7 @@ function writeEvidencePair({
   previousReceiptDigest,
   runAttempt,
   observedMinute,
+  observedEpochMilliseconds,
   rolledBackCount = 0,
   stateFingerprints = null,
   finalizedTrain = false,
@@ -1774,9 +1777,13 @@ function writeEvidencePair({
       writerMatrix: writerMatrix(stateName),
       preflightReceiptDigest,
       observedAt:
-        `2026-07-31T12:${String(observedMinute).padStart(2, '0')}:${
-          status === 'preflight' ? '00' : '30'
-        }.000Z`,
+        observedEpochMilliseconds === undefined
+          ? `2026-07-31T12:${String(observedMinute).padStart(2, '0')}:${
+              status === 'preflight' ? '00' : '30'
+            }.000Z`
+          : new Date(
+              observedEpochMilliseconds + (status === 'preflight' ? 0 : 30_000),
+            ).toISOString(),
     });
   const preflight = build('preflight', beforeState, null);
   const preflightBytes = `${JSON.stringify(preflight, null, 2)}\n`;

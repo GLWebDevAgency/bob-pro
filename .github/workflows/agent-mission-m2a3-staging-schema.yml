@@ -125,20 +125,22 @@ jobs:
         run: |
           set -euo pipefail
           receipt="$(
-            railway run --project "$RAILWAY_PROJECT_ID" \
-              --service "$RAILWAY_API_SERVICE_ID" \
-              --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-              env CABINET_RELEASE_ENV=staging \
-                BOB_M2A3_EXPECTED_SHA="$EXPECTED_SHA" \
-                BOB_M2A3_PREVIOUS_RECEIPT_DIGEST=none \
-                BOB_M1B_STAGING_SUPABASE_PROJECT_REF="$BOB_M1B_STAGING_SUPABASE_PROJECT_REF" \
-                BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER="$BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER" \
-                BOB_M1B_STAGING_DATABASE_OID="$BOB_M1B_STAGING_DATABASE_OID" \
-                BOB_M1B_STAGING_DATABASE_NAME="$BOB_M1B_STAGING_DATABASE_NAME" \
-                GITHUB_SHA="$EXPECTED_SHA" \
-                GITHUB_RUN_ID="$GITHUB_RUN_ID" \
-                GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
-                node apps/api/scripts/agent-mission-m2a3-staging-schema.mjs phase expand
+            BOB_RAILWAY_RETRY_GUARD_PATH="$GITHUB_WORKSPACE/.release-evidence/agent-mission-m2a3-schema" \
+              apps/api/scripts/run-m2a3-railway-with-bounded-fetch-retry.sh \
+              railway run --project "$RAILWAY_PROJECT_ID" \
+                --service "$RAILWAY_API_SERVICE_ID" \
+                --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+                env CABINET_RELEASE_ENV=staging \
+                  BOB_M2A3_EXPECTED_SHA="$EXPECTED_SHA" \
+                  BOB_M2A3_PREVIOUS_RECEIPT_DIGEST=none \
+                  BOB_M1B_STAGING_SUPABASE_PROJECT_REF="$BOB_M1B_STAGING_SUPABASE_PROJECT_REF" \
+                  BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER="$BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER" \
+                  BOB_M1B_STAGING_DATABASE_OID="$BOB_M1B_STAGING_DATABASE_OID" \
+                  BOB_M1B_STAGING_DATABASE_NAME="$BOB_M1B_STAGING_DATABASE_NAME" \
+                  GITHUB_SHA="$EXPECTED_SHA" \
+                  GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+                  GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+                  node apps/api/scripts/agent-mission-m2a3-staging-schema.mjs phase expand
           )"
           RECEIPT="$receipt" node <<'NODE' >> "$GITHUB_OUTPUT"
           const prefix = 'agent-mission-m2a3-staging-schema:ok:expand:';
@@ -151,8 +153,16 @@ jobs:
           }
           process.stdout.write(`receipt_digest=${digest}\n`);
           NODE
-      - name: Preserve expand evidence
+      - name: Validate any bounded Railway transport evidence
+        id: transport_guard
         if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          node apps/api/scripts/validate-m2a3-railway-transport-evidence.mjs \
+            "$GITHUB_WORKSPACE/.release-evidence/agent-mission-m2a3-schema/railway-control-plane-fetch-failure.json" \
+            >> "$GITHUB_OUTPUT"
+      - name: Preserve expand evidence
+        if: ${{ always() && steps.transport_guard.outcome == 'success' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ steps.metadata.outputs.artifact_name }}
@@ -220,20 +230,22 @@ jobs:
           set -euo pipefail
           [[ "$PREVIOUS_RECEIPT_DIGEST" =~ ^[a-f0-9]{64}$ ]]
           receipt="$(
-            railway run --project "$RAILWAY_PROJECT_ID" \
-              --service "$RAILWAY_API_SERVICE_ID" \
-              --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-              env CABINET_RELEASE_ENV=staging \
-                BOB_M2A3_EXPECTED_SHA="$EXPECTED_SHA" \
-                BOB_M2A3_PREVIOUS_RECEIPT_DIGEST="$PREVIOUS_RECEIPT_DIGEST" \
-                BOB_M1B_STAGING_SUPABASE_PROJECT_REF="$BOB_M1B_STAGING_SUPABASE_PROJECT_REF" \
-                BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER="$BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER" \
-                BOB_M1B_STAGING_DATABASE_OID="$BOB_M1B_STAGING_DATABASE_OID" \
-                BOB_M1B_STAGING_DATABASE_NAME="$BOB_M1B_STAGING_DATABASE_NAME" \
-                GITHUB_SHA="$EXPECTED_SHA" \
-                GITHUB_RUN_ID="$GITHUB_RUN_ID" \
-                GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
-                node apps/api/scripts/agent-mission-m2a3-staging-schema.mjs phase validate
+            BOB_RAILWAY_RETRY_GUARD_PATH="$GITHUB_WORKSPACE/.release-evidence/agent-mission-m2a3-schema" \
+              apps/api/scripts/run-m2a3-railway-with-bounded-fetch-retry.sh \
+              railway run --project "$RAILWAY_PROJECT_ID" \
+                --service "$RAILWAY_API_SERVICE_ID" \
+                --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+                env CABINET_RELEASE_ENV=staging \
+                  BOB_M2A3_EXPECTED_SHA="$EXPECTED_SHA" \
+                  BOB_M2A3_PREVIOUS_RECEIPT_DIGEST="$PREVIOUS_RECEIPT_DIGEST" \
+                  BOB_M1B_STAGING_SUPABASE_PROJECT_REF="$BOB_M1B_STAGING_SUPABASE_PROJECT_REF" \
+                  BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER="$BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER" \
+                  BOB_M1B_STAGING_DATABASE_OID="$BOB_M1B_STAGING_DATABASE_OID" \
+                  BOB_M1B_STAGING_DATABASE_NAME="$BOB_M1B_STAGING_DATABASE_NAME" \
+                  GITHUB_SHA="$EXPECTED_SHA" \
+                  GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+                  GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+                  node apps/api/scripts/agent-mission-m2a3-staging-schema.mjs phase validate
           )"
           RECEIPT="$receipt" node <<'NODE' >> "$GITHUB_OUTPUT"
           const prefix = 'agent-mission-m2a3-staging-schema:ok:validate:';
@@ -246,8 +258,16 @@ jobs:
           }
           process.stdout.write(`receipt_digest=${digest}\n`);
           NODE
-      - name: Preserve validate evidence
+      - name: Validate any bounded Railway transport evidence
+        id: transport_guard
         if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          node apps/api/scripts/validate-m2a3-railway-transport-evidence.mjs \
+            "$GITHUB_WORKSPACE/.release-evidence/agent-mission-m2a3-schema/railway-control-plane-fetch-failure.json" \
+            >> "$GITHUB_OUTPUT"
+      - name: Preserve validate evidence
+        if: ${{ always() && steps.transport_guard.outcome == 'success' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ steps.metadata.outputs.artifact_name }}
@@ -315,20 +335,22 @@ jobs:
           set -euo pipefail
           [[ "$PREVIOUS_RECEIPT_DIGEST" =~ ^[a-f0-9]{64}$ ]]
           receipt="$(
-            railway run --project "$RAILWAY_PROJECT_ID" \
-              --service "$RAILWAY_API_SERVICE_ID" \
-              --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-              env CABINET_RELEASE_ENV=staging \
-                BOB_M2A3_EXPECTED_SHA="$EXPECTED_SHA" \
-                BOB_M2A3_PREVIOUS_RECEIPT_DIGEST="$PREVIOUS_RECEIPT_DIGEST" \
-                BOB_M1B_STAGING_SUPABASE_PROJECT_REF="$BOB_M1B_STAGING_SUPABASE_PROJECT_REF" \
-                BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER="$BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER" \
-                BOB_M1B_STAGING_DATABASE_OID="$BOB_M1B_STAGING_DATABASE_OID" \
-                BOB_M1B_STAGING_DATABASE_NAME="$BOB_M1B_STAGING_DATABASE_NAME" \
-                GITHUB_SHA="$EXPECTED_SHA" \
-                GITHUB_RUN_ID="$GITHUB_RUN_ID" \
-                GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
-                node apps/api/scripts/agent-mission-m2a3-staging-schema.mjs phase cutover
+            BOB_RAILWAY_RETRY_GUARD_PATH="$GITHUB_WORKSPACE/.release-evidence/agent-mission-m2a3-schema" \
+              apps/api/scripts/run-m2a3-railway-with-bounded-fetch-retry.sh \
+              railway run --project "$RAILWAY_PROJECT_ID" \
+                --service "$RAILWAY_API_SERVICE_ID" \
+                --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+                env CABINET_RELEASE_ENV=staging \
+                  BOB_M2A3_EXPECTED_SHA="$EXPECTED_SHA" \
+                  BOB_M2A3_PREVIOUS_RECEIPT_DIGEST="$PREVIOUS_RECEIPT_DIGEST" \
+                  BOB_M1B_STAGING_SUPABASE_PROJECT_REF="$BOB_M1B_STAGING_SUPABASE_PROJECT_REF" \
+                  BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER="$BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER" \
+                  BOB_M1B_STAGING_DATABASE_OID="$BOB_M1B_STAGING_DATABASE_OID" \
+                  BOB_M1B_STAGING_DATABASE_NAME="$BOB_M1B_STAGING_DATABASE_NAME" \
+                  GITHUB_SHA="$EXPECTED_SHA" \
+                  GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+                  GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+                  node apps/api/scripts/agent-mission-m2a3-staging-schema.mjs phase cutover
           )"
           RECEIPT="$receipt" node <<'NODE' >> "$GITHUB_OUTPUT"
           const prefix = 'agent-mission-m2a3-staging-schema:ok:cutover:';
@@ -341,8 +363,16 @@ jobs:
           }
           process.stdout.write(`receipt_digest=${digest}\n`);
           NODE
-      - name: Preserve cutover evidence
+      - name: Validate any bounded Railway transport evidence
+        id: transport_guard
         if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          node apps/api/scripts/validate-m2a3-railway-transport-evidence.mjs \
+            "$GITHUB_WORKSPACE/.release-evidence/agent-mission-m2a3-schema/railway-control-plane-fetch-failure.json" \
+            >> "$GITHUB_OUTPUT"
+      - name: Preserve cutover evidence
+        if: ${{ always() && steps.transport_guard.outcome == 'success' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ steps.metadata.outputs.artifact_name }}
