@@ -40,8 +40,13 @@ function resolveEvidencePath(rawPath: string): string {
 describeLive('M2-A-3 — évaluation opt-in du vrai modèle runtime', () => {
   it('exécute le corpus sans retry avec exactement le planner et l’adapter OpenAI runtime', async () => {
     evidencePath = resolveEvidencePath(requiredEnvironment('BOB_LIVE_M2A3_EVAL_EVIDENCE_PATH'));
-    let failureStage: 'configuration' | 'provider_request' | 'semantic_result' | null =
-      'configuration';
+    let failureStage:
+      | 'configuration'
+      | 'local_contract'
+      | 'provider_request'
+      | 'multiple_failures'
+      | 'semantic_result'
+      | null = 'configuration';
     let requestedModel: string | null = null;
     let requestedModelSource: 'versioned_default' | 'environment_override' | null = null;
     let releaseSha: string | null = null;
@@ -100,9 +105,15 @@ describeLive('M2-A-3 — évaluation opt-in du vrai modèle runtime', () => {
       } finally {
         globalThis.fetch = originalFetch;
       }
-      failureStage = results.some((result) => result.status === 'provider_error')
-        ? 'provider_request'
-        : 'semantic_result';
+      const hasSchemaFailure = results.some((result) => result.status === 'schema_error');
+      const hasProviderFailure = results.some((result) => result.status === 'provider_error');
+      failureStage = hasSchemaFailure && hasProviderFailure
+        ? 'multiple_failures'
+        : hasSchemaFailure
+          ? 'local_contract'
+          : hasProviderFailure
+            ? 'provider_request'
+            : 'semantic_result';
       const allCasesPassed = results.every((result) => result.passed);
       if (
         instrumented.snapshot().completeAttempts !== M2A3_SEMANTIC_MODEL_CORPUS.length ||

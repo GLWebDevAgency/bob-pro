@@ -41,7 +41,15 @@ const ISSUE_CODES = new Set([
   'returned_model_invalid_identifier',
   'returned_model_incompatible',
   'planner_model_mismatch',
+  'strict_schema_invalid',
   'provider_request_failed',
+  'provider_invalid_function_parameters',
+  'provider_authentication_failed',
+  'provider_permission_denied',
+  'provider_rate_limited',
+  'provider_quota_exceeded',
+  'provider_unavailable',
+  'provider_http_error',
   'planner_processing_failed',
   'local_evaluation_failed',
 ]);
@@ -50,6 +58,7 @@ const STATUSES = new Set([
   'global_plan',
   'out_of_scope',
   'rejected',
+  'schema_error',
   'provider_error',
   'planner_error',
   'local_error',
@@ -61,6 +70,7 @@ const REJECTION_REASONS = new Set([
   'invalid_mission_frame',
   'invalid_global_plan',
   'invalid_model',
+  'strict_schema_invalid',
   'provider_error',
   'planner_error',
   'local_error',
@@ -78,6 +88,15 @@ const RETURNED_MODEL_STATUSES = new Set([
   'missing',
   'invalid_identifier',
   'incompatible',
+]);
+const PROVIDER_DETAIL_CODES = new Set([
+  'provider_invalid_function_parameters',
+  'provider_authentication_failed',
+  'provider_permission_denied',
+  'provider_rate_limited',
+  'provider_quota_exceeded',
+  'provider_unavailable',
+  'provider_http_error',
 ]);
 const MODEL_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/u;
 const EXACT_SHA = /^[a-f0-9]{40}$/u;
@@ -164,7 +183,14 @@ export function validateAgentMissionM2A3SemanticEvidence(receipt, expectedSha) {
     receipt.providerRequestCount < 0 ||
     receipt.providerRequestCount > 12 ||
     (receipt.outcome !== 'passed' && receipt.outcome !== 'failed') ||
-    !['configuration', 'provider_request', 'semantic_result', null].includes(
+    ![
+      'configuration',
+      'local_contract',
+      'provider_request',
+      'multiple_failures',
+      'semantic_result',
+      null,
+    ].includes(
       receipt.failureStage,
     ) ||
     !Array.isArray(receipt.returnedModels) ||
@@ -237,6 +263,8 @@ export function validateAgentMissionM2A3SemanticEvidence(receipt, expectedSha) {
     const rejectionIsConsistent =
       entry.status === 'rejected'
         ? SEMANTIC_REJECTION_REASONS.has(entry.rejectionReason)
+        : entry.status === 'schema_error'
+          ? entry.rejectionReason === 'strict_schema_invalid'
         : entry.status === 'provider_error'
           ? entry.rejectionReason === 'provider_error'
           : entry.status === 'planner_error'
@@ -245,7 +273,11 @@ export function validateAgentMissionM2A3SemanticEvidence(receipt, expectedSha) {
               ? entry.rejectionReason === 'local_error'
               : entry.rejectionReason === null;
     const executionIsConsistent =
-      entry.status === 'provider_error'
+      entry.status === 'schema_error'
+        ? entry.completeAttempts === 1 &&
+          entry.completeResolved === 0 &&
+          entry.issueCodes.includes('strict_schema_invalid')
+        : entry.status === 'provider_error'
         ? entry.completeAttempts === 1 &&
           entry.completeResolved === 0 &&
           entry.issueCodes.includes('provider_request_failed')
@@ -270,11 +302,22 @@ export function validateAgentMissionM2A3SemanticEvidence(receipt, expectedSha) {
               : entry.returnedModelStatus === 'invalid_identifier'
                 ? entry.issueCodes.includes('returned_model_invalid_identifier')
                 : entry.issueCodes.includes('returned_model_incompatible'));
+    const providerDetailCodeCount = entry.issueCodes.filter((code) =>
+      PROVIDER_DETAIL_CODES.has(code)).length;
+    const failureIssueIsConsistent =
+      entry.issueCodes.includes('strict_schema_invalid') === (entry.status === 'schema_error') &&
+      entry.issueCodes.includes('provider_request_failed') === (entry.status === 'provider_error') &&
+      entry.issueCodes.includes('planner_processing_failed') === (entry.status === 'planner_error') &&
+      entry.issueCodes.includes('local_evaluation_failed') === (entry.status === 'local_error');
     if (
       modelIsPublic !== (typeof entry.returnedModel === 'string') ||
       !rejectionIsConsistent ||
       !executionIsConsistent ||
       !returnedModelIsConsistent ||
+      !failureIssueIsConsistent ||
+      (entry.status === 'provider_error'
+        ? providerDetailCodeCount > 1
+        : providerDetailCodeCount !== 0) ||
       (modelIsPublic &&
         (!MODEL_IDENTIFIER.test(entry.returnedModel) ||
           !requestedModelIsValid ||
@@ -305,10 +348,13 @@ export function validateAgentMissionM2A3SemanticEvidence(receipt, expectedSha) {
     receipt.cases.every(
       (entry) => entry.returnedModelStatus === 'exact' || entry.returnedModelStatus === 'snapshot',
     );
+  const schemaErrorCount = receipt.cases.filter(
+    (entry) => entry.status === 'schema_error',
+  ).length;
   if (
     completeAttempts !== receipt.completionCount ||
     generateAttempts !== receipt.generateCount ||
-    receipt.providerRequestCount !== receipt.completionCount ||
+    receipt.providerRequestCount !== receipt.completionCount - schemaErrorCount ||
     JSON.stringify(uniqueObservedModels) !== JSON.stringify(receipt.returnedModels) ||
     receipt.modelCompatible !== computedModelCompatibility
   ) {
@@ -331,9 +377,19 @@ export function validateAgentMissionM2A3SemanticEvidence(receipt, expectedSha) {
     fail('failed outcome requires a failure stage');
   }
   const hasProviderFailure = receipt.cases.some((entry) => entry.status === 'provider_error');
+  const hasSchemaFailure = schemaErrorCount > 0;
   if (
     (receipt.failureStage === 'provider_request' && !hasProviderFailure) ||
-    (receipt.failureStage === 'semantic_result' && hasProviderFailure) ||
+    (receipt.failureStage === 'local_contract' &&
+      (!hasSchemaFailure ||
+        hasProviderFailure ||
+        receipt.providerRequestCount >= receipt.completionCount)) ||
+    (receipt.failureStage === 'provider_request' && hasSchemaFailure) ||
+    (receipt.failureStage === 'multiple_failures' &&
+      (!hasSchemaFailure ||
+        !hasProviderFailure ||
+        receipt.providerRequestCount >= receipt.completionCount)) ||
+    (receipt.failureStage === 'semantic_result' && (hasProviderFailure || hasSchemaFailure)) ||
     (receipt.failureStage === 'configuration' &&
       (receipt.cases.length !== 0 ||
         receipt.completionCount !== 0 ||

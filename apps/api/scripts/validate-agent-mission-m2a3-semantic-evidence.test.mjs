@@ -99,6 +99,109 @@ test('distingue une panne fournisseur d’une panne sémantique locale', () => {
   );
 });
 
+test('accepte un préflight strict local tenté sans requête fournisseur', () => {
+  const receipt = passingReceipt();
+  receipt.outcome = 'failed';
+  receipt.failureStage = 'local_contract';
+  receipt.modelCompatible = false;
+  receipt.providerRequestCount = 8;
+  receipt.returnedModels = ['gpt-test-2026-07-31'];
+  receipt.cases[0].passed = false;
+  receipt.cases[0].status = 'schema_error';
+  receipt.cases[0].issueCodes = [
+    'strict_schema_invalid',
+    'completion_resolution_count_mismatch',
+    'returned_model_missing',
+  ];
+  receipt.cases[0].rejectionReason = 'strict_schema_invalid';
+  receipt.cases[0].completeResolved = 0;
+  receipt.cases[0].returnedModelStatus = 'missing';
+  receipt.cases[0].returnedModel = null;
+
+  assert.deepEqual(validateAgentMissionM2A3SemanticEvidence(receipt, SHA), {
+    outcome: 'failed',
+  });
+});
+
+test('exige un étage explicite quand contrat local et fournisseur échouent ensemble', () => {
+  const receipt = passingReceipt();
+  receipt.outcome = 'failed';
+  receipt.failureStage = 'multiple_failures';
+  receipt.modelCompatible = false;
+  receipt.providerRequestCount = 8;
+  for (const [index, status] of ['schema_error', 'provider_error'].entries()) {
+    const entry = receipt.cases[index];
+    entry.passed = false;
+    entry.status = status;
+    entry.issueCodes = status === 'schema_error'
+      ? [
+        'strict_schema_invalid',
+        'completion_resolution_count_mismatch',
+        'returned_model_missing',
+      ]
+      : [
+        'provider_request_failed',
+        'provider_unavailable',
+        'completion_resolution_count_mismatch',
+        'returned_model_missing',
+      ];
+    entry.rejectionReason =
+      status === 'schema_error' ? 'strict_schema_invalid' : 'provider_error';
+    entry.completeResolved = 0;
+    entry.returnedModelStatus = 'missing';
+    entry.returnedModel = null;
+  }
+
+  assert.deepEqual(validateAgentMissionM2A3SemanticEvidence(receipt, SHA), {
+    outcome: 'failed',
+  });
+  const contradictory = structuredClone(receipt);
+  contradictory.failureStage = 'local_contract';
+  assert.throws(
+    () => validateAgentMissionM2A3SemanticEvidence(contradictory, SHA),
+    /failure stage contradicts/u,
+  );
+});
+
+test('refuse les catégories fournisseur hors provider_error ou en doublon', () => {
+  const contradictory = passingReceipt();
+  contradictory.outcome = 'failed';
+  contradictory.failureStage = 'semantic_result';
+  contradictory.cases[0].passed = false;
+  contradictory.cases[0].status = 'rejected';
+  contradictory.cases[0].issueCodes = [
+    'mission_frame_required',
+    'provider_authentication_failed',
+  ];
+  contradictory.cases[0].rejectionReason = 'invalid_mission_frame';
+  assert.throws(
+    () => validateAgentMissionM2A3SemanticEvidence(contradictory, SHA),
+    /result is inconsistent/u,
+  );
+
+  const duplicated = passingReceipt();
+  duplicated.outcome = 'failed';
+  duplicated.failureStage = 'provider_request';
+  duplicated.modelCompatible = false;
+  duplicated.cases[0].passed = false;
+  duplicated.cases[0].status = 'provider_error';
+  duplicated.cases[0].issueCodes = [
+    'provider_request_failed',
+    'provider_authentication_failed',
+    'provider_rate_limited',
+    'completion_resolution_count_mismatch',
+    'returned_model_missing',
+  ];
+  duplicated.cases[0].rejectionReason = 'provider_error';
+  duplicated.cases[0].completeResolved = 0;
+  duplicated.cases[0].returnedModelStatus = 'missing';
+  duplicated.cases[0].returnedModel = null;
+  assert.throws(
+    () => validateAgentMissionM2A3SemanticEvidence(duplicated, SHA),
+    /result is inconsistent/u,
+  );
+});
+
 test('refuse une valeur de modèle brute invalide dans un reçu rouge', () => {
   const receipt = passingReceipt();
   receipt.outcome = 'failed';

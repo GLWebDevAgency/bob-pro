@@ -202,8 +202,10 @@ describe('planRealtimeSemanticTurn — monobrain strict', () => {
       (tool) => tool.name === 'mettre_a_jour_mission_devis_v2',
     );
     const serialized = JSON.stringify(missionTool);
-    expect(serialized).toContain('"scope":{"const":"answer_required_fact"}');
-    expect(serialized).toContain('"field":{"const":"unit_price"}');
+    expect(serialized).toContain(
+      '"scope":{"type":"string","const":"answer_required_fact"}',
+    );
+    expect(serialized).toContain('"field":{"type":"string","const":"unit_price"}');
     expect(serialized).not.toContain('confirm_current_proposal');
   });
 

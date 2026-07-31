@@ -9,6 +9,11 @@ import {
   type RealtimeSemanticPlannerInput,
   type RealtimeSemanticPlannerResult,
 } from '@bob/ai';
+import {
+  isLlmStrictSchemaError,
+  llmProviderFailureCategory,
+  type LlmProviderFailureCategory,
+} from '../../../ai/provider-failure';
 
 const NOW = '2026-07-31T08:00:00.000Z';
 const SCREEN_DIGEST = 'd'.repeat(64);
@@ -58,11 +63,16 @@ export interface M2A3SemanticModelEvaluationCaseResult {
   readonly id: M2A3SemanticModelEvaluationCase['id'];
   readonly passed: boolean;
   readonly status:
-    RealtimeSemanticPlannerResult['status'] | 'provider_error' | 'planner_error' | 'local_error';
+    RealtimeSemanticPlannerResult['status']
+    | 'schema_error'
+    | 'provider_error'
+    | 'planner_error'
+    | 'local_error';
   readonly durationMs: number;
   readonly issues: readonly M2A3SemanticIssueCode[];
   readonly rejectionReason:
     | Extract<RealtimeSemanticPlannerResult, { readonly status: 'rejected' }>['reason']
+    | 'strict_schema_invalid'
     | 'provider_error'
     | 'planner_error'
     | 'local_error'
@@ -102,7 +112,15 @@ export type M2A3SemanticIssueCode =
   | 'returned_model_invalid_identifier'
   | 'returned_model_incompatible'
   | 'planner_model_mismatch'
+  | 'strict_schema_invalid'
   | 'provider_request_failed'
+  | 'provider_invalid_function_parameters'
+  | 'provider_authentication_failed'
+  | 'provider_permission_denied'
+  | 'provider_rate_limited'
+  | 'provider_quota_exceeded'
+  | 'provider_unavailable'
+  | 'provider_http_error'
   | 'planner_processing_failed'
   | 'local_evaluation_failed';
 
@@ -749,19 +767,46 @@ function snapshotDelta(
   });
 }
 
+function providerFailureIssueCode(
+  category: LlmProviderFailureCategory,
+): Extract<M2A3SemanticIssueCode, `provider_${string}`> {
+  switch (category) {
+    case 'invalid_function_parameters':
+      return 'provider_invalid_function_parameters';
+    case 'authentication_failed':
+      return 'provider_authentication_failed';
+    case 'permission_denied':
+      return 'provider_permission_denied';
+    case 'rate_limited':
+      return 'provider_rate_limited';
+    case 'quota_exceeded':
+      return 'provider_quota_exceeded';
+    case 'provider_unavailable':
+      return 'provider_unavailable';
+    case 'provider_http_error':
+      return 'provider_http_error';
+  }
+}
+
 function failedM2A3SemanticModelCase(
   evaluationCase: M2A3SemanticModelEvaluationCase,
   durationMs: number,
   execution: ReturnType<typeof snapshotDelta>,
-  exceptionKind: 'provider_error' | 'planner_error' | 'local_error',
+  exceptionKind: 'schema_error' | 'provider_error' | 'planner_error' | 'local_error',
+  providerFailureCategory: LlmProviderFailureCategory | null,
 ): M2A3SemanticModelEvaluationCaseResult {
   const issues: M2A3SemanticIssueCode[] = [
-    exceptionKind === 'provider_error'
-      ? 'provider_request_failed'
-      : exceptionKind === 'planner_error'
-        ? 'planner_processing_failed'
-        : 'local_evaluation_failed',
+    exceptionKind === 'schema_error'
+      ? 'strict_schema_invalid'
+      : exceptionKind === 'provider_error'
+        ? 'provider_request_failed'
+        : exceptionKind === 'planner_error'
+          ? 'planner_processing_failed'
+          : 'local_evaluation_failed',
   ];
+  if (exceptionKind === 'provider_error' && providerFailureCategory !== null) {
+    issues.push(providerFailureIssueCode(providerFailureCategory));
+  }
   if (execution.completeAttempts !== 1) {
     issues.push('completion_attempt_count_mismatch');
   }
@@ -776,7 +821,7 @@ function failedM2A3SemanticModelCase(
     status: exceptionKind,
     durationMs,
     issues: Object.freeze([...new Set(issues)]),
-    rejectionReason: exceptionKind,
+    rejectionReason: exceptionKind === 'schema_error' ? 'strict_schema_invalid' : exceptionKind,
     returnedModel: execution.observedModel,
     completeAttempts: execution.completeAttempts,
     completeResolved: execution.completeResolved,
@@ -794,11 +839,12 @@ export async function runM2A3SemanticModelCase(
   let result: RealtimeSemanticPlannerResult;
   try {
     result = await planRealtimeSemanticTurn(instrumented.llm, evaluationCase.input);
-  } catch {
+  } catch (error) {
     const durationMs = Math.max(0, Math.round(performance.now() - startedAt));
     const execution = snapshotDelta(before, instrumented.snapshot());
-    const exceptionKind =
-      execution.completeAttempts === 1
+    const exceptionKind = isLlmStrictSchemaError(error)
+      ? 'schema_error'
+      : execution.completeAttempts === 1
         ? execution.completeResolved === 0
           ? 'provider_error'
           : execution.completeResolved === 1
@@ -810,6 +856,7 @@ export async function runM2A3SemanticModelCase(
       durationMs,
       execution,
       exceptionKind,
+      exceptionKind === 'provider_error' ? llmProviderFailureCategory(error) : null,
     );
   }
   const execution = snapshotDelta(before, instrumented.snapshot());
@@ -826,6 +873,7 @@ export async function runM2A3SemanticModelCase(
       Math.max(0, Math.round(performance.now() - startedAt)),
       execution,
       'local_error',
+      null,
     );
   }
 }
@@ -880,7 +928,13 @@ export function publicM2A3SemanticEvidence(input: {
   readonly completionCount: number;
   readonly generateCount: number;
   readonly providerRequestCount: number;
-  readonly failureStage: 'configuration' | 'provider_request' | 'semantic_result' | null;
+  readonly failureStage:
+    | 'configuration'
+    | 'local_contract'
+    | 'provider_request'
+    | 'multiple_failures'
+    | 'semantic_result'
+    | null;
 }): Readonly<Record<string, unknown>> {
   const requestedModel =
     input.requestedModel !== null && isSafeM2A3ModelIdentifier(input.requestedModel)

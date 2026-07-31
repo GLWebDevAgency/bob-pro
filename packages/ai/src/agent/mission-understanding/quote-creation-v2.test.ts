@@ -32,6 +32,21 @@ function expectStrictObjectSchemas(value: unknown): void {
   if (typeof value !== 'object' || value === null) return;
   const record = value as Record<string, unknown>;
   expect(record).not.toHaveProperty('oneOf');
+  if (Object.hasOwn(record, 'const')) {
+    const constant = record['const'];
+    const expectedType = constant === null
+      ? 'null'
+      : Array.isArray(constant)
+        ? 'array'
+      : Number.isInteger(constant)
+        ? 'integer'
+        : typeof constant;
+    const declaredType = record['type'];
+    expect(
+      Array.isArray(declaredType) ? declaredType : [declaredType],
+      `Le const ${JSON.stringify(constant)} doit déclarer son type JSON Schema.`,
+    ).toContain(expectedType);
+  }
   if (record['type'] === 'object') {
     expect(record['additionalProperties']).toBe(false);
     const properties = record['properties'];
@@ -333,12 +348,23 @@ describe('parseQuoteCreationSemanticToolCallV2', () => {
     ] as const) {
       expectStrictObjectSchemas(quoteCreationUnderstandingToolV2ForPhase(phase).parameters);
     }
-    expectStrictObjectSchemas(
-      quoteCreationUnderstandingToolV2ForPhase(
-        'awaiting_line_details',
-        'housing_older_than_2y',
-      ).parameters,
-    );
+    for (const requiredFact of [
+      'service_reference',
+      'category',
+      'quantity',
+      'unit',
+      'unit_price',
+      'vat_rate',
+      'housing_older_than_2y',
+      'energy_renovation',
+    ] as const) {
+      expectStrictObjectSchemas(
+        quoteCreationUnderstandingToolV2ForPhase(
+          'awaiting_line_details',
+          requiredFact,
+        ).parameters,
+      );
+    }
   });
 
   it('limite le choix catalogue à la sélection ou à la correction explicite du service', () => {

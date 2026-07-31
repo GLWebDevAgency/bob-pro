@@ -13,6 +13,10 @@ import {
   type M2A3SemanticModelEvaluationCase,
   type M2A3SemanticModelEvaluationCaseResult,
 } from './m2a3-semantic-model-evaluation';
+import {
+  LlmProviderHttpError,
+  LlmStrictSchemaError,
+} from '../../../ai/provider-failure';
 
 function operationFor(caseId: string): Record<string, unknown> {
   if (
@@ -438,6 +442,74 @@ describe('M2-A-3 — corpus modèle sémantique déterministe', () => {
       ]),
     );
     expect(JSON.stringify(result)).not.toContain('secret fournisseur');
+  });
+
+  it('publie seulement la catégorie fermée d’une erreur HTTP fournisseur', async () => {
+    const base: LlmPort = {
+      id: 'openai-eval-invalid-schema',
+      complete: vi.fn(async () => {
+        throw new LlmProviderHttpError(400, 'invalid_function_parameters');
+      }),
+      generate: vi.fn(async () => ({ text: '', model: 'gpt-test' })),
+      health: vi.fn(async () => ({ healthy: true })),
+    };
+    const result = await runM2A3SemanticModelCase(
+      instrumentM2A3Llm(base),
+      M2A3_SEMANTIC_MODEL_CORPUS[0],
+      'gpt-test',
+    );
+
+    expect(result.status).toBe('provider_error');
+    expect(result.issues).toContain('provider_invalid_function_parameters');
+    expect(JSON.stringify(result)).not.toContain('HTTP 400');
+    expect(JSON.stringify(result)).not.toContain('tools[');
+  });
+
+  it('conserve et fait valider un reçu rouge borné si le contrat strict échoue avant le réseau', async () => {
+    const fetchMock = vi.fn();
+    const base: LlmPort = {
+      id: 'openai-eval-local-schema',
+      complete: vi.fn(async () => {
+        throw new LlmStrictSchemaError();
+      }),
+      generate: vi.fn(async () => ({ text: '', model: 'gpt-test' })),
+      health: vi.fn(async () => ({ healthy: true })),
+    };
+    const result = await runM2A3SemanticModelCase(
+      instrumentM2A3Llm(base),
+      M2A3_SEMANTIC_MODEL_CORPUS[0],
+      'gpt-test',
+    );
+    const releaseSha = '1'.repeat(40);
+    const evidence = publicM2A3SemanticEvidence({
+      releaseSha,
+      requestedModel: 'gpt-test',
+      requestedModelSource: 'versioned_default',
+      completionCount: 1,
+      generateCount: 0,
+      providerRequestCount: fetchMock.mock.calls.length,
+      failureStage: 'local_contract',
+      results: [result],
+    });
+
+    expect(result).toMatchObject({
+      passed: false,
+      status: 'schema_error',
+      rejectionReason: 'strict_schema_invalid',
+      completeAttempts: 1,
+      completeResolved: 0,
+    });
+    expect(result.issues).toEqual(expect.arrayContaining([
+      'strict_schema_invalid',
+      'completion_resolution_count_mismatch',
+      'returned_model_missing',
+    ]));
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(validateAgentMissionM2A3SemanticEvidence(evidence, releaseSha)).toEqual({
+      outcome: 'failed',
+    });
+    expect(JSON.stringify(evidence)).not.toContain('transcript');
+    expect(JSON.stringify(evidence)).not.toContain('arguments');
   });
 
   it('distingue une panne locale après réponse d’une panne réseau fournisseur', async () => {

@@ -393,7 +393,13 @@ opt-in qui :
   réponse réseau perdue ;
 - utilise le mode strict uniquement sur les outils et fournisseurs qui le supportent, sans
   désactiver la capacité multi-actions des gestes globaux ni envoyer un champ OpenAI à un adapter
-  tiers ;
+  tiers. Le contrat strict OpenAI est prévalidé localement selon son sous-ensemble documenté et
+  ses budgets avant tout appel réseau. Une dérive locale reste fail-closed mais produit un reçu
+  rouge borné `local_contract/strict_schema_invalid` avec `providerRequestCount=0` pour cette
+  tentative ; si le corpus rencontre à la fois une dérive locale et une panne fournisseur, le
+  reçu porte l'étage fermé `multiple_failures` au lieu de masquer une cause. Une réponse HTTP
+  fournisseur est réduite à une catégorie fermée, sans corps, message, paramètre ni identifiant
+  fournisseur ;
 - écrit seulement un rapport non-PII : version du corpus, SHA, provider/modèle, résultat et latence
   de chaque identifiant de cas, compteurs par cas, codes d'issue fermés et statut borné du modèle
   observé. Seule la source `versioned_default` peut certifier ; `environment_override` reste un

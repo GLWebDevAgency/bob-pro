@@ -15,6 +15,11 @@ import {
   resolveOpenAiChatModel,
 } from './providers';
 import { LOCAL_WHISPER_AUDIT_CONTRACT } from './local-whisper-audit-contract';
+import {
+  classifyLlmProviderHttpFailure,
+  LlmProviderHttpError,
+  LlmStrictSchemaError,
+} from './provider-failure';
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -200,6 +205,271 @@ describe('OpenAI chat model runtime contract', () => {
     );
     expect(proxiedOpenAiBody).not.toHaveProperty('parallel_tool_calls');
     expect(proxiedOpenAiBody.tools?.[0]?.function).not.toHaveProperty('strict');
+  });
+
+  it('refuse localement un schéma OpenAI strict invalide avant tout appel réseau', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const adapter = new OpenAiCompatibleLlmAdapter({
+      id: 'openai-strict-test',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'openai-key',
+      model: 'gpt-test',
+      nativeOpenAiToolControls: true,
+    });
+
+    await expect(
+      adapter.complete([{ role: 'user', content: 'Bonjour' }], {
+        tools: [{
+          name: 'mission_invalide',
+          description: 'Test',
+          schemaAdherence: 'strict',
+          parameters: {
+            type: 'object',
+            properties: {
+              kind: { const: 'sans_type' },
+            },
+            required: ['kind'],
+            additionalProperties: false,
+          },
+        }],
+      }),
+    ).rejects.toBeInstanceOf(LlmStrictSchemaError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'root anyOf',
+      {
+        anyOf: [
+          {
+            type: 'object',
+            properties: { value: { type: 'string' } },
+            required: ['value'],
+            additionalProperties: false,
+          },
+        ],
+      },
+    ],
+    ['root non objet', { type: 'string' }],
+    [
+      'composition allOf',
+      {
+        type: 'object',
+        properties: {
+          value: {
+            allOf: [{ type: 'string' }],
+          },
+        },
+        required: ['value'],
+        additionalProperties: false,
+      },
+    ],
+    [
+      'condition if/then',
+      {
+        type: 'object',
+        properties: {
+          value: {
+            type: 'string',
+            if: { const: 'a', type: 'string' },
+            then: { const: 'b', type: 'string' },
+          },
+        },
+        required: ['value'],
+        additionalProperties: false,
+      },
+    ],
+    [
+      'profondeur 11',
+      Array.from({ length: 11 }).reduce<Record<string, unknown>>(
+        (nested) => ({
+          type: 'object',
+          properties: { value: nested },
+          required: ['value'],
+          additionalProperties: false,
+        }),
+        { type: 'string' },
+      ),
+    ],
+  ])('refuse le schéma strict OpenAI hors contrat : %s', async (_label, parameters) => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const adapter = new OpenAiCompatibleLlmAdapter({
+      id: 'openai-strict-contract-test',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'openai-key',
+      model: 'gpt-test',
+      nativeOpenAiToolControls: true,
+    });
+
+    await expect(adapter.complete([{ role: 'user', content: 'Bonjour' }], {
+      tools: [{
+        name: 'mission_invalide',
+        description: 'Test',
+        schemaAdherence: 'strict',
+        parameters,
+      }],
+    })).rejects.toBeInstanceOf(LlmStrictSchemaError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('accepte un const entier déclaré number dans un schéma strict valide', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      model: 'gpt-test',
+      choices: [{ message: { content: null, tool_calls: [] } }],
+    }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const adapter = new OpenAiCompatibleLlmAdapter({
+      id: 'openai-strict-number-test',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'openai-key',
+      model: 'gpt-test',
+      nativeOpenAiToolControls: true,
+    });
+
+    await expect(adapter.complete([{ role: 'user', content: 'Bonjour' }], {
+      tools: [{
+        name: 'mission_valide',
+        description: 'Test',
+        schemaAdherence: 'strict',
+        parameters: {
+          type: 'object',
+          properties: { version: { type: 'number', const: 1 } },
+          required: ['version'],
+          additionalProperties: false,
+        },
+      }],
+    })).resolves.toBeDefined();
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [401, 'invalid_function_parameters', 'authentication_failed'],
+    [403, 'invalid_function_parameters', 'permission_denied'],
+    [429, 'invalid_function_parameters', 'rate_limited'],
+    [500, 'invalid_function_parameters', 'provider_unavailable'],
+    [400, 'invalid_function_parameters', 'invalid_function_parameters'],
+  ] as const)(
+    'priorise le statut HTTP %s sur le code fournisseur incohérent',
+    (status, code, expected) => {
+      expect(classifyLlmProviderHttpFailure(status, { error: { code } })).toBe(expected);
+    },
+  );
+
+  it('borne une erreur HTTP OpenAI à une catégorie fermée sans conserver le corps', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({
+        error: {
+          type: 'invalid_request_error',
+          code: 'invalid_function_parameters',
+          param: 'tools[0].function.parameters',
+          message: 'transcript et secret fournisseur à ne jamais propager',
+        },
+      }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      })),
+    );
+    const adapter = new OpenAiCompatibleLlmAdapter({
+      id: 'openai-error-test',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'openai-key',
+      model: 'gpt-test',
+    });
+
+    const failure = await adapter.complete([{ role: 'user', content: 'Bonjour' }])
+      .then(() => null, (error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(LlmProviderHttpError);
+    expect(failure).toMatchObject({
+      status: 400,
+      category: 'invalid_function_parameters',
+      message: 'llm_provider_invalid_function_parameters',
+    });
+    expect(JSON.stringify(failure)).not.toContain('transcript');
+    expect(JSON.stringify(failure)).not.toContain('secret fournisseur');
+    expect(JSON.stringify(failure)).not.toContain('tools[0]');
+  });
+
+  it('ignore un corps d’erreur fournisseur surdimensionné et conserve seulement le statut', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({
+        error: {
+          code: 'invalid_function_parameters',
+          message: `donnée-non-publiable-${'x'.repeat(20 * 1024)}`,
+        },
+      }), { status: 400 })),
+    );
+    const adapter = new OpenAiCompatibleLlmAdapter({
+      id: 'openai-oversized-error-test',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'openai-key',
+      model: 'gpt-test',
+    });
+
+    const failure = await adapter.complete([{ role: 'user', content: 'Bonjour' }])
+      .then(() => null, (error: unknown) => error);
+
+    expect(failure).toMatchObject({
+      status: 400,
+      category: 'provider_http_error',
+      message: 'llm_provider_http_error',
+    });
+    expect(JSON.stringify(failure)).not.toContain('donnée-non-publiable');
+  });
+
+  it('conserve la catégorie bornée sur un adapter OpenAI-compatible tiers', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({
+        error: { message: 'secret tiers non publiable' },
+      }), { status: 503 })),
+    );
+    const adapter = new OpenAiCompatibleLlmAdapter({
+      id: 'proxy-compatible-test',
+      baseUrl: 'https://proxy-compatible.test/v1',
+      apiKey: 'proxy-key',
+      model: 'proxy-model',
+    });
+
+    const failure = await adapter.complete([{ role: 'user', content: 'Bonjour' }])
+      .then(() => null, (error: unknown) => error);
+
+    expect(failure).toMatchObject({
+      status: 503,
+      category: 'provider_unavailable',
+      message: 'llm_provider_unavailable',
+    });
+    expect(JSON.stringify(failure)).not.toContain('secret tiers');
+  });
+
+  it('ne requalifie pas une annulation appelant pendant la lecture d’une erreur HTTP', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({
+        error: { message: 'corps non pertinent' },
+      }), { status: 503 })),
+    );
+    const adapter = new OpenAiCompatibleLlmAdapter({
+      id: 'openai-abort-test',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'openai-key',
+      model: 'gpt-test',
+    });
+    const controller = new AbortController();
+    const reason = new Error('caller_cancelled');
+    controller.abort(reason);
+
+    const failure = await adapter.complete([{ role: 'user', content: 'Bonjour' }], {
+      signal: controller.signal,
+    }).then(() => null, (error: unknown) => error);
+
+    expect(failure).toBe(reason);
+    expect(failure).not.toBeInstanceOf(LlmProviderHttpError);
   });
 
   it('préserve le strict mission et le multi-actions global dans le wire OpenAI réel', async () => {

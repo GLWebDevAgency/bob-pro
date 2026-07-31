@@ -19,8 +19,22 @@ import {
   parseLocalWhisperAuditBaseUrl,
   type LocalWhisperAuditEndpoints,
 } from './local-whisper-audit-contract';
+import {
+  classifyLlmProviderHttpFailure,
+  LlmProviderHttpError,
+  LlmStrictSchemaError,
+} from './provider-failure';
 
 const TIMEOUT_MS = 12_000;
+const MAX_LLM_JSON_BYTES = 2 * 1024 * 1024;
+const MAX_LLM_ERROR_JSON_BYTES = 16 * 1024;
+const MAX_STRICT_SCHEMA_DEPTH = 10;
+const MAX_STRICT_SCHEMA_NODES = 20_000;
+const MAX_STRICT_SCHEMA_PROPERTIES = 5_000;
+const MAX_STRICT_SCHEMA_STRING_CHARS = 120_000;
+const MAX_STRICT_SCHEMA_ENUM_VALUES = 1_000;
+const LARGE_STRICT_SCHEMA_ENUM_SIZE = 250;
+const MAX_LARGE_STRICT_SCHEMA_ENUM_STRING_CHARS = 15_000;
 const VOICE_PROVIDER_TIMEOUT_MS = 20_000;
 const MAX_STT_JSON_BYTES = 64 * 1024;
 const MAX_STT_AUDIO_BYTES = 4 * 1024 * 1024;
@@ -248,6 +262,253 @@ async function readBoundedJson(
   }
 }
 
+function constantJsonType(value: unknown): string | null {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  if (typeof value === 'number') return Number.isInteger(value) ? 'integer' : 'number';
+  if (typeof value === 'string' || typeof value === 'boolean' || typeof value === 'object') {
+    return typeof value;
+  }
+  return null;
+}
+
+const UNSUPPORTED_OPENAI_STRICT_KEYWORDS = Object.freeze([
+  'oneOf',
+  'allOf',
+  'not',
+  'dependentRequired',
+  'dependentSchemas',
+  'if',
+  'then',
+  'else',
+] as const);
+const STRICT_JSON_TYPES = new Set([
+  'object',
+  'array',
+  'string',
+  'number',
+  'integer',
+  'boolean',
+  'null',
+]);
+
+interface StrictSchemaValidationState {
+  nodes: number;
+  properties: number;
+  stringChars: number;
+  enumValues: number;
+  readonly ancestors: WeakSet<object>;
+}
+
+function isSchemaRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function declaredSchemaTypes(value: unknown): readonly string[] | null {
+  const values = typeof value === 'string' ? [value] : Array.isArray(value) ? value : null;
+  if (
+    values === null
+    || values.length === 0
+    || values.some((entry) => typeof entry !== 'string' || !STRICT_JSON_TYPES.has(entry))
+    || new Set(values).size !== values.length
+  ) {
+    return null;
+  }
+  return values as string[];
+}
+
+function schemaTypeAcceptsConstant(types: readonly string[], value: unknown): boolean {
+  const actual = constantJsonType(value);
+  return (
+    actual !== null
+    && (
+      types.includes(actual)
+      || (actual === 'integer' && types.includes('number'))
+    )
+  );
+}
+
+function addStrictSchemaStringBudget(
+  state: StrictSchemaValidationState,
+  values: readonly string[],
+): boolean {
+  state.stringChars += values.reduce((total, value) => total + value.length, 0);
+  return state.stringChars <= MAX_STRICT_SCHEMA_STRING_CHARS;
+}
+
+function isOpenAiStrictSchemaCompatible(
+  value: unknown,
+  state: StrictSchemaValidationState,
+  depth = 1,
+  isRoot = true,
+): boolean {
+  if (
+    depth > MAX_STRICT_SCHEMA_DEPTH
+    || state.nodes >= MAX_STRICT_SCHEMA_NODES
+    || !isSchemaRecord(value)
+    || state.ancestors.has(value)
+  ) {
+    return false;
+  }
+  state.ancestors.add(value);
+  state.nodes += 1;
+  try {
+    const schema = value;
+    if (UNSUPPORTED_OPENAI_STRICT_KEYWORDS.some((keyword) => Object.hasOwn(schema, keyword))) {
+      return false;
+    }
+    if (isRoot && (schema['type'] !== 'object' || Object.hasOwn(schema, 'anyOf'))) {
+      return false;
+    }
+
+    const hasType = Object.hasOwn(schema, 'type');
+    const types = hasType ? declaredSchemaTypes(schema['type']) : null;
+    if (hasType && types === null) return false;
+    if (
+      !hasType
+      && !Object.hasOwn(schema, 'anyOf')
+      && !Object.hasOwn(schema, '$ref')
+    ) {
+      return false;
+    }
+
+    if (Object.hasOwn(schema, 'const')) {
+      if (types === null || !schemaTypeAcceptsConstant(types, schema['const'])) return false;
+      if (
+        typeof schema['const'] === 'string'
+        && !addStrictSchemaStringBudget(state, [schema['const']])
+      ) {
+        return false;
+      }
+    }
+
+    if (Object.hasOwn(schema, 'enum')) {
+      const values = schema['enum'];
+      if (
+        types === null
+        || !Array.isArray(values)
+        || values.length === 0
+        || values.some((entry) => !schemaTypeAcceptsConstant(types, entry))
+      ) {
+        return false;
+      }
+      state.enumValues += values.length;
+      if (state.enumValues > MAX_STRICT_SCHEMA_ENUM_VALUES) return false;
+      const stringValues = values.filter((entry): entry is string => typeof entry === 'string');
+      const stringChars = stringValues.reduce((total, entry) => total + entry.length, 0);
+      if (
+        (values.length > LARGE_STRICT_SCHEMA_ENUM_SIZE
+          && stringChars > MAX_LARGE_STRICT_SCHEMA_ENUM_STRING_CHARS)
+        || !addStrictSchemaStringBudget(state, stringValues)
+      ) {
+        return false;
+      }
+    }
+
+    if (types?.includes('object')) {
+      const properties = schema['properties'];
+      const required = schema['required'];
+      if (
+        !isSchemaRecord(properties)
+        || schema['additionalProperties'] !== false
+        || !Array.isArray(required)
+        || required.some((key) => typeof key !== 'string')
+      ) {
+        return false;
+      }
+      const propertyKeys = Object.keys(properties);
+      const requiredKeys = required as string[];
+      state.properties += propertyKeys.length;
+      if (
+        state.properties > MAX_STRICT_SCHEMA_PROPERTIES
+        || !addStrictSchemaStringBudget(state, propertyKeys)
+        || new Set(requiredKeys).size !== requiredKeys.length
+        || propertyKeys.length !== requiredKeys.length
+        || propertyKeys.some((key) => !requiredKeys.includes(key))
+        || !Object.values(properties).every((property) =>
+          isOpenAiStrictSchemaCompatible(property, state, depth + 1, false))
+      ) {
+        return false;
+      }
+    } else if (
+      Object.hasOwn(schema, 'properties')
+      || Object.hasOwn(schema, 'required')
+      || Object.hasOwn(schema, 'additionalProperties')
+    ) {
+      return false;
+    }
+
+    if (types?.includes('array')) {
+      if (
+        !Object.hasOwn(schema, 'items')
+        || !isOpenAiStrictSchemaCompatible(schema['items'], state, depth + 1, false)
+      ) {
+        return false;
+      }
+    } else if (Object.hasOwn(schema, 'items')) {
+      return false;
+    }
+
+    if (Object.hasOwn(schema, 'anyOf')) {
+      const branches = schema['anyOf'];
+      if (
+        !Array.isArray(branches)
+        || branches.length === 0
+        || !branches.every((branch) =>
+          isOpenAiStrictSchemaCompatible(branch, state, depth, false))
+      ) {
+        return false;
+      }
+    }
+
+    if (Object.hasOwn(schema, '$ref')) {
+      if (
+        typeof schema['$ref'] !== 'string'
+        || !addStrictSchemaStringBudget(state, [schema['$ref']])
+      ) {
+        return false;
+      }
+    }
+
+    for (const definitionsKey of ['$defs', 'definitions'] as const) {
+      if (!Object.hasOwn(schema, definitionsKey)) continue;
+      const definitions = schema[definitionsKey];
+      if (
+        !isSchemaRecord(definitions)
+        || !addStrictSchemaStringBudget(state, Object.keys(definitions))
+        || !Object.values(definitions).every((definition) =>
+          isOpenAiStrictSchemaCompatible(definition, state, depth, false))
+      ) {
+        return false;
+      }
+    }
+    return true;
+  } finally {
+    state.ancestors.delete(value);
+  }
+}
+
+async function readBoundedLlmJson(
+  response: Response,
+  maxBytes: number,
+  signal: AbortSignal,
+): Promise<unknown> {
+  let bytes: Uint8Array;
+  try {
+    bytes = await readBoundedBytes(response, maxBytes, signal);
+  } catch (error) {
+    if (error instanceof Error && error.message === 'voice_provider_response_too_large') {
+      throw new Error('llm_provider_response_too_large');
+    }
+    throw error;
+  }
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+  } catch {
+    throw new Error('llm_provider_invalid_json');
+  }
+}
+
 async function fetchJson(url: string, init: RequestInit, callerSignal?: AbortSignal): Promise<unknown> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -256,8 +517,25 @@ async function fetchJson(url: string, init: RequestInit, callerSignal?: AbortSig
   else callerSignal?.addEventListener('abort', abortFromCaller, { once: true });
   try {
     const res = await fetch(url, { ...init, signal: controller.signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
+    if (!res.ok) {
+      let payload: unknown = null;
+      try {
+        payload = await readBoundedLlmJson(
+          res,
+          MAX_LLM_ERROR_JSON_BYTES,
+          controller.signal,
+        );
+      } catch (error) {
+        if (controller.signal.aborted || callerSignal?.aborted === true) throw error;
+        // Le statut HTTP reste la vérité. Un corps invalide ou surdimensionné n'est jamais
+        // propagé, journalisé ni substitué à l'erreur fonctionnelle bornée.
+      }
+      throw new LlmProviderHttpError(
+        res.status,
+        classifyLlmProviderHttpFailure(res.status, payload),
+      );
+    }
+    return await readBoundedLlmJson(res, MAX_LLM_JSON_BYTES, controller.signal);
   } finally {
     clearTimeout(timer);
     callerSignal?.removeEventListener('abort', abortFromCaller);
@@ -461,6 +739,22 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
     };
     if (opts.maxTokens) body.max_tokens = opts.maxTokens;
     if (opts.tools?.length) {
+      if (
+        this.cfg.nativeOpenAiToolControls === true
+        && opts.tools.some(
+          (tool) =>
+            tool.schemaAdherence === 'strict'
+            && !isOpenAiStrictSchemaCompatible(tool.parameters, {
+              nodes: 0,
+              properties: 0,
+              stringChars: 0,
+              enumValues: 0,
+              ancestors: new WeakSet(),
+            }),
+        )
+      ) {
+        throw new LlmStrictSchemaError();
+      }
       body.tools = opts.tools.map((t) => ({
         type: 'function',
         function: {

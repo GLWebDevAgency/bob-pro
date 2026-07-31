@@ -117,7 +117,7 @@ const LINES_SCHEMA = {
 const SERVICE_REFERENCE_PATCH_SCHEMA = {
       type: 'object',
       properties: {
-        field: { const: 'service_reference' },
+        field: { type: 'string', const: 'service_reference' },
         value: { type: 'string', maxLength: MAX_REFERENCE_LENGTH },
       },
       required: ['field', 'value'],
@@ -127,7 +127,7 @@ const SERVICE_REFERENCE_PATCH_SCHEMA = {
 const CATEGORY_PATCH_SCHEMA = {
       type: 'object',
       properties: {
-        field: { const: 'category' },
+        field: { type: 'string', const: 'category' },
         value: { type: 'string', enum: [...CATEGORY_HINTS] },
       },
       required: ['field', 'value'],
@@ -137,7 +137,7 @@ const CATEGORY_PATCH_SCHEMA = {
 const QUANTITY_PATCH_SCHEMA = {
       type: 'object',
       properties: {
-        field: { const: 'quantity' },
+        field: { type: 'string', const: 'quantity' },
         decimal: { type: 'string', maxLength: 64 },
       },
       required: ['field', 'decimal'],
@@ -147,7 +147,7 @@ const QUANTITY_PATCH_SCHEMA = {
 const UNIT_PATCH_SCHEMA = {
       type: 'object',
       properties: {
-        field: { const: 'unit' },
+        field: { type: 'string', const: 'unit' },
         value: { type: 'string', maxLength: MAX_UNIT_LENGTH },
       },
       required: ['field', 'value'],
@@ -157,9 +157,9 @@ const UNIT_PATCH_SCHEMA = {
 const UNIT_PRICE_PATCH_SCHEMA = {
       type: 'object',
       properties: {
-        field: { const: 'unit_price' },
+        field: { type: 'string', const: 'unit_price' },
         decimal: { type: 'string', maxLength: 64 },
-        currency: { const: 'EUR' },
+        currency: { type: 'string', const: 'EUR' },
         basis: { type: 'string', enum: [...PRICE_BASES] },
       },
       required: ['field', 'decimal', 'currency', 'basis'],
@@ -169,7 +169,7 @@ const UNIT_PRICE_PATCH_SCHEMA = {
 const VAT_RATE_PATCH_SCHEMA = {
       type: 'object',
       properties: {
-        field: { const: 'vat_rate' },
+        field: { type: 'string', const: 'vat_rate' },
         value: { type: 'string', enum: [...VAT_RATE_HINTS] },
       },
       required: ['field', 'value'],
@@ -179,7 +179,7 @@ const VAT_RATE_PATCH_SCHEMA = {
 const HOUSING_OLDER_THAN_2Y_PATCH_SCHEMA = {
       type: 'object',
       properties: {
-        field: { const: 'housing_older_than_2y' },
+        field: { type: 'string', const: 'housing_older_than_2y' },
         value: { type: 'boolean' },
       },
       required: ['field', 'value'],
@@ -189,7 +189,7 @@ const HOUSING_OLDER_THAN_2Y_PATCH_SCHEMA = {
 const ENERGY_RENOVATION_PATCH_SCHEMA = {
       type: 'object',
       properties: {
-        field: { const: 'energy_renovation' },
+        field: { type: 'string', const: 'energy_renovation' },
         value: { type: 'boolean' },
       },
       required: ['field', 'value'],
@@ -229,7 +229,7 @@ const START_OPERATION_SCHEMA = {
   description:
     'Démarrer un devis depuis une demande explicite. Extraire le client et toutes les lignes dites dans le même énoncé, sans compléter les faits absents.',
   properties: {
-    kind: { const: 'start_quote_creation' },
+    kind: { type: 'string', const: 'start_quote_creation' },
     customer_reference: {
       type: ['string', 'null'],
       maxLength: MAX_REFERENCE_LENGTH,
@@ -245,7 +245,7 @@ const SET_CUSTOMER_OPERATION_SCHEMA = {
   description:
     'Renseigner une référence client explicitement prononcée pendant une mission déjà ouverte ; conserver aussi les lignes dites dans le même tour.',
   properties: {
-    kind: { const: 'set_customer_reference' },
+    kind: { type: 'string', const: 'set_customer_reference' },
     customer_reference: { type: 'string', maxLength: MAX_REFERENCE_LENGTH },
     lines: LINES_SCHEMA,
   },
@@ -258,7 +258,7 @@ const APPEND_LINES_OPERATION_SCHEMA = {
   description:
     "Ajouter dans l'ordre une ou plusieurs lignes explicitement décrites dans la parole courante. Un chiffre contenu dans un nom métier ne devient jamais une quantité. Une TVA absente reste null et ne devient jamais 0.",
   properties: {
-    kind: { const: 'append_line_candidates' },
+    kind: { type: 'string', const: 'append_line_candidates' },
     lines: LINES_SCHEMA,
   },
   required: ['kind', 'lines'],
@@ -270,7 +270,7 @@ const SELECT_CHOICE_OPERATION_SCHEMA = {
   description:
     "Choisir uniquement parmi C1…C6 actuellement présentés. Une description comme « celle à 55 euros » doit être résolue vers l'ordinal correspondant aux données visibles. Ne jamais recopier une ligne, un choix ou le contexte dans cette opération.",
   properties: {
-    kind: { const: 'select_presented_choice' },
+    kind: { type: 'string', const: 'select_presented_choice' },
     ordinal: {
       type: 'integer',
       minimum: 1,
@@ -291,8 +291,8 @@ const EXPLICIT_PATCH_OPERATION_SCHEMA = {
   description:
     'Corriger spontanément un seul fait nommé de la ligne courante.',
   properties: {
-    kind: { const: 'patch_pending_line' },
-    scope: { const: 'explicit_correction' },
+    kind: { type: 'string', const: 'patch_pending_line' },
+    scope: { type: 'string', const: 'explicit_correction' },
     patch: PATCH_SCHEMA,
   },
   required: ['kind', 'scope', 'patch'],
@@ -307,8 +307,8 @@ function answerRequiredFactPatchOperationSchema(
     description:
       'Répondre uniquement au fait précis demandé par Bob. Le champ est imposé par la mission persistée.',
     properties: {
-      kind: { const: 'patch_pending_line' },
-      scope: { const: 'answer_required_fact' },
+      kind: { type: 'string', const: 'patch_pending_line' },
+      scope: { type: 'string', const: 'answer_required_fact' },
       patch: PATCH_SCHEMA_BY_REQUIRED_FACT[requiredFact],
     },
     required: ['kind', 'scope', 'patch'],
@@ -321,12 +321,12 @@ const CATALOGUE_REFERENCE_PATCH_OPERATION_SCHEMA = {
   description:
     'Corriger explicitement le libellé de la ligne avant de relancer la recherche catalogue.',
   properties: {
-    kind: { const: 'patch_pending_line' },
-    scope: { const: 'explicit_correction' },
+    kind: { type: 'string', const: 'patch_pending_line' },
+    scope: { type: 'string', const: 'explicit_correction' },
     patch: {
       type: 'object',
       properties: {
-        field: { const: 'service_reference' },
+        field: { type: 'string', const: 'service_reference' },
         value: { type: 'string', maxLength: MAX_REFERENCE_LENGTH },
       },
       required: ['field', 'value'],
@@ -340,7 +340,7 @@ const CATALOGUE_REFERENCE_PATCH_OPERATION_SCHEMA = {
 const CONFIRM_OPERATION_SCHEMA = {
   type: 'object',
   description: 'Confirmer la proposition courante uniquement quand elle est présentée.',
-  properties: { kind: { const: 'confirm_current_proposal' } },
+  properties: { kind: { type: 'string', const: 'confirm_current_proposal' } },
   required: ['kind'],
   additionalProperties: false,
 } as const;
@@ -348,7 +348,7 @@ const CONFIRM_OPERATION_SCHEMA = {
 const REJECT_OPERATION_SCHEMA = {
   type: 'object',
   description: 'Refuser la proposition courante tout en conservant la ligne à corriger.',
-  properties: { kind: { const: 'reject_current_proposal' } },
+  properties: { kind: { type: 'string', const: 'reject_current_proposal' } },
   required: ['kind'],
   additionalProperties: false,
 } as const;
@@ -356,7 +356,7 @@ const REJECT_OPERATION_SCHEMA = {
 const CANCEL_OPERATION_SCHEMA = {
   type: 'object',
   description: 'Annuler uniquement la ligne courante, jamais la session Bob entière.',
-  properties: { kind: { const: 'cancel_current_line' } },
+  properties: { kind: { type: 'string', const: 'cancel_current_line' } },
   required: ['kind'],
   additionalProperties: false,
 } as const;
