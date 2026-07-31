@@ -232,3 +232,95 @@ describe('RealtimeAgentMissionAdmissionGate', () => {
       .toThrow(/principal binding input is invalid/u);
   });
 });
+
+/**
+ * Contrat nommé de la composition boot-time (matrice des masters, incident « signature B »).
+ *
+ * L'incident de référence : un APK V1 terrain voyait ses sessions tuées < 1 s après le SDP.
+ * La cause compatible avec les observations est un `null/null` rendu à une demande `v1`
+ * pendant une opération staging (flag DB V1 coupé ou master muté en vol) — le vieux transport
+ * ferme alors la session APRÈS un bootstrap réussi. Ce bloc fige la table de décision de
+ * l'admission composée par `buildRealtimeAgentMissionAdmissionGate` avec les env RÉELLES :
+ * le remède est OPÉRATIONNEL (la matrice §17.3 exige V1 master ET flag DB v1 actifs pendant
+ * toute activation préview M2-A ; `assertM2A3PreviewOff` verrouille le `false` explicite).
+ * La moitié wire du contrat — `null/null` n'est jamais un 4xx et le bootstrap continue avec
+ * son `answerSdp` — est prouvée par realtime-agent-mission-negotiation.test.ts et
+ * realtime.service.test.ts ; ici on prouve la DÉCISION d'admission, rien de plus.
+ */
+describe('contrat nommé — matrice des masters V1/M2-A (reproduction de la signature B)', () => {
+  const keyringEnv = {
+    CABINET_RELEASE_ENV: 'staging',
+    BOB_AGENT_MISSION_HMAC_KEY_VERSION: 1,
+    BOB_AGENT_MISSION_HMAC_KEYRING: JSON.stringify({
+      1: Buffer.alloc(32, 11).toString('base64url'),
+    }),
+  };
+
+  it('sert un client V1 terrain pendant le préview : V1 master ON + flag DB v1 ON → capability littérale bam1_', async () => {
+    const store = persistence(releaseFlag(true));
+    const gate = buildRealtimeAgentMissionAdmissionGate(store.value, {
+      ...keyringEnv,
+      BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED: 'true',
+      BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED: 'false',
+    } as Env);
+
+    const prepared = await gate.prepare(v1Input());
+
+    expect(prepared.capability).toMatch(/^bam1_[A-Za-z0-9_-]{43}$/u);
+    expect(prepared.binding).toMatchObject({
+      protocolVersion: 1,
+      releaseFlagKey: 'bob.agent_missions.quote.v1',
+      releaseEnvironment: 'staging',
+    });
+    expect(store.findByKey).toHaveBeenCalledWith('staging', 'bob.agent_missions.quote.v1');
+  });
+
+  it('signature B contractuelle : demande v1 avec flag DB v1 OFF → null/null (jamais un refus HTTP)', async () => {
+    // C'est exactement l'état serveur qui a produit l'incident terrain : le client V1 reçoit
+    // un bootstrap SANS capability et se ferme lui-même. Le test documente que cette réponse
+    // est bien la sortie contractuelle — la prévention est opérationnelle (§17.3), pas du code.
+    const store = persistence(releaseFlag(false));
+    const gate = buildRealtimeAgentMissionAdmissionGate(store.value, {
+      ...keyringEnv,
+      BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED: 'true',
+      BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED: 'true',
+    } as Env);
+
+    await expect(gate.prepare(v1Input())).resolves.toEqual({
+      capability: null,
+      binding: null,
+    });
+  });
+
+  it('master M2-A littéralement false → demande v2 null/null sans même consulter le flag DB m2a', async () => {
+    const store = persistence(releaseFlag(true, 'bob.agent_missions.quote.m2a'));
+    const gate = buildRealtimeAgentMissionAdmissionGate(store.value, {
+      ...keyringEnv,
+      BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED: 'true',
+      BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED: 'false',
+    } as Env);
+
+    await expect(gate.prepare(v2Input())).resolves.toEqual({
+      capability: null,
+      binding: null,
+    });
+    expect(store.findByKey).not.toHaveBeenCalled();
+    expect(store.runWithIdentity).not.toHaveBeenCalled();
+  });
+
+  it('master M2-A ON sans flag DB m2a → null/null, jamais un repli V1 silencieux', async () => {
+    const store = persistence(null);
+    const gate = buildRealtimeAgentMissionAdmissionGate(store.value, {
+      ...keyringEnv,
+      BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED: 'true',
+      BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED: 'true',
+    } as Env);
+
+    await expect(gate.prepare(v2Input())).resolves.toEqual({
+      capability: null,
+      binding: null,
+    });
+    expect(store.findByKey).toHaveBeenCalledWith('staging', 'bob.agent_missions.quote.m2a');
+    expect(store.findByKey).not.toHaveBeenCalledWith('staging', 'bob.agent_missions.quote.v1');
+  });
+});
