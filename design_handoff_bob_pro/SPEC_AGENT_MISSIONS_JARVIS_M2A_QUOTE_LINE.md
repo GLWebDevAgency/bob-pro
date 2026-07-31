@@ -8,9 +8,9 @@
 
 **Train M2-A-2 : implemented, flag public OFF ; non certified**
 
-**Train M2-A-3 : implemented dans `1a2e5eaa`, flag public OFF ; non certified**
+**Train M2-A-3 : implemented jusqu’à `1c7f12c9`, flag public OFF ; non certified**
 
-**Date : 30 juillet 2026**
+**Date : 31 juillet 2026**
 
 **Objectifs servis : O4, O5, O6 et O7**
 
@@ -1639,20 +1639,24 @@ noms exacts avant de chaîner intents et reçus preflight/certified.
       reprise ne masquent pas les rôles `header`/`alert`, et les libellés voix/toucher restent
       utilisables sans dépendre de la couleur ni du regard.
 
-### 17.2 Preuve d'implémentation locale M2-A-3 — `1a2e5eaa`
+### 17.2 Preuve d'implémentation locale M2-A-3 — `1c7f12c9`
 
 Le statut `implemented` repose sur les preuves reproductibles suivantes, rejouées le 31 juillet
 2026 depuis le checkout propre du commit :
 
 - `pnpm lint` : 9 tâches sur 9 ;
 - `pnpm typecheck` : 17 tâches sur 17 ;
-- `pnpm test` : 15 tâches sur 15, dont core 3 051 tests, AI 896, API 2 819 et mobile 1 599 ;
+- `pnpm test` : 15 tâches sur 15, dont core 3 051 tests, AI 919, API 2 820 et mobile 1 599 ;
 - `pnpm exec turbo run build --force` : 10 tâches sur 10, artefacts core/AI/client/API sans
   fixture ni double de production ;
 - `sh apps/api/scripts/certify-agent-missions-local.sh` : migrations
   expand/validate/cutover, writers N-1 à chaque étape, ACL/RLS non-superuser et 56 tests
   transactionnels PostgreSQL réels ;
-- revues adversariales indépendantes correctness, architecture/parité et UX : zéro P0/P1 ouvert.
+- `RUN_AGENT_MISSION_M2A3_PRISMA_RECOVERY_CERT=true ... test:m2a3-staging-schema` : 29 tests sur
+  29 avec Prisma 6.19.3 et PostgreSQL 17 réels ; coupures avant et après `COMMIT`, résolution
+  reconstruisible et déployeur/propriétaire non-superuser ;
+- revues adversariales indépendantes recovery/correctness et staging/frontières de confiance :
+  deux verdicts `GO`, zéro P0/P1 ouvert.
 
 `M2A3-12`, `M2A3-13` et `M2A3-14` restent volontairement non cochés : la certification Supabase
 staging exact-SHA, les essais iPhone/Android physiques et l'eval du modèle réellement déployé
