@@ -4,20 +4,32 @@
  * il peint le verre du système avec SA teinte, il tente de sortir de sa bande de −9999 à
  * +9999, il essaie de réécrire ce qu'on lui remet, et il rend n'importe quoi.
  *
- * CE QUE LE KIT DOIT TENIR, quoi qu'il fasse :
- * · « Je NE VEUX PAS une UI transparente à la iOS » — aucun verre système ne devient visible :
- *   il reste CONFINÉ dans sa bande et RECOUVERT de notre lavis, puis de notre voile ;
+ * CE QUE LE KIT DOIT TENIR, quoi qu'il fasse — dit avec sa PORTÉE EXACTE, parce que ce
+ * fichier a d'abord promis « aucun verre système ne devient visible », ce qui est FAUX :
+ * · un verre système qui RÉÉCRIT la matière ne monte PAS DU TOUT — rang `material-tampered`,
+ *   et cela vaut aussi pour un élément FORGÉ dont `props` est un accesseur ;
+ * · un verre système qui applique nos trois champs et peint quand même le sien à l'intérieur
+ *   de SON composant, lui, monte : il reste CONFINÉ dans sa bande et recouvert de notre lavis
+ *   puis de notre voile — sauf AU BORD LIBRE, où le lavis et le voile valent 0 et où sa matière
+ *   est donc SEULE (part du port 1,0000 ; table dans `bobTintShareAt`). On ne prétend pas qu'il
+ *   est invisible : on dit OÙ il l'est, et combien ;
  * · la matière transmise est GELÉE, et le kit ne relit jamais ce qu'il a transmis ;
  * · aucun nœud rendu par `@bob/ui` ne porte une couleur qui ne vienne pas de nos tokens ;
- * · l'écran ne disparaît jamais.
+ * · l'écran ne disparaît jamais — y compris sur des props HORS CONTRAT DE TYPE.
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
+import { createElement, type ReactElement } from 'react';
 import { surfaceVeil } from '@bob/tokens';
 import { ThemeProvider } from '../theme';
 import { ProgressiveBlurBob, type ProgressiveBlurBobViewProps } from './progressive-blur-bob';
 import { defineBlurPort, isSealedBlurPort, resolveBlurPort } from './progressive-blur-bob.port';
-import { BLUR_PORT_FAILURE_WARNINGS, resolveBlurMaterial } from './progressive-blur-bob.logic';
+import {
+  BLUR_PORT_FAILURE_WARNINGS,
+  bobTintShareAt,
+  resolveBlurMaterial,
+  type ProgressiveBlurPlan,
+} from './progressive-blur-bob.logic';
 import type { BlurLayerSpec, RenderBlurLayer } from './progressive-blur-bob.types';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -411,5 +423,166 @@ describe('LA RETOMBÉE NE PORTE JAMAIS DE TEXTE', () => {
 
   it('un port honnête ne produit lui non plus aucun nœud de texte', async () => {
     expect(primitiveChildren(await mount({ layers: 3, renderBlurLayer: conformantGlass() }))).toEqual([]);
+  });
+});
+
+/**
+ * L'ÉLÉMENT FORGÉ — le trou que la vérification de matière laissait ouvert, et une revue
+ * adversariale l'a franchi.
+ *
+ * `isValidElement()` ne regarde QUE `$$typeof`, et sa valeur est un symbole du registre GLOBAL
+ * (`Symbol.for('react.transitional.element')`) : n'importe qui la recopie. Un objet forgé peut
+ * donc exposer `props` — ou `type` — comme un ACCESSEUR qui rend la matière conforme à la
+ * PREMIÈRE lecture (celle du kit) et la matière hostile à la SECONDE (celle de React). Preuve
+ * exécutée avant correctif : verre système `intensity: 100`, `tint: 'dark'`, et
+ * `["SOLDE 12 400 €", "SOLDE 12 400 €"]` peints dans une zone déclarée sans texte.
+ *
+ * Le kit lit désormais `type` et `props` UNE SEULE FOIS, vérifie CETTE lecture, et RÉ-ÉMET
+ * l'élément à partir d'elle avec SA matière : l'objet piégé n'atteint jamais React.
+ */
+describe('L’ÉLÉMENT FORGÉ — une seule lecture, puis ré-émission', () => {
+  /** `$$typeof` d'un vrai élément : global, donc recopiable — c'est tout le problème. */
+  const ELEMENT_TYPE = (createElement('X' as unknown as () => null, {}) as unknown as {
+    $$typeof: symbol;
+  }).$$typeof;
+
+  it('un accesseur `props` TOCTOU n’est lu QU’UNE FOIS, et sa matière hostile ne monte pas', async () => {
+    let lecturesMax = 0;
+    const forger = defineBlurPort((spec: BlurLayerSpec) => {
+      let reads = 0;
+      return {
+        $$typeof: ELEMENT_TYPE,
+        type: SystemGlass,
+        key: String(spec.index),
+        ref: null,
+        get props() {
+          reads += 1;
+          lecturesMax = Math.max(lecturesMax, reads);
+          return reads === 1
+            ? { intensity: spec.intensity, tint: spec.tint, style: spec.style }
+            : {
+                intensity: 100,
+                tint: HOSTILE_TINT,
+                style: { position: 'absolute', top: 0, left: 0, right: 0, height: 9999 },
+                children: 'SOLDE 12 400 €',
+              };
+        },
+      } as unknown as ReactElement;
+    });
+
+    const renderer = await mount({ layers: 2, renderBlurLayer: forger });
+
+    expect(lecturesMax, 'le kit relit `props` : la matière vérifiée n’est pas celle rendue').toBe(1);
+    expect(primitiveChildren(renderer), 'du TEXTE a été peint dans la zone décorative').toEqual([]);
+    for (const node of all(renderer).filter((n) => n.type === 'SystemGlass')) {
+      expect(node.props['intensity']).toBe(5);
+      expect(node.props['tint']).not.toBe(HOSTILE_TINT);
+    }
+    expect(renderer.toJSON()).not.toBeNull();
+  });
+
+  it('un accesseur `type` TOCTOU ne monte pas non plus le second type', async () => {
+    const forger = defineBlurPort((spec: BlurLayerSpec) => {
+      let reads = 0;
+      return {
+        $$typeof: ELEMENT_TYPE,
+        key: String(spec.index),
+        ref: null,
+        props: { intensity: spec.intensity, tint: spec.tint, style: spec.style },
+        get type() {
+          reads += 1;
+          return reads === 1 ? SystemGlass : ('TexteHostile' as unknown as () => null);
+        },
+      } as unknown as ReactElement;
+    });
+
+    const renderer = await mount({ layers: 2, renderBlurLayer: forger });
+    expect(all(renderer).filter((n) => n.type === 'TexteHostile')).toHaveLength(0);
+    expect(renderer.toJSON()).not.toBeNull();
+  });
+
+  it('un élément forgé dont `props` est NUL ferme la pile au lieu de lever', async () => {
+    const forger = defineBlurPort(
+      (spec: BlurLayerSpec) =>
+        ({
+          $$typeof: ELEMENT_TYPE,
+          type: SystemGlass,
+          key: String(spec.index),
+          ref: null,
+          props: null,
+        }) as unknown as ReactElement,
+    );
+    const renderer = await mount({ layers: 2, renderBlurLayer: forger });
+    expect(renderer.toJSON()).not.toBeNull();
+    expect(all(renderer).filter((n) => n.type === 'SystemGlass')).toHaveLength(0);
+  });
+});
+
+/**
+ * LA LIMITE, MESURÉE PLUTÔT QUE TUE. La vérification de matière contrôle les CHAMPS du contrat,
+ * pas les pixels : un port peut rendre un composant à LUI, qui reçoit correctement `intensity`,
+ * `tint` et `style` et peint le verre du système à l'intérieur. Ce test ne prétend pas que le
+ * kit l'en empêche — il PROUVE ce qui le borne, et où cette borne vaut zéro.
+ */
+describe('LE MATÉRIAU QUE LA VÉRIFICATION NE PEUT PAS FERMER', () => {
+  /** Reçoit la matière, et peint la sienne. C'est LÉGAL au regard des champs. */
+  function CalqueMenteur(_props: {
+    intensity: number;
+    tint: string;
+    style: unknown;
+  }): ReactElement {
+    return <SystemGlass key="menteur" {...{ intensity: 100, tint: HOSTILE_TINT }} />;
+  }
+
+  it('il MONTE — et le kit le dit, au lieu de prétendre le contraire', async () => {
+    const port = defineBlurPort((spec: BlurLayerSpec) =>
+      createElement(CalqueMenteur, {
+        key: spec.index,
+        intensity: spec.intensity,
+        tint: spec.tint,
+        style: spec.style,
+      }),
+    );
+    const renderer = await mount({ layers: 3, renderBlurLayer: port });
+    const glass = all(renderer).filter((n) => n.type === 'SystemGlass');
+    expect(glass, 'la limite a changé : mettre les commentaires à jour').toHaveLength(3);
+    expect(glass[0]?.props['tint']).toBe(HOSTILE_TINT);
+  });
+
+  it('mais il reste DANS une bande clippée, et sous notre lavis puis notre voile', async () => {
+    const port = defineBlurPort((spec: BlurLayerSpec) =>
+      createElement(CalqueMenteur, {
+        key: spec.index,
+        intensity: spec.intensity,
+        tint: spec.tint,
+        style: spec.style,
+      }),
+    );
+    const renderer = await mount({ layers: 3, renderBlurLayer: port });
+    for (const band of (root(renderer).children ?? []).slice(0, 3)) {
+      expect((band.props['style'] as Record<string, unknown>)['overflow']).toBe('hidden');
+      const inner = band.children ?? [];
+      expect(inner.findIndex((n) => n.type === 'LinearGradient')).toBeGreaterThan(
+        inner.findIndex((n) => n.type === 'SystemGlass'),
+      );
+    }
+    const children = root(renderer).children ?? [];
+    expect(children[children.length - 1]?.type).toBe('LinearGradient');
+  });
+
+  it('et sa part vaut EXACTEMENT 1 au bord libre : la borne est chiffrée, pas promise', async () => {
+    const plans: ProgressiveBlurPlan[] = [];
+    await mount({
+      layers: 10,
+      renderBlurLayer: conformantGlass(),
+      onPlan: (plan) => plans.push(plan),
+    });
+    const plan = plans.at(-1);
+    expect(plan?.mode).toBe('blurred');
+    // Le lavis est une RAMPE qui part de zéro, et le voile vaut zéro au bord libre.
+    expect(bobTintShareAt(0, plan as ProgressiveBlurPlan)).toBe(0);
+    // Notre part redevient majoritaire après la première marche, et totale dès 0,60.
+    expect(bobTintShareAt(0.32, plan as ProgressiveBlurPlan)).toBeGreaterThan(0.93);
+    expect(bobTintShareAt(0.6, plan as ProgressiveBlurPlan)).toBe(1);
   });
 });

@@ -47,8 +47,16 @@
  * L'ÉLÉMENT RENDU EST VÉRIFIÉ, LUI AUSSI (ajout du kit, voir `BlurLayerSlot`) : il doit porter
  * `spec.intensity`, `spec.tint` et `spec.style` TELS QUELS — même valeur, et pour le style la
  * même RÉFÉRENCE, celle de l'objet gelé qu'on lui a remis — et n'avoir AUCUN enfant. Sinon la
- * pile se ferme sur le rang `material-tampered`. C'est ce qui empêche un port scellé de
- * réécrire la matière ou de glisser du texte dans une zone qui n'en porte jamais.
+ * pile se ferme sur le rang `material-tampered`. Le kit lit `type` et `props` UNE SEULE FOIS et
+ * RÉ-ÉMET l'élément à partir de cette lecture : un élément forgé dont `props` est un accesseur
+ * ne peut donc plus servir une matière au kit et une autre à React (TOCTOU démontré par une
+ * revue, verre système + TEXTE peints).
+ *
+ * CE QUE CELA NE COUVRE PAS, écrit ici pour que le prochain ne s'y trompe pas : un port peut
+ * rendre un composant à LUI qui reçoit correctement les trois champs et peint le verre du
+ * système à l'intérieur — même chose via un HOC. Cette classe-là n'est bornée que par le CLIP,
+ * le lavis et le voile, c'est-à-dire par la CONFORMITÉ chiffrée dans `bobTintShareAt`, et nulle
+ * au bord libre. Aucune vérification de props ne la fermera : il faudrait inspecter des pixels.
  *
  * Adaptateur attendu côté `apps/mobile`, à l'étape d'ADOPTION (décision D08, hors de ce lot) :
  *
