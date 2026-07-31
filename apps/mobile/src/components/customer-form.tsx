@@ -1,10 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
-import { Pressable, Text, TextInput, View } from 'react-native';
-import { Siret, validateFrenchVatId, type Address, type CustomerType } from '@bob/core';
-import type { CreateCustomerClientInput } from '@bob/api-client';
-import { t, type Personality } from '@bob/i18n';
-import { Button, Chip, Skeleton, font, useTheme } from '@bob/ui';
+import { Pressable, Share, Text, TextInput, View } from 'react-native';
+import { appDomain, Siret, validateFrenchVatId, type Address, type CustomerType } from '@bob/core';
+import { bobErrorCode, type CreateCustomerClientInput } from '@bob/api-client';
+import { t, type I18nKey, type Personality } from '@bob/i18n';
+import { Button, Chip, ErrorNotice, Skeleton, font, useTheme } from '@bob/ui';
 import { useLookupCompany, useSearchAddress } from '../data/hooks';
+import {
+  discriminateSiretLookupError,
+  type SiretLookupFailure,
+  type SiretLookupFailureReason,
+} from '../lib/siret-lookup-error';
 import { formatSiret } from './CompanyFicheCard';
 import { decideSiretLookupResult } from './customer-form-siret.logic';
 
@@ -15,6 +20,20 @@ const TYPE_LABEL_KEY = {
   b2b: 'clients.filterB2b',
   b2g: 'clients.filterB2g',
 } as const;
+
+/**
+ * SPEC_SYSTEME_ERREUR §8 — SITE DE RÉFÉRENCE de la règle anti-écrasement : l'ancien
+ * `onError: () => setSiretError(true)` écrasait 404/422/429/502 en un seul booléen (cas
+ * terrain n° 1 du fondateur). Chaque motif du discriminateur partagé a SA copy actionnable.
+ */
+const SIRET_FAILURE_KEY: Record<SiretLookupFailureReason, I18nKey> = {
+  invalid: 'clients.createSiretErrorInvalid',
+  not_found: 'clients.createSiretErrorNotFound',
+  rate_limited: 'clients.createSiretErrorRateLimited',
+  contract: 'clients.createSiretErrorContract',
+  lookup_down: 'clients.createSiretErrorLookupDown',
+  unknown: 'clients.createSiretErrorUnknown',
+};
 
 /** Pré-remplissage (édition) — un sous-ensemble de CreateCustomerClientInput + les 2 volets
  * du nom (prénom/nom) reconstitués depuis `name` par l'appelant, la fiche n'ayant PAS de champ
@@ -141,7 +160,7 @@ export function CustomerForm({
   const [siret, setSiret] = useState(base.siret ?? '');
   const siretRef = useRef(base.siret ?? '');
   const lookupRequestIdRef = useRef(0);
-  const [siretError, setSiretError] = useState(false);
+  const [siretFailure, setSiretFailure] = useState<SiretLookupFailure | null>(null);
   const [siretFound, setSiretFound] = useState<string | null>(null);
   // État administratif de l'ÉTABLISSEMENT retenu par l'annuaire ('F' = fermé). Un établissement
   // fermé n'est pas refusé — il reste facturable (facture finale, avoir) — mais il est annoncé.
@@ -163,13 +182,14 @@ export function CustomerForm({
 
   const searchSiret = (): void => {
     const requestId = ++lookupRequestIdRef.current;
-    setSiretError(false);
+    setSiretFailure(null);
     setSiretFound(null);
     setSiretClosed(false);
     setSiretAddressMissing(false);
     const v = Siret.of(siret);
     if (!v.ok) {
-      setSiretError(true);
+      // Refus LOCAL du domaine (format/Luhn) : même motif `invalid` que le 422 serveur.
+      setSiretFailure(discriminateSiretLookupError(appDomain(v.error)));
       return;
     }
     const requestedSiret = v.value.value;
@@ -184,7 +204,15 @@ export function CustomerForm({
         });
         if (decision.kind === 'stale') return;
         if (decision.kind === 'identity_mismatch') {
-          setSiretError(true);
+          // Réponse 200 pour un AUTRE établissement : anomalie de contrat, pas une panne
+          // annuaire — même motif `contract` que le décodage illisible.
+          setSiretFailure(
+            discriminateSiretLookupError({
+              kind: 'dependency',
+              port: 'api-contract',
+              cause: 'annuaire : réponse pour un autre établissement que celui demandé.',
+            }),
+          );
           setSiretCandidateUnverified(true);
           return;
         }
@@ -203,12 +231,14 @@ export function CustomerForm({
         setAddressQuery(decision.addressLabel);
         setAddressLocked(decision.addressLocked);
       },
-      onError: () => {
+      onError: (e) => {
         if (
           requestId === lookupRequestIdRef.current &&
           siretRef.current === requestedSiret
         ) {
-          setSiretError(true);
+          // Anti-écrasement : le motif COMPLET traverse (kind + code + corrélation), jamais
+          // un booléen — c'est ce site qui a coûté 48 h de diagnostic au fondateur.
+          setSiretFailure(discriminateSiretLookupError(e));
         }
       },
     });
@@ -323,7 +353,7 @@ export function CustomerForm({
                 setSiretFound(null);
                 setSiretClosed(false);
                 setSiretAddressMissing(false);
-                setSiretError(false);
+                setSiretFailure(null);
               }}
               placeholder={t('clients.createSiretPlaceholder', { personality })}
               placeholderTextColor={colors.slate300}
@@ -335,7 +365,7 @@ export function CustomerForm({
                   flex: 1,
                   minHeight: 44,
                   borderWidth: 1,
-                  borderColor: siretError ? semantic.danger : colors.lineSoft,
+                  borderColor: siretFailure ? semantic.danger : colors.lineSoft,
                   borderRadius: 12,
                   paddingHorizontal: 13,
                   paddingVertical: 11,
@@ -356,14 +386,23 @@ export function CustomerForm({
             <View style={{ marginTop: 8 }}>
               <Skeleton height={13} width="70%" radius={6} />
             </View>
-          ) : siretError ? (
-            <Text
-              accessibilityRole="alert"
-              accessibilityLiveRegion="polite"
-              style={[font('sub'), { color: semantic.danger, marginTop: 8 }]}
-            >
-              {t('clients.createSiretError', { personality })}
-            </Text>
+          ) : siretFailure ? (
+            <View style={{ marginTop: 8 }}>
+              <ErrorNotice
+                message={t(SIRET_FAILURE_KEY[siretFailure.reason], {
+                  personality,
+                  ...(siretFailure.retryAfterSeconds !== null
+                    ? { params: { seconds: siretFailure.retryAfterSeconds } }
+                    : {}),
+                })}
+                code={siretFailure.error.code ?? bobErrorCode(siretFailure.error, 'SIRET')}
+                correlationId={siretFailure.error.correlationId ?? null}
+                kind={siretFailure.error.kind}
+                onShareReport={(reportText) => {
+                  void Share.share({ message: reportText }).catch(() => undefined);
+                }}
+              />
+            </View>
           ) : siretFound !== null ? (
             <>
               <Text
