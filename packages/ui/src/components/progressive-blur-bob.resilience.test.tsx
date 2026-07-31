@@ -34,6 +34,7 @@ import {
   type ReactElement,
   type ReactNode,
 } from 'react';
+import { surfaceVeil } from '@bob/tokens';
 import { ThemeProvider } from '../theme';
 import { ProgressiveBlurBob, type ProgressiveBlurBobViewProps } from './progressive-blur-bob';
 import { defineBlurPort } from './progressive-blur-bob.port';
@@ -724,5 +725,70 @@ describe('LE PLAN REMIS À L’APPLICATION EST GELÉ', () => {
     expect(frozen, 'le plan ou son tableau de couches n’est pas gelé').toEqual([true, true]);
     expect(warnings().join('\n')).not.toMatch(/DONNEE-ETRANGERE/);
     expect(renderer.toJSON()).not.toBeNull();
+  });
+});
+
+/**
+ * LES PROPS HORS CONTRAT DE TYPE — le QUATRIÈME chemin par lequel l'écran tombait, trouvé par
+ * une revue adversariale et fermé.
+ *
+ * Les trois chemins nommés plus haut parlent du PORT. Mais `ProgressiveBlurBob` lit aussi des
+ * SCALAIRES fournis par l'application, et il les lit PENDANT SON PROPRE RENDU — au-dessus de
+ * `BlurStackBoundary`, donc sans aucune frontière interne. « Le typage ne protège que le code
+ * typé » : le kit le dit lui-même pour refuser une chaîne rendue par le port, et cela vaut
+ * pour ses props. Mesuré AVANT correctif, `r.toJSON()` valait `null` — l'écran entier :
+ *
+ *  · `layers` objet à `valueOf` hostile → `input.layers <= granted` déclenchait la conversion ;
+ *  · `devShellHeight` idem, via `height > devShellHeight` ;
+ *  · `tone` hors énumération → `surfaceVeil[appearance][tone].stops` sur `undefined`.
+ *
+ * Rien n'est plus CONVERTI (`Number.isFinite` répond sans coercer) et le ton inconnu retombe sur
+ * `canvas`, qui est le fond d'app — donc NOTRE teinte, jamais celle du système.
+ */
+describe('LES PROPS HORS CONTRAT DE TYPE N’EMPORTENT PAS L’ÉCRAN', () => {
+  /** Port CONFORME sur la matière — sans lui, la barrière de matière ferme avant le scénario. */
+  const honnete = (): RenderBlurLayer =>
+    defineBlurPort((spec) => <BlurProbe key={spec.index} {...material(spec)} />);
+  const hostileValueOf = {
+    valueOf(): number {
+      throw new Error('valueOf hostile');
+    },
+  } as unknown as number;
+
+  it('`layers` dont le `valueOf` lève : refus, pas de chute', async () => {
+    const renderer = await mount({ layers: hostileValueOf, renderBlurLayer: honnete() });
+    expectScreenSurvivedWithOpaqueFallback(renderer);
+  });
+
+  it('`devShellHeight` dont le `valueOf` lève : l’assertion redevient impossible, donc refus', async () => {
+    const renderer = await mount({
+      layers: 4,
+      devShellHeight: hostileValueOf,
+      renderBlurLayer: honnete(),
+    });
+    expectScreenSurvivedWithOpaqueFallback(renderer);
+  });
+
+  it('`tone` hors énumération : l’écran tient, et le voile reste NOTRE teinte', async () => {
+    const renderer = await mount({
+      layers: 4,
+      tone: 'verre-systeme' as never,
+      renderBlurLayer: honnete(),
+    });
+    expect(renderer.toJSON()).not.toBeNull();
+    expect(veilNodes(renderer)[0]?.props['colors']).toEqual(surfaceVeil.light.canvas.stops);
+  });
+
+  it('`onPlan` qui n’est pas une fonction : ignoré, jamais fatal', async () => {
+    const renderer = await mount({
+      layers: 4,
+      onPlan: 'pas une fonction' as never,
+      renderBlurLayer: honnete(),
+    });
+    expect(renderer.toJSON()).not.toBeNull();
+    // Le rappel n'est pas appelable : c'est le MÊME rang qu'un rappel qui lève — on avertit,
+    // on n'ampute que l'émission, et l'écran ne bouge pas.
+    expect(warnings().join('\n')).toMatch(/le rappel onPlan a LEVÉ/);
+    expect(nodesOf(renderer, 'BlurSample')).toHaveLength(4);
   });
 });

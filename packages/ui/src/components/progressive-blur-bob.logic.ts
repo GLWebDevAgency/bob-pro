@@ -80,9 +80,14 @@ export type BlurPortStatus = 'absent' | 'unsealed' | 'ready';
  *                      le contrat déclare sans texte ni information. Refusé, fermé ;
  * · `material-tampered` — la fabrique a rendu un élément VALIDE qui ne porte pas la matière
  *                      qu'on lui a remise : `intensity`, `tint` ou `style` réécrits, ou des
- *                      ENFANTS ajoutés (« une couche, et rien d'autre »). C'est la seule
- *                      barrière qui ferme la classe entière du matériau hostile — voir
- *                      `bobTintShareAt` pour ce que le lavis, lui, ne peut PAS garantir.
+ *                      ENFANTS ajoutés (« une couche, et rien d'autre »). Ce rang ferme les
+ *                      CHAMPS du contrat. Il NE ferme PAS « la classe entière du matériau
+ *                      hostile », comme ce commentaire l'a d'abord affirmé : une revue
+ *                      adversariale a monté du verre système à intensité 100 et teinte `dark`
+ *                      en rendant un composant à SOI qui reçoit correctement les trois champs
+ *                      et peint autre chose — et le même chemin passe par un HOC. Celui-là
+ *                      n'est borné que par le clip, le lavis et le voile, c'est-à-dire par la
+ *                      CONFORMITÉ chiffrée par `bobTintShareAt`, nulle au bord libre.
  */
 export type BlurPortFailure =
   | 'null-at-zero'
@@ -238,8 +243,34 @@ function alphaOf(color: string): number {
   return Number.isFinite(parsed) ? clamp01(parsed) : 1;
 }
 
+/**
+ * SPEC DE VOILE, résolue SANS JAMAIS LEVER. `tone` vient de l'application : un ton hors
+ * énumération — une préférence persistée, une valeur de configuration — faisait un accès
+ * `surfaceVeil[appearance][tone].stops` sur `undefined`, donc une erreur PENDANT LE RENDU, au
+ * -dessus de toute frontière : l'écran entier disparaissait. Une revue adversariale l'a
+ * exécuté. Un effet DÉCORATIF ne fait pas tomber un écran, même mal appelé : l'inconnu retombe
+ * sur `canvas`, qui est le FOND D'APP, donc notre teinte et jamais celle du système. La matière
+ * publie ensuite le ton RÉELLEMENT résolu, pour que le plan ne mente pas sur ce qui est peint.
+ */
+const FALLBACK_TONE: SurfaceVeilTone = 'canvas';
+const FALLBACK_APPEARANCE: SurfaceTintAppearance = 'light';
+
+function resolveVeilTone(
+  appearance: SurfaceTintAppearance,
+  tone: SurfaceVeilTone,
+): { readonly appearance: SurfaceTintAppearance; readonly tone: SurfaceVeilTone } {
+  const safeAppearance = surfaceVeil[appearance] === undefined ? FALLBACK_APPEARANCE : appearance;
+  const safeTone = surfaceVeil[safeAppearance][tone] === undefined ? FALLBACK_TONE : tone;
+  return { appearance: safeAppearance, tone: safeTone };
+}
+
+function veilSpecOf(appearance: SurfaceTintAppearance, tone: SurfaceVeilTone) {
+  const resolved = resolveVeilTone(appearance, tone);
+  return surfaceVeil[resolved.appearance][resolved.tone];
+}
+
 function veilAlphas(material: BobBlurMaterial): readonly [number, number, number] {
-  const [free, mid, anchored] = surfaceVeil[material.appearance][material.tone].stops;
+  const [free, mid, anchored] = veilSpecOf(material.appearance, material.tone).stops;
   return [alphaOf(free), alphaOf(mid), alphaOf(anchored)];
 }
 
@@ -260,10 +291,11 @@ export function resolveBlurMaterial(
   tone: SurfaceVeilTone,
   appearance: SurfaceTintAppearance,
 ): BobBlurMaterial {
-  const spec = surfaceVeil[appearance][tone];
+  const resolved = resolveVeilTone(appearance, tone);
+  const spec = surfaceVeil[resolved.appearance][resolved.tone];
   return Object.freeze({
-    appearance,
-    tone,
+    appearance: resolved.appearance,
+    tone: resolved.tone,
     tintTransparent: spec.stops[0],
     tintSolid: spec.stops[2],
     washOpacity: FALLOFF.layerWash,
@@ -394,14 +426,22 @@ export function blurLayerStyle(
  * pour ACTIVES : c'est la règle fail-closed du socle, appliquée aux trois tri-états.
  */
 export function progressiveBlurPlan(input: ProgressiveBlurPlanInput): ProgressiveBlurPlan {
-  const granted = normalizeLayerCount(input.layers);
+  /*
+   * `layers` vient de l'application. Le kit le traite déjà comme non fiable — NaN, infini,
+   * négatif, fractionnaire — et il faut aller jusqu'au bout : une valeur qui n'est PAS un
+   * nombre ne doit pas être COMPARÉE, car `input.layers <= granted` appellerait son `valueOf`,
+   * qui peut lever pendant le rendu et emporter l'écran (mesuré par une revue adversariale).
+   * On la ramène à NaN, que la suite sait déjà traiter : 0 accordé, `capped` vrai.
+   */
+  const requested = typeof input.layers === 'number' ? input.layers : Number.NaN;
+  const granted = normalizeLayerCount(requested);
   /*
    * `capped` = « la demande a été RAMENÉE ». Écrit comme une NÉGATION, jamais comme
    * `requested > granted` : c'est la seule forme qui reste vraie pour NaN et pour l'infini,
    * les deux demandes que `normalizeLayerCount` ramène à zéro sans qu'aucune comparaison ne
    * puisse le dire. Une demande négative, elle, est remontée à 0 : ce n'est pas un plafond.
    */
-  const capped = !(input.layers <= granted);
+  const capped = !(requested <= granted);
   const visibleLayers = Math.min(granted, visibleLayerCount(input.material));
   /*
    * LE PLAN EST GELÉ, comme la matière et comme chaque spec. Ce n'est pas de la coquetterie :
@@ -416,7 +456,7 @@ export function progressiveBlurPlan(input: ProgressiveBlurPlanInput): Progressiv
       reason,
       layers: Object.freeze([]),
       material: input.material,
-      requested: input.layers,
+      requested,
       granted,
       capped,
       peakIntensity: 0,
@@ -464,7 +504,7 @@ export function progressiveBlurPlan(input: ProgressiveBlurPlanInput): Progressiv
     reason: 'blurred' as const,
     layers,
     material: input.material,
-    requested: input.layers,
+    requested,
     granted,
     capped,
     peakIntensity: granted * FALLOFF.layerIntensity,
@@ -656,7 +696,9 @@ export function edgeVeilGradient(
   appearance: SurfaceTintAppearance,
   anchor: BlurAnchor,
 ): EdgeVeilGradient {
-  const spec = surfaceVeil[appearance][tone];
+  // Même résolution SANS LEVER que `resolveBlurMaterial` : un ton hors énumération retombe sur
+  // `canvas`, il ne fait pas tomber l'écran. Voir `resolveVeilTone`.
+  const spec = veilSpecOf(appearance, tone);
   return {
     colors: spec.stops,
     locations: FALLOFF.veilLocations,

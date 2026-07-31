@@ -12,11 +12,19 @@
  *   2. PAR-DESSUS l'ensemble, le VOILE TEINTÉ, rendu dans les DEUX modes. C'est lui qui porte
  *      NOTRE identité, là où la référence se contente d'un voile noir `rgba(0,0,0,.70)`.
  *
- * Le clip et le lavis ne sont pas décoratifs : ce sont les DEUX barrières qui rendent la
- * teinte du système inatteignable. Un port ne peut peindre ni hors de sa bande, ni par-dessus
- * notre teinte — au mieux dessous. Et le clip est GÉOMÉTRIQUEMENT NEUTRE : la bande a
- * exactement le rectangle que `spec.style` décrit, donc un port conforme rend les mêmes
- * pixels avec ou sans lui. Le clip ne coûte rien à l'honnête et arrête l'hostile.
+ * Le clip et le lavis ne sont pas décoratifs — mais ils ne SUFFISENT pas, et ce fichier a
+ * d'abord affirmé le contraire : « les DEUX barrières qui rendent la teinte du système
+ * inatteignable ». C'ÉTAIT FAUX, et c'est MESURÉ : le lavis est une rampe qui vaut 0 au bord
+ * libre de chaque bande, là où le voile vaut 0 lui aussi. À la profondeur 0, le matériau du
+ * port est SEUL — part du port 1,0000 (table complète dans `bobTintShareAt`).
+ *
+ * Ce que ces deux-là garantissent est donc BORNÉ, et il faut le dire ainsi : un port ne peint
+ * ni hors de sa bande (clip), ni par-dessus notre teinte — au mieux dessous (ordre de
+ * déclaration). Ce qui rend la teinte du SYSTÈME réellement inatteignable est ailleurs, et
+ * seulement pour la matière DÉCLARÉE : la vérification de l'élément rendu (`BlurLayerSlot`).
+ * Et le clip est GÉOMÉTRIQUEMENT NEUTRE : la bande a exactement le rectangle que `spec.style`
+ * décrit, donc un port conforme rend les mêmes pixels avec ou sans lui. Le clip ne coûte rien
+ * à l'honnête et arrête l'hostile.
  *
  * AUCUNE ANIMATION, dans aucun mode, ni en Reduced Motion. Il n'y a donc aucune valeur animée
  * à recalculer, aucun coût JS par frame sous le scroll, et rien à dégrader quand la préférence
@@ -50,6 +58,13 @@
  * quitte), aucune frontière interne ne peut aider — par construction elle part avec. C'est le
  * rôle d'une frontière d'ÉCRAN, côté application ; un test le démontre et vaut recommandation.
  *
+ * CES TROIS-LÀ PARLENT DU PORT. Il existe une QUATRIÈME famille, d'une autre nature, et elle a
+ * fait tomber l'écran elle aussi : les PROPS HORS CONTRAT DE TYPE. Ce composant lit des
+ * scalaires de l'application PENDANT SON PROPRE RENDU, donc AU-DESSUS de toute frontière
+ * interne — `layers`, `devShellHeight`, `tone`. Un `valueOf` qui lève, un ton hors énumération,
+ * et l'arbre valait `null`. « Le typage ne protège que le code typé », et cela vaut aussi pour
+ * ses props : plus rien n'est CONVERTI ici, et un ton inconnu retombe sur le fond d'app.
+ *
  * Dans les trois cas l'écran survit et l'utilisateur voit la surface teintée opaque, lisible.
  * La dégradation est DÉFINITIVE pour la vie du composant : un port qui a manqué n'est plus
  * rappelé — sinon on remplacerait un écran mort par une boucle d'erreurs, et un port
@@ -79,6 +94,7 @@
 import {
   Component,
   Fragment,
+  createElement,
   isValidElement,
   useCallback,
   useEffect,
@@ -86,6 +102,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ElementType,
   type ReactElement,
   type ReactNode,
 } from 'react';
@@ -255,17 +272,30 @@ interface BlurLayerSlotProps {
  *
  * CE QUE CETTE BARRIÈRE NE PEUT PAS FAIRE, dit ici pour que personne ne s'y trompe : elle
  * contrôle les CHAMPS du contrat, pas les pixels. Un port peut toujours rendre un composant à
- * lui qui reçoit correctement `intensity`, `tint` et `style` et peint autre chose à l'intérieur.
- * Celui-là reste borné par le CLIP de sa bande, par le lavis et par le voile — c'est-à-dire par
- * la garantie de conformité, chiffrée et plancherée par `bobTintShareAt`.
+ * lui qui reçoit correctement `intensity`, `tint` et `style` et peint autre chose à l'intérieur
+ * — une revue adversariale a monté par ce chemin du verre système à intensité 100, teinte
+ * `dark`, et le même chemin passe par un HOC. Celui-là reste borné par le CLIP de sa bande, par
+ * le lavis et par le voile — c'est-à-dire par la garantie de CONFORMITÉ, chiffrée par
+ * `bobTintShareAt`, et nulle au bord libre. Aucune vérification de props ne fermera cette
+ * classe-là : il faudrait inspecter des pixels, ce qu'un arbre React ne donne pas.
+ *
+ * ELLE PREND `props` ET NON L'ÉLÉMENT, et c'est un correctif, pas un détail de signature. Un
+ * élément peut être FORGÉ à la main — `isValidElement()` ne regarde que `$$typeof`, dont la
+ * valeur est un symbole du registre GLOBAL (`Symbol.for('react.transitional.element')`), donc
+ * recopiable par n'importe qui. Un tel élément peut exposer `props` comme un ACCESSEUR qui rend
+ * la matière conforme à la première lecture, la nôtre, et la matière hostile à la seconde,
+ * celle de React. La revue l'a exécuté : verre système à intensité 100 ET du TEXTE peint dans
+ * la zone. Le kit lit donc `type` et `props` UNE SEULE FOIS (voir `callPort`), vérifie cette
+ * lecture-là, et RÉ-ÉMET l'élément à partir d'elle : React ne voit plus jamais l'objet du port.
  */
-function honorsMaterial(element: ReactElement, spec: BlurLayerSpec): boolean {
-  const props = element.props as Record<string, unknown>;
+function honorsMaterial(props: unknown, spec: BlurLayerSpec): boolean {
+  // Un `props` nul lève ici, et c'est voulu : `callPort` l'attrape et FERME la pile.
+  const read = props as Record<string, unknown>;
   return (
-    props['intensity'] === spec.intensity &&
-    props['tint'] === spec.tint &&
-    props['style'] === spec.style &&
-    props['children'] === undefined
+    read['intensity'] === spec.intensity &&
+    read['tint'] === spec.tint &&
+    read['style'] === spec.style &&
+    read['children'] === undefined
   );
 }
 
@@ -279,9 +309,13 @@ function honorsMaterial(element: ReactElement, spec: BlurLayerSpec): boolean {
  * règles des hooks : « Rendered fewer hooks than during the previous render ».
  *
  * L'appel est donc isolé dans CE composant : les hooks du port appartiennent à CETTE instance,
- * le nombre d'appels par instance est invariant — exactement UN —, et passer de N à 0 démonte
- * des instances, ce qui est légal. On obtient la propriété que donnait un adaptateur-composant
- * SANS quitter la signature render-prop du contrat.
+ * le nombre d'appels par PASSE DE RENDU de cette instance est invariant — exactement UN —, et
+ * passer de N à 0 démonte des instances, ce qui est légal. On obtient la propriété que donnait
+ * un adaptateur-composant SANS quitter la signature render-prop du contrat.
+ *
+ * Le nombre de PASSES, lui, n'est pas au kit : `StrictMode` en fait deux (mesuré : 6 appels
+ * pour 3 bandes), et une passe ABANDONNÉE est rejouée par React pour sa trace d'erreur. Un port
+ * doit donc être une fonction PURE — c'est déjà ce que le contrat exige de lui.
  *
  * Les hooks du kit sont déclarés AVANT l'appel, à position fixe : quoi que fasse le port, le
  * préfixe de la liste de hooks de cette instance ne bouge pas.
@@ -334,27 +368,48 @@ function BlurLayerSlot({ spec, render, ledger, onOutcome }: BlurLayerSlotProps):
  * bande rend alors `null`, ce qui est visuellement IDENTIQUE au repli : le voile teinté, lui,
  * est rendu par le parent dans les deux modes.
  *
- * Le `try` couvre AUSSI les vérifications : lire `element.props` sur un objet fourni par
+ * Le `try` couvre AUSSI les vérifications : lire `type` ou `props` sur un objet fourni par
  * l'application peut lever (accesseur hostile), et cela doit FERMER, pas tomber.
+ *
+ * UNE SEULE LECTURE, PUIS RÉ-ÉMISSION — c'est le correctif d'un TOCTOU démontré. Vérifier
+ * `element.props` puis rendre `element` laisse React RELIRE `props` : sur un élément forgé à la
+ * main, un accesseur rend alors autre chose que ce qui a été vérifié. Le kit lit donc `type` et
+ * `props` exactement une fois, dans des locales, puis reconstruit l'élément lui-même avec SA
+ * matière — `intensity`, `tint`, `style` — et SANS enfant. Pour un port honnête l'élément
+ * reconstruit est identique au sien (les trois champs valaient déjà les nôtres, et il n'avait
+ * pas d'enfant) ; pour un port forgé, l'objet piégé n'atteint jamais React.
  */
 function callPort(
   render: RenderBlurLayer,
   spec: BlurLayerSpec,
 ): { readonly outcome: SlotOutcome; readonly element: ReactElement | null } {
   try {
-    const element: unknown = render(spec);
-    if (element === null || element === undefined) return { outcome: 'null', element: null };
+    const returned: unknown = render(spec);
+    if (returned === null || returned === undefined) return { outcome: 'null', element: null };
     // Le typage ne protège que le code typé. Une chaîne rendue ici deviendrait du TEXTE dans
     // une zone que le contrat déclare sans texte ni information : on refuse, et on ferme.
-    if (!isValidElement(element)) return { outcome: 'invalid', element: null };
+    if (!isValidElement(returned)) return { outcome: 'invalid', element: null };
+    // LES DEUX SEULES LECTURES, capturées avant tout examen : au-delà, un accesseur pourrait
+    // servir une valeur au kit et une autre à React.
+    const type: unknown = returned.type;
+    const props: unknown = returned.props;
     // `isValidElement()` rend TRUE pour un Fragment — et un Fragment porte n'importe quoi,
     // `<>{'texte'}</>` compris. Il traversait le garde et React peignait le texte. Un Fragment
     // n'est pas une couche : c'est un passe-plat, refusé au même rang que la chaîne nue.
-    if (element.type === Fragment) return { outcome: 'invalid', element: null };
+    if (type === Fragment) return { outcome: 'invalid', element: null };
     // La matière rendue doit être celle qu'on a remise — sinon le port impose la sienne là où
     // le lavis ne le couvre pas encore (bord libre). Voir `honorsMaterial`.
-    if (!honorsMaterial(element, spec)) return { outcome: 'tampered', element: null };
-    return { outcome: 'element', element };
+    if (!honorsMaterial(props, spec)) return { outcome: 'tampered', element: null };
+    return {
+      outcome: 'element',
+      element: createElement(type as ElementType, {
+        ...(props as Record<string, unknown>),
+        intensity: spec.intensity,
+        tint: spec.tint,
+        style: spec.style,
+        children: undefined,
+      }),
+    };
   } catch {
     return { outcome: 'threw', element: null };
   }
@@ -519,12 +574,18 @@ export function ProgressiveBlurBob({
    * faite — le socle l'écrit, l'invariant y est structurel : on transmet `within`. En
    * DÉVELOPPEMENT, une hauteur de shell non déclarée n'est pas « pas de problème », c'est
    * « assertion impossible » : elle vaut refus, et le développeur reçoit un avertissement nommé.
+   *
+   * ON NE COERCE RIEN. `height > devShellHeight` sur une valeur qui n'est pas un nombre
+   * appellerait son `valueOf` — un `valueOf` qui lève emporterait l'écran depuis le RENDU, au
+   * -dessus de toute frontière. `Number.isFinite` ne convertit pas : il répond `false` et
+   * l'assertion redevient simplement « impossible », donc refus.
    */
+  const shellHeight = Number.isFinite(devShellHeight) ? Number(devShellHeight) : Number.NaN;
   const envelope: BlurEnvelopeAssertion = !isDevelopment()
     ? 'within'
-    : devShellHeight === undefined
+    : !Number.isFinite(shellHeight) || !Number.isFinite(height)
       ? 'unverified'
-      : height > devShellHeight
+      : height > shellHeight
         ? 'overflow'
         : 'within';
 
