@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
-import { PrismaClient } from '@prisma/client';
 
 const KEY_SPACE = 'bob-agent-mission-fingerprint-hmac-v1';
 const DOMAIN = Buffer.from('bob.agent-mission.fingerprint-hmac-key.v1\0', 'utf8');
@@ -526,6 +525,11 @@ async function main() {
   let prisma;
   try {
     const config = parseAgentMissionFingerprintKeyOperation(process.argv[2]);
+    // This module also exposes the dependency-free keyring parser used by the
+    // staging Railway safety control plane before `pnpm install`. Resolve
+    // Prisma only for the database-mutating CLI entry point so importing the
+    // safety operator can never depend on application packages being present.
+    const { PrismaClient } = await import('@prisma/client');
     prisma = new PrismaClient({ datasourceUrl: process.env.DIRECT_URL });
     await prisma.$connect();
     const result = await manageAgentMissionFingerprintKeyVersions(config, prisma);

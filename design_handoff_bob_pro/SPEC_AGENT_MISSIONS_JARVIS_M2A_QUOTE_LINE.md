@@ -1815,6 +1815,14 @@ concurrente empêche le retour canonique `OFF`, l'opérateur arme les kill switc
 restaure ensuite la capacité globale, puis refuse de présenter cet état d'urgence comme un `OFF`
 canonique.
 
+Le control plane Railway chargé avant `pnpm install` doit rester importable dans un checkout sans
+`node_modules`. Le parseur de keyring partagé ne charge donc Prisma qu'au point d'entrée CLI qui
+mute réellement la base ; un test d'isolation copie les deux scripts dans un répertoire temporaire
+sans dépendance applicative et exécute la commande `serving-deployment-id` utilisée par le bind.
+L'incident staging `30654276259` a prouvé la
+mise à l'abri DB mais a refusé le bind runtime à cause de cette frontière auparavant incorrecte ;
+ce run n'est ni un reçu `OFF` ni une autorisation d'activation.
+
 - [ ] checkout, release Railway et `/health/ready` portent le même SHA exact ;
 - [ ] les variables staging valent V1 master `true`, M2-A master `true`, keyring/version stables,
       sans bloc partiel ni matériau remplacé ;
@@ -1825,6 +1833,8 @@ canonique.
       hangup ; une capability nulle ou V1 échoue ;
 - [ ] le chemin d'échec remet d'abord le flag DB `OFF`, retire uniquement le bloc Railway possédé
       puis prouve l'état fermé ;
+- [x] le control plane Railway nécessaire avant l'installation des dépendances s'importe sans
+      `node_modules` et Prisma n'est résolu que par le point d'entrée DB explicite ;
 - [ ] le reçu non-PII lie décision, SHA, versions de flags, déploiement et résultat du canary.
 
 ## 18. Definition of Done
