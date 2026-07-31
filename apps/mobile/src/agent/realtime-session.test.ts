@@ -2,12 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { ok } from '@bob/core';
 import type { AgentContext } from '@bob/ai';
 import {
+  REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
   REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
   type RealtimeAgentMissionSession,
   type RealtimeVoiceConfig,
 } from '@bob/api-client';
 import type { RealtimeResilienceEvent } from '../realtime/realtime-resilience-orchestrator';
-import type { AgentMissionRuntimeBridge } from './agent-mission-runtime';
+import {
+  AgentMissionRuntimeOwner,
+  type AgentMissionRuntimeBridge,
+} from './agent-mission-runtime';
 import {
   RealtimeSessionController,
   type RealtimeOrchestratorLike,
@@ -32,17 +36,69 @@ const NEGOTIATION: RealtimeVoiceConfig = Object.freeze({
   speechDelivery: 'audited-signed-url-v1',
 });
 
+const NATIVE_WEBRTC_NEGOTIATION: RealtimeVoiceConfig = Object.freeze({
+  ...NEGOTIATION,
+  configVersion: 'bob-live-provider-neutral-v4',
+  speechDelivery: 'openai-native-webrtc-v1',
+});
+
+const MISTRAL_NEGOTIATION: RealtimeVoiceConfig = Object.freeze({
+  available: true,
+  transport: 'mistral-pcm',
+  model: 'voxtral-mini-transcribe-realtime-2602',
+  voice: 'marin',
+  configVersion: 'bob-live-provider-neutral-v2',
+  requiresDevelopmentBuild: true,
+  maxSessionSeconds: 60,
+  speechDelivery: 'audited-signed-url-v1',
+});
+
+function acceptingMissionRuntime(): AgentMissionRuntimeBridge {
+  return {
+    adopt: () => true,
+    invalidateContext: () => undefined,
+    confirmContext: () => true,
+    settleTurn: () => true,
+    release: () => true,
+  };
+}
+
+function owningMissionRuntime(): AgentMissionRuntimeBridge {
+  let owned: RealtimeAgentMissionSession | null = null;
+  return {
+    adopt: (session) => {
+      if (owned !== null && owned !== session) owned.dispose();
+      owned = session;
+      return true;
+    },
+    invalidateContext: () => undefined,
+    confirmContext: () => true,
+    settleTurn: () => true,
+    release: (realtimeSessionId) => {
+      if (owned?.realtimeSessionId !== realtimeSessionId) return false;
+      const released = owned;
+      owned = null;
+      released.dispose();
+      return true;
+    },
+  };
+}
+
 function missionSessionStub(
   log: string[],
   label: string,
   realtimeSessionId = `realtime-${label}`,
+  protocolVersion:
+    | typeof REALTIME_AGENT_MISSION_PROTOCOL_VERSION
+    | typeof REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION =
+      REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
 ): RealtimeAgentMissionSession {
   let disposed = false;
   const unused = async (): Promise<never> => {
     throw new Error('unused_agent_mission_method');
   };
   return {
-    protocolVersion: REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
+    protocolVersion,
     realtimeSessionId,
     get disposed() {
       return disposed;
@@ -82,15 +138,29 @@ function harness(
       | { ok: false; error: { kind: 'dependency'; port: string; cause: string } }
     >;
     allowMicrophoneActivation?: () => Promise<boolean>;
+    ensureConfirmedTimeZoneForMissionV2?: () => Promise<boolean>;
     synchronizeContext?: (
       fence: import('./realtime-driver').RealtimePublishedFence,
     ) => Promise<boolean>;
     emitCommitOnFinish?: boolean;
     failAgentMissionNegotiation?: boolean;
     agentMissionRuntime?: AgentMissionRuntimeBridge;
+    /** Simule volontairement un montage audité sans propriétaire runtime. */
+    omitAgentMissionRuntime?: boolean;
+    negotiation?: RealtimeVoiceConfig;
   } = {},
 ) {
   const log: string[] = input.log ?? [];
+  const negotiated = input.negotiation ?? NEGOTIATION;
+  const effectiveAgentMissionRuntime =
+    input.agentMissionRuntime
+    ?? (
+      input.omitAgentMissionRuntime !== true
+      && negotiated.transport === 'webrtc'
+      && negotiated.speechDelivery === 'audited-signed-url-v1'
+        ? owningMissionRuntime()
+        : undefined
+    );
   let nextAgentMissionSession = 0;
   let emit: (event: RealtimeResilienceEvent) => void = () => undefined;
   const external: {
@@ -98,17 +168,35 @@ function harness(
     fallback: import('../realtime/realtime-resilience-orchestrator').LegacyVoiceFallbackPort | null;
     negotiations: number;
     receivedNegotiation: RealtimeVoiceConfig | null;
+    receivedAgentMissionProtocolVersion:
+      | typeof REALTIME_AGENT_MISSION_PROTOCOL_VERSION
+      | typeof REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
+      | null;
     reconnect: ((label: string, handle?: string | null) => RealtimeTransportLike) | null;
   } = {
     resolveStart: null,
     fallback: null,
     negotiations: 0,
     receivedNegotiation: null,
+    receivedAgentMissionProtocolVersion: null,
     reconnect: null,
   };
   const createTransport = (label: string | null, handle: string | null): RealtimeTransportLike => {
-    let agentMissionSession =
-      input.agentMissionSessions?.[nextAgentMissionSession++] ?? null;
+    const explicitAgentMissionSessions = input.agentMissionSessions;
+    let agentMissionSession = explicitAgentMissionSessions === undefined
+      ? (
+          handle !== null
+          && negotiated.transport === 'webrtc'
+          && negotiated.speechDelivery === 'audited-signed-url-v1'
+            ? missionSessionStub(
+                log,
+                `auto-mission-${label ?? 'initial'}`,
+                handle,
+                REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
+              )
+            : null
+        )
+      : explicitAgentMissionSessions[nextAgentMissionSession++] ?? null;
     const trace = (entry: string): void => {
       log.push(label === null ? entry : `${label}:${entry}`);
     };
@@ -193,8 +281,10 @@ function harness(
         external.negotiations += 1;
         return input.available === false
           ? { ...NEGOTIATION, available: false, availabilityReason: 'not_entitled' }
-          : NEGOTIATION;
+          : negotiated;
       },
+      ensureConfirmedTimeZoneForMissionV2:
+        input.ensureConfirmedTimeZoneForMissionV2 ?? (async () => true),
       updateContext: async (handle, update) => {
         log.push(`publish:${handle}:r${update.revision}`);
         if (input.updateContextImpl) return input.updateContextImpl(handle, update.revision);
@@ -206,8 +296,16 @@ function harness(
         }
         return ok({ revision: update.revision, contextDigest: `digest-${update.revision}` });
       },
-      createOrchestrator: (negotiation, fallback, _currentFence, onPrimaryCreated) => {
+      createOrchestrator: (
+        negotiation,
+        agentMissionProtocolVersion,
+        fallback,
+        _currentFence,
+        onPrimaryCreated,
+      ) => {
         external.receivedNegotiation = negotiation;
+        external.receivedAgentMissionProtocolVersion =
+          agentMissionProtocolVersion;
         onPrimaryCreated(transport);
         external.reconnect = (label, handle = `h-${label}`) => {
           const fresh = createTransport(label, handle);
@@ -238,9 +336,9 @@ function harness(
       }),
       allowMicrophoneActivation: input.allowMicrophoneActivation
         ?? (async () => true),
-      ...(input.agentMissionRuntime === undefined
+      ...(effectiveAgentMissionRuntime === undefined
         ? {}
-        : { agentMissionRuntime: input.agentMissionRuntime }),
+        : { agentMissionRuntime: effectiveAgentMissionRuntime }),
     },
     hooks,
   );
@@ -261,6 +359,18 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     expect(await controller.start()).toBe('realtime');
     expect(external.negotiations).toBe(1);
     expect(external.receivedNegotiation).toBe(NEGOTIATION);
+    expect(external.receivedAgentMissionProtocolVersion)
+      .toBe(REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION);
+  });
+
+  it('conserve OpenAI natif sans capability Mission et transmet explicitement null', async () => {
+    const h = harness({ negotiation: NATIVE_WEBRTC_NEGOTIATION });
+
+    await expect(h.controller.start()).resolves.toBe('realtime');
+
+    expect(h.external.receivedNegotiation).toBe(NATIVE_WEBRTC_NEGOTIATION);
+    expect(h.external.receivedAgentMissionProtocolVersion).toBeNull();
+    expect(h.log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
   });
 
   it('serveur indisponible (entitlement/rollout) → unavailable, rien ne démarre', async () => {
@@ -269,15 +379,119 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     expect(log).toEqual([]);
   });
 
-  it('reprise V1 indisponible : échoue fermée sans jamais appeler le fallback legacy', async () => {
-    const { controller, log } = harness({ available: false });
+  it('demande le fuseau après la négociation uniquement pour Mission V2', async () => {
+    const order: string[] = [];
+    const h = harness({
+      ensureConfirmedTimeZoneForMissionV2: async () => {
+        order.push('time-zone');
+        return false;
+      },
+    });
 
-    await expect(controller.resumeMissionV1()).resolves.toBe('failed_closed');
+    await expect(h.controller.start()).resolves.toBe('cancelled');
+
+    expect(h.external.negotiations).toBe(1);
+    expect(order).toEqual(['time-zone']);
+    expect(h.external.receivedNegotiation).toBeNull();
+    expect(h.log.some((entry) => entry.startsWith('mic:'))).toBe(false);
+  });
+
+  it('ne bloque jamais une reprise V1 sur la confirmation du fuseau V2', async () => {
+    const log: string[] = [];
+    let timeZoneGateCalls = 0;
+    const realtimeSessionId = '08000000-0000-4000-8000-000000000001';
+    const h = harness({
+      log,
+      handle: realtimeSessionId,
+      ensureConfirmedTimeZoneForMissionV2: async () => {
+        timeZoneGateCalls += 1;
+        return false;
+      },
+      agentMissionSessions: [
+        missionSessionStub(
+          log,
+          'resume-v1-without-time-zone',
+          realtimeSessionId,
+          REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
+        ),
+      ],
+      agentMissionRuntime: acceptingMissionRuntime(),
+    });
+
+    const pending = h.controller.resumeMissionV1();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+
+    await expect(pending).resolves.toBe('resumed');
+    expect(timeZoneGateCalls).toBe(0);
+    expect(log).toContain('mic:true');
+  });
+
+  it.each([
+    ['OpenAI natif', NATIVE_WEBRTC_NEGOTIATION],
+    ['Mistral', MISTRAL_NEGOTIATION],
+  ] as const)(
+    'ne bloque jamais %s sans Mission V2 sur la confirmation temporelle',
+    async (_label, negotiation) => {
+      let timeZoneGateCalls = 0;
+      const h = harness({
+        negotiation,
+        ensureConfirmedTimeZoneForMissionV2: async () => {
+          timeZoneGateCalls += 1;
+          return false;
+        },
+      });
+
+      await expect(h.controller.start()).resolves.toBe('realtime');
+
+      expect(timeZoneGateCalls).toBe(0);
+      expect(h.external.receivedAgentMissionProtocolVersion).toBeNull();
+    },
+  );
+
+  it('reprise V2 indisponible : échoue fermée sans jamais appeler le fallback legacy', async () => {
+    const { controller, log } = harness({
+      available: false,
+      agentMissionRuntime: acceptingMissionRuntime(),
+    });
+
+    await expect(controller.resumeMissionV2()).resolves.toBe('failed_closed');
     expect(log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
     expect(log).not.toContain('mic:true');
   });
 
-  it('reprise V1 ne réussit qu’après capability, contexte confirmé et micro ouvert', async () => {
+  it('reprise V2 sans runtime propriétaire échoue avant négociation, contexte et micro', async () => {
+    const h = harness({ omitAgentMissionRuntime: true });
+
+    await expect(h.controller.resumeMissionV2()).resolves.toBe('failed_closed');
+
+    expect(h.external.negotiations).toBe(0);
+    expect(h.external.receivedNegotiation).toBeNull();
+    expect(h.log.some((entry) => entry.startsWith('publish:'))).toBe(false);
+    expect(h.log).not.toContain('mic:true');
+  });
+
+  it.each([
+    ['Mistral V1', MISTRAL_NEGOTIATION],
+    ['OpenAI native non certifié', NATIVE_WEBRTC_NEGOTIATION],
+  ] as const)(
+    'reprise V2 refuse %s avant de créer le transport',
+    async (_label, negotiation) => {
+      const h = harness({
+        negotiation,
+        agentMissionRuntime: acceptingMissionRuntime(),
+      });
+
+      await expect(h.controller.resumeMissionV2()).resolves.toBe('failed_closed');
+
+      expect(h.external.negotiations).toBe(1);
+      expect(h.external.receivedNegotiation).toBeNull();
+      expect(h.log.some((entry) => entry.startsWith('publish:'))).toBe(false);
+      expect(h.log).not.toContain('mic:true');
+    },
+  );
+
+  it('reprise V2 ne réussit qu’après capability V2, contexte confirmé et micro ouvert', async () => {
     const log: string[] = [];
     const realtimeSessionId = '09000000-0000-4000-8000-000000000001';
     const runtime: AgentMissionRuntimeBridge = {
@@ -302,7 +516,7 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
       agentMissionRuntime: runtime,
     });
 
-    const pending = h.controller.resumeMissionV1();
+    const pending = h.controller.resumeMissionV2();
     await new Promise((resolve) => setTimeout(resolve, 0));
     let settled = false;
     void pending.then(() => {
@@ -315,19 +529,71 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     expect(log.indexOf('runtime:adopt')).toBeLessThan(log.indexOf('runtime:confirm'));
     expect(log.indexOf('runtime:confirm')).toBeLessThan(log.indexOf('mic:true'));
     expect(log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+    expect(h.external.receivedAgentMissionProtocolVersion)
+      .toBe(REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION);
   });
 
-  it('reprise V1 sans capability ferme le primaire au lieu de lancer le legacy', async () => {
+  it('reprise V1 auditée transmet V1 et ne réussit qu’après son contexte exact', async () => {
+    const log: string[] = [];
+    const realtimeSessionId = '09000000-0000-4000-8000-000000000011';
     const h = harness({
-      agentMissionRuntime: {
-        adopt: () => true,
-        invalidateContext: () => undefined,
-        confirmContext: () => true,
-        settleTurn: () => true,
-        release: () => true,
-      },
+      log,
+      handle: realtimeSessionId,
+      agentMissionSessions: [
+        missionSessionStub(
+          log,
+          'resume-v1',
+          realtimeSessionId,
+          REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
+        ),
+      ],
+      agentMissionRuntime: acceptingMissionRuntime(),
     });
+
     const pending = h.controller.resumeMissionV1();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+
+    await expect(pending).resolves.toBe('resumed');
+    expect(h.external.receivedAgentMissionProtocolVersion)
+      .toBe(REALTIME_AGENT_MISSION_PROTOCOL_VERSION);
+    expect(log).toContain('mic:true');
+    expect(log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+  });
+
+  it('reprise V1 détruit une capability V2 sans publier le contexte ni ouvrir le micro', async () => {
+    const log: string[] = [];
+    const realtimeSessionId = '09000000-0000-4000-8000-000000000012';
+    const h = harness({
+      log,
+      handle: realtimeSessionId,
+      agentMissionSessions: [
+        missionSessionStub(
+          log,
+          'resume-v2-refused',
+          realtimeSessionId,
+          REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
+        ),
+      ],
+      agentMissionRuntime: acceptingMissionRuntime(),
+    });
+
+    const pending = h.controller.resumeMissionV1();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+
+    await expect(pending).resolves.toBe('failed_closed');
+    expect(log).toContain('resume-v2-refused:dispose');
+    expect(log.some((entry) => entry.startsWith('publish:'))).toBe(false);
+    expect(log).not.toContain('mic:true');
+  });
+
+  it('reprise V2 sans capability ferme le primaire au lieu de lancer le legacy', async () => {
+    const h = harness({
+      agentMissionSessions: [null],
+      agentMissionRuntime: acceptingMissionRuntime(),
+    });
+    const pending = h.controller.resumeMissionV2();
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
@@ -337,9 +603,37 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     expect(h.log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
   });
 
-  it('reprise V1 interdit aussi le fallback demandé par l’orchestrateur', async () => {
-    const h = harness({ deferStart: true });
-    const pending = h.controller.resumeMissionV1();
+  it('start frais V2 sans capability ferme la session sans jamais rallumer le legacy', async () => {
+    const h = harness({ agentMissionSessions: [null] });
+
+    await expect(h.controller.start()).resolves.toBe('realtime');
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(h.log).toContain('orchestrator:stop');
+    expect(h.log).toContain('failed-closed:provider_error');
+    expect(h.log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+    expect(h.log).not.toContain('mic:true');
+    expect(h.controller.active).toBe(false);
+  });
+
+  it('start frais audité sans runtime propriétaire échoue avant transport et micro', async () => {
+    const h = harness({ omitAgentMissionRuntime: true });
+
+    await expect(h.controller.start()).resolves.toBe('failed_closed');
+
+    expect(h.external.negotiations).toBe(1);
+    expect(h.external.receivedNegotiation).toBeNull();
+    expect(h.log.some((entry) => entry.startsWith('publish:'))).toBe(false);
+    expect(h.log.some((entry) => entry.startsWith('mic:'))).toBe(false);
+  });
+
+  it('reprise V2 interdit aussi le fallback demandé par l’orchestrateur', async () => {
+    const h = harness({
+      deferStart: true,
+      agentMissionRuntime: acceptingMissionRuntime(),
+    });
+    const pending = h.controller.resumeMissionV2();
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     await h.external.fallback?.start({
@@ -351,6 +645,33 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     await expect(pending).resolves.toBe('failed_closed');
     expect(h.log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
     expect(h.log).not.toContain('mic:true');
+  });
+
+  it('reprise V2 détruit une capability V1 sans publier le contexte ni ouvrir le micro', async () => {
+    const log: string[] = [];
+    const realtimeSessionId = '09000000-0000-4000-8000-000000000010';
+    const h = harness({
+      log,
+      handle: realtimeSessionId,
+      agentMissionSessions: [
+        missionSessionStub(
+          log,
+          'resume-v1-refused',
+          realtimeSessionId,
+          REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
+        ),
+      ],
+      agentMissionRuntime: acceptingMissionRuntime(),
+    });
+
+    const pending = h.controller.resumeMissionV2();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+
+    await expect(pending).resolves.toBe('failed_closed');
+    expect(log).toContain('resume-v1-refused:dispose');
+    expect(log.some((entry) => entry.startsWith('publish:'))).toBe(false);
+    expect(log).not.toContain('mic:true');
   });
 
   it('retourne failed_closed sans boucle legacy si la négociation mission échoue', async () => {
@@ -495,7 +816,10 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
         log.push(`runtime:settle:${sessionId}:${settlement.turnId}:${settlement.status}`);
         return true;
       },
-      release: () => true,
+      release: (sessionId) => {
+        log.push(`runtime:release:${sessionId}`);
+        return true;
+      },
     };
     const { controller, emit } = harness({
       log,
@@ -527,7 +851,53 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     await controller.stop('user');
     expect(log).not.toContain('mission-owned:dispose');
     expect(log).toContain(`runtime:invalidate:${realtimeSessionId}`);
+    expect(log).toContain(`runtime:release:${realtimeSessionId}`);
+    expect(log.indexOf(`runtime:release:${realtimeSessionId}`))
+      .toBeLessThan(log.indexOf('orchestrator:stop'));
   });
+
+  it.each(['user', 'background', 'unmount'] as const)(
+    'libère réellement le runtime sur stop(%s), sans handle dormant avant une reprise froide',
+    async (reason) => {
+      const log: string[] = [];
+      const realtimeSessionId = `14000000-0000-4000-8000-00000000000${
+        reason === 'user' ? '1' : reason === 'background' ? '2' : '3'
+      }`;
+      const owner = new AgentMissionRuntimeOwner();
+      const h = harness({
+        log,
+        handle: realtimeSessionId,
+        agentMissionSessions: [
+          missionSessionStub(log, `mission-${reason}`, realtimeSessionId),
+        ],
+        agentMissionRuntime: owner,
+        updateContextImpl: async (_handle, revision) => ok({
+          revision,
+          contextDigest: 'c'.repeat(64),
+        }),
+      });
+      await h.controller.start();
+      h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(owner.snapshot()).toMatchObject({
+        protocolVersion: REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
+        realtimeSessionId,
+      });
+      expect(owner.snapshot().confirmedContext).not.toBeNull();
+
+      await h.controller.stop(reason);
+
+      expect(owner.snapshot()).toMatchObject({
+        protocolVersion: null,
+        realtimeSessionId: null,
+        confirmedContext: null,
+      });
+      expect(log).toContain(`mission-${reason}:dispose`);
+      expect(log.indexOf(`mission-${reason}:dispose`))
+        .toBeLessThan(log.indexOf('orchestrator:stop'));
+    },
+  );
 
   it('échoue fermé sans ouvrir le micro si le provider perd la propriété avant confirmation', async () => {
     const log: string[] = [];
@@ -734,7 +1104,7 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     expect(controller.active).toBe(false);
   });
 
-  it('handle indisponible → FAIL-CLOSED : pas de publication, JAMAIS de micro, stop + repli', async () => {
+  it('handle indisponible sous protocole V2 → FAIL-CLOSED, jamais de cerveau legacy', async () => {
     const { controller, log, emit } = harness({ handle: null });
     await controller.start();
     emit({ type: 'transport', event: { type: 'state', state: readyState } });
@@ -742,7 +1112,8 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     expect(log.some((entry) => entry.startsWith('publish:'))).toBe(false);
     expect(log).not.toContain('mic:true');
     expect(log).toContain('orchestrator:stop');
-    expect(log.some((entry) => entry.startsWith('fallback:'))).toBe(true);
+    expect(log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+    expect(log).toContain('failed-closed:provider_error');
   });
 
   const candidate = (turnId: string) => ({
@@ -784,7 +1155,7 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     expect(hostile.log.some((entry) => entry.startsWith('nav:'))).toBe(false);
   });
 
-  it('changement d’écran : micro OFF → interrupt(navigation) → PUT → micro ON ; PUT en échec → stop + fallback', async () => {
+  it('changement d’écran : micro OFF → interrupt → PUT → micro ON ; échec V2 → stop fail-closed', async () => {
     const okCase = harness();
     await okCase.controller.start();
     okCase.emit({ type: 'transport', event: { type: 'state', state: readyState } });
@@ -800,11 +1171,12 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
 
     const failing = harness({ putFails: true });
     await failing.controller.start();
-    // publication initiale en échec → session stoppée + fallback honnête
+    // Publication initiale en échec sous V2 : jamais de cerveau historique de secours.
     failing.emit({ type: 'transport', event: { type: 'state', state: readyState } });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(failing.log).toContain('orchestrator:stop');
-    expect(failing.log.some((entry) => entry.startsWith('fallback:'))).toBe(true);
+    expect(failing.log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+    expect(failing.log).toContain('failed-closed:provider_error');
     expect(failing.log).not.toContain('mic:true');
   });
 
@@ -827,7 +1199,8 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     expect(refused.log).toContain('sync:r1');
     expect(refused.log).not.toContain('mic:true');
     expect(refused.log).toContain('orchestrator:stop');
-    expect(refused.log.some((entry) => entry.startsWith('fallback:'))).toBe(true);
+    expect(refused.log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+    expect(refused.log).toContain('failed-closed:provider_error');
   });
 
   it('commit semi-duplex : finalise l’utterance sans stopper puis passe en traitement', async () => {
@@ -1130,6 +1503,44 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     expect(log).toContain('orchestrator:stop');
   });
 
+  it('un stop lifecycle ferme et notifie une seule fois sans rejection non gérée si release refuse', async () => {
+    const realtimeSessionId = '13000000-0000-4000-8000-000000000002';
+    const log: string[] = [];
+    const h = harness({
+      log,
+      handle: realtimeSessionId,
+      agentMissionSessions: [
+        missionSessionStub(log, 'mission-lifecycle-release-refused', realtimeSessionId),
+      ],
+      agentMissionRuntime: {
+        adopt: () => true,
+        invalidateContext: () => undefined,
+        confirmContext: () => true,
+        settleTurn: () => true,
+        release: () => false,
+      },
+    });
+    await h.controller.start();
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    await expect(h.controller.stop('background')).resolves.toBeUndefined();
+
+    expect(log).toContain('orchestrator:stop');
+    expect(log.filter(
+      (entry) => entry === 'failed-closed:agent_mission_negotiation_failed',
+    )).toHaveLength(1);
+    expect(h.controller.active).toBe(false);
+
+    const negotiationsBeforeRestart = h.external.negotiations;
+    log.length = 0;
+    await expect(h.controller.start()).resolves.toBe('failed_closed');
+    expect(h.external.negotiations).toBe(negotiationsBeforeRestart);
+    expect(log.some((entry) => entry.startsWith('mic:'))).toBe(false);
+    expect(log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+    expect(log).not.toContain('orchestrator:stop');
+  });
+
   it('stop pendant ACK one-shot efface la decision terminale sans aucun effet UI tardif', async () => {
     let releaseGate!: () => void;
     const gateDelay = new Promise<void>((resolve) => {
@@ -1159,7 +1570,10 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     const gateDelay = new Promise<void>((resolve) => {
       releaseGate = resolve;
     });
-    const h = harness({ gateDelay });
+    const h = harness({
+      gateDelay,
+      negotiation: NATIVE_WEBRTC_NEGOTIATION,
+    });
     await h.controller.start();
     h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -1352,7 +1766,10 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
   });
 
   it('repli pendant le bootstrap (orchestrateur → legacy) : outcome=fallback, pas de double boucle', async () => {
-    const { controller, log, external } = harness({ deferStart: true });
+    const { controller, log, external } = harness({
+      deferStart: true,
+      negotiation: NATIVE_WEBRTC_NEGOTIATION,
+    });
     const pending = controller.start();
     await new Promise((resolve) => setTimeout(resolve, 0));
     // L'orchestrateur épuise ses retries et active le repli AVANT de résoudre start().
@@ -1363,8 +1780,28 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     expect(log).not.toContain('mic:true');
   });
 
+  it('bootstrap V2 audité en échec reste fail-closed avant même la prise de capability', async () => {
+    const { controller, log, external } = harness({
+      deferStart: true,
+      agentMissionSessions: [null],
+    });
+    const pending = controller.start();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    await external.fallback?.start({ reason: 'bootstrap_failed', channel: 'voice' });
+    external.resolveStart?.('legacy');
+
+    await expect(pending).resolves.toBe('failed_closed');
+    expect(log).toContain('failed-closed:bootstrap_failed');
+    expect(log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+    expect(log).not.toContain('mic:true');
+  });
+
   it('transmet le canal text_only après refus micro, sans le transformer en repli vocal', async () => {
-    const { controller, log, external } = harness({ deferStart: true });
+    const { controller, log, external } = harness({
+      deferStart: true,
+      negotiation: NATIVE_WEBRTC_NEGOTIATION,
+    });
     const pending = controller.start();
     await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -1377,7 +1814,9 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
   });
 
   it('redémarrage après un repli mid-call : start() repart d’un monde PROPRE (jamais un zombie)', async () => {
-    const { controller, log, emit, external } = harness();
+    const { controller, log, emit, external } = harness({
+      negotiation: NATIVE_WEBRTC_NEGOTIATION,
+    });
     await controller.start();
     emit({ type: 'transport', event: { type: 'state', state: readyState } });
     await new Promise((resolve) => setTimeout(resolve, 0));

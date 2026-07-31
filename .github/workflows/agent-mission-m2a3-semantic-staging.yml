@@ -1,0 +1,202 @@
+name: AgentMission M2-A-3 Semantic Model Staging
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+concurrency:
+  group: railway-api-staging
+  cancel-in-progress: false
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: staging
+    env:
+      RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+      RAILWAY_ENVIRONMENT_ID: ${{ vars.RAILWAY_ENVIRONMENT_ID }}
+      RAILWAY_API_SERVICE_ID: ${{ vars.RAILWAY_API_SERVICE_ID }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate the immutable staging target before installing dependencies
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          node <<'NODE'
+          const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+          const required = [
+            'RAILWAY_PROJECT_ID',
+            'RAILWAY_ENVIRONMENT_ID',
+            'RAILWAY_API_SERVICE_ID',
+            'RAILWAY_TOKEN',
+          ];
+          for (const name of required) {
+            const value = process.env[name];
+            if (
+              typeof value !== 'string'
+              || value.length < 1
+              || value.length > 16_384
+              || value !== value.trim()
+              || /[\u0000-\u001f\u007f]/u.test(value)
+            ) {
+              throw new Error(`${name} is required by the staging environment`);
+            }
+          }
+          for (const name of [
+            'RAILWAY_PROJECT_ID',
+            'RAILWAY_ENVIRONMENT_ID',
+            'RAILWAY_API_SERVICE_ID',
+          ]) {
+            if (!uuid.test(process.env[name] ?? '')) {
+              throw new Error(`${name} must be a UUID`);
+            }
+          }
+          if (!/^[a-f0-9]{40}$/.test(process.env.GITHUB_SHA ?? '')) {
+            throw new Error('GITHUB_SHA must be exact');
+          }
+          NODE
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - name: Install and build the exact semantic runtime
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter "@bob/api..." build
+          sh apps/api/scripts/install-railway-cli.sh
+      - name: Prove the versioned corpus and scorekeeper without network
+        run: >-
+          pnpm --filter @bob/api exec vitest run
+          src/voice/realtime/evaluation/m2a3-semantic-model-evaluation.test.ts
+          --reporter=verbose
+      - name: Run the exact staging OpenAI planner once per corpus case
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/.release-evidence/agent-mission-m2a3"
+          railway run --project "$RAILWAY_PROJECT_ID" \
+            --service "$RAILWAY_API_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+            env \
+              RUN_BOB_LIVE_M2A3_MODEL_EVAL=true \
+              BOB_LIVE_M2A3_EVAL_RELEASE_SHA="$GITHUB_SHA" \
+              BOB_LIVE_M2A3_EVAL_EVIDENCE_PATH="$GITHUB_WORKSPACE/.release-evidence/agent-mission-m2a3/semantic-model.json" \
+              pnpm --filter @bob/api exec vitest run \
+                src/voice/realtime/evaluation/m2a3-semantic-model-evaluation.live.test.ts \
+                --reporter=verbose
+      - name: Require a non-PII passing receipt for the exact SHA
+        run: |
+          node <<'NODE'
+          const { readFileSync } = require('node:fs');
+          const path = `${process.env.GITHUB_WORKSPACE}/.release-evidence/agent-mission-m2a3/semantic-model.json`;
+          const receipt = JSON.parse(readFileSync(path, 'utf8'));
+          const exactKeys = (value, expected) => {
+            if (
+              typeof value !== 'object'
+              || value === null
+              || Array.isArray(value)
+              || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify([...expected].sort())
+            ) {
+              throw new Error('M2-A-3 semantic receipt schema drifted');
+            }
+          };
+          const ids = [
+            'line-paraphrase-direct',
+            'line-paraphrase-familiar',
+            'catalogue-anaphora-price',
+            'required-fact-elliptical',
+            'confirmation-multiturn-correction',
+          ];
+          const modelName = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
+          const compatibleModel = (requested, returned) => (
+            returned === requested
+            || (
+              returned.startsWith(`${requested}-`)
+              && /^-\d{4}-\d{2}-\d{2}$/.test(returned.slice(requested.length))
+            )
+          );
+          exactKeys(receipt, [
+            'schema',
+            'version',
+            'scope',
+            'corpusVersion',
+            'releaseSha',
+            'provider',
+            'requestedModel',
+            'returnedModels',
+            'modelCompatible',
+            'completionCount',
+            'generateCount',
+            'providerRequestCount',
+            'outcome',
+            'failureStage',
+            'cases',
+          ]);
+          if (
+            receipt.schema !== 'bob.m2a3.semantic-model-eval'
+            || receipt.version !== 1
+            || receipt.scope !== 'quote_line_m2a3'
+            || receipt.corpusVersion !== 1
+            || receipt.releaseSha !== process.env.GITHUB_SHA
+            || receipt.provider !== 'openai'
+            || typeof receipt.requestedModel !== 'string'
+            || !modelName.test(receipt.requestedModel)
+            || receipt.modelCompatible !== true
+            || receipt.completionCount !== 5
+            || receipt.generateCount !== 0
+            || receipt.providerRequestCount !== 5
+            || receipt.outcome !== 'passed'
+            || receipt.failureStage !== null
+            || !Array.isArray(receipt.returnedModels)
+            || receipt.returnedModels.length < 1
+            || new Set(receipt.returnedModels).size !== receipt.returnedModels.length
+            || receipt.returnedModels.some(
+              (model) => typeof model !== 'string'
+                || !modelName.test(model)
+                || !compatibleModel(receipt.requestedModel, model),
+            )
+            || !Array.isArray(receipt.cases)
+            || receipt.cases.length !== 5
+          ) {
+            throw new Error('M2-A-3 semantic model receipt is incomplete or failing');
+          }
+          for (let index = 0; index < ids.length; index += 1) {
+            const entry = receipt.cases[index];
+            exactKeys(entry, ['id', 'passed', 'status', 'durationMs']);
+            if (
+              entry.id !== ids[index]
+              || entry.passed !== true
+              || entry.status !== 'mission_frame'
+              || !Number.isSafeInteger(entry.durationMs)
+              || entry.durationMs < 0
+              || entry.durationMs > 20_000
+            ) {
+              throw new Error('M2-A-3 semantic case receipt is incomplete or duplicated');
+            }
+          }
+          const serialized = JSON.stringify(receipt);
+          for (const forbidden of ['transcript', 'prompt', 'arguments', 'utterance']) {
+            if (serialized.toLowerCase().includes(forbidden)) {
+              throw new Error(`M2-A-3 receipt contains forbidden field: ${forbidden}`);
+            }
+          }
+          NODE
+      - name: Preserve exact-SHA semantic evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: agent-mission-m2a3-semantic-${{ github.sha }}
+          path: .release-evidence/agent-mission-m2a3/
+          if-no-files-found: error
+          retention-days: 90

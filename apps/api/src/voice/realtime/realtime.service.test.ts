@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { MISTRAL_CONVERSATION_PROTOCOL } from '@bob/ai';
 import type { AppError, Result } from '@bob/core';
 import { Metrics } from '../../observability/metrics';
-import { requestContext, setPrincipal, type AppLogger } from '../../observability/logger';
+import {
+  requestContext,
+  setPrincipal,
+  type AppLogger,
+  type Principal,
+} from '../../observability/logger';
 import { InMemoryRealtimeAdmission } from './realtime-admission.testing';
 import {
   type RealtimeAdmissionPolicy,
@@ -173,7 +178,14 @@ function sidebandStub(options: { terminateAfterAttach?: boolean } = {}): Realtim
 
 function runAsPrincipal<T>(
   fn: () => Promise<T>,
-  principal: { userId: string; companyId: string } = { userId: 'user-1', companyId: 'company-1' },
+  principal: Principal = {
+    userId: 'user-1',
+    companyId: 'company-1',
+    confirmedTimeZone: {
+      timeZone: 'Europe/Paris',
+      confirmedAt: '2026-07-31T00:00:00.000Z',
+    },
+  },
 ): Promise<T> {
   return requestContext.run({ correlationId: 'test-correlation' }, async () => {
     setPrincipal(principal);
@@ -582,6 +594,59 @@ describe('RealtimeVoiceService', () => {
     if (result.ok) {
       await runAsPrincipal(() => service.hangup(result.value.sessionHandle));
     }
+  });
+
+  it('ferme le bootstrap V2 sans fuseau confirmé avant entitlement, admission et provider', async () => {
+    const order: string[] = [];
+    const provider: OpenAiRealtimeCallProvider = {
+      createCall: vi.fn(),
+      hangupCall: vi.fn(async () => undefined),
+    };
+    const entitlements = entitled();
+    const gate = missionGate(
+      `bam2_${Buffer.alloc(32, 75).toString('base64url')}`,
+      'v2',
+    );
+    const service = new RealtimeVoiceService(
+      SETTINGS,
+      provider,
+      tracedAdmission(admission(), order),
+      sidebandStub(),
+      new Metrics(),
+      loggerStub(),
+      undefined,
+      entitlements,
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
+      undefined,
+      undefined,
+      undefined,
+      gate,
+    );
+
+    const result = await runAsPrincipal(
+      () => service.createCall({
+        ...AUDITED_BOOTSTRAP_BINDING,
+        agentMissionProtocolVersion: 2,
+        sdp: OFFER_SDP,
+      }),
+      {
+        userId: 'user-1',
+        companyId: 'company-1',
+      },
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { kind: 'forbidden' },
+    });
+    expect(entitlements.check).not.toHaveBeenCalled();
+    expect(order).toEqual([]);
+    expect(gate.prepare).not.toHaveBeenCalled();
+    expect(provider.createCall).not.toHaveBeenCalled();
+    expect(provider.hangupCall).not.toHaveBeenCalled();
   });
 
   it('forme l’autorité Mission du tour uniquement depuis la lease et sa preuve serveur', async () => {

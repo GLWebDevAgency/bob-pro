@@ -1,6 +1,9 @@
 import { Module, type Provider } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import type { SttPort } from '@bob/ai';
+import {
+  planRealtimeSemanticTurn,
+  type SttPort,
+} from '@bob/ai';
 import { QUOTE_CREATION_MISSION_KIND_V1 } from '@bob/core';
 import {
   buildLlmForProvider,
@@ -44,7 +47,10 @@ import {
 } from './mistral-conversation-bootstrap-reaper.scheduler';
 import { RealtimeSidebandManager } from './realtime-sideband';
 import { RealtimeVoiceService } from './realtime.service';
-import { RealtimeBobAgentTurnAdapter } from './realtime-agent-turn';
+import {
+  RealtimeBobAgentTurnAdapter,
+  type RealtimeSemanticPlannerPort,
+} from './realtime-agent-turn';
 import { RealtimeQuoteMissionOrchestrator } from './realtime-quote-mission-orchestrator';
 import { QuoteCreationMissionKindAdapter } from './quote-creation-mission-kind.adapter';
 import { RealtimeMissionKindRegistry } from './realtime-mission-kind';
@@ -114,6 +120,7 @@ import {
   REALTIME_AGENT_MISSION_ADMISSION,
   REALTIME_GLOBAL_CAPACITY_INSPECTOR,
   REALTIME_MISSION_KIND_REGISTRY,
+  REALTIME_SEMANTIC_PLANNER,
   REALTIME_AGENT_TURN,
   REALTIME_ENTITLEMENT,
   REALTIME_DURABLE_CONTROLS,
@@ -697,17 +704,29 @@ const sidebandProvider: Provider = {
 
 const realtimeMissionKindRegistryProvider: Provider = {
   provide: REALTIME_MISSION_KIND_REGISTRY,
-  inject: [REALTIME_VOICE_SETTINGS, AgentMissionService],
+  inject: [AgentMissionService],
+  useFactory: (missions: AgentMissionService) =>
+    new RealtimeMissionKindRegistry([
+      new QuoteCreationMissionKindAdapter(
+        new RealtimeQuoteMissionOrchestrator(missions),
+      ),
+    ]),
+};
+
+const realtimeSemanticPlannerProvider: Provider = {
+  provide: REALTIME_SEMANTIC_PLANNER,
+  inject: [REALTIME_VOICE_SETTINGS],
   useFactory: (
     settings: RealtimeVoiceSettings,
-    missions: AgentMissionService,
-  ) => {
+  ): RealtimeSemanticPlannerPort | null => {
     const llm = buildLlmForProvider(settings.provider);
-    return new RealtimeMissionKindRegistry([
-      new QuoteCreationMissionKindAdapter(
-        llm === undefined ? null : new RealtimeQuoteMissionOrchestrator(llm, missions),
-      ),
-    ]);
+    return llm === undefined
+      ? null
+      : Object.freeze({
+          plan: (
+            input: Parameters<RealtimeSemanticPlannerPort['plan']>[0],
+          ) => planRealtimeSemanticTurn(llm, input),
+        });
   },
 };
 
@@ -718,12 +737,14 @@ const realtimeAgentTurnProvider: Provider = {
     REALTIME_VOICE_SETTINGS,
     ModuleRef,
     REALTIME_MISSION_KIND_REGISTRY,
+    REALTIME_SEMANTIC_PLANNER,
   ],
   useFactory: (
     persistence: Persistence,
     settings: RealtimeVoiceSettings,
     moduleRef: ModuleRef,
     missionKinds: RealtimeMissionKindRegistry,
+    semanticPlanner: RealtimeSemanticPlannerPort | null,
   ) => new RealtimeBobAgentTurnAdapter(
     persistence,
     settings.provider,
@@ -731,6 +752,7 @@ const realtimeAgentTurnProvider: Provider = {
     // `strict:false` traverse le conteneur sans introduire un cycle de modules Nest.
     () => moduleRef.get(BackendService, { strict: false }),
     missionKinds.get(QUOTE_CREATION_MISSION_KIND_V1),
+    semanticPlanner,
   ),
 };
 
@@ -829,6 +851,7 @@ const realtimeSpeechSourcePolicyProvider: Provider = {
     mistralConversationBootstrapReaperProvider,
     mistralConversationBootstrapReaperOptionsProvider,
     realtimeMissionKindRegistryProvider,
+    realtimeSemanticPlannerProvider,
     realtimeAgentTurnProvider,
     realtimeEntitlementProvider,
     sidebandProvider,

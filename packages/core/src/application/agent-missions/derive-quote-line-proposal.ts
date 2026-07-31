@@ -1,4 +1,5 @@
 import {
+  calculateBillingLineTotalCents,
   MAX_BILLING_AMOUNT_CENTS,
 } from '../../domain/billing/shared/line-item';
 import { sha256Hex } from '../../shared-kernel/sha256';
@@ -14,6 +15,7 @@ import {
 import {
   type CatalogueCandidateRecord,
 } from '../ports/catalogue-candidate-search';
+import { MAX_BILLING_LINES } from '../billing/line-input-validation';
 import {
   deriveQuoteVatDecisionOptions,
   type QuoteVatDecisionContext,
@@ -33,6 +35,7 @@ export type QuoteLineProposalRejectionReason =
   | 'unsupported_vat_rate'
   | 'ineligible_reduced_rate'
   | 'inexact_total_price'
+  | 'line_limit_reached'
   | 'amount_out_of_bounds'
   | 'invalid_draft';
 
@@ -42,6 +45,19 @@ export interface ResolvedQuoteLineProposal {
   readonly metadata: QuoteDraftPayloadLineMetadata;
   readonly vatDecision: NonNullable<QuoteDraftPayloadV1['draft']['vatDecision']>;
   readonly diffHash: string;
+  readonly diff: QuoteLineAppendDiff;
+}
+
+export interface QuoteLineAppendDiffSnapshot {
+  readonly contentRevision: number;
+  readonly lineCount: number;
+  readonly totalHtCents: number;
+}
+
+export interface QuoteLineAppendDiff {
+  readonly kind: 'append_line';
+  readonly before: QuoteLineAppendDiffSnapshot;
+  readonly after: QuoteLineAppendDiffSnapshot;
 }
 
 export type QuoteLineProposalDerivation =
@@ -70,13 +86,48 @@ function rejected(
   return Object.freeze({ kind: 'rejected', reason });
 }
 
-function roundPositiveMilliAmount(
-  quantityMilli: number,
-  unitPriceCents: number,
-): bigint {
-  return (
-    BigInt(quantityMilli) * BigInt(unitPriceCents) + 500n
-  ) / 1_000n;
+function quoteDraftTotalHtCents(
+  payload: QuoteDraftPayloadV1,
+): number | null {
+  let total = 0;
+  for (const line of payload.draft.lines) {
+    const lineTotal = calculateBillingLineTotalCents(line);
+    if (lineTotal === null) return null;
+    total += lineTotal;
+    if (
+      !Number.isSafeInteger(total)
+      || total > MAX_BILLING_AMOUNT_CENTS
+    ) return null;
+  }
+  return total;
+}
+
+function appendDiff(
+  before: QuoteDraftPayloadV1,
+  after: QuoteDraftPayloadV1,
+): QuoteLineAppendDiff | null {
+  const beforeTotal = quoteDraftTotalHtCents(before);
+  const afterTotal = quoteDraftTotalHtCents(after);
+  if (
+    beforeTotal === null
+    || afterTotal === null
+    || after.draft.contentRevision !== before.draft.contentRevision + 1
+    || after.draft.lines.length !== before.draft.lines.length + 1
+    || afterTotal < beforeTotal
+  ) return null;
+  return Object.freeze({
+    kind: 'append_line',
+    before: Object.freeze({
+      contentRevision: before.draft.contentRevision,
+      lineCount: before.draft.lines.length,
+      totalHtCents: beforeTotal,
+    }),
+    after: Object.freeze({
+      contentRevision: after.draft.contentRevision,
+      lineCount: after.draft.lines.length,
+      totalHtCents: afterTotal,
+    }),
+  });
 }
 
 function resolvePerUnitPrice(input: {
@@ -116,9 +167,10 @@ export function computeQuoteDraftAppendLineDiffHash(input: {
   readonly line: QuoteDraftPayloadLine;
   readonly metadata: QuoteDraftPayloadLineMetadata;
   readonly vatDecision: NonNullable<QuoteDraftPayloadV1['draft']['vatDecision']>;
+  readonly diff: QuoteLineAppendDiff;
 }): string {
   return sha256Hex(JSON.stringify([
-    'bob.quote-draft.append-line-diff.v1',
+    'bob.quote-draft.append-line-diff.v2',
     [
       input.payload.draft.sessionId,
       input.payload.draft.contentRevision,
@@ -147,6 +199,19 @@ export function computeQuoteDraftAppendLineDiffHash(input: {
       input.vatDecision.rate,
       input.vatDecision.housingOlderThan2y ?? null,
       input.vatDecision.energyRenovation ?? null,
+    ],
+    [
+      input.diff.kind,
+      [
+        input.diff.before.contentRevision,
+        input.diff.before.lineCount,
+        input.diff.before.totalHtCents,
+      ],
+      [
+        input.diff.after.contentRevision,
+        input.diff.after.lineCount,
+        input.diff.after.totalHtCents,
+      ],
     ],
   ]));
 }
@@ -235,10 +300,10 @@ export function deriveQuoteLineProposal(input: {
   });
   if (price.kind === 'required_fact') return required('unit_price');
   if (price.kind === 'rejected') return rejected(price.reason);
-  if (
-    roundPositiveMilliAmount(quantityMilli, price.unitPriceCents)
-      > BigInt(MAX_BILLING_AMOUNT_CENTS)
-  ) {
+  if (calculateBillingLineTotalCents({
+    qty: quantityMilli / 1_000,
+    unitPriceHT: price.unitPriceCents,
+  }) === null) {
     return rejected('amount_out_of_bounds');
   }
 
@@ -288,6 +353,18 @@ export function deriveQuoteLineProposal(input: {
     unitPriceHT: price.unitPriceCents,
     vatRate: vat.rate,
   };
+  const lineTotalHtCents = calculateBillingLineTotalCents(line);
+  const currentTotalHtCents = quoteDraftTotalHtCents(parsedPayload.value);
+  if (currentTotalHtCents === null) return rejected('invalid_draft');
+  if (draft.lines.length >= MAX_BILLING_LINES) {
+    return rejected('line_limit_reached');
+  }
+  if (
+    lineTotalHtCents === null
+    || currentTotalHtCents + lineTotalHtCents > MAX_BILLING_AMOUNT_CENTS
+  ) {
+    return rejected('amount_out_of_bounds');
+  }
   const metadata: QuoteDraftPayloadLineMetadata = {
     id: input.workItem.id,
     interaction: input.workItem.origin === 'user_voice' ? 'voice' : 'manual',
@@ -309,6 +386,8 @@ export function deriveQuoteLineProposal(input: {
     vatDecision,
   });
   if (!appendCheck.ok) return rejected('invalid_draft');
+  const diff = appendDiff(parsedPayload.value, appendCheck.value);
+  if (diff === null) return rejected('invalid_draft');
 
   const facts: ResolvedAgentMissionQuoteLineFacts = {
     serviceReference,
@@ -333,7 +412,9 @@ export function deriveQuoteLineProposal(input: {
         line,
         metadata,
         vatDecision,
+        diff,
       }),
+      diff,
     }),
   });
 }

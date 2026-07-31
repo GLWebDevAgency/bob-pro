@@ -1,5 +1,6 @@
 import { timingSafeEqual } from 'node:crypto';
 import { ForbiddenException, Injectable, type CanActivate, type ExecutionContext } from '@nestjs/common';
+import { deriveConfirmedTimeZone } from '@bob/core';
 import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from 'jose';
 import { setPrincipal } from '../observability/logger';
 
@@ -120,7 +121,12 @@ export class SupabaseAuthGuard implements CanActivate {
         audience: process.env.SUPABASE_JWT_AUD ?? 'authenticated',
       });
       const claims = payload as {
-        app_metadata?: { company_id?: string };
+        app_metadata?: {
+          company_id?: string;
+          bob_time_zone?: unknown;
+          bob_time_zone_confirmed_at?: unknown;
+          bob_time_zone_company_id?: unknown;
+        };
         email?: unknown;
         email_verified?: unknown;
       };
@@ -144,6 +150,12 @@ export class SupabaseAuthGuard implements CanActivate {
         });
       }
       const email = typeof claims.email === 'string' ? claims.email.trim().toLowerCase() : null;
+      const confirmedTimeZone = deriveConfirmedTimeZone({
+        timeZone: meta?.bob_time_zone,
+        confirmedAt: meta?.bob_time_zone_confirmed_at,
+        boundCompanyId: meta?.bob_time_zone_company_id,
+        currentCompanyId: companyId,
+      });
       // Ne jamais faire autorité sur user_metadata.email_verified : ces métadonnées sont
       // modifiables par l'utilisateur. L'acceptation revalide l'email via GoTrue Admin en live.
       const emailVerified = claims.email_verified === true;
@@ -151,6 +163,7 @@ export class SupabaseAuthGuard implements CanActivate {
         userId,
         companyId,
         ...(email ? { email, emailVerified } : {}),
+        ...(confirmedTimeZone === null ? {} : { confirmedTimeZone }),
       });
       return true;
     } catch (e) {

@@ -1,15 +1,22 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { LlmPort, LlmToolCall } from '@bob/ai';
+import {
+  planRealtimeSemanticTurn,
+  type LlmPort,
+  type LlmToolCall,
+} from '@bob/ai';
 import type {
   AgentMissionViewV1,
   DecideQuoteAgentMissionOutput,
+  QuoteAgentMissionPlannerResumeV2,
   QuoteAgentMissionPresentationV1,
 } from '@bob/core';
 import {
   RealtimeQuoteMissionOrchestrator,
   type RealtimeQuoteMissionGateway,
+  type RealtimeQuoteMissionOrchestrationInput,
 } from './realtime-quote-mission-orchestrator';
 import type {
+  CancelQuoteAgentMissionPendingLineServiceOutput,
   DecideQuoteAgentMissionLineProposalServiceOutput,
   DecideQuoteAgentMissionCatalogueChoiceServiceOutput,
   PatchQuoteAgentMissionLineServiceOutput,
@@ -60,6 +67,80 @@ const EMPTY_PRESENTATION = Object.freeze({
   proposalStatus: Object.freeze({ kind: 'absent' }),
   proposal: null,
 }) satisfies QuoteAgentMissionPresentationV1;
+
+function plannerResumeForSnapshot(
+  snapshot: {
+    readonly mission: AgentMissionViewV1 | null;
+    readonly presentation: QuoteAgentMissionPresentationV1 | null;
+  },
+): QuoteAgentMissionPlannerResumeV2 {
+  if (snapshot.mission === null || snapshot.presentation === null) {
+    return Object.freeze({
+      resume: Object.freeze({ mission: null, presentation: null }),
+      currentLine: null,
+      confirmedLineCount: 0,
+      pendingLineCount: 0,
+    });
+  }
+  const draft = snapshot.mission.payload.draft;
+  if (draft === null) throw new Error('fixture mission V2 sans brouillon');
+  const customerDecision = snapshot.mission.payload.decision?.kind === 'customer'
+    ? snapshot.mission.payload.decision
+    : null;
+  const resume = Object.freeze({
+    mission: Object.freeze({
+      id: snapshot.mission.id,
+      status: snapshot.mission.status === 'active' ? 'active' : 'expired',
+      phase: snapshot.mission.phase,
+      revision: snapshot.mission.revision,
+      actionable: snapshot.mission.actionable,
+      draft: Object.freeze({ ...draft }),
+      idleExpiresAt: snapshot.mission.idleExpiresAt,
+      hardExpiresAt: snapshot.mission.hardExpiresAt,
+    }),
+    draft: Object.freeze({
+      ...draft,
+      step:
+        snapshot.mission.phase === 'awaiting_customer'
+        || snapshot.mission.phase === 'awaiting_customer_choice'
+          ? ('client' as const)
+          : ('lignes' as const),
+    }),
+    customerChoices: Object.freeze(
+      customerDecision?.candidates.map((candidate, index) => Object.freeze({
+        status: 'available' as const,
+        choiceId: candidate.choiceId,
+        label: `Client ${index + 1}`,
+      })) ?? [],
+    ),
+    presentation: snapshot.presentation,
+  });
+  const pending = snapshot.presentation.pendingLine;
+  return Object.freeze({
+    resume,
+    currentLine: pending === null
+      ? null
+      : Object.freeze({
+          pendingLineId: pending.pendingLineId,
+          expectedWorkRevision: pending.expectedWorkRevision,
+          serviceReference: 'Main-d’œuvre plomberie',
+          category: 'labor' as const,
+          quantityMilli: 2_000,
+          unit: 'heure',
+          unitPriceCents:
+            snapshot.mission.phase === 'awaiting_line_details' ? null : 5_500,
+          requestedVatRate: 20 as const,
+          priceBasis:
+            snapshot.mission.phase === 'awaiting_line_details'
+              ? null
+              : 'per_unit' as const,
+          housingOlderThan2y: null,
+          energyRenovation: null,
+        }),
+    confirmedLineCount: 0,
+    pendingLineCount: pending === null ? 0 : 1,
+  });
+}
 
 function presentationForMission(
   value: AgentMissionViewV1 | null,
@@ -124,6 +205,19 @@ function presentationForMission(
       proposal: Object.freeze({
         proposalId: decision.proposalId,
         diffHash: decision.diffHash,
+        diff: Object.freeze({
+          kind: 'append_line',
+          before: Object.freeze({
+            contentRevision: decision.expectedDraft.contentRevision,
+            lineCount: 0,
+            totalHtCents: 0,
+          }),
+          after: Object.freeze({
+            contentRevision: decision.expectedDraft.contentRevision + 1,
+            lineCount: 1,
+            totalHtCents: 11_000,
+          }),
+        }),
         line: Object.freeze({
           label: 'Main-d’œuvre plomberie',
           category: 'labor',
@@ -351,17 +445,21 @@ function harness(input: {
   readonly currentPresentationAfterDecision?:
     QuoteAgentMissionPresentationV1 | null;
   readonly started?: AgentMissionViewV1;
+  readonly startFailure?: 'conflict' | 'line_limit_reached' | 'throws';
   readonly decided?: AgentMissionViewV1;
   readonly decisionOutcome?: 'selected' | 'invalidated' | 'presented' | 'not_found' | 'replayed';
   readonly replayEffect?: DecideQuoteAgentMissionOutput['effect'];
-  readonly decisionFailure?: 'conflict' | 'throws';
+  readonly decisionFailure?: 'conflict' | 'line_limit_reached' | 'throws';
   readonly stageValue?: StageQuoteAgentMissionLinesServiceOutput;
-  readonly stageFailure?: 'conflict' | 'throws';
+  readonly stageFailure?: 'conflict' | 'line_limit_reached' | 'throws';
   readonly catalogueChoiceValue?:
     DecideQuoteAgentMissionCatalogueChoiceServiceOutput;
-  readonly catalogueChoiceFailure?: 'conflict' | 'throws';
+  readonly catalogueChoiceFailure?: 'conflict' | 'line_limit_reached' | 'throws';
   readonly patchValue?: PatchQuoteAgentMissionLineServiceOutput;
   readonly patchFailure?: 'conflict' | 'throws';
+  readonly pendingLineCancellationValue?:
+    CancelQuoteAgentMissionPendingLineServiceOutput;
+  readonly pendingLineCancellationFailure?: 'conflict' | 'throws';
   readonly lineDecisionValue?: DecideQuoteAgentMissionLineProposalServiceOutput;
   readonly lineDecisionFailure?: 'conflict' | 'throws';
 }) {
@@ -377,6 +475,10 @@ function harness(input: {
     };
   });
   let currentV2ReadCount = 0;
+  let lastV2Snapshot: {
+    readonly mission: AgentMissionViewV1 | null;
+    readonly presentation: QuoteAgentMissionPresentationV1 | null;
+  } | null = null;
   const getCurrentV2 = vi.fn<
     RealtimeQuoteMissionGateway['getCurrentV2']
   >(async () => {
@@ -403,23 +505,54 @@ function harness(input: {
           ? input.currentPresentation ?? null
           : presentationForMission(selected);
     currentV2ReadCount += 1;
+    lastV2Snapshot = {
+      mission: selected,
+      presentation: selectedPresentation,
+    };
     return {
       ok: true,
-      value: {
-        mission: selected,
-        presentation: selectedPresentation,
-      },
+      value: lastV2Snapshot,
+    };
+  });
+  const getCurrentPlannerResumeV2 = vi.fn<
+    RealtimeQuoteMissionGateway['getCurrentPlannerResumeV2']
+  >(async () => {
+    if (lastV2Snapshot === null) {
+      throw new Error('resume planner lu avant le snapshot capability');
+    }
+    return {
+      ok: true,
+      value: plannerResumeForSnapshot(lastV2Snapshot),
     };
   });
   const startFromVoiceTurn = vi.fn<RealtimeQuoteMissionGateway['startFromVoiceTurn']>(
-    async () => ({
-      ok: true,
-      value: {
-        outcome: 'created',
-        startOutcome: 'no_slot',
-        mission: input.started ?? mission(),
-      },
-    }),
+    async () => {
+      if (input.startFailure === 'throws') throw new Error('response lost');
+      if (input.startFailure !== undefined) {
+        return {
+          ok: false,
+          error: input.startFailure === 'line_limit_reached'
+            ? {
+                kind: 'conflict',
+                entity: 'agent_mission_quote_draft',
+                reason: 'line_limit_reached',
+              }
+            : {
+                kind: 'conflict',
+                entity: 'agent_mission',
+                reason: 'stale_revision',
+              },
+        };
+      }
+      return {
+        ok: true,
+        value: {
+          outcome: 'created',
+          startOutcome: 'no_slot',
+          mission: input.started ?? mission(),
+        },
+      };
+    },
   );
   const decideFromVoiceTurn = vi.fn<
     RealtimeQuoteMissionGateway['decideFromVoiceTurn']
@@ -434,6 +567,16 @@ function harness(input: {
           kind: 'conflict',
           entity: 'agent_mission_decision',
           reason: 'revision_mismatch',
+        },
+      };
+    }
+    if (input.decisionFailure === 'line_limit_reached') {
+      return {
+        ok: false,
+        error: {
+          kind: 'conflict',
+          entity: 'agent_mission_quote_draft',
+          reason: 'line_limit_reached',
         },
       };
     }
@@ -492,6 +635,16 @@ function harness(input: {
         },
       };
     }
+    if (input.stageFailure === 'line_limit_reached') {
+      return {
+        ok: false,
+        error: {
+          kind: 'conflict',
+          entity: 'agent_mission_quote_draft',
+          reason: 'line_limit_reached',
+        },
+      };
+    }
     const detailsMission = mission({ phase: 'awaiting_line_details', revision: 5 });
     return {
       ok: true,
@@ -525,6 +678,16 @@ function harness(input: {
           kind: 'conflict',
           entity: 'agent_mission',
           reason: 'stale_revision',
+        },
+      };
+    }
+    if (input.catalogueChoiceFailure === 'line_limit_reached') {
+      return {
+        ok: false,
+        error: {
+          kind: 'conflict',
+          entity: 'agent_mission_quote_draft',
+          reason: 'line_limit_reached',
         },
       };
     }
@@ -580,6 +743,54 @@ function harness(input: {
       },
     };
   });
+  const cancelPendingLineFromVoiceTurn = vi.fn<
+    RealtimeQuoteMissionGateway['cancelPendingLineFromVoiceTurn']
+  >(async () => {
+    if (input.pendingLineCancellationFailure === 'throws') {
+      throw new Error('response lost');
+    }
+    if (input.pendingLineCancellationFailure === 'conflict') {
+      return {
+        ok: false,
+        error: {
+          kind: 'conflict',
+          entity: 'agent_mission',
+          reason: 'stale_revision',
+        },
+      };
+    }
+    const nextMission = mission({
+      phase: 'awaiting_lines',
+      revision: 8,
+      payload: {
+        schema: 'bob.agent-mission.quote-creation',
+        version: 1,
+        draft: {
+          sessionId: 'draft-session-1',
+          slotRevision: 2,
+          contentRevision: 1,
+        },
+        decision: null,
+        stagedCustomerResolution: null,
+      },
+    });
+    return {
+      ok: true,
+      value: input.pendingLineCancellationValue ?? {
+        outcome: 'cancelled',
+        pendingLineId: '60000000-0000-4000-8000-000000000001',
+        mission: nextMission,
+        continuation: {
+          outcome: 'empty',
+          pendingLineId: null,
+          presentedChoiceCount: 0,
+          requiredFact: null,
+          proposalId: null,
+        },
+        presentation: presentationForMission(nextMission)!,
+      },
+    };
+  });
   const decideLineProposalFromVoiceTurn = vi.fn<
     RealtimeQuoteMissionGateway['decideLineProposalFromVoiceTurn']
   >(async () => {
@@ -631,25 +842,67 @@ function harness(input: {
   const gateway: RealtimeQuoteMissionGateway = {
     getCurrent,
     getCurrentV2,
+    getCurrentPlannerResumeV2,
     startFromVoiceTurn,
     decideFromVoiceTurn,
     stageLinesFromVoiceTurn,
     decideCatalogueChoiceFromVoiceTurn,
     patchLineFromVoiceTurn,
+    cancelPendingLineFromVoiceTurn,
     decideLineProposalFromVoiceTurn,
   };
   const model = llm(input.call);
-  const orchestrator = new RealtimeQuoteMissionOrchestrator(model, gateway);
+  const engine = new RealtimeQuoteMissionOrchestrator(gateway);
+  const orchestrator = {
+    run: async (
+      request: RealtimeQuoteMissionOrchestrationInput,
+    ): Promise<Awaited<ReturnType<typeof engine.runPlanned>>> => {
+      const preparation = await engine.prepare(request);
+      if (preparation.status === 'failed') return preparation;
+      const planning = await planRealtimeSemanticTurn(model, {
+        transcript: request.transcript,
+        history: request.history.slice(-6),
+        screen: null,
+        quoteMission: preparation.prepared.semanticContext,
+        hostManifest: {
+          schema: 'bob.realtime-semantic-host-manifest',
+          version: 1,
+          globalToolNames: [],
+        },
+        missionCapabilities: preparation.prepared.availableCapabilities,
+        locale: 'fr-FR',
+        timeZone: null,
+        now: '2026-07-30T12:00:00.000Z',
+        signal: request.signal,
+      });
+      if (planning.status !== 'mission_frame') {
+        return {
+          status: 'failed',
+          canonicalSpeech: planning.status === 'rejected'
+            ? 'Je n’ai pas pu sécuriser cette demande. Rien n’a été exécuté. Reformule-la simplement.'
+            : 'Ce tour ne relève pas de la mission devis.',
+        };
+      }
+      return engine.runPlanned({
+        request,
+        prepared: preparation.prepared,
+        frame: planning.frame,
+      });
+    },
+  };
   return {
     orchestrator,
+    engine,
     model,
     getCurrent,
     getCurrentV2,
+    getCurrentPlannerResumeV2,
     startFromVoiceTurn,
     decideFromVoiceTurn,
     stageLinesFromVoiceTurn,
     decideCatalogueChoiceFromVoiceTurn,
     patchLineFromVoiceTurn,
+    cancelPendingLineFromVoiceTurn,
     decideLineProposalFromVoiceTurn,
   };
 }
@@ -719,7 +972,8 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
     });
 
     await expect(h.orchestrator.run(input())).resolves.toEqual({
-      status: 'not_applicable',
+      status: 'failed',
+      canonicalSpeech: 'Ce tour ne relève pas de la mission devis.',
     });
     expect(h.startFromVoiceTurn).not.toHaveBeenCalled();
   });
@@ -973,13 +1227,13 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
     await expect(h.orchestrator.run(input())).resolves.toEqual({
       status: 'failed',
       canonicalSpeech:
-        'La mission est déjà en cours. J’attends que l’étape affichée soit confirmée avant de poursuivre.',
+        'Je n’ai pas pu sécuriser cette demande. Rien n’a été exécuté. Reformule-la simplement.',
     });
-    expect(h.model.complete).not.toHaveBeenCalled();
+    expect(h.model.complete).toHaveBeenCalledOnce();
     expect(h.startFromVoiceTurn).not.toHaveBeenCalled();
   });
 
-  it('V2 conserve client et ligne canonique dans la même commande avant navigation', async () => {
+  it('V2 conserve client et ligne et fournit l’historique borné au planner unique', async () => {
     const h = harness({
       call: toolCallV2({
         kind: 'start_quote_creation',
@@ -990,7 +1244,7 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
 
     const outcome = await h.orchestrator.run(inputV2(
       new AbortController().signal,
-      [{ role: 'bob', text: 'Historique qui ne doit pas entrer dans la frame V2.' }],
+      [{ role: 'bob', text: 'Historique récent utile au planner V2.' }],
     ));
 
     expect(outcome).toMatchObject({
@@ -1007,9 +1261,28 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
       lines: [LINE_CANDIDATE],
     });
     const llmMessages = vi.mocked(h.model.complete).mock.calls[0]?.[0];
-    expect(JSON.stringify(llmMessages)).not.toContain(
-      'Historique qui ne doit pas entrer dans la frame V2.',
+    expect(JSON.stringify(llmMessages)).toContain(
+      'Historique récent utile au planner V2.',
     );
+  });
+
+  it('V2 annonce aussi la capacité lors du démarrage sur un brouillon déjà plein', async () => {
+    const h = harness({
+      call: toolCallV2({
+        kind: 'start_quote_creation',
+        customer_reference: 'Camping les Pins',
+        lines: [LINE_ARGUMENTS],
+      }),
+      startFailure: 'line_limit_reached',
+    });
+
+    await expect(h.orchestrator.run(inputV2())).resolves.toEqual({
+      status: 'handled',
+      canonicalSpeech:
+        'Ce devis contient déjà 100 lignes, soit la limite autorisée. Je n’ai ajouté aucune nouvelle ligne. Pour modifier ses lignes, arrête cette mission Bob : le brouillon restera enregistré et l’édition manuelle sera libérée.',
+      speechPurpose: 'action_result',
+    });
+    expect(h.startFromVoiceTurn).toHaveBeenCalledOnce();
   });
 
   it('V2 stage la ligne puis rend uniquement le choix catalogue réellement scellé', async () => {
@@ -1054,7 +1327,7 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
     await expect(h.orchestrator.run(inputV2())).resolves.toEqual({
       status: 'handled',
       canonicalSpeech:
-        'J’ai trouvé 2 prestations disponibles dans ton catalogue, plus l’option de créer une ligne libre. Elles sont conservées dans cet ordre pour ton choix.',
+        'J’ai trouvé 2 prestations disponibles dans ton catalogue. Premier choix : « Prestation 1 », à 55 € hors taxes par heure. Deuxième choix : « Prestation 2 », à 55 € hors taxes par heure. Dernier choix : créer une ligne libre. Tu peux dire le premier, le deuxième, ou le choix que tu veux.',
       speechPurpose: 'structured_choice',
     });
     expect(h.stageLinesFromVoiceTurn).toHaveBeenCalledWith({
@@ -1070,6 +1343,75 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
       expectedDraftContentRevision: 1,
       lines: [LINE_CANDIDATE],
     });
+  });
+
+  it('V2 annonce la capacité autoritaire sans convergence ambiguë ni retry', async () => {
+    const h = harness({
+      call: toolCallV2({
+        kind: 'append_line_candidates',
+        lines: [LINE_ARGUMENTS],
+      }),
+      current: mission({
+        phase: 'awaiting_lines',
+        revision: 3,
+        payload: {
+          schema: 'bob.agent-mission.quote-creation',
+          version: 1,
+          draft: {
+            sessionId: 'draft-session-1',
+            slotRevision: 2,
+            contentRevision: 100,
+          },
+          decision: null,
+          stagedCustomerResolution: null,
+        },
+      }),
+      stageFailure: 'line_limit_reached',
+    });
+
+    await expect(h.orchestrator.run(inputV2())).resolves.toEqual({
+      status: 'handled',
+      canonicalSpeech:
+        'Ce devis contient déjà 100 lignes, soit la limite autorisée. Je n’ai ajouté aucune nouvelle ligne. Pour modifier ses lignes, arrête cette mission Bob : le brouillon restera enregistré et l’édition manuelle sera libérée.',
+      speechPurpose: 'action_result',
+    });
+    expect(h.stageLinesFromVoiceTurn).toHaveBeenCalledOnce();
+    expect(h.getCurrentV2).toHaveBeenCalledTimes(2);
+  });
+
+  it('V2 annonce la capacité lors de la résolution client atomique avec lignes', async () => {
+    const h = harness({
+      call: toolCallV2({
+        kind: 'set_customer_reference',
+        customer_reference: 'Camping les Pins',
+        lines: [LINE_ARGUMENTS],
+      }),
+      current: mission({
+        phase: 'awaiting_customer',
+        revision: 3,
+        payload: {
+          schema: 'bob.agent-mission.quote-creation',
+          version: 1,
+          draft: {
+            sessionId: 'draft-session-1',
+            slotRevision: 2,
+            contentRevision: 100,
+          },
+          decision: null,
+          stagedCustomerResolution: null,
+        },
+      }),
+      decisionFailure: 'line_limit_reached',
+    });
+
+    await expect(h.orchestrator.run(inputV2())).resolves.toEqual({
+      status: 'handled',
+      canonicalSpeech:
+        'Ce devis contient déjà 100 lignes, soit la limite autorisée. Je n’ai ajouté aucune nouvelle ligne. Pour modifier ses lignes, arrête cette mission Bob : le brouillon restera enregistré et l’édition manuelle sera libérée.',
+      speechPurpose: 'action_result',
+    });
+    expect(h.decideFromVoiceTurn).toHaveBeenCalledOnce();
+    expect(h.getCurrentV2).toHaveBeenCalledTimes(2);
   });
 
   it('V2 résout l’ordinal catalogue vers le choiceId scellé sans transmettre itemId', async () => {
@@ -1109,6 +1451,28 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
     expect(
       h.decideCatalogueChoiceFromVoiceTurn.mock.calls[0]?.[0],
     ).not.toHaveProperty('catalogueItemId');
+  });
+
+  it('V2 annonce la capacité quand un choix catalogue transporte des lignes supplémentaires', async () => {
+    const current = catalogueMission();
+    const h = harness({
+      call: toolCallV2({
+        kind: 'select_presented_choice',
+        ordinal: 2,
+        lines: [LINE_ARGUMENTS],
+      }),
+      current,
+      catalogueChoiceFailure: 'line_limit_reached',
+    });
+
+    await expect(h.orchestrator.run(inputV2())).resolves.toEqual({
+      status: 'handled',
+      canonicalSpeech:
+        'Ce devis contient déjà 100 lignes, soit la limite autorisée. Je n’ai ajouté aucune nouvelle ligne. Pour modifier ses lignes, arrête cette mission Bob : le brouillon restera enregistré et l’édition manuelle sera libérée.',
+      speechPurpose: 'action_result',
+    });
+    expect(h.decideCatalogueChoiceFromVoiceTurn).toHaveBeenCalledOnce();
+    expect(h.getCurrentV2).toHaveBeenCalledTimes(2);
   });
 
   it('V2 refuse sans mutation un ordinal catalogue devenu indisponible', async () => {
@@ -1203,6 +1567,14 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
     expect(h.getCurrentV2).toHaveBeenCalledTimes(2);
     expect(h.model.complete).toHaveBeenCalledTimes(1);
     expect(h.patchLineFromVoiceTurn).toHaveBeenCalledTimes(1);
+    const plannerMessages =
+      vi.mocked(h.model.complete).mock.calls[0]?.[0] ?? [];
+    const plannerContext = plannerMessages.at(-1)?.content ?? '';
+    expect(plannerContext).toContain('"label":"Main-d’œuvre plomberie"');
+    expect(plannerContext).toContain('"quantityDecimal":"2"');
+    expect(plannerContext).toContain('"unit":"heure"');
+    expect(plannerContext).toContain('"unitPriceDecimal":null');
+    expect(plannerContext).toContain('"vatRate":"20"');
     expect(outcome).toMatchObject({
       status: 'handled',
       speechPurpose: 'structured_choice',
@@ -1210,6 +1582,10 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
     expect(outcome).toHaveProperty(
       'canonicalSpeech',
       expect.stringContaining('Main-d’œuvre plomberie'),
+    );
+    expect(outcome).toHaveProperty(
+      'canonicalSpeech',
+      expect.stringContaining('passerait de 0 € à 110 €'),
     );
     expect(outcome).toHaveProperty(
       'canonicalSpeech',
@@ -1299,6 +1675,96 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
     expect(h.getCurrentV2).toHaveBeenCalledTimes(2);
   });
 
+  it('V2 annule une ligne encore incomplète avec les fences fraîches, sans choix inventé', async () => {
+    const current = mission({
+      phase: 'awaiting_line_details',
+      revision: 6,
+      payload: {
+        schema: 'bob.agent-mission.quote-creation',
+        version: 1,
+        draft: {
+          sessionId: 'draft-session-1',
+          slotRevision: 2,
+          contentRevision: 1,
+        },
+        decision: null,
+        stagedCustomerResolution: null,
+      },
+    });
+    const h = harness({
+      call: toolCallV2({ kind: 'cancel_current_line' }),
+      current,
+    });
+
+    const outcome = await h.orchestrator.run(inputV2());
+
+    expect(outcome).toHaveProperty(
+      'canonicalSpeech',
+      expect.stringContaining(
+        'La ligne est retirée de la mission. Le devis n’a pas été modifié.',
+      ),
+    );
+    expect(h.cancelPendingLineFromVoiceTurn).toHaveBeenCalledWith({
+      authorization: { owner: OWNER, proof: PROOF_V2 },
+      missionId: current.id,
+      turnId: TURN_ID,
+      realtimeSessionId: SESSION_ID,
+      contextRevision: 4,
+      contextDigest: 'f'.repeat(64),
+      expectedMissionRevision: 6,
+      expectedDraftSessionId: 'draft-session-1',
+      expectedDraftSlotRevision: 2,
+      expectedDraftContentRevision: 1,
+      pendingLineId: '60000000-0000-4000-8000-000000000001',
+      expectedWorkRevision: 2,
+    });
+    expect(h.decideLineProposalFromVoiceTurn).not.toHaveBeenCalled();
+    const modelInput = JSON.stringify(
+      vi.mocked(h.model.complete).mock.calls[0]?.[0],
+    );
+    expect(modelInput).not.toContain(
+      '60000000-0000-4000-8000-000000000001',
+    );
+  });
+
+  it('V2 converge sur l’état réel si la réponse réseau de l’annulation est perdue', async () => {
+    const current = mission({
+      phase: 'awaiting_line_details',
+      revision: 6,
+      payload: {
+        schema: 'bob.agent-mission.quote-creation',
+        version: 1,
+        draft: {
+          sessionId: 'draft-session-1',
+          slotRevision: 2,
+          contentRevision: 1,
+        },
+        decision: null,
+        stagedCustomerResolution: null,
+      },
+    });
+    const cancelled = mission({
+      phase: 'awaiting_lines',
+      revision: 7,
+      payload: current.payload,
+    });
+    const h = harness({
+      call: toolCallV2({ kind: 'cancel_current_line' }),
+      current,
+      currentAfterDecision: cancelled,
+      pendingLineCancellationFailure: 'throws',
+    });
+
+    await expect(h.orchestrator.run(inputV2())).resolves.toEqual({
+      status: 'handled',
+      canonicalSpeech:
+        'Les informations données sont conservées dans la mission. Je poursuis à partir de l’état réellement enregistré.',
+      speechPurpose: 'action_result',
+    });
+    expect(h.cancelPendingLineFromVoiceTurn).toHaveBeenCalledOnce();
+    expect(h.getCurrentV2).toHaveBeenCalledTimes(3);
+  });
+
   it('V2 confirme avec le choiceId, le proposalId et tous les hashes relus', async () => {
     const current = lineConfirmationMission();
     const h = harness({
@@ -1340,7 +1806,7 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
     const modelInput = JSON.stringify(
       vi.mocked(h.model.complete).mock.calls[0]?.[0],
     );
-    expect(modelInput).not.toContain('Main-d’œuvre plomberie');
+    expect(modelInput).toContain('Main-d’œuvre plomberie');
     expect(modelInput).not.toContain(
       '70000000-0000-4000-8000-000000000001',
     );
@@ -1505,7 +1971,7 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
     await expect(h.orchestrator.run(inputV2())).resolves.toEqual({
       status: 'handled',
       canonicalSpeech:
-        'J’ai trouvé 2 prestations disponibles dans ton catalogue, plus l’option de créer une ligne libre. Elles sont conservées dans cet ordre pour ton choix.',
+        'J’ai trouvé 2 prestations disponibles dans ton catalogue. Premier choix : « Prestation 1 », à 55 € hors taxes par heure. Deuxième choix : « Prestation 2 », à 55 € hors taxes par heure. Dernier choix : créer une ligne libre. Tu peux dire le premier, le deuxième, ou le choix que tu veux.',
       speechPurpose: 'structured_choice',
     });
     expect(h.getCurrentV2).toHaveBeenCalledTimes(3);
@@ -1541,7 +2007,7 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
     await expect(h.orchestrator.run(inputV2())).resolves.toEqual({
       status: 'handled',
       canonicalSpeech:
-        'La prestation numéro 1 n’est plus disponible. 1 prestation reste disponible. La ligne libre reste le dernier choix affiché.',
+        'J’ai trouvé 1 prestation disponible dans ton catalogue. Premier choix : cette prestation n’est plus disponible. Deuxième choix : « Prestation 2 », à 55 € hors taxes par heure. Dernier choix : créer une ligne libre. Tu peux dire le premier, le deuxième, ou le choix que tu veux.',
       speechPurpose: 'structured_choice',
     });
   });

@@ -160,6 +160,20 @@ export interface RealtimeAgentMissionPatchQuoteLineOutput {
   readonly presentation: QuoteAgentMissionPresentationV1;
 }
 
+export interface RealtimeAgentMissionCancelPendingQuoteLineInput
+extends RealtimeAgentMissionQuoteLineCommandBase {
+  readonly pendingLineId: string;
+  readonly expectedWorkRevision: number;
+}
+
+export interface RealtimeAgentMissionCancelPendingQuoteLineOutput {
+  readonly outcome: 'cancelled' | 'replayed';
+  readonly pendingLineId: string;
+  readonly mission: AgentMissionViewV1;
+  readonly continuation: RealtimeAgentMissionLineContinuation;
+  readonly presentation: QuoteAgentMissionPresentationV1;
+}
+
 export interface RealtimeAgentMissionLineProposalDecisionInput
 extends RealtimeAgentMissionQuoteLineCommandBase {
   readonly decisionId: string;
@@ -260,6 +274,12 @@ extends RealtimeAgentMissionSessionCommon {
     input: RealtimeAgentMissionPatchQuoteLineInput,
     signal?: AbortSignal,
   ): Promise<Result<RealtimeAgentMissionPatchQuoteLineOutput, AppError>>;
+  cancelPendingQuoteLine(
+    input: RealtimeAgentMissionCancelPendingQuoteLineInput,
+    signal?: AbortSignal,
+  ): Promise<
+    Result<RealtimeAgentMissionCancelPendingQuoteLineOutput, AppError>
+  >;
   decideQuoteLineProposal(
     input: RealtimeAgentMissionLineProposalDecisionInput,
     signal?: AbortSignal,

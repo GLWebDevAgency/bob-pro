@@ -3,7 +3,9 @@ import type {
   RealtimeQuoteMissionOrchestrationInput,
   RealtimeQuoteMissionOrchestrationOutcome,
   RealtimeQuoteMissionOrchestratorPort,
+  RealtimeQuoteMissionPreparedTurn,
 } from './realtime-quote-mission-orchestrator';
+import type { QuoteCreationSemanticFrameV1 } from '@bob/ai';
 import {
   QuoteCreationMissionKindAdapter,
   REALTIME_MISSION_UNAVAILABLE_SPEECH,
@@ -31,27 +33,74 @@ function input(): RealtimeQuoteMissionOrchestrationInput {
 }
 
 describe('QuoteCreationMissionKindAdapter', () => {
-  it('délègue la même entrée et restitue exactement le même outcome', async () => {
+  it('délègue préparation et exécution planifiée sans recréer de cerveau', async () => {
     const outcome: RealtimeQuoteMissionOrchestrationOutcome = {
       status: 'ready',
       canonicalSpeech: 'Je prépare le devis.',
       navigate: '/devis/new',
     };
-    const run = vi.fn<RealtimeQuoteMissionOrchestratorPort['run']>(
+    const prepared = {
+      protocolVersion: 1,
+      snapshot: { mission: null },
+      semanticContext: {
+        missionAlias: null,
+        missionRevision: 0,
+        confirmedLineCount: 0,
+        pendingLineCount: 0,
+        pendingDecisionKind: null,
+        protocolVersion: 1,
+        phase: 'inactive',
+        presentedChoices: [],
+      },
+      availableCapabilities: ['quote.customer.resolve'],
+    } as const satisfies RealtimeQuoteMissionPreparedTurn;
+    const frame = {
+      schema: 'bob.semantic.quote-creation',
+      version: 1,
+      operation: {
+        kind: 'start_quote_creation',
+        customerReference: 'Camping Les Pins',
+      },
+      model: 'gpt-test',
+    } as const satisfies QuoteCreationSemanticFrameV1;
+    const prepare = vi.fn<RealtimeQuoteMissionOrchestratorPort['prepare']>(
+      async () => ({ status: 'prepared', prepared }),
+    );
+    const runPlanned = vi.fn<RealtimeQuoteMissionOrchestratorPort['runPlanned']>(
       async () => outcome,
     );
-    const adapter = new QuoteCreationMissionKindAdapter({ run });
+    const adapter = new QuoteCreationMissionKindAdapter({ prepare, runPlanned });
     const turn = input();
 
-    await expect(adapter.run(turn)).resolves.toBe(outcome);
-    expect(run).toHaveBeenCalledOnce();
-    expect(run).toHaveBeenCalledWith(turn);
+    await expect(adapter.prepare(turn)).resolves.toEqual({
+      status: 'prepared',
+      prepared,
+    });
+    await expect(adapter.runPlanned({
+      request: turn,
+      prepared,
+      frame,
+    })).resolves.toBe(outcome);
+    expect(prepare).toHaveBeenCalledWith(turn);
+    expect(runPlanned).toHaveBeenCalledWith({
+      request: turn,
+      prepared,
+      frame,
+    });
   });
 
   it('échoue fermé avec le refus M1-C exact lorsque le délégué est absent', async () => {
     const adapter = new QuoteCreationMissionKindAdapter(null);
 
-    await expect(adapter.run(input())).resolves.toEqual({
+    await expect(adapter.prepare(input())).resolves.toEqual({
+      status: 'failed',
+      canonicalSpeech: REALTIME_MISSION_UNAVAILABLE_SPEECH,
+    });
+    await expect(adapter.runPlanned({
+      request: input(),
+      prepared: {} as RealtimeQuoteMissionPreparedTurn,
+      frame: {} as QuoteCreationSemanticFrameV1,
+    })).resolves.toEqual({
       status: 'failed',
       canonicalSpeech: REALTIME_MISSION_UNAVAILABLE_SPEECH,
     });

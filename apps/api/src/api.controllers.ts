@@ -2310,6 +2310,30 @@ export class OnboardingController {
 @Controller('account')
 export class AccountController {
   constructor(private readonly backend: BackendService) {}
+  /**
+   * Confirmation explicite du fuseau conversationnel. Pas de transaction PostgreSQL autour de
+   * l'I/O GoTrue Admin ; le JWT frais sera obtenu par refreshSession côté mobile.
+   */
+  @Put('preferences/time-zone')
+  @WithoutTenantPersistenceTransaction()
+  async confirmTimeZone(@Body() body: unknown) {
+    assertJsonObjectBody(body);
+    const fields = Object.keys(body);
+    if (
+      fields.length !== 1 ||
+      fields[0] !== 'timeZone' ||
+      typeof body.timeZone !== 'string'
+    ) {
+      throwValidationIssues([
+        {
+          field: fields.find((field) => field !== 'timeZone') ?? 'timeZone',
+          message: 'Fuseau IANA requis, sans champ supplémentaire.',
+        },
+      ]);
+    }
+    return unwrap(await this.backend.confirmConversationTimeZone(body.timeZone));
+  }
+
   @Delete()
   @WithoutTenantPersistenceTransaction()
   @AllowsClosedCompany()

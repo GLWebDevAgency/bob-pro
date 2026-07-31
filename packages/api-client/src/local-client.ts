@@ -122,6 +122,7 @@ import {
   type QuoteAgentMissionResumeViewV2,
   SearchAddress,
   CloseAccount,
+  parseIanaTimeZone,
   type SubscriptionRepository,
   type SubscriptionRecord,
   Company,
@@ -252,6 +253,7 @@ import {
 } from './in-memory/services';
 import type {
   BobClient,
+  ConfirmedConversationTimeZoneView,
   QuoteView,
   InvoiceView,
   PaymentView,
@@ -1250,6 +1252,23 @@ export class LocalBobClient implements BobClient {
     });
     if (!r.ok) return r;
     return ok({ closedAt: r.value.closedAt });
+  }
+
+  async confirmConversationTimeZone(
+    rawTimeZone: string,
+  ): Promise<Result<ConfirmedConversationTimeZoneView, AppError>> {
+    const timeZone = parseIanaTimeZone(rawTimeZone);
+    if (timeZone === null) {
+      return err({
+        kind: 'validation',
+        issues: [{ field: 'timeZone', message: 'Fuseau IANA invalide.' }],
+      });
+    }
+    return ok({
+      timeZone,
+      confirmedAt: this.clock.now(),
+      requiresSessionRefresh: true,
+    });
   }
 
   async invoicePaymentLink(invoiceId: string): Promise<Result<{ url: string }, AppError>> {

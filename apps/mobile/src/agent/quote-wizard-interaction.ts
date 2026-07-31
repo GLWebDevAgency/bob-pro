@@ -3,6 +3,10 @@ import type {
 } from './quote-screen-mission-coordinator';
 
 type QuoteMissionPhase = QuoteScreenMissionBindingState['phase'];
+export type QuoteWizardLineSurfaceMode =
+  | 'hidden'
+  | 'agent_v2'
+  | 'legacy';
 
 const INTERACTIVE_PHASES: ReadonlySet<QuoteMissionPhase> = new Set([
   'ready',
@@ -21,6 +25,34 @@ export function quoteWizardInteractionEnabled(input: {
   readonly missionPhase: QuoteMissionPhase;
 }): boolean {
   return input.billingDefaultsReady && INTERACTIVE_PHASES.has(input.missionPhase);
+}
+
+/**
+ * Autorité unique de l'étape lignes.
+ *
+ * Un état `ready` V1 est encore possédé par la mission pendant que le binding prépare sa
+ * passation : rendre le formulaire local pendant ce court intervalle recréerait deux writers.
+ * Le writer historique ne revient donc qu'après une passation aboutie (`handoff`) ou lorsqu'aucune
+ * mission ne possède le slot (`manual`).
+ */
+export function quoteWizardLineSurfaceMode(input: {
+  readonly isLineStep: boolean;
+  readonly missionState: QuoteScreenMissionBindingState;
+}): QuoteWizardLineSurfaceMode {
+  if (!input.isLineStep) return 'hidden';
+  if (
+    input.missionState.phase === 'ready'
+    && input.missionState.protocolVersion === 2
+  ) {
+    return 'agent_v2';
+  }
+  if (
+    input.missionState.phase === 'handoff'
+    || input.missionState.phase === 'manual'
+  ) {
+    return 'legacy';
+  }
+  return 'hidden';
 }
 
 /**

@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { Injectable, type LoggerService } from '@nestjs/common';
-import { redactTelemetryText } from '@bob/core';
+import { redactTelemetryText, type ConfirmedTimeZone } from '@bob/core';
 import pino from 'pino';
 
 export interface Principal {
@@ -15,6 +15,11 @@ export interface Principal {
   email?: string | null;
   /** Doit être explicitement vrai pour accepter une invitation ; jamais déduit d'un body client. */
   emailVerified?: boolean;
+  /**
+   * Préférence conversationnelle issue exclusivement de claims JWT signés, validés et liés au
+   * tenant courant. Absente = indisponible ; aucun fuseau implicite.
+   */
+  confirmedTimeZone?: ConfirmedTimeZone;
 }
 
 interface RequestContext {

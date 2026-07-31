@@ -4,6 +4,11 @@ import {
   classifyWithRegex,
   INTENTS_HORS_OUTILLAGE_LLM,
   LLM_TOOL_SPECS,
+  TOOL_TO_INTENT,
+  isPreclassifiedAgentPlan,
+  llmToolSpecsWithoutIntents,
+  parseStrictLlmClassifiedPlan,
+  preclassifiedOutOfScopePlan,
 } from './classifier';
 import { type LlmPort, type LlmCompletion } from '../llm/port';
 import { type AgentContext } from './context';
@@ -154,6 +159,103 @@ describe('classifyWithLlm (tool-calling -> plan)', () => {
     expect(lastUser).not.toContain('inv-secret');
     expect(system).not.toContain('E1: invoice');
     expect(system).not.toContain('Facture F-2026-0014');
+  });
+});
+
+describe('plan préclassifié strict du monobrain Realtime', () => {
+  const allowedTools = llmToolSpecsWithoutIntents(new Set(['nouveau_devis']));
+
+  it('le manifeste outil ↔ intention est bijectif et sans nom dupliqué', () => {
+    const specNames = LLM_TOOL_SPECS.map((spec) => spec.name);
+    expect(new Set(specNames).size).toBe(specNames.length);
+    expect(new Set(specNames)).toEqual(new Set(Object.keys(TOOL_TO_INTENT)));
+  });
+
+  it('parse et gèle intégralement un plan global autorisé', () => {
+    const plan = parseStrictLlmClassifiedPlan({
+      toolCalls: [
+        { name: 'encaisser_facture', arguments: { reference: 'F2026-014' } },
+        { name: 'relance_brouillon', arguments: {} },
+      ],
+      model: 'gpt-semantic-planner',
+      allowedTools,
+    });
+
+    expect(plan).toEqual({
+      schema: 'bob.preclassified-agent-plan',
+      version: 1,
+      steps: [
+        { intent: 'encaisser', reference: 'F2026-014' },
+        { intent: 'relance', reference: null },
+      ],
+      model: 'gpt-semantic-planner',
+    });
+    expect(Object.isFrozen(plan)).toBe(true);
+    expect(Object.isFrozen(plan?.steps)).toBe(true);
+    expect(Object.isFrozen(plan?.steps[0])).toBe(true);
+    expect(isPreclassifiedAgentPlan(plan)).toBe(true);
+  });
+
+  it.each([
+    {
+      name: 'outil mission exclu',
+      calls: [{ name: 'nouveau_devis', arguments: {} }],
+    },
+    {
+      name: 'outil inconnu',
+      calls: [{ name: 'outil_inconnu', arguments: {} }],
+    },
+    {
+      name: 'argument supplémentaire',
+      calls: [{ name: 'encaisser_facture', arguments: { reference: 'F1', id: 'secret' } }],
+    },
+    {
+      name: 'référence interdite sur outil sans référence',
+      calls: [{ name: 'documents_liste', arguments: { reference: 'x' } }],
+    },
+    {
+      name: 'contrôle Unicode',
+      calls: [{ name: 'encaisser_facture', arguments: { reference: 'F1\u202eexe' } }],
+    },
+  ])('refuse tout le plan : $name', ({ calls }) => {
+    expect(parseStrictLlmClassifiedPlan({
+      toolCalls: calls,
+      model: 'gpt-semantic-planner',
+      allowedTools,
+    })).toBeNull();
+  });
+
+  it('refuse zéro étape et plus de huit étapes', () => {
+    expect(parseStrictLlmClassifiedPlan({
+      toolCalls: [],
+      model: 'gpt-semantic-planner',
+      allowedTools,
+    })).toBeNull();
+    expect(parseStrictLlmClassifiedPlan({
+      toolCalls: Array.from(
+        { length: 9 },
+        () => ({ name: 'relance_brouillon', arguments: {} }),
+      ),
+      model: 'gpt-semantic-planner',
+      allowedTools,
+    })).toBeNull();
+  });
+
+  it('la factory dédiée est la seule forme vide valide', () => {
+    const abstention = preclassifiedOutOfScopePlan('gpt-semantic-planner');
+    expect(abstention).not.toBeNull();
+    expect(abstention?.steps).toEqual([]);
+    expect(isPreclassifiedAgentPlan(abstention)).toBe(true);
+    expect(preclassifiedOutOfScopePlan('gpt\u2066planner')).toBeNull();
+  });
+
+  it('le garde runtime refuse une structure forgée malgré son type apparent', () => {
+    expect(isPreclassifiedAgentPlan({
+      schema: 'bob.preclassified-agent-plan',
+      version: 1,
+      steps: [{ intent: 'inconnu', reference: null }],
+      model: 'gpt',
+    })).toBe(false);
   });
 });
 

@@ -1,7 +1,19 @@
 import {
+  REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
   REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
+  type RealtimeAgentMissionCancelPendingQuoteLineInput,
+  type RealtimeAgentMissionCancelPendingQuoteLineOutput,
+  type RealtimeAgentMissionProtocolVersion,
+  type RealtimeAgentMissionCatalogueChoiceInput,
+  type RealtimeAgentMissionCatalogueChoiceOutput,
+  type RealtimeAgentMissionLineProposalDecisionInput,
+  type RealtimeAgentMissionLineProposalDecisionOutput,
+  type RealtimeAgentMissionPatchQuoteLineInput,
+  type RealtimeAgentMissionPatchQuoteLineOutput,
   type RealtimeAgentMissionQuoteDecisionInput,
   type RealtimeAgentMissionSession,
+  type RealtimeAgentMissionStageQuoteLinesInput,
+  type RealtimeAgentMissionStageQuoteLinesOutput,
 } from '@bob/api-client';
 import type { AgentContext } from '@bob/ai';
 import type {
@@ -10,6 +22,7 @@ import type {
   AppError,
   CancelQuoteAgentMissionOutput,
   DecideQuoteAgentMissionOutput,
+  QuoteAgentMissionPresentationV1,
 } from '@bob/core';
 import type { RealtimePublishedFence } from './realtime-driver';
 
@@ -34,6 +47,7 @@ export interface AgentMissionConfirmedContext {
 
 export interface AgentMissionRuntimeSnapshot {
   readonly generation: number;
+  readonly protocolVersion: RealtimeAgentMissionProtocolVersion | null;
   readonly realtimeSessionId: string | null;
   readonly confirmedContext: AgentMissionConfirmedContext | null;
   /** Dernier terminal accepté ; sa révision est portée par `generation`. */
@@ -47,6 +61,11 @@ export interface AgentMissionRuntimeCapture {
 }
 
 export interface AgentMissionRuntimeBridge {
+  /**
+   * Lecture synchrone sans capability, utilisée uniquement pour certifier une frontière de
+   * teardown. Les doubles historiques peuvent l'omettre ; le provider de production l'expose.
+   */
+  readonly currentSnapshot?: () => AgentMissionRuntimeSnapshot;
   /**
    * Transfert move-only synchrone. `true` signifie que l'appelant doit immédiatement oublier
    * le handle et ne plus jamais le disposer.
@@ -104,25 +123,86 @@ export interface AgentMissionManualHandoffInput {
   readonly expectedScreenInstanceId: string;
 }
 
+export type AgentMissionAbandonInput = AgentMissionManualHandoffInput;
+
 export interface AgentMissionRuntimeActions {
   readonly readCurrentQuoteCreation: (
     expectedScreenInstanceId: string,
   ) => Promise<
-    AgentMissionRuntimeCall<{ readonly mission: AgentMissionViewV1 | null }>
+    AgentMissionRuntimeCall<AgentMissionQuoteReadOutput>
   >;
   readonly acknowledgeQuoteScreen: (
     input: AgentMissionQuoteScreenAckInput,
-  ) => Promise<AgentMissionRuntimeCall<AcknowledgeQuoteScreenOutput>>;
+  ) => Promise<AgentMissionRuntimeCall<AgentMissionQuoteScreenAckOutput>>;
   readonly decideQuoteCreation: (
     input: AgentMissionQuoteDecisionInput,
-  ) => Promise<AgentMissionRuntimeCall<DecideQuoteAgentMissionOutput>>;
+  ) => Promise<AgentMissionRuntimeCall<AgentMissionQuoteDecisionOutput>>;
+  readonly stageQuoteLines: (
+    input: AgentMissionStageQuoteLinesInput,
+  ) => Promise<AgentMissionRuntimeCall<RealtimeAgentMissionStageQuoteLinesOutput>>;
+  readonly decideQuoteCatalogueChoice: (
+    input: AgentMissionCatalogueChoiceInput,
+  ) => Promise<AgentMissionRuntimeCall<RealtimeAgentMissionCatalogueChoiceOutput>>;
+  readonly patchQuoteLine: (
+    input: AgentMissionPatchQuoteLineInput,
+  ) => Promise<AgentMissionRuntimeCall<RealtimeAgentMissionPatchQuoteLineOutput>>;
+  readonly cancelPendingQuoteLine: (
+    input: AgentMissionCancelPendingQuoteLineInput,
+  ) => Promise<
+    AgentMissionRuntimeCall<RealtimeAgentMissionCancelPendingQuoteLineOutput>
+  >;
+  readonly decideQuoteLineProposal: (
+    input: AgentMissionLineProposalDecisionInput,
+  ) => Promise<
+    AgentMissionRuntimeCall<RealtimeAgentMissionLineProposalDecisionOutput>
+  >;
   readonly manualHandoffQuoteCreation: (
     input: AgentMissionManualHandoffInput,
   ) => Promise<AgentMissionRuntimeCall<CancelQuoteAgentMissionOutput>>;
+  /**
+   * Abandon explicite de la mission Bob. Le brouillon reste en base mais le slot est libéré ;
+   * ce geste est distinct d'un arrêt audio et de l'annulation de la seule ligne courante.
+   */
+  readonly abandonQuoteCreation: (
+    input: AgentMissionAbandonInput,
+  ) => Promise<AgentMissionRuntimeCall<CancelQuoteAgentMissionOutput>>;
 }
+
+export interface AgentMissionQuoteReadOutput {
+  readonly mission: AgentMissionViewV1 | null;
+  readonly presentation: QuoteAgentMissionPresentationV1 | null;
+}
+
+export type AgentMissionQuoteScreenAckOutput =
+  & AcknowledgeQuoteScreenOutput
+  & { readonly presentation: QuoteAgentMissionPresentationV1 | null };
+
+export type AgentMissionQuoteDecisionOutput =
+  & DecideQuoteAgentMissionOutput
+  & { readonly presentation: QuoteAgentMissionPresentationV1 | null };
 
 export type AgentMissionQuoteDecisionInput =
   & RealtimeAgentMissionQuoteDecisionInput
+  & { readonly expectedScreenInstanceId: string };
+
+export type AgentMissionStageQuoteLinesInput =
+  & RealtimeAgentMissionStageQuoteLinesInput
+  & { readonly expectedScreenInstanceId: string };
+
+export type AgentMissionCatalogueChoiceInput =
+  & RealtimeAgentMissionCatalogueChoiceInput
+  & { readonly expectedScreenInstanceId: string };
+
+export type AgentMissionPatchQuoteLineInput =
+  & RealtimeAgentMissionPatchQuoteLineInput
+  & { readonly expectedScreenInstanceId: string };
+
+export type AgentMissionCancelPendingQuoteLineInput =
+  & RealtimeAgentMissionCancelPendingQuoteLineInput
+  & { readonly expectedScreenInstanceId: string };
+
+export type AgentMissionLineProposalDecisionInput =
+  & RealtimeAgentMissionLineProposalDecisionInput
   & { readonly expectedScreenInstanceId: string };
 
 type Listener = (snapshot: AgentMissionRuntimeSnapshot) => void;
@@ -162,6 +242,7 @@ export class AgentMissionRuntimeOwner {
   snapshot(): AgentMissionRuntimeSnapshot {
     return Object.freeze({
       generation: this.generation,
+      protocolVersion: this.session?.protocolVersion ?? null,
       realtimeSessionId: this.session?.realtimeSessionId ?? null,
       confirmedContext: this.confirmedContext,
       lastTurnSettlement: this.lastTurnSettlement,
@@ -191,7 +272,10 @@ export class AgentMissionRuntimeOwner {
       !this.active
       || this.destroyed
       || session.disposed
-      || session.protocolVersion !== REALTIME_AGENT_MISSION_PROTOCOL_VERSION
+      || (
+        session.protocolVersion !== REALTIME_AGENT_MISSION_PROTOCOL_VERSION
+        && session.protocolVersion !== REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
+      )
       || !UUID.test(session.realtimeSessionId)
     ) {
       return false;
@@ -391,7 +475,7 @@ export class FencedAgentMissionRuntimeActions implements AgentMissionRuntimeActi
   readCurrentQuoteCreation(
     expectedScreenInstanceId: string,
   ): Promise<
-    AgentMissionRuntimeCall<{ readonly mission: AgentMissionViewV1 | null }>
+    AgentMissionRuntimeCall<AgentMissionQuoteReadOutput>
   > {
     const captured = captureForQuoteScreen(this.owner, expectedScreenInstanceId);
     if (captured === null) return Promise.resolve({ status: 'unavailable' });
@@ -408,16 +492,24 @@ export class FencedAgentMissionRuntimeActions implements AgentMissionRuntimeActi
       context.digest,
       expectedScreenInstanceId,
     ]);
-    return this.singleFlight<{ readonly mission: AgentMissionViewV1 | null }>(
+    return this.singleFlight<AgentMissionQuoteReadOutput>(
       key,
       async (): Promise<
-        AgentMissionRuntimeCall<{ readonly mission: AgentMissionViewV1 | null }>
+        AgentMissionRuntimeCall<AgentMissionQuoteReadOutput>
       > => {
       try {
         const result = await captured.session.getCurrentQuoteCreation();
         if (!this.owner.isCurrent(captured)) return { status: 'stale' };
         if (!result.ok) return { status: 'failed', error: result.error };
-        return { status: 'completed', value: result.value };
+        return {
+          status: 'completed',
+          value: {
+            mission: result.value.mission,
+            presentation: 'presentation' in result.value
+              ? result.value.presentation as QuoteAgentMissionPresentationV1
+              : null,
+          },
+        };
       } catch {
         return { status: 'unavailable' };
       }
@@ -427,7 +519,7 @@ export class FencedAgentMissionRuntimeActions implements AgentMissionRuntimeActi
 
   acknowledgeQuoteScreen(
     input: AgentMissionQuoteScreenAckInput,
-  ): Promise<AgentMissionRuntimeCall<AcknowledgeQuoteScreenOutput>> {
+  ): Promise<AgentMissionRuntimeCall<AgentMissionQuoteScreenAckOutput>> {
     const captured = captureForQuoteScreen(
       this.owner,
       input.expectedScreenInstanceId,
@@ -452,9 +544,9 @@ export class FencedAgentMissionRuntimeActions implements AgentMissionRuntimeActi
       input.draft.slotRevision,
       input.draft.contentRevision,
     ]);
-    return this.singleFlight<AcknowledgeQuoteScreenOutput>(
+    return this.singleFlight<AgentMissionQuoteScreenAckOutput>(
       key,
-      async (): Promise<AgentMissionRuntimeCall<AcknowledgeQuoteScreenOutput>> => {
+      async (): Promise<AgentMissionRuntimeCall<AgentMissionQuoteScreenAckOutput>> => {
       try {
         const result = await captured.session.acknowledgeQuoteScreen({
           missionId: input.missionId,
@@ -479,7 +571,15 @@ export class FencedAgentMissionRuntimeActions implements AgentMissionRuntimeActi
         ) {
           return { status: 'invalid_response' };
         }
-        return { status: 'completed', value: output };
+        return {
+          status: 'completed',
+          value: {
+            ...output,
+            presentation: 'presentation' in output
+              ? output.presentation as QuoteAgentMissionPresentationV1
+              : null,
+          },
+        };
       } catch {
         return { status: 'unavailable' };
       }
@@ -489,7 +589,7 @@ export class FencedAgentMissionRuntimeActions implements AgentMissionRuntimeActi
 
   decideQuoteCreation(
     input: AgentMissionQuoteDecisionInput,
-  ): Promise<AgentMissionRuntimeCall<DecideQuoteAgentMissionOutput>> {
+  ): Promise<AgentMissionRuntimeCall<AgentMissionQuoteDecisionOutput>> {
     const captured = captureForQuoteScreen(
       this.owner,
       input.expectedScreenInstanceId,
@@ -531,13 +631,268 @@ export class FencedAgentMissionRuntimeActions implements AgentMissionRuntimeActi
       input.expectedScreenInstanceId,
       decision,
     ]);
-    return this.singleFlight<DecideQuoteAgentMissionOutput>(
+    return this.singleFlight<AgentMissionQuoteDecisionOutput>(
       key,
       async (): Promise<
-        AgentMissionRuntimeCall<DecideQuoteAgentMissionOutput>
+        AgentMissionRuntimeCall<AgentMissionQuoteDecisionOutput>
       > => {
         try {
           const result = await captured.session.decideQuoteCreation(decision);
+          if (!this.owner.isCurrent(captured)) return { status: 'stale' };
+          if (!result.ok) return { status: 'failed', error: result.error };
+          if (result.value.mission.id !== input.missionId) {
+            return { status: 'invalid_response' };
+          }
+          return {
+            status: 'completed',
+            value: {
+              ...result.value,
+              presentation: 'presentation' in result.value
+                ? result.value.presentation as QuoteAgentMissionPresentationV1
+                : null,
+            },
+          };
+        } catch {
+          return { status: 'unavailable' };
+        }
+      },
+    );
+  }
+
+  stageQuoteLines(
+    input: AgentMissionStageQuoteLinesInput,
+  ): Promise<AgentMissionRuntimeCall<RealtimeAgentMissionStageQuoteLinesOutput>> {
+    const captured = captureForQuoteScreen(
+      this.owner,
+      input.expectedScreenInstanceId,
+    );
+    if (captured === null) return Promise.resolve({ status: 'unavailable' });
+    if (captured === 'context_unconfirmed') {
+      return Promise.resolve({ status: 'context_unconfirmed' });
+    }
+    const session = captured.session;
+    if (session.protocolVersion !== REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION) {
+      return Promise.resolve({ status: 'unavailable' });
+    }
+    const context = captured.confirmedContext;
+    if (context === null) return Promise.resolve({ status: 'context_unconfirmed' });
+    const { expectedScreenInstanceId: _, ...command } = input;
+    const key = JSON.stringify([
+      'stage_quote_lines',
+      captured.generation,
+      captured.session.realtimeSessionId,
+      context.revision,
+      context.digest,
+      input.expectedScreenInstanceId,
+      command,
+    ]);
+    return this.singleFlight<RealtimeAgentMissionStageQuoteLinesOutput>(
+      key,
+      async (): Promise<
+        AgentMissionRuntimeCall<RealtimeAgentMissionStageQuoteLinesOutput>
+      > => {
+        try {
+          const result = await session.stageQuoteLines(command);
+          if (!this.owner.isCurrent(captured)) return { status: 'stale' };
+          if (!result.ok) return { status: 'failed', error: result.error };
+          if (result.value.mission.id !== input.missionId) {
+            return { status: 'invalid_response' };
+          }
+          return { status: 'completed', value: result.value };
+        } catch {
+          return { status: 'unavailable' };
+        }
+      },
+    );
+  }
+
+  decideQuoteCatalogueChoice(
+    input: AgentMissionCatalogueChoiceInput,
+  ): Promise<
+    AgentMissionRuntimeCall<RealtimeAgentMissionCatalogueChoiceOutput>
+  > {
+    const captured = captureForQuoteScreen(
+      this.owner,
+      input.expectedScreenInstanceId,
+    );
+    if (captured === null) return Promise.resolve({ status: 'unavailable' });
+    if (captured === 'context_unconfirmed') {
+      return Promise.resolve({ status: 'context_unconfirmed' });
+    }
+    const session = captured.session;
+    if (session.protocolVersion !== REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION) {
+      return Promise.resolve({ status: 'unavailable' });
+    }
+    const context = captured.confirmedContext;
+    if (context === null) return Promise.resolve({ status: 'context_unconfirmed' });
+    const { expectedScreenInstanceId: _, ...command } = input;
+    const key = JSON.stringify([
+      'decide_quote_catalogue_choice',
+      captured.generation,
+      captured.session.realtimeSessionId,
+      context.revision,
+      context.digest,
+      input.expectedScreenInstanceId,
+      command,
+    ]);
+    return this.singleFlight<RealtimeAgentMissionCatalogueChoiceOutput>(
+      key,
+      async (): Promise<
+        AgentMissionRuntimeCall<RealtimeAgentMissionCatalogueChoiceOutput>
+      > => {
+        try {
+          const result = await session.decideQuoteCatalogueChoice(command);
+          if (!this.owner.isCurrent(captured)) return { status: 'stale' };
+          if (!result.ok) return { status: 'failed', error: result.error };
+          if (result.value.mission.id !== input.missionId) {
+            return { status: 'invalid_response' };
+          }
+          return { status: 'completed', value: result.value };
+        } catch {
+          return { status: 'unavailable' };
+        }
+      },
+    );
+  }
+
+  patchQuoteLine(
+    input: AgentMissionPatchQuoteLineInput,
+  ): Promise<AgentMissionRuntimeCall<RealtimeAgentMissionPatchQuoteLineOutput>> {
+    const captured = captureForQuoteScreen(
+      this.owner,
+      input.expectedScreenInstanceId,
+    );
+    if (captured === null) return Promise.resolve({ status: 'unavailable' });
+    if (captured === 'context_unconfirmed') {
+      return Promise.resolve({ status: 'context_unconfirmed' });
+    }
+    const session = captured.session;
+    if (session.protocolVersion !== REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION) {
+      return Promise.resolve({ status: 'unavailable' });
+    }
+    const context = captured.confirmedContext;
+    if (context === null) return Promise.resolve({ status: 'context_unconfirmed' });
+    const { expectedScreenInstanceId: _, ...command } = input;
+    const key = JSON.stringify([
+      'patch_quote_line',
+      captured.generation,
+      captured.session.realtimeSessionId,
+      context.revision,
+      context.digest,
+      input.expectedScreenInstanceId,
+      command,
+    ]);
+    return this.singleFlight<RealtimeAgentMissionPatchQuoteLineOutput>(
+      key,
+      async (): Promise<
+        AgentMissionRuntimeCall<RealtimeAgentMissionPatchQuoteLineOutput>
+      > => {
+        try {
+          const result = await session.patchQuoteLine(command);
+          if (!this.owner.isCurrent(captured)) return { status: 'stale' };
+          if (!result.ok) return { status: 'failed', error: result.error };
+          if (
+            result.value.mission.id !== input.missionId
+            || result.value.pendingLineId !== input.pendingLineId
+          ) {
+            return { status: 'invalid_response' };
+          }
+          return { status: 'completed', value: result.value };
+        } catch {
+          return { status: 'unavailable' };
+        }
+      },
+    );
+  }
+
+  cancelPendingQuoteLine(
+    input: AgentMissionCancelPendingQuoteLineInput,
+  ): Promise<
+    AgentMissionRuntimeCall<RealtimeAgentMissionCancelPendingQuoteLineOutput>
+  > {
+    const captured = captureForQuoteScreen(
+      this.owner,
+      input.expectedScreenInstanceId,
+    );
+    if (captured === null) return Promise.resolve({ status: 'unavailable' });
+    if (captured === 'context_unconfirmed') {
+      return Promise.resolve({ status: 'context_unconfirmed' });
+    }
+    const session = captured.session;
+    if (session.protocolVersion !== REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION) {
+      return Promise.resolve({ status: 'unavailable' });
+    }
+    const context = captured.confirmedContext;
+    if (context === null) return Promise.resolve({ status: 'context_unconfirmed' });
+    const { expectedScreenInstanceId: _, ...command } = input;
+    const key = JSON.stringify([
+      'cancel_pending_quote_line',
+      captured.generation,
+      captured.session.realtimeSessionId,
+      context.revision,
+      context.digest,
+      input.expectedScreenInstanceId,
+      command,
+    ]);
+    return this.singleFlight<RealtimeAgentMissionCancelPendingQuoteLineOutput>(
+      key,
+      async (): Promise<
+        AgentMissionRuntimeCall<RealtimeAgentMissionCancelPendingQuoteLineOutput>
+      > => {
+        try {
+          const result = await session.cancelPendingQuoteLine(command);
+          if (!this.owner.isCurrent(captured)) return { status: 'stale' };
+          if (!result.ok) return { status: 'failed', error: result.error };
+          if (
+            result.value.mission.id !== input.missionId
+            || result.value.pendingLineId !== input.pendingLineId
+          ) {
+            return { status: 'invalid_response' };
+          }
+          return { status: 'completed', value: result.value };
+        } catch {
+          return { status: 'unavailable' };
+        }
+      },
+    );
+  }
+
+  decideQuoteLineProposal(
+    input: AgentMissionLineProposalDecisionInput,
+  ): Promise<
+    AgentMissionRuntimeCall<RealtimeAgentMissionLineProposalDecisionOutput>
+  > {
+    const captured = captureForQuoteScreen(
+      this.owner,
+      input.expectedScreenInstanceId,
+    );
+    if (captured === null) return Promise.resolve({ status: 'unavailable' });
+    if (captured === 'context_unconfirmed') {
+      return Promise.resolve({ status: 'context_unconfirmed' });
+    }
+    const session = captured.session;
+    if (session.protocolVersion !== REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION) {
+      return Promise.resolve({ status: 'unavailable' });
+    }
+    const context = captured.confirmedContext;
+    if (context === null) return Promise.resolve({ status: 'context_unconfirmed' });
+    const { expectedScreenInstanceId: _, ...command } = input;
+    const key = JSON.stringify([
+      'decide_quote_line_proposal',
+      captured.generation,
+      captured.session.realtimeSessionId,
+      context.revision,
+      context.digest,
+      input.expectedScreenInstanceId,
+      command,
+    ]);
+    return this.singleFlight<RealtimeAgentMissionLineProposalDecisionOutput>(
+      key,
+      async (): Promise<
+        AgentMissionRuntimeCall<RealtimeAgentMissionLineProposalDecisionOutput>
+      > => {
+        try {
+          const result = await session.decideQuoteLineProposal(command);
           if (!this.owner.isCurrent(captured)) return { status: 'stale' };
           if (!result.ok) return { status: 'failed', error: result.error };
           if (result.value.mission.id !== input.missionId) {
@@ -554,6 +909,19 @@ export class FencedAgentMissionRuntimeActions implements AgentMissionRuntimeActi
   manualHandoffQuoteCreation(
     input: AgentMissionManualHandoffInput,
   ): Promise<AgentMissionRuntimeCall<CancelQuoteAgentMissionOutput>> {
+    return this.cancelQuoteMission(input, 'manual_handoff');
+  }
+
+  abandonQuoteCreation(
+    input: AgentMissionAbandonInput,
+  ): Promise<AgentMissionRuntimeCall<CancelQuoteAgentMissionOutput>> {
+    return this.cancelQuoteMission(input, 'user_cancelled');
+  }
+
+  private cancelQuoteMission(
+    input: AgentMissionManualHandoffInput,
+    reason: 'user_cancelled' | 'manual_handoff',
+  ): Promise<AgentMissionRuntimeCall<CancelQuoteAgentMissionOutput>> {
     const captured = captureForQuoteScreen(
       this.owner,
       input.expectedScreenInstanceId,
@@ -565,7 +933,8 @@ export class FencedAgentMissionRuntimeActions implements AgentMissionRuntimeActi
     const context = captured.confirmedContext;
     if (context === null) return Promise.resolve({ status: 'context_unconfirmed' });
     const key = JSON.stringify([
-      'manual_handoff_quote_creation',
+      'cancel_quote_creation',
+      reason,
       captured.generation,
       captured.session.realtimeSessionId,
       context.revision,
@@ -585,7 +954,7 @@ export class FencedAgentMissionRuntimeActions implements AgentMissionRuntimeActi
             missionId: input.missionId,
             commandId: input.commandId,
             expectedMissionRevision: input.expectedMissionRevision,
-            reason: 'manual_handoff',
+            reason,
           });
           if (!this.owner.isCurrent(captured)) return { status: 'stale' };
           if (!result.ok) return { status: 'failed', error: result.error };

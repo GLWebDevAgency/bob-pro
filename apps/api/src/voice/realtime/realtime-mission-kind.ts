@@ -54,18 +54,26 @@ function captureMissionKind(candidate: unknown): RegisteredRealtimeMissionKind {
     );
   }
 
-  const run = Reflect.get(candidate, 'run');
-  if (typeof run !== 'function') {
+  const prepare = Reflect.get(candidate, 'prepare');
+  const runPlanned = Reflect.get(candidate, 'runPlanned');
+  if (typeof prepare !== 'function' || typeof runPlanned !== 'function') {
     throw new RealtimeMissionKindRegistryError('invalid_adapter', id);
   }
 
   switch (id) {
     case QUOTE_CREATION_MISSION_KIND_V1: {
-      const capturedRun = run.bind(candidate) as RealtimeQuoteMissionOrchestratorPort['run'];
-      Object.freeze(capturedRun);
+      const capturedPrepare = prepare.bind(
+        candidate,
+      ) as RealtimeQuoteMissionOrchestratorPort['prepare'];
+      const capturedRunPlanned = runPlanned.bind(
+        candidate,
+      ) as RealtimeQuoteMissionOrchestratorPort['runPlanned'];
+      Object.freeze(capturedPrepare);
+      Object.freeze(capturedRunPlanned);
       return Object.freeze({
         id,
-        run: capturedRun,
+        prepare: capturedPrepare,
+        runPlanned: capturedRunPlanned,
       });
     }
   }

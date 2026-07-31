@@ -5,6 +5,7 @@ import {
   quoteWizardCanResumeParkedDraft,
   quoteWizardGlobalBobHidden,
   quoteWizardInteractionEnabled,
+  quoteWizardLineSurfaceMode,
   quoteWizardNavigationLocked,
 } from './quote-wizard-interaction';
 
@@ -85,6 +86,48 @@ describe('quoteWizardCanResumeParkedDraft — autorité unique du brouillon', ()
 
   it.each(phases)('n’autorise la reprise locale qu’en mode manuel (%s)', (phase) => {
     expect(quoteWizardCanResumeParkedDraft(phase)).toBe(phase === 'manual');
+  });
+});
+
+describe('quoteWizardLineSurfaceMode — un seul writer de lignes', () => {
+  const v1Ready = {
+    phase: 'ready',
+    protocolVersion: 1,
+  } as QuoteScreenMissionBindingState;
+  const v2Ready = {
+    phase: 'ready',
+    protocolVersion: 2,
+  } as QuoteScreenMissionBindingState;
+
+  it('rend uniquement la surface mission pour une mission V2 prête', () => {
+    expect(quoteWizardLineSurfaceMode({
+      isLineStep: true,
+      missionState: v2Ready,
+    })).toBe('agent_v2');
+  });
+
+  it('ne rend jamais le writer legacy durant la fenêtre ready V1', () => {
+    expect(quoteWizardLineSurfaceMode({
+      isLineStep: true,
+      missionState: v1Ready,
+    })).toBe('hidden');
+  });
+
+  it.each(['handoff', 'manual'] as const)(
+    'rend le writer legacy seulement après autorité locale (%s)',
+    (phase) => {
+      expect(quoteWizardLineSurfaceMode({
+        isLineStep: true,
+        missionState: { phase } as QuoteScreenMissionBindingState,
+      })).toBe('legacy');
+    },
+  );
+
+  it('ne rend aucune surface de lignes sur une autre étape', () => {
+    expect(quoteWizardLineSurfaceMode({
+      isLineStep: false,
+      missionState: v2Ready,
+    })).toBe('hidden');
   });
 });
 

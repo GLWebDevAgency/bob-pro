@@ -113,6 +113,18 @@ const m2a2CutoverPath = path.join(
   apiDir,
   'prisma/migrations/20260730110200_agent_mission_line_confirmation_cutover/migration.sql',
 );
+const m2a3ExpandPath = path.join(
+  apiDir,
+  'prisma/migrations/20260731120000_agent_mission_line_cancel_choice_expand/migration.sql',
+);
+const m2a3ValidatePath = path.join(
+  apiDir,
+  'prisma/migrations/20260731120100_agent_mission_line_cancel_choice_validate/migration.sql',
+);
+const m2a3CutoverPath = path.join(
+  apiDir,
+  'prisma/migrations/20260731120200_agent_mission_line_cancel_choice_cutover/migration.sql',
+);
 const schemaPath = path.join(apiDir, 'prisma/schema.prisma');
 const persistencePath = path.join(
   apiDir,
@@ -135,6 +147,10 @@ const m2a1GeneratorPath = path.join(
 const m2a2GeneratorPath = path.join(
   scriptDir,
   'generate-agent-mission-m2a2-values.mjs',
+);
+const m2a3GeneratorPath = path.join(
+  scriptDir,
+  'generate-agent-mission-m2a3-values.mjs',
 );
 
 const [
@@ -164,6 +180,9 @@ const [
   m2a2Expand,
   m2a2Validate,
   m2a2Cutover,
+  m2a3Expand,
+  m2a3Validate,
+  m2a3Cutover,
   schema,
   persistence,
   rls,
@@ -172,6 +191,7 @@ const [
   m2aGenerator,
   m2a1Generator,
   m2a2Generator,
+  m2a3Generator,
 ] = await Promise.all([
   readFile(expandPath, 'utf8'),
   readFile(validatePath, 'utf8'),
@@ -199,6 +219,9 @@ const [
   readFile(m2a2ExpandPath, 'utf8'),
   readFile(m2a2ValidatePath, 'utf8'),
   readFile(m2a2CutoverPath, 'utf8'),
+  readFile(m2a3ExpandPath, 'utf8'),
+  readFile(m2a3ValidatePath, 'utf8'),
+  readFile(m2a3CutoverPath, 'utf8'),
   readFile(schemaPath, 'utf8'),
   readFile(persistencePath, 'utf8'),
   readFile(rlsPath, 'utf8'),
@@ -207,6 +230,7 @@ const [
   readFile(m2aGeneratorPath, 'utf8'),
   readFile(m2a1GeneratorPath, 'utf8'),
   readFile(m2a2GeneratorPath, 'utf8'),
+  readFile(m2a3GeneratorPath, 'utf8'),
 ]);
 
 test('les migrations AgentMission historiques sont immuables octet par octet', () => {
@@ -297,6 +321,9 @@ test('chaque migration borne les verrous et le temps de statement dans sa transa
     ['M2-A-2 expand', m2a2Expand],
     ['M2-A-2 validate', m2a2Validate],
     ['M2-A-2 cutover', m2a2Cutover],
+    ['M2-A-3 expand', m2a3Expand],
+    ['M2-A-3 validate', m2a3Validate],
+    ['M2-A-3 cutover', m2a3Cutover],
   ]) {
     assert.match(sql, /\bBEGIN;/u, `${name}: transaction absente`);
     assert.match(sql, /SET LOCAL lock_timeout = '[^']+';/u, `${name}: lock_timeout absent`);
@@ -1507,4 +1534,75 @@ test('M2-A-2 ne dépend d’aucun identifiant PostgreSQL tronqué à 63 octets',
       `Identifiant PostgreSQL tronqué silencieusement: ${identifier}`,
     );
   }
+});
+
+test('M2-A-3 est généré sans réécrire le train M2-A-2 publié', () => {
+  const result = spawnSync(
+    process.execPath,
+    [m2a3GeneratorPath, '--check'],
+    { cwd: repositoryRoot, encoding: 'utf8' },
+  );
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.match(
+    m2a3Generator,
+    /AGENT_MISSION_EVENT_LINE_CANCELLED_DATA_KEYS/u,
+  );
+  assert.match(
+    m2a3Generator,
+    /agent_mission_events_data_m2a2_check/u,
+  );
+  assert.doesNotMatch(
+    m2a3Generator,
+    /writeFile\(m2a2ExpandPath/u,
+    'Le générateur M2-A-3 ne doit jamais réécrire M2-A-2.',
+  );
+});
+
+test('M2-A-3 remplace uniquement le CHECK data par expand/validate/cutover', () => {
+  assert.equal((m2a3Expand.match(/\bNOT VALID\b/gmu) ?? []).length, 1);
+  assert.doesNotMatch(
+    m2a3Expand,
+    /\bVALIDATE CONSTRAINT\b|\bDROP CONSTRAINT\b|\bRENAME CONSTRAINT\b/u,
+  );
+  assert.equal(
+    (m2a3Validate.match(/\bVALIDATE CONSTRAINT\b/gmu) ?? []).length,
+    1,
+  );
+  assert.doesNotMatch(
+    m2a3Validate,
+    /\bADD CONSTRAINT\b|\bDROP CONSTRAINT\b|\bRENAME CONSTRAINT\b/u,
+  );
+  assert.equal((m2a3Cutover.match(/\bDROP CONSTRAINT\b/gmu) ?? []).length, 1);
+  assert.equal((m2a3Cutover.match(/\bRENAME CONSTRAINT\b/gmu) ?? []).length, 1);
+  assert.doesNotMatch(
+    m2a3Cutover,
+    /\bADD CONSTRAINT\b|\bVALIDATE CONSTRAINT\b|\bNOT VALID\b/u,
+  );
+});
+
+test('M2-A-3 accepte exclusivement line_cancelled scellé ou null/null', () => {
+  assert.match(
+    m2a3Expand,
+    /"eventType" = 'line_cancelled'[\s\S]*?"data" -> 'choiceId' = 'null'::JSONB[\s\S]*?"data" -> 'choiceSetHash' = 'null'::JSONB[\s\S]*?OR \([\s\S]*?"data" ->> 'choiceId' ~ '\^\[a-f0-9\]\{8\}[\s\S]*?jsonb_typeof\("data" -> 'choiceSetHash'\) = 'string'[\s\S]*?"data" ->> 'choiceSetHash' ~ '\^\[a-f0-9\]\{64\}\$'/u,
+  );
+  assert.match(
+    m2a3Expand,
+    /"data" \?& ARRAY\[[\s\S]*?'kind'[\s\S]*?'pendingLineId'[\s\S]*?'expectedWorkRevision'[\s\S]*?'choiceId'[\s\S]*?'choiceSetHash'/u,
+  );
+  for (const sql of [m2a3Expand, m2a3Cutover]) {
+    assert.match(
+      sql,
+      /flag\.key = 'bob\.agent_missions\.quote\.m2a'[\s\S]*?\) <> 3[\s\S]*?flag\.enabled[\s\S]*?flag\."killSwitch"[\s\S]*?flag\.version <> 1/u,
+    );
+  }
+  for (const sql of [m2a3Expand, m2a3Validate, m2a3Cutover]) {
+    assert.doesNotMatch(
+      sql,
+      /\b(?:INSERT|UPDATE|DELETE)\s+(?:INTO\s+|FROM\s+)?public\.release_flags/iu,
+    );
+  }
+  assert.doesNotMatch(
+    `${m2a3Expand}\n${m2a3Validate}\n${m2a3Cutover}`,
+    /GRANT\s+\w+\s+TO\s+(?:postgres|current_user|session_user)/iu,
+  );
 });

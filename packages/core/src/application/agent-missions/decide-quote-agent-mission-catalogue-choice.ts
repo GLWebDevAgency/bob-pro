@@ -610,6 +610,7 @@ export class DecideQuoteAgentMissionCatalogueChoice {
               transaction,
               owner,
               mission,
+              confirmedLineCount: slot.payload.draft.lines.length,
               candidates: input.additionalLines,
               origin: input.origin.actor,
               occurredAt: now,

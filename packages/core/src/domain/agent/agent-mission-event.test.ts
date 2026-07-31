@@ -528,6 +528,32 @@ describe('AgentMissionEvent', () => {
       data: selected as never,
     })).toMatchObject({ ok: false, error: { field: 'data.choiceSetHash', reason: 'invalid_digest' } });
   });
+
+  it('accepte line_cancelled sans décision seulement avec la paire null/null', () => {
+    const base = validEventFor('line_cancelled');
+    const pendingLine = {
+      ...dataFor('line_cancelled'),
+      choiceId: null,
+      choiceSetHash: null,
+    };
+    expect(AgentMissionEvent.record({
+      ...base,
+      data: pendingLine,
+    }).ok).toBe(true);
+
+    for (const mixed of [
+      { ...pendingLine, choiceId: CHOICE_ID },
+      { ...pendingLine, choiceSetHash: DIGEST },
+    ]) {
+      expect(AgentMissionEvent.record({
+        ...base,
+        data: mixed,
+      })).toMatchObject({
+        ok: false,
+        error: { field: 'data', reason: 'inconsistent_event' },
+      });
+    }
+  });
 });
 
 describe('AgentMissionEvent — matrice exhaustive acteur, contexte et effet draft', () => {

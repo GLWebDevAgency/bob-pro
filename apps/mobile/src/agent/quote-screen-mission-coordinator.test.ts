@@ -1,14 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import type {
-  AcknowledgeQuoteScreenOutput,
   AgentMissionViewV1,
-  DecideQuoteAgentMissionOutput,
+  QuoteAgentMissionPresentationV1,
 } from '@bob/core';
 import type {
   QuoteDraftAuthoritativeReference,
 } from '../quote-draft/quote-draft-remote-store';
 import type {
   AgentMissionConfirmedContext,
+  AgentMissionQuoteDecisionOutput,
+  AgentMissionQuoteScreenAckOutput,
   AgentMissionRuntimeActions,
 } from './agent-mission-runtime';
 import {
@@ -16,6 +17,7 @@ import {
   deriveQuoteCustomerSelectionRows,
   QuoteCustomerDecisionCoordinator,
   QuoteManualHandoffCoordinator,
+  QuoteMissionAbandonCoordinator,
   quoteScreenInstanceId,
   QuoteScreenMissionCoordinator,
   type QuoteScreenMissionObservation,
@@ -92,7 +94,7 @@ function mission(input: {
 
 function acknowledgement(
   updated: AgentMissionViewV1,
-): AcknowledgeQuoteScreenOutput {
+): AgentMissionQuoteScreenAckOutput {
   return {
     outcome: 'acknowledged',
     receipt: {
@@ -105,16 +107,27 @@ function acknowledgement(
       occurredAt: '2026-07-29T00:00:00.000Z',
     },
     mission: updated,
+    presentation: null,
   };
 }
 
 function selectedDecision(
   updated: AgentMissionViewV1,
   outcome: 'selected' | 'replayed' = 'selected',
-): DecideQuoteAgentMissionOutput {
+): AgentMissionQuoteDecisionOutput {
   return outcome === 'replayed'
-    ? { outcome, effect: { kind: 'selected' }, mission: updated }
-    : { outcome, effect: { kind: 'selected' }, mission: updated };
+    ? {
+        outcome,
+        effect: { kind: 'selected' },
+        mission: updated,
+        presentation: null,
+      }
+    : {
+        outcome,
+        effect: { kind: 'selected' },
+        mission: updated,
+        presentation: null,
+      };
 }
 
 function awaitingCustomerChoice(): AgentMissionViewV1 {
@@ -149,13 +162,18 @@ function observation(input: {
   instanceId: string;
   draft: QuoteDraftAuthoritativeReference | null;
   realtimeSessionId?: string | null;
+  protocolVersion?: 1 | 2 | null;
   recovery?: AgentMissionRecoverySnapshot;
 }): QuoteScreenMissionObservation {
+  const realtimeSessionId = input.realtimeSessionId === undefined
+    ? REALTIME_ID
+    : input.realtimeSessionId;
   return {
     runtimeGeneration: 1,
-    realtimeSessionId: input.realtimeSessionId === undefined
-      ? REALTIME_ID
-      : input.realtimeSessionId,
+    protocolVersion: input.protocolVersion === undefined
+      ? realtimeSessionId === null ? null : 1
+      : input.protocolVersion,
+    realtimeSessionId,
     confirmedContext: input.confirmed === undefined ? null : input.confirmed,
     screenInstanceId: input.instanceId,
     authoritativeDraft: input.draft,
@@ -174,6 +192,7 @@ function recovered(
   const draft = current.payload.draft;
   if (draft === null) throw new Error('Invalid recovery fixture');
   return {
+    protocolVersion: 1,
     mission: {
       id: current.id,
       status: current.status as 'active' | 'expired',
@@ -189,6 +208,7 @@ function recovered(
       step: draft.contentRevision === 0 ? 'client' : 'lignes',
     },
     customerChoices,
+    presentation: null,
   };
 }
 
@@ -534,6 +554,76 @@ describe('QuoteManualHandoffCoordinator — passation durable', () => {
   });
 });
 
+describe('QuoteMissionAbandonCoordinator — abandon durable distinct', () => {
+  it('accepte toute phase active et réutilise le commandId après une réponse perdue', async () => {
+    const firstAttempt = deferred<Awaited<ReturnType<
+      AgentMissionRuntimeActions['abandonQuoteCreation']
+    >>>();
+    let attempt = 0;
+    const abandonQuoteCreation = vi.fn<
+      AgentMissionRuntimeActions['abandonQuoteCreation']
+    >(() => {
+      attempt += 1;
+      return attempt === 1
+        ? firstAttempt.promise
+        : Promise.resolve({
+            status: 'completed' as const,
+            value: {
+              outcome: 'replayed' as const,
+              mission: {
+                ...mission({ revision: 2, draft: DRAFT_ZERO }),
+                status: 'cancelled',
+                actionable: false,
+              } as AgentMissionViewV1,
+            },
+          });
+    });
+    let commandCount = 0;
+    const coordinator = new QuoteMissionAbandonCoordinator(() => {
+      commandCount += 1;
+      return '71000000-0000-4000-8000-000000000001';
+    });
+    const input = {
+      mission: mission({ revision: 2, draft: DRAFT_ZERO }),
+      expectedScreenInstanceId: 'devis-client',
+    } as const;
+
+    const first = coordinator.abandon(input, { abandonQuoteCreation });
+    const doubled = coordinator.abandon(input, { abandonQuoteCreation });
+    expect(first).toBe(doubled);
+    firstAttempt.resolve({ status: 'unavailable' });
+    await first;
+    await coordinator.abandon(input, { abandonQuoteCreation });
+
+    expect(abandonQuoteCreation).toHaveBeenCalledTimes(2);
+    expect(abandonQuoteCreation.mock.calls.map(([call]) => call.commandId)).toEqual([
+      '71000000-0000-4000-8000-000000000001',
+      '71000000-0000-4000-8000-000000000001',
+    ]);
+    expect(commandCount).toBe(1);
+  });
+
+  it('échoue fermé pour une mission terminale ou sans brouillon', async () => {
+    const abandonQuoteCreation = vi.fn();
+    const coordinator = new QuoteMissionAbandonCoordinator(() =>
+      '71000000-0000-4000-8000-000000000001');
+    const active = mission({ revision: 2, draft: DRAFT_ZERO });
+
+    await expect(coordinator.abandon({
+      mission: { ...active, status: 'cancelled', actionable: false },
+      expectedScreenInstanceId: 'devis-client',
+    }, { abandonQuoteCreation })).resolves.toEqual({ status: 'invalid_response' });
+    await expect(coordinator.abandon({
+      mission: {
+        ...active,
+        payload: { ...active.payload, draft: null },
+      } as AgentMissionViewV1,
+      expectedScreenInstanceId: 'devis-client',
+    }, { abandonQuoteCreation })).resolves.toEqual({ status: 'invalid_response' });
+    expect(abandonQuoteCreation).not.toHaveBeenCalled();
+  });
+});
+
 describe('QuoteScreenMissionCoordinator — point fixe contexte + brouillon', () => {
   it('distingue deux longues sessions partageant exactement le même suffixe', () => {
     const suffix = 'same-suffix'.repeat(12);
@@ -662,7 +752,7 @@ describe('QuoteScreenMissionCoordinator — point fixe contexte + brouillon', ()
       actions: {
         readCurrentQuoteCreation: vi.fn(async () => ({
           status: 'completed' as const,
-          value: { mission: currentMission },
+          value: { mission: currentMission, presentation: null },
         })),
         acknowledgeQuoteScreen: vi.fn(),
       },
@@ -681,7 +771,7 @@ describe('QuoteScreenMissionCoordinator — point fixe contexte + brouillon', ()
     const actions: QuoteScreenMissionPorts['actions'] = {
       readCurrentQuoteCreation: vi.fn(async () => ({
         status: 'completed' as const,
-        value: { mission: currentMission },
+        value: { mission: currentMission, presentation: null },
       })),
       acknowledgeQuoteScreen: vi.fn(async (input) => {
         acknowledgementInputs.push(input);
@@ -711,7 +801,10 @@ describe('QuoteScreenMissionCoordinator — point fixe contexte + brouillon', ()
       actions,
       hydrateDraft,
       refreshRecovery: refreshAbsentRecovery,
-    })).resolves.toEqual({ phase: 'refreshing' });
+    })).resolves.toMatchObject({
+      phase: 'refreshing',
+      convergenceKey: expect.any(String),
+    });
     expect(currentDraft).toEqual(DRAFT_SELECTED);
 
     await expect(coordinator.advance(observation({
@@ -722,7 +815,10 @@ describe('QuoteScreenMissionCoordinator — point fixe contexte + brouillon', ()
       actions,
       hydrateDraft,
       refreshRecovery: refreshAbsentRecovery,
-    })).resolves.toEqual({ phase: 'refreshing' });
+    })).resolves.toMatchObject({
+      phase: 'refreshing',
+      convergenceKey: expect.any(String),
+    });
 
     await expect(coordinator.advance(observation({
       confirmed: linesContext,
@@ -764,7 +860,7 @@ describe('QuoteScreenMissionCoordinator — point fixe contexte + brouillon', ()
     const actions: QuoteScreenMissionPorts['actions'] = {
       readCurrentQuoteCreation: vi.fn(async () => ({
         status: 'completed' as const,
-        value: { mission: currentMission },
+        value: { mission: currentMission, presentation: null },
       })),
       acknowledgeQuoteScreen,
     };
@@ -785,7 +881,10 @@ describe('QuoteScreenMissionCoordinator — point fixe contexte + brouillon', ()
       hydrateDraft,
       refreshRecovery: refreshAbsentRecovery,
     }))
-      .resolves.toEqual({ phase: 'refreshing' });
+      .resolves.toMatchObject({
+        phase: 'refreshing',
+        convergenceKey: expect.any(String),
+      });
     await expect(coordinator.advance(input, {
       actions,
       hydrateDraft,
@@ -793,6 +892,100 @@ describe('QuoteScreenMissionCoordinator — point fixe contexte + brouillon', ()
     }))
       .resolves.toMatchObject({ phase: 'ready' });
     expect(acknowledgeQuoteScreen).toHaveBeenCalledOnce();
+  });
+
+  it('ne publie jamais ready pour une tête queued V2 et la redrive par le même ACK écran', async () => {
+    const linesContext = context(3, 'c', 'devis-lines');
+    let currentMission = mission({
+      revision: 4,
+      draft: DRAFT_SELECTED,
+      context: linesContext,
+    });
+    const queuedPresentation = {
+      schema: 'bob.agent-mission.quote-presentation',
+      version: 1,
+      requiredFact: null,
+      pendingLine: {
+        pendingLineId: '60000000-0000-4000-8000-000000000001',
+        expectedWorkRevision: 1,
+      },
+      decision: null,
+      catalogueChoices: [],
+      freeLineChoiceId: null,
+      proposalStatus: { kind: 'absent' },
+      proposal: null,
+    } as const;
+    const detailsPresentation = {
+      ...queuedPresentation,
+      requiredFact: 'unit_price' as const,
+      pendingLine: {
+        ...queuedPresentation.pendingLine,
+        expectedWorkRevision: 2,
+      },
+    };
+    let currentPresentation: QuoteAgentMissionPresentationV1 =
+      queuedPresentation;
+    const acknowledgeQuoteScreen = vi.fn(async () => {
+      currentMission = {
+        ...currentMission,
+        phase: 'awaiting_line_details',
+        revision: 5,
+      };
+      currentPresentation = detailsPresentation;
+      return {
+        status: 'completed' as const,
+        value: {
+          ...acknowledgement(currentMission),
+          presentation: detailsPresentation,
+        },
+      };
+    });
+    const actions: QuoteScreenMissionPorts['actions'] = {
+      readCurrentQuoteCreation: vi.fn(async () => ({
+        status: 'completed' as const,
+        value: {
+          mission: currentMission,
+          presentation: currentPresentation,
+        },
+      })),
+      acknowledgeQuoteScreen,
+    };
+    const hydrateDraft = vi.fn(async () => ({
+      status: 'ready' as const,
+      reference: DRAFT_SELECTED,
+    }));
+    const coordinator = new QuoteScreenMissionCoordinator(() =>
+      '30000000-0000-4000-8000-000000000099');
+    const input = observation({
+      confirmed: linesContext,
+      instanceId: linesContext.screen.instanceId,
+      draft: DRAFT_SELECTED,
+      protocolVersion: 2,
+    });
+
+    await expect(coordinator.advance(input, {
+      actions,
+      hydrateDraft,
+      refreshRecovery: refreshAbsentRecovery,
+    })).resolves.toMatchObject({
+      phase: 'refreshing',
+      convergenceKey: expect.any(String),
+    });
+    expect(acknowledgeQuoteScreen).toHaveBeenCalledOnce();
+
+    await expect(coordinator.advance(input, {
+      actions,
+      hydrateDraft,
+      refreshRecovery: refreshAbsentRecovery,
+    })).resolves.toMatchObject({
+      phase: 'ready',
+      protocolVersion: 2,
+      mission: {
+        phase: 'awaiting_line_details',
+        revision: 5,
+      },
+      presentation: detailsPresentation,
+    });
   });
 
   it('partage le même vol sous double rendu et réutilise le commandId après réponse perdue', async () => {
@@ -842,7 +1035,7 @@ describe('QuoteScreenMissionCoordinator — point fixe contexte + brouillon', ()
     expect(first).toBe(doubled);
     readGate.resolve({
       status: 'completed',
-      value: { mission: currentMission },
+      value: { mission: currentMission, presentation: null },
     });
     await expect(first).resolves.toEqual({
       phase: 'error',
@@ -861,7 +1054,10 @@ describe('QuoteScreenMissionCoordinator — point fixe contexte + brouillon', ()
     const actions: QuoteScreenMissionPorts['actions'] = {
       readCurrentQuoteCreation: vi.fn(async () => ({
         status: 'completed' as const,
-        value: { mission: mission({ revision: 1, draft: DRAFT_SELECTED }) },
+        value: {
+          mission: mission({ revision: 1, draft: DRAFT_SELECTED }),
+          presentation: null,
+        },
       })),
       acknowledgeQuoteScreen: vi.fn(),
     };

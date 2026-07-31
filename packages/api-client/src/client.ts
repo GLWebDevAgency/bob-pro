@@ -1195,6 +1195,12 @@ export interface InterventionSettingsWriteInput {
   expectedRevision?: number;
 }
 
+export interface ConfirmedConversationTimeZoneView {
+  readonly timeZone: string;
+  readonly confirmedAt: string;
+  readonly requiresSessionRefresh: true;
+}
+
 export interface BobClient {
   readonly companyId: string;
   /**
@@ -1252,6 +1258,10 @@ export interface BobClient {
     confirmationText: string;
     reason?: string;
   }): Promise<Result<{ closedAt: string }, AppError>>;
+  /** Confirme la préférence conversationnelle signée ; le mobile rafraîchit ensuite son JWT. */
+  confirmConversationTimeZone(
+    timeZone: string,
+  ): Promise<Result<ConfirmedConversationTimeZoneView, AppError>>;
   invoicePaymentLink(invoiceId: string): Promise<Result<{ url: string }, AppError>>;
   getDiagnostic(): Promise<Result<DiagnosticResult, AppError>>;
   /** Résultat terminé persistant. `never_run`/`stale` ne contiennent jamais un faux score. */

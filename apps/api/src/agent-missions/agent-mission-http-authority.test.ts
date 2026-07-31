@@ -208,6 +208,9 @@ describe('AgentMission HTTP authority', () => {
   it.each([
     'stage_quote_lines',
     'decide_catalogue_choice',
+    'patch_quote_line',
+    'cancel_pending_quote_line',
+    'decide_quote_line_proposal',
   ] as const)('refuse bam1 sur la surface M2-A avant toute lecture métier (%s)', (operation) => {
     const { metrics, inc } = metricHarness();
     const authority = new DurableAgentMissionHttpAuthority(settings(), metrics);
@@ -224,9 +227,7 @@ describe('AgentMission HTTP authority', () => {
       },
     });
     expect(inc).toHaveBeenCalledWith({
-      operation: operation === 'stage_quote_lines'
-        ? 'line_stage'
-        : 'catalogue_choice',
+      operation: agentMissionCapabilityMetricOperation(operation),
       reason: 'state',
     });
   });
@@ -234,6 +235,9 @@ describe('AgentMission HTTP authority', () => {
   it.each([
     'stage_quote_lines',
     'decide_catalogue_choice',
+    'patch_quote_line',
+    'cancel_pending_quote_line',
+    'decide_quote_line_proposal',
   ] as const)('accepte bam2 sur la surface M2-A (%s)', (operation) => {
     const { metrics, inc } = metricHarness();
     const authority = new DurableAgentMissionHttpAuthority(settings(), metrics);
@@ -261,6 +265,9 @@ describe('AgentMission HTTP authority', () => {
       agentMissionCapabilityMetricOperation('decide_quote_creation'),
       agentMissionCapabilityMetricOperation('stage_quote_lines'),
       agentMissionCapabilityMetricOperation('decide_catalogue_choice'),
+      agentMissionCapabilityMetricOperation('patch_quote_line'),
+      agentMissionCapabilityMetricOperation('cancel_pending_quote_line'),
+      agentMissionCapabilityMetricOperation('decide_quote_line_proposal'),
     ]).toEqual([
       'get',
       'start',
@@ -269,6 +276,9 @@ describe('AgentMission HTTP authority', () => {
       'decision',
       'line_stage',
       'catalogue_choice',
+      'line_patch',
+      'line_cancel',
+      'line_decision',
     ]);
   });
 });

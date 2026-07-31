@@ -2,7 +2,7 @@ import { createElement, useEffect } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { QuoteAgentMissionResumeView } from '@bob/core';
+import type { QuoteAgentMissionResumeViewV2 } from '@bob/core';
 import {
   AgentMissionRecoveryProvider,
   useAgentMissionRecovery,
@@ -12,6 +12,7 @@ import {
   .IS_REACT_ACT_ENVIRONMENT = true;
 
 const fixtures = vi.hoisted(() => ({
+  getCurrentQuoteAgentMissionResumeV2: vi.fn(),
   getCurrentQuoteAgentMissionResume: vi.fn(),
   userId: '10000000-0000-4000-8000-000000000001',
   companyId: '20000000-0000-4000-8000-000000000001',
@@ -30,6 +31,8 @@ vi.mock('../data/auth', () => ({
 vi.mock('../data/client', () => ({
   useBobClient: () => ({
     companyId: fixtures.companyId,
+    getCurrentQuoteAgentMissionResumeV2:
+      fixtures.getCurrentQuoteAgentMissionResumeV2,
     getCurrentQuoteAgentMissionResume:
       fixtures.getCurrentQuoteAgentMissionResume,
   }),
@@ -52,6 +55,9 @@ describe('AgentMissionRecoveryProvider — single-flight QueryClient', () => {
     vi.clearAllMocks();
     fixtures.userId = '10000000-0000-4000-8000-000000000001';
     fixtures.companyId = '20000000-0000-4000-8000-000000000001';
+    fixtures.getCurrentQuoteAgentMissionResume.mockRejectedValue(
+      new Error('V1 ne doit pas être appelé sans upgrade_required'),
+    );
     recovery = null;
     queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -68,10 +74,10 @@ describe('AgentMissionRecoveryProvider — single-flight QueryClient', () => {
 
   it('partage le fetch initial avec deux refresh concurrents sans annulation', async () => {
     let resolveRequest!: (
-      value: { readonly ok: true; readonly value: QuoteAgentMissionResumeView },
+      value: { readonly ok: true; readonly value: QuoteAgentMissionResumeViewV2 },
     ) => void;
     let observedSignal: AbortSignal | undefined;
-    fixtures.getCurrentQuoteAgentMissionResume.mockImplementation(
+    fixtures.getCurrentQuoteAgentMissionResumeV2.mockImplementation(
       (signal: AbortSignal | undefined) => {
         observedSignal = signal;
         return new Promise((resolve) => {
@@ -91,7 +97,7 @@ describe('AgentMissionRecoveryProvider — single-flight QueryClient', () => {
       ));
       await Promise.resolve();
     });
-    expect(fixtures.getCurrentQuoteAgentMissionResume).toHaveBeenCalledTimes(1);
+    expect(fixtures.getCurrentQuoteAgentMissionResumeV2).toHaveBeenCalledTimes(1);
     expect(recovery).not.toBeNull();
 
     let first!: Promise<unknown>;
@@ -102,11 +108,14 @@ describe('AgentMissionRecoveryProvider — single-flight QueryClient', () => {
       await Promise.resolve();
     });
     expect(first).toBe(second);
-    expect(fixtures.getCurrentQuoteAgentMissionResume).toHaveBeenCalledTimes(1);
+    expect(fixtures.getCurrentQuoteAgentMissionResumeV2).toHaveBeenCalledTimes(1);
     expect(observedSignal?.aborted).toBe(false);
 
     await act(async () => {
-      resolveRequest({ ok: true, value: { mission: null } });
+      resolveRequest({
+        ok: true,
+        value: { mission: null, presentation: null },
+      });
       await Promise.all([first, second]);
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
@@ -115,7 +124,7 @@ describe('AgentMissionRecoveryProvider — single-flight QueryClient', () => {
 
   it('annule toute lecture pré-mutation et exige un GET post-commit neuf', async () => {
     let firstSignal: AbortSignal | undefined;
-    fixtures.getCurrentQuoteAgentMissionResume
+    fixtures.getCurrentQuoteAgentMissionResumeV2
       .mockImplementationOnce(
         (signal: AbortSignal | undefined) =>
           new Promise((_resolve, reject) => {
@@ -125,7 +134,10 @@ describe('AgentMissionRecoveryProvider — single-flight QueryClient', () => {
             });
           }),
       )
-      .mockResolvedValueOnce({ ok: true, value: { mission: null } });
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { mission: null, presentation: null },
+      });
     await act(async () => {
       renderer = create(createElement(
         QueryClientProvider,
@@ -138,7 +150,7 @@ describe('AgentMissionRecoveryProvider — single-flight QueryClient', () => {
       ));
       await Promise.resolve();
     });
-    expect(fixtures.getCurrentQuoteAgentMissionResume).toHaveBeenCalledOnce();
+    expect(fixtures.getCurrentQuoteAgentMissionResumeV2).toHaveBeenCalledOnce();
 
     let result!: Awaited<ReturnType<
       NonNullable<typeof recovery>['refreshAfterMutation']
@@ -149,13 +161,13 @@ describe('AgentMissionRecoveryProvider — single-flight QueryClient', () => {
     });
 
     expect(firstSignal?.aborted).toBe(true);
-    expect(fixtures.getCurrentQuoteAgentMissionResume).toHaveBeenCalledTimes(2);
+    expect(fixtures.getCurrentQuoteAgentMissionResumeV2).toHaveBeenCalledTimes(2);
     expect(result).toEqual({ phase: 'absent' });
     expect(recovery?.snapshot).toEqual({ phase: 'absent' });
   });
 
   it('ne partage jamais un refresh entre deux propriétaires successifs', async () => {
-    fixtures.getCurrentQuoteAgentMissionResume
+    fixtures.getCurrentQuoteAgentMissionResumeV2
       .mockImplementationOnce(
         (signal: AbortSignal | undefined) =>
           new Promise((_resolve, reject) => {
@@ -164,7 +176,10 @@ describe('AgentMissionRecoveryProvider — single-flight QueryClient', () => {
             });
           }),
       )
-      .mockResolvedValue({ ok: true, value: { mission: null } });
+      .mockResolvedValue({
+        ok: true,
+        value: { mission: null, presentation: null },
+      });
     const tree = () => createElement(
       QueryClientProvider,
       { client: queryClient },
@@ -190,7 +205,7 @@ describe('AgentMissionRecoveryProvider — single-flight QueryClient', () => {
 
     expect(ownerBRefresh).not.toBe(ownerARefresh);
     await expect(ownerBRefresh).resolves.toEqual({ phase: 'absent' });
-    expect(fixtures.getCurrentQuoteAgentMissionResume.mock.calls.length)
+    expect(fixtures.getCurrentQuoteAgentMissionResumeV2.mock.calls.length)
       .toBeGreaterThanOrEqual(2);
     await Promise.allSettled([ownerARefresh]);
   });

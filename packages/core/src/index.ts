@@ -202,6 +202,7 @@ export * from './application/agent-missions/stage-quote-agent-mission-lines-comm
 export * from './application/agent-missions/continue-quote-agent-mission-line-queue';
 export * from './application/agent-missions/decide-quote-agent-mission-catalogue-choice';
 export * from './application/agent-missions/patch-quote-agent-mission-line';
+export * from './application/agent-missions/cancel-quote-agent-mission-pending-line';
 export * from './application/agent-missions/continue-quote-agent-mission-line-resolution';
 export * from './application/agent-missions/decide-quote-agent-mission-line-proposal';
 export * from './application/quote-drafts/apply-quote-draft-transition';

@@ -4,7 +4,13 @@ import type {
   RealtimeQuoteMissionOrchestrationInput,
   RealtimeQuoteMissionOrchestrationOutcome,
   RealtimeQuoteMissionOrchestratorPort,
+  RealtimeQuoteMissionPreparationOutcome,
+  RealtimeQuoteMissionPreparedTurn,
 } from './realtime-quote-mission-orchestrator';
+import type {
+  QuoteCreationSemanticFrameV1,
+  QuoteCreationSemanticFrameV2,
+} from '@bob/ai';
 import type { RegisteredRealtimeMissionKind } from './realtime-mission-kind';
 import {
   RealtimeMissionKindRegistry,
@@ -12,7 +18,12 @@ import {
 } from './realtime-mission-kind';
 
 const outcome: RealtimeQuoteMissionOrchestrationOutcome = {
-  status: 'not_applicable',
+  status: 'failed',
+  canonicalSpeech: 'Rien n’a été exécuté.',
+};
+const preparation: RealtimeQuoteMissionPreparationOutcome = {
+  status: 'failed',
+  canonicalSpeech: 'Préparation indisponible.',
 };
 
 function turn(): RealtimeQuoteMissionOrchestrationInput {
@@ -40,29 +51,46 @@ function expectRegistryError(
 
 describe('RealtimeMissionKindRegistry', () => {
   it('capture une closure bindée, immuable et réellement appelable', async () => {
-    const original = vi.fn(async () => outcome);
-    const replacement = vi.fn(async () => ({
+    const originalPrepare = vi.fn(async () => preparation);
+    const originalRunPlanned = vi.fn(async () => outcome);
+    const replacementPrepare = vi.fn(async () => ({
+      status: 'failed' as const,
+      canonicalSpeech: 'mutable prepare',
+    }));
+    const replacementRunPlanned = vi.fn(async () => ({
       status: 'failed' as const,
       canonicalSpeech: 'mutable',
     }));
     const candidate: {
       id: typeof QUOTE_CREATION_MISSION_KIND_V1;
-      run: RealtimeQuoteMissionOrchestratorPort['run'];
+      prepare: RealtimeQuoteMissionOrchestratorPort['prepare'];
+      runPlanned: RealtimeQuoteMissionOrchestratorPort['runPlanned'];
     } = {
       id: QUOTE_CREATION_MISSION_KIND_V1,
-      run: original,
+      prepare: originalPrepare,
+      runPlanned: originalRunPlanned,
     };
     const registry = new RealtimeMissionKindRegistry([candidate]);
     const captured = registry.get(QUOTE_CREATION_MISSION_KIND_V1);
-    candidate.run = replacement;
+    candidate.prepare = replacementPrepare;
+    candidate.runPlanned = replacementRunPlanned;
     const input = turn();
+    const planned = {
+      request: input,
+      prepared: {} as RealtimeQuoteMissionPreparedTurn,
+      frame: {} as QuoteCreationSemanticFrameV1 | QuoteCreationSemanticFrameV2,
+    };
 
     expect(Object.isFrozen(registry)).toBe(true);
     expect(Object.isFrozen(captured)).toBe(true);
-    expect(Object.isFrozen(captured.run)).toBe(true);
-    await expect(captured.run(input)).resolves.toBe(outcome);
-    expect(original).toHaveBeenCalledWith(input);
-    expect(replacement).not.toHaveBeenCalled();
+    expect(Object.isFrozen(captured.prepare)).toBe(true);
+    expect(Object.isFrozen(captured.runPlanned)).toBe(true);
+    await expect(captured.prepare(input)).resolves.toBe(preparation);
+    await expect(captured.runPlanned(planned)).resolves.toBe(outcome);
+    expect(originalPrepare).toHaveBeenCalledWith(input);
+    expect(originalRunPlanned).toHaveBeenCalledWith(planned);
+    expect(replacementPrepare).not.toHaveBeenCalled();
+    expect(replacementRunPlanned).not.toHaveBeenCalled();
   });
 
   it('refuse une liste vide ou un kind attendu manquant', () => {
@@ -73,11 +101,13 @@ describe('RealtimeMissionKindRegistry', () => {
     ['valeur primitive', [null], 'invalid_adapter'],
     ['adaptateur non appelable', [{
       id: QUOTE_CREATION_MISSION_KIND_V1,
-      run: null,
+      prepare: null,
+      runPlanned: null,
     }], 'invalid_adapter'],
     ['identité inconnue', [{
       id: 'equipment_management@1',
-      run: vi.fn(),
+      prepare: vi.fn(),
+      runPlanned: vi.fn(),
     }], 'unsupported_id'],
   ] as const)('refuse %s', (_label, candidates, code) => {
     expectRegistryError(() => registryFromUnsafe(candidates), code);
@@ -86,7 +116,8 @@ describe('RealtimeMissionKindRegistry', () => {
   it('refuse deux propriétaires runtime pour la même identité', () => {
     const candidate = {
       id: QUOTE_CREATION_MISSION_KIND_V1,
-      run: vi.fn(async () => outcome),
+      prepare: vi.fn(async () => preparation),
+      runPlanned: vi.fn(async () => outcome),
     };
 
     expectRegistryError(
@@ -98,7 +129,8 @@ describe('RealtimeMissionKindRegistry', () => {
   it('échoue fermé si un appel JavaScript contourne le type fermé de get', () => {
     const registry = new RealtimeMissionKindRegistry([{
       id: QUOTE_CREATION_MISSION_KIND_V1,
-      run: vi.fn(async () => outcome),
+      prepare: vi.fn(async () => preparation),
+      runPlanned: vi.fn(async () => outcome),
     }]);
     const unsafeGet = registry.get.bind(registry) as (id: unknown) => unknown;
 

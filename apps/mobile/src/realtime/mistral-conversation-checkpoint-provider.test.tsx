@@ -152,7 +152,7 @@ describe('MistralConversationCheckpointProvider', () => {
     mocks.appStateListeners.clear();
   });
 
-  it('n’expose le binding authentifié qu’après la reprise terminale', async () => {
+  it('publie seulement la fence locale sans aucune reprise ni requête Mistral', async () => {
     mocks.session = session('subject-1', 'company-1');
     const h = harness();
     const renderer = await h.render();
@@ -164,8 +164,8 @@ describe('MistralConversationCheckpointProvider', () => {
     });
     expect(h.log).toEqual([
       'activate:subject-1:company-1',
-      'recover:subject-1:company-1',
     ]);
+    expect(mocks.recover).not.toHaveBeenCalled();
     await act(async () => renderer.unmount());
   });
 
@@ -185,12 +185,11 @@ describe('MistralConversationCheckpointProvider', () => {
     });
     expect(h.log).toEqual([
       'activate:subject-1:company-1',
-      'recover:subject-1:company-1',
       'purge:subject-1:company-1',
       'deactivate:subject-1:company-1',
       'activate:subject-2:company-2',
-      'recover:subject-2:company-2',
     ]);
+    expect(mocks.recover).not.toHaveBeenCalled();
     await h.unmount();
   });
 
@@ -226,11 +225,9 @@ describe('MistralConversationCheckpointProvider', () => {
     expect(h.observed.at(-1)?.fence.generation).toBe(2);
     expect(h.log).toEqual([
       'activate:subject-1:company-1',
-      'recover:subject-1:company-1',
       'purge:subject-1:company-1',
       'deactivate:subject-1:company-1',
       'activate:subject-1:company-1',
-      'recover:subject-1:company-1',
     ]);
     await h.unmount();
   });
@@ -250,52 +247,48 @@ describe('MistralConversationCheckpointProvider', () => {
       subjectId: 'subject-2',
       companyId: 'company-2',
     });
-    expect(h.log.slice(-4)).toEqual([
+    expect(h.log.slice(-3)).toEqual([
       'purge:subject-1:company-1',
       'deactivate:subject-1:company-1',
       'activate:subject-2:company-2',
-      'recover:subject-2:company-2',
     ]);
     await h.unmount();
   });
 
-  it('n’expose jamais le résultat tardif d’une reprise appartenant à l’ancien compte', async () => {
-    let releaseFirst!: () => void;
+  it('n’expose jamais le nouvel owner avant la purge locale complète de l’ancien compte', async () => {
     mocks.session = session('subject-1', 'company-1');
     const h = harness();
-    mocks.recover.mockImplementationOnce(async () => new Promise<boolean>((resolve) => {
-      releaseFirst = () => resolve(true);
-    }));
-    let renderer!: ReactTestRenderer;
-    await act(async () => {
-      renderer = create(
-        <MistralConversationCheckpointProvider>
-          {null}
-        </MistralConversationCheckpointProvider>,
-      );
-      await flush();
-    });
+    await h.render();
+    h.observed.length = 0;
+    let releasePurge!: () => void;
+    vi.mocked(h.store.purgeForAuthBoundary).mockImplementationOnce(
+      async () => new Promise<void>((resolve) => {
+        releasePurge = resolve;
+      }),
+    );
 
     mocks.session = session('subject-2', 'company-2');
+    await h.update();
+
+    expect(h.observed.every((value) => value === null)).toBe(true);
+    expect(h.log).not.toContain('activate:subject-2:company-2');
+
     await act(async () => {
-      renderer.update(
-        <MistralConversationCheckpointProvider>
-          {null}
-        </MistralConversationCheckpointProvider>,
-      );
-      releaseFirst();
+      releasePurge();
       await flush();
       await flush();
     });
 
-    expect(h.log).not.toContain('recover:subject-1:company-1');
-    expect(h.log.slice(-4)).toEqual([
-      'purge:subject-1:company-1',
+    expect(h.observed.at(-1)?.fence.identity).toEqual({
+      subjectId: 'subject-2',
+      companyId: 'company-2',
+    });
+    expect(h.log.slice(-2)).toEqual([
       'deactivate:subject-1:company-1',
       'activate:subject-2:company-2',
-      'recover:subject-2:company-2',
     ]);
-    await act(async () => renderer.unmount());
+    expect(mocks.recover).not.toHaveBeenCalled();
+    await h.unmount();
   });
 
   it('conserve la fence et retente une purge SecureStore transitoirement refusée', async () => {
@@ -323,9 +316,9 @@ describe('MistralConversationCheckpointProvider', () => {
 
       expect(h.log.slice(-4)).toEqual([
         'purge:subject-1:company-1',
+        'purge:subject-1:company-1',
         'deactivate:subject-1:company-1',
         'activate:subject-2:company-2',
-        'recover:subject-2:company-2',
       ]);
       expect(h.observed.at(-1)?.fence.identity).toEqual({
         subjectId: 'subject-2',
@@ -367,13 +360,11 @@ describe('MistralConversationCheckpointProvider', () => {
     });
     expect(h.log).toEqual([
       'activate:subject-1:company-1',
-      'recover:subject-1:company-1',
       'purge:subject-1:company-1',
       'retry-terminal-clear:subject-1:company-1',
       'purge:subject-1:company-1',
       'deactivate:subject-1:company-1',
       'activate:subject-2:company-2',
-      'recover:subject-2:company-2',
     ]);
     expect(h.store.retryInterruptedTerminalClear).toHaveBeenCalledOnce();
     await h.unmount();
@@ -421,7 +412,7 @@ describe('MistralConversationCheckpointProvider', () => {
         await flush();
       });
 
-      expect(h.log.slice(-8)).toEqual([
+      expect(h.log.slice(-7)).toEqual([
         'purge:subject-1:company-1',
         'retry-terminal-clear:subject-1:company-1',
         'purge:subject-1:company-1',
@@ -429,7 +420,6 @@ describe('MistralConversationCheckpointProvider', () => {
         'purge:subject-1:company-1',
         'deactivate:subject-1:company-1',
         'activate:subject-2:company-2',
-        'recover:subject-2:company-2',
       ]);
       expect(h.observed.at(-1)?.fence.identity).toEqual({
         subjectId: 'subject-2',
@@ -442,51 +432,45 @@ describe('MistralConversationCheckpointProvider', () => {
     }
   });
 
-  it('rearme un cycle borne au retour foreground apres une panne de demarrage', async () => {
+  it('réarme seulement SecureStore au retour foreground, sans reprise réseau Mistral', async () => {
     vi.useFakeTimers();
     try {
       mocks.session = session('subject-1', 'company-1');
       const h = harness();
-      mocks.recover.mockResolvedValue(false);
+      vi.mocked(h.store.activateOwner).mockImplementationOnce(() => {
+        throw new Error('secure_store_temporarily_unavailable');
+      });
       await h.render();
 
-      for (let attempt = 1; attempt < 8; attempt += 1) {
-        await act(async () => {
-          await vi.runOnlyPendingTimersAsync();
-          await flush();
-        });
-      }
-      expect(mocks.recover).toHaveBeenCalledTimes(8);
       expect(h.observed.at(-1)).toBeNull();
-
-      mocks.recover.mockResolvedValue(true);
       await act(async () => {
         for (const listener of [...mocks.appStateListeners]) listener('active');
         await flush();
       });
 
-      expect(mocks.recover).toHaveBeenCalledTimes(9);
       expect(h.observed.at(-1)?.fence.identity).toEqual({
         subjectId: 'subject-1',
         companyId: 'company-1',
       });
+      expect(mocks.recover).not.toHaveBeenCalled();
       await h.unmount();
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('expose un retry manuel sans publier le binding avant sa reussite', async () => {
+  it('expose un retry manuel local sans jamais charger ni reprendre le checkpoint', async () => {
     vi.useFakeTimers();
     try {
       mocks.session = session('subject-1', 'company-1');
       const h = harness();
-      mocks.recover.mockResolvedValue(false);
+      vi.mocked(h.store.activateOwner).mockImplementationOnce(() => {
+        throw new Error('secure_store_temporarily_unavailable');
+      });
       await h.render();
       expect(h.retryRecovery()).not.toBeNull();
       expect(h.observed.at(-1)).toBeNull();
 
-      mocks.recover.mockResolvedValue(true);
       await act(async () => {
         h.retryRecovery()?.();
         await flush();
@@ -496,6 +480,8 @@ describe('MistralConversationCheckpointProvider', () => {
         subjectId: 'subject-1',
         companyId: 'company-1',
       });
+      expect(mocks.recover).not.toHaveBeenCalled();
+      expect(h.store.load).not.toHaveBeenCalled();
       await h.unmount();
     } finally {
       vi.useRealTimers();

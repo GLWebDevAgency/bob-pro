@@ -10,6 +10,10 @@ const railwayReleaseWorkflow = readFileSync(
   resolve(repositoryRoot, '.github/workflows/railway-api.yml'),
   'utf8',
 );
+const m2a3SemanticWorkflow = readFileSync(
+  resolve(repositoryRoot, '.github/workflows/agent-mission-m2a3-semantic-staging.yml'),
+  'utf8',
+);
 const reportSource = readFileSync(
   resolve(repositoryRoot, 'apps/api/scripts/agent-mission-m1b-staging-report.mjs'),
   'utf8',
@@ -62,6 +66,7 @@ test('workflow M1-B est uniquement manuel ou réutilisable, staging et sérialis
 test('le workflow Railway déjà présent sur main sert seulement de trampoline pré-merge', () => {
   assert.match(railwayReleaseWorkflow, /- m1b-staging-certification/u);
   assert.match(railwayReleaseWorkflow, /- m1b-staging-recovery/u);
+  assert.match(railwayReleaseWorkflow, /- m2a3-semantic-certification/u);
   assert.match(railwayReleaseWorkflow, /- k2-staging-schema/u);
   assert.match(
     railwayReleaseWorkflow,
@@ -75,7 +80,7 @@ test('le workflow Railway déjà présent sur main sert seulement de trampoline 
   );
   assert.match(
     railwayReleaseWorkflow,
-    /validate-purpose:[\s\S]*?release\|m1b-staging-certification\|m1b-staging-recovery\|k2-staging-schema\)[\s\S]*?Unsupported Railway release purpose/u,
+    /validate-purpose:[\s\S]*?release\|m1b-staging-certification\|m1b-staging-recovery\|m2a3-semantic-certification\|k2-staging-schema\)[\s\S]*?Unsupported Railway release purpose/u,
   );
   assert.match(
     railwayReleaseWorkflow,
@@ -85,6 +90,35 @@ test('le workflow Railway déjà présent sur main sert seulement de trampoline 
     railwayReleaseWorkflow,
     /mode: \$\{\{ inputs\.purpose == 'm1b-staging-recovery' && 'recovery' \|\| 'certification' \}\}/u,
   );
+  assert.match(
+    railwayReleaseWorkflow,
+    /certify-agent-mission-m2a3-semantic:[\s\S]*?uses: \.\/\.github\/workflows\/agent-mission-m2a3-semantic-staging\.yml[\s\S]*?secrets: inherit/u,
+  );
+});
+
+test('le certificat M2-A-3 est manuel, exact-SHA, staging et sans clé OpenAI GitHub', () => {
+  assert.match(m2a3SemanticWorkflow, /^on:\n  workflow_dispatch:\n  workflow_call:/mu);
+  assert.doesNotMatch(m2a3SemanticWorkflow, /^\s+(?:push|pull_request|schedule):/mu);
+  assert.equal(occurrences(m2a3SemanticWorkflow, /^\s+environment: staging$/gmu), 1);
+  assert.match(m2a3SemanticWorkflow, /group: railway-api-staging/u);
+  assert.match(m2a3SemanticWorkflow, /cancel-in-progress: false/u);
+  assert.match(m2a3SemanticWorkflow, /test "\$\(git rev-parse HEAD\)" = "\$GITHUB_SHA"/u);
+  assert.match(m2a3SemanticWorkflow, /pnpm install --frozen-lockfile/u);
+  assert.match(
+    m2a3SemanticWorkflow,
+    /RUN_BOB_LIVE_M2A3_MODEL_EVAL=true[\s\S]*?BOB_LIVE_M2A3_EVAL_RELEASE_SHA="\$GITHUB_SHA"/u,
+  );
+  assert.match(
+    m2a3SemanticWorkflow,
+    /railway run --project "\$RAILWAY_PROJECT_ID"[\s\S]*?--service "\$RAILWAY_API_SERVICE_ID"[\s\S]*?--environment "\$RAILWAY_ENVIRONMENT_ID" --no-local/u,
+  );
+  assert.doesNotMatch(m2a3SemanticWorkflow, /secrets\.OPENAI_API_KEY/u);
+  assert.doesNotMatch(m2a3SemanticWorkflow, /railway\s+link/u);
+  assert.match(m2a3SemanticWorkflow, /receipt\.providerRequestCount !== 5/u);
+  assert.match(m2a3SemanticWorkflow, /receipt\.generateCount !== 0/u);
+  assert.match(m2a3SemanticWorkflow, /entry\.status !== 'mission_frame'/u);
+  assert.match(m2a3SemanticWorkflow, /if-no-files-found: error/u);
+  assert.match(m2a3SemanticWorkflow, /retention-days: 90/u);
 });
 
 test('workflow cible le SHA et les UUID sans relier le checkout ni changer de backend CLI', () => {

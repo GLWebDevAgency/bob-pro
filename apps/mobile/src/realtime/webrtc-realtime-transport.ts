@@ -1,6 +1,6 @@
 import {
-  REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
   type BobClient,
+  type RealtimeAgentMissionProtocolVersion,
   type RealtimeAgentMissionSession,
   type RealtimeVoiceConfig,
   type RealtimeVoiceNativeSpeechDeliveryAcknowledgement,
@@ -162,6 +162,11 @@ function runtimeEvents(target: unknown): RuntimeEventSource {
 export interface RealtimeWebRtcTransportOptions {
   /** Injection reservee aux tests deterministes ; le runtime de production reste charge paresseusement. */
   loadRuntime?: () => WebRtcRuntime | null;
+  /**
+   * Protocole prouvé avant le bootstrap. `null` est obligatoire pour le downlink OpenAI natif
+   * tant que sa frontière AgentMission n'est pas certifiée.
+   */
+  agentMissionProtocolVersion: RealtimeAgentMissionProtocolVersion | null;
 }
 
 export type RealtimeWebRtcNegotiation = RealtimeVoiceConfig & { readonly transport: 'webrtc' };
@@ -292,7 +297,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
   constructor(
     private readonly client: BobClient,
     private readonly negotiation: RealtimeWebRtcNegotiation,
-    private readonly options: RealtimeWebRtcTransportOptions = {},
+    private readonly options: RealtimeWebRtcTransportOptions,
   ) {
     this.nativeDownlink = negotiation.speechDelivery === 'openai-native-webrtc-v1';
     this.capabilities = Object.freeze({
@@ -336,6 +341,12 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     if (this.closingPromise) await this.waitForPreviousHangup(input.signal);
     if (this.currentState.phase !== 'idle' && this.currentState.phase !== 'closed') {
       throw new RealtimeTransportError('bootstrap_failed');
+    }
+    if (
+      (this.nativeDownlink && this.options.agentMissionProtocolVersion !== null)
+      || (!this.nativeDownlink && this.options.agentMissionProtocolVersion === null)
+    ) {
+      throw new RealtimeTransportError('agent_mission_negotiation_failed');
     }
     const resources: AttemptResources = {
       audioLease: null,
@@ -491,7 +502,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
           sessionHandle: requestedSessionHandle,
           configVersion: config.configVersion,
           speechDelivery: config.speechDelivery,
-          agentMissionProtocolVersion: REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
+          agentMissionProtocolVersion: this.options.agentMissionProtocolVersion,
         },
         bootstrapAbort.signal,
       );
@@ -505,7 +516,27 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
       ) {
         throw new RealtimeTransportError('agent_mission_negotiation_failed');
       }
-      resources.agentMissionSession = agentMissionSession;
+      const expectedMissionProtocol = this.options.agentMissionProtocolVersion;
+      if (expectedMissionProtocol === null) {
+        if (agentMissionSession !== null) {
+          resources.agentMissionSession = agentMissionSession;
+          throw new RealtimeTransportError('agent_mission_negotiation_failed');
+        }
+      } else {
+        if (agentMissionSession === null) {
+          throw new RealtimeTransportError('agent_mission_negotiation_failed');
+        }
+        if (agentMissionSession.disposed) {
+          throw new RealtimeTransportError('agent_mission_negotiation_failed');
+        }
+        resources.agentMissionSession = agentMissionSession;
+        if (
+          agentMissionSession.protocolVersion !== expectedMissionProtocol
+          || agentMissionSession.realtimeSessionId !== requestedSessionHandle
+        ) {
+          throw new RealtimeTransportError('agent_mission_negotiation_failed');
+        }
+      }
       this.assertGeneration(generation);
       if (
         bootstrap.value.transport !== 'webrtc'

@@ -3,6 +3,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import {
   AcknowledgeQuoteScreen,
   AdvanceQuoteAgentMission,
+  CancelQuoteAgentMissionPendingLine,
   CancelQuoteAgentMission,
   ContinueQuoteAgentMissionLineQueue,
   ContinueQuoteAgentMissionLineResolution,
@@ -30,6 +31,7 @@ import {
   type AcknowledgeQuoteScreenOutput,
   type AppError,
   type CancelQuoteAgentMissionOutput,
+  type CancelQuoteAgentMissionPendingLineOutput,
   type ContinueQuoteAgentMissionLineResolutionOutput,
   type ContinueQuoteAgentMissionLineQueueOutput,
   type DecideQuoteAgentMissionCatalogueChoiceOutput,
@@ -39,6 +41,7 @@ import {
   type AgentMissionQuoteLinePatchV1,
   type AgentMissionQuoteLineRequiredFact,
   type QuoteAgentMissionCustomerDecision,
+  type QuoteAgentMissionPlannerResumeV2,
   type QuoteAgentMissionPresentationV1,
   type QuoteAgentMissionResumeViewV2,
   type Result,
@@ -112,6 +115,16 @@ export interface PatchQuoteAgentMissionLineServiceOutput {
   readonly outcome: 'patched' | 'replayed';
   readonly pendingLineId: string;
   readonly workRevisionAfter: number;
+  readonly mission: AgentMissionViewV1;
+  readonly continuation: AgentMissionLineContinuationServiceOutput;
+  readonly presentation: QuoteAgentMissionPresentationV1;
+}
+
+export interface CancelQuoteAgentMissionPendingLineServiceOutput
+extends Omit<
+  CancelQuoteAgentMissionPendingLineOutput,
+  'mission' | 'commandReceipt'
+> {
   readonly mission: AgentMissionViewV1;
   readonly continuation: AgentMissionLineContinuationServiceOutput;
   readonly presentation: QuoteAgentMissionPresentationV1;
@@ -389,6 +402,36 @@ export class AgentMissionService {
       companyId: principal.companyId,
       ownerUserId: principal.userId,
     });
+  }
+
+  /**
+   * Projection interne du planner Realtime. Elle n'est exposée par aucun controller et ne remplace
+   * jamais la vérification de capability de `getCurrentV2`; l'orchestrateur appelle les deux puis
+   * exige leur cohérence avant de montrer au modèle des alias/libellés sans identifiants.
+   */
+  async getCurrentPlannerResumeV2(
+    authorization: AgentMissionServiceAuthorization,
+  ): Promise<Result<QuoteAgentMissionPlannerResumeV2, AppError>> {
+    if (authorization.proof.protocolVersion !== 2) {
+      return err(appConflict('agent_mission_protocol', 'upgrade_required'));
+    }
+    const unitOfWork = this.persistence.createAgentMissionResumeV2UnitOfWork();
+    if (unitOfWork === null) {
+      return err(appUnavailable('agent_mission_resume_v2_persistence'));
+    }
+    try {
+      return await new GetResumableQuoteAgentMissionV2({
+        unitOfWork,
+      }).executeForPlanner(authorization.owner);
+    } catch (error) {
+      this.logger.error(
+        'Lecture du contexte planner AgentMission V2 impossible.',
+        undefined,
+        'AgentMissionService',
+        classifyAgentMissionResumeV2Failure(error),
+      );
+      return err(appUnavailable('agent_mission_resume_v2_persistence'));
+    }
   }
 
   private async readCurrentResumeV2(
@@ -1262,6 +1305,135 @@ export class AgentMissionService {
       outcome: patched.value.outcome,
       pendingLineId: patched.value.pendingLineId,
       workRevisionAfter: patched.value.workRevisionAfter,
+      mission: continued.value.mission,
+      continuation: continued.value.continuation,
+    }));
+  }
+
+  cancelPendingLine(input: {
+    readonly authorization: AgentMissionServiceAuthorization;
+    readonly missionId: string;
+    readonly commandId: string;
+    readonly expectedMissionRevision: number;
+    readonly expectedDraftSessionId: string;
+    readonly expectedDraftSlotRevision: number;
+    readonly expectedDraftContentRevision: number;
+    readonly pendingLineId: string;
+    readonly expectedWorkRevision: number;
+  }): Promise<
+    Result<CancelQuoteAgentMissionPendingLineServiceOutput, AppError>
+  > {
+    return this.executePendingLineCancellation({
+      ...input,
+      origin: { actor: 'user_tap', correlation: null },
+    });
+  }
+
+  cancelPendingLineFromVoiceTurn(input: {
+    readonly authorization: AgentMissionServiceAuthorization;
+    readonly missionId: string;
+    readonly turnId: string;
+    readonly realtimeSessionId: string;
+    readonly contextRevision: number;
+    readonly contextDigest: string;
+    readonly expectedMissionRevision: number;
+    readonly expectedDraftSessionId: string;
+    readonly expectedDraftSlotRevision: number;
+    readonly expectedDraftContentRevision: number;
+    readonly pendingLineId: string;
+    readonly expectedWorkRevision: number;
+  }): Promise<
+    Result<CancelQuoteAgentMissionPendingLineServiceOutput, AppError>
+  > {
+    return this.executePendingLineCancellation({
+      authorization: input.authorization,
+      missionId: input.missionId,
+      commandId: input.turnId,
+      expectedMissionRevision: input.expectedMissionRevision,
+      expectedDraftSessionId: input.expectedDraftSessionId,
+      expectedDraftSlotRevision: input.expectedDraftSlotRevision,
+      expectedDraftContentRevision: input.expectedDraftContentRevision,
+      pendingLineId: input.pendingLineId,
+      expectedWorkRevision: input.expectedWorkRevision,
+      origin: {
+        actor: 'user_voice',
+        correlation: {
+          realtimeSessionId: input.realtimeSessionId,
+          turnId: input.turnId,
+          contextRevision: input.contextRevision,
+          contextDigest: input.contextDigest,
+        },
+      },
+    });
+  }
+
+  private async executePendingLineCancellation(input: {
+    readonly authorization: AgentMissionServiceAuthorization;
+    readonly missionId: string;
+    readonly commandId: string;
+    readonly expectedMissionRevision: number;
+    readonly expectedDraftSessionId: string;
+    readonly expectedDraftSlotRevision: number;
+    readonly expectedDraftContentRevision: number;
+    readonly pendingLineId: string;
+    readonly expectedWorkRevision: number;
+    readonly origin: Parameters<
+      CancelQuoteAgentMissionPendingLine['execute']
+    >[0]['origin'];
+  }): Promise<
+    Result<CancelQuoteAgentMissionPendingLineServiceOutput, AppError>
+  > {
+    const persistedUnitOfWork = this.persistence.createAgentMissionUnitOfWork();
+    if (persistedUnitOfWork === null) {
+      return err(appUnavailable('agent_mission_persistence'));
+    }
+    const unitOfWork = instrumentAgentMissionCapabilityRejections(
+      persistedUnitOfWork,
+      this.metrics,
+      this.logger,
+      'line_cancel',
+    );
+    const owner = input.authorization.owner;
+    const cancelled = await new CancelQuoteAgentMissionPendingLine({
+      unitOfWork,
+      fingerprints: this.fingerprints,
+      ids: { newId: () => randomUUID() },
+    }).execute({
+      ...owner,
+      authority: input.authorization.proof,
+      missionId: input.missionId,
+      commandId: input.commandId,
+      expectedMissionRevision: input.expectedMissionRevision,
+      expectedDraftSessionId: input.expectedDraftSessionId,
+      expectedDraftSlotRevision: input.expectedDraftSlotRevision,
+      expectedDraftContentRevision: input.expectedDraftContentRevision,
+      pendingLineId: input.pendingLineId,
+      expectedWorkRevision: input.expectedWorkRevision,
+      origin: input.origin,
+    });
+    if (!cancelled.ok) return cancelled;
+    const continued = await this.continueLineQueue({
+      authorization: input.authorization,
+      missionId: input.missionId,
+      parentCommandId: input.commandId,
+    });
+    if (!continued.ok) return continued;
+    if (cancelled.value.outcome !== 'replayed') {
+      this.logger.audit('agent_mission.pending_line_cancelled', {
+        ...auditReferences(this.fingerprints, {
+          companyId: owner.companyId,
+          ownerUserId: owner.ownerUserId,
+          missionId: input.missionId,
+        }),
+        actor: input.origin.actor,
+        outcome: cancelled.value.outcome,
+        phase: continued.value.mission.phase,
+        continuationOutcome: continued.value.continuation.outcome,
+      });
+    }
+    return this.attachCurrentLinePresentation(owner, Object.freeze({
+      outcome: cancelled.value.outcome,
+      pendingLineId: cancelled.value.pendingLineId,
       mission: continued.value.mission,
       continuation: continued.value.continuation,
     }));

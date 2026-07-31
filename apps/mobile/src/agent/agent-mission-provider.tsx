@@ -19,11 +19,13 @@ import {
 } from './agent-mission-runtime';
 import type { RealtimePublishedFence } from './realtime-driver';
 import { registerBeforeSignOutCleanup } from '../data/session-cleanup';
+import { AgentMissionCommandIdRegistry } from './agent-mission-command-id-registry';
 
 interface AgentMissionRuntimeContextValue {
   readonly bridge: AgentMissionRuntimeBridge;
   readonly actions: AgentMissionRuntimeActions;
   readonly snapshot: AgentMissionRuntimeSnapshot;
+  readonly commandIds: AgentMissionCommandIdRegistry;
 }
 
 const AgentMissionRuntimeContext =
@@ -43,6 +45,7 @@ export function AgentMissionProvider({
 }) {
   const [owner] = useState(() => new AgentMissionRuntimeOwner());
   const [actions] = useState(() => new FencedAgentMissionRuntimeActions(owner));
+  const [commandIds] = useState(() => new AgentMissionCommandIdRegistry());
   const [snapshot, setSnapshot] = useState(() => owner.snapshot());
   const effectGeneration = useRef(0);
 
@@ -54,6 +57,7 @@ export function AgentMissionProvider({
       // La déconnexion est une vraie frontière de sécurité, pas un faux cycle Strict Effects :
       // invalider et détruire immédiatement la capability avant toute bascule de principal.
       owner.dispose();
+      commandIds.clear();
       return Promise.resolve();
     });
     return () => {
@@ -64,13 +68,16 @@ export function AgentMissionProvider({
       // cleanup de vérification ; un vrai unmount n'a pas de second setup et détruit le handle.
       owner.deactivate();
       queueMicrotask(() => {
-        if (effectGeneration.current === generation) owner.dispose();
+        if (effectGeneration.current !== generation) return;
+        owner.dispose();
+        commandIds.clear();
       });
     };
-  }, [owner]);
+  }, [commandIds, owner]);
 
   const bridge = useMemo<AgentMissionRuntimeBridge>(
     () => Object.freeze({
+      currentSnapshot: () => owner.snapshot(),
       adopt: (session: RealtimeAgentMissionSession) => owner.adopt(session),
       invalidateContext: (realtimeSessionId: string) =>
         owner.invalidateContext(realtimeSessionId),
@@ -91,8 +98,8 @@ export function AgentMissionProvider({
     [owner],
   );
   const value = useMemo<AgentMissionRuntimeContextValue>(
-    () => Object.freeze({ actions, bridge, snapshot }),
-    [actions, bridge, snapshot],
+    () => Object.freeze({ actions, bridge, commandIds, snapshot }),
+    [actions, bridge, commandIds, snapshot],
   );
 
   return (
@@ -130,4 +137,14 @@ export function useAgentMissionRuntimeActions(): AgentMissionRuntimeActions {
     );
   }
   return value.actions;
+}
+
+export function useAgentMissionCommandIdRegistry(): AgentMissionCommandIdRegistry {
+  const value = useContext(AgentMissionRuntimeContext);
+  if (value === null) {
+    throw new Error(
+      'useAgentMissionCommandIdRegistry doit être utilisé dans AgentMissionProvider',
+    );
+  }
+  return value.commandIds;
 }

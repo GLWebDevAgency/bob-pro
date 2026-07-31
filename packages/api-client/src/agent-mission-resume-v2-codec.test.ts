@@ -27,7 +27,13 @@ const DRAFT = Object.freeze({
   contentRevision: 2,
 });
 
-function mission(phase: 'awaiting_catalogue_choice' | 'awaiting_line_confirmation') {
+function mission(
+  phase:
+    | 'awaiting_lines'
+    | 'awaiting_catalogue_choice'
+    | 'awaiting_line_details'
+    | 'awaiting_line_confirmation',
+) {
   return {
     id: MISSION_ID,
     status: 'active',
@@ -37,6 +43,56 @@ function mission(phase: 'awaiting_catalogue_choice' | 'awaiting_line_confirmatio
     draft: DRAFT,
     idleExpiresAt: '2026-07-31T08:00:00.000Z',
     hardExpiresAt: '2026-08-06T08:00:00.000Z',
+  };
+}
+
+function emptyPresentation(
+  pendingLine: {
+    readonly pendingLineId: string;
+    readonly expectedWorkRevision: number;
+  } | null,
+  requiredFact: 'unit_price' | null = null,
+) {
+  return {
+    schema: 'bob.agent-mission.quote-presentation',
+    version: 1,
+    requiredFact,
+    pendingLine,
+    decision: null,
+    catalogueChoices: [],
+    freeLineChoiceId: null,
+    proposalStatus: { kind: 'absent' },
+    proposal: null,
+  };
+}
+
+function awaitingLinesWire() {
+  return {
+    mission: mission('awaiting_lines'),
+    draft: {
+      ...DRAFT,
+      step: 'lignes',
+    },
+    customerChoices: [],
+    presentation: emptyPresentation({
+      pendingLineId: WORK_ID,
+      expectedWorkRevision: 1,
+    }),
+  };
+}
+
+function lineDetailsWire() {
+  return {
+    mission: mission('awaiting_line_details'),
+    draft: {
+      ...DRAFT,
+      step: 'lignes',
+    },
+    customerChoices: [],
+    presentation: emptyPresentation({
+      pendingLineId: WORK_ID,
+      expectedWorkRevision: 2,
+    }, 'unit_price'),
   };
 }
 
@@ -112,6 +168,19 @@ function lineConfirmationWire() {
       proposal: {
         proposalId: PROPOSAL_ID,
         diffHash: 'b'.repeat(64),
+        diff: {
+          kind: 'append_line',
+          before: {
+            contentRevision: DRAFT.contentRevision,
+            lineCount: 1,
+            totalHtCents: 10_000,
+          },
+          after: {
+            contentRevision: DRAFT.contentRevision + 1,
+            lineCount: 2,
+            totalHtCents: 21_000,
+          },
+        },
         line: {
           label: 'Main-d’œuvre plomberie',
           category: 'labor',
@@ -227,6 +296,23 @@ describe('QuoteAgentMissionResumeViewV2 codec', () => {
   });
 
   it.each([
+    ['awaiting_lines avec tête queued', awaitingLinesWire],
+    ['awaiting_catalogue_choice', catalogueWire],
+    ['awaiting_line_details', lineDetailsWire],
+    ['awaiting_line_confirmation', lineConfirmationWire],
+  ])('accepte la phase M2-A %s uniquement à l’étape lignes', (_label, makeWire) => {
+    const wire = makeWire();
+    expect(decodeQuoteAgentMissionResumeV2(wire)).toEqual(wire);
+    expect(decodeQuoteAgentMissionResumeV2({
+      ...wire,
+      draft: {
+        ...wire.draft,
+        step: 'client',
+      },
+    })).toBeNull();
+  });
+
+  it.each([
     [
       'une clé top-level ajoutée',
       () => ({ ...lineConfirmationWire(), tenantId: 'forged' }),
@@ -328,6 +414,76 @@ describe('QuoteAgentMissionResumeViewV2 codec', () => {
         };
       },
     ],
+    [
+      'un diff financier incohérent avec la ligne',
+      () => {
+        const wire = lineConfirmationWire();
+        return {
+          ...wire,
+          presentation: {
+            ...wire.presentation,
+            proposal: {
+              ...wire.presentation.proposal,
+              diff: {
+                ...wire.presentation.proposal.diff,
+                after: {
+                  ...wire.presentation.proposal.diff.after,
+                  totalHtCents: 21_001,
+                },
+              },
+            },
+          },
+        };
+      },
+    ],
+    [
+      'une révision après sans incrément exact',
+      () => {
+        const wire = lineConfirmationWire();
+        return {
+          ...wire,
+          presentation: {
+            ...wire.presentation,
+            proposal: {
+              ...wire.presentation.proposal,
+              diff: {
+                ...wire.presentation.proposal.diff,
+                after: {
+                  ...wire.presentation.proposal.diff.after,
+                  contentRevision: DRAFT.contentRevision + 2,
+                },
+              },
+            },
+          },
+        };
+      },
+    ],
+    [
+      'une proposition qui créerait une 101e ligne de facturation',
+      () => {
+        const wire = lineConfirmationWire();
+        return {
+          ...wire,
+          presentation: {
+            ...wire.presentation,
+            proposal: {
+              ...wire.presentation.proposal,
+              diff: {
+                ...wire.presentation.proposal.diff,
+                before: {
+                  ...wire.presentation.proposal.diff.before,
+                  lineCount: 100,
+                },
+                after: {
+                  ...wire.presentation.proposal.diff.after,
+                  lineCount: 101,
+                },
+              },
+            },
+          },
+        };
+      },
+    ],
   ])('refuse %s', (_label, mutate) => {
     expect(decodeQuoteAgentMissionResumeV2(mutate())).toBeNull();
   });
@@ -342,6 +498,50 @@ describe('QuoteAgentMissionResumeViewV2 codec', () => {
           wire.presentation.catalogueChoices[1],
           wire.presentation.catalogueChoices[0],
         ],
+      },
+    })).toBeNull();
+  });
+
+  it('valide le diff avec le même arrondi canonique que le devis', () => {
+    const wire = lineConfirmationWire();
+    const rounded = {
+      ...wire,
+      presentation: {
+        ...wire.presentation,
+        proposal: {
+          ...wire.presentation.proposal,
+          line: {
+            ...wire.presentation.proposal.line,
+            qty: 0.009,
+            unitPriceHT: 1_500,
+          },
+          diff: {
+            ...wire.presentation.proposal.diff,
+            after: {
+              ...wire.presentation.proposal.diff.after,
+              totalHtCents:
+                wire.presentation.proposal.diff.before.totalHtCents + 13,
+            },
+          },
+        },
+      },
+    };
+    expect(decodeQuoteAgentMissionResumeV2(rounded)).not.toBeNull();
+    expect(decodeQuoteAgentMissionResumeV2({
+      ...rounded,
+      presentation: {
+        ...rounded.presentation,
+        proposal: {
+          ...rounded.presentation.proposal,
+          diff: {
+            ...rounded.presentation.proposal.diff,
+            after: {
+              ...rounded.presentation.proposal.diff.after,
+              totalHtCents:
+                rounded.presentation.proposal.diff.before.totalHtCents + 14,
+            },
+          },
+        },
       },
     })).toBeNull();
   });

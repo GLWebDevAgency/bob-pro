@@ -46,6 +46,67 @@ const actions: BobActions = {
 const makeAgent = () => new BobAgent({ router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }), actions });
 
 describe('BobAgent (démo)', () => {
+  describe('manifeste sémantique Realtime — surface réellement câblée', () => {
+    it('omet une action optionnelle absente et l’ajoute seulement quand son port existe', () => {
+      const withoutOptional = makeAgent().realtimeSemanticHostManifest();
+      expect(withoutOptional.globalToolNames).not.toContain('marquer_notifications_lues');
+
+      const withOptional = new BobAgent({
+        router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
+        actions: {
+          ...actions,
+          markNotificationsReadThrough: async () => ok({
+            updatedCount: 1,
+            readAt: '2026-07-30T12:00:00.000Z',
+          }),
+        },
+      }).realtimeSemanticHostManifest();
+
+      expect(withOptional.globalToolNames).toContain('marquer_notifications_lues');
+    });
+
+    it('retire le writer devis global quand le MissionKind possède l’intention', () => {
+      expect(makeAgent().realtimeSemanticHostManifest().globalToolNames)
+        .toContain('nouveau_devis');
+
+      const missionOwned = new BobAgent({
+        router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
+        actions,
+        admittedMissionKinds: [QUOTE_CREATION_MISSION_KIND_V1],
+      }).realtimeSemanticHostManifest();
+
+      expect(missionOwned.globalToolNames).not.toContain('nouveau_devis');
+    });
+
+    it('n’expose la lecture contextuelle que si port et entité écran existent ensemble', () => {
+      const contextual = new BobAgent({
+        router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
+        actions: {
+          ...actions,
+          readContextEntity: async (input) => ok({
+            ...input,
+            label: 'Client relu',
+            facts: [],
+          }),
+        },
+      });
+      const emptyContext = {
+        screen: { name: '/home', instanceId: 'home-1' },
+        entities: [],
+        capabilities: ['screen.read'] as const,
+      };
+      const entityContext = {
+        ...emptyContext,
+        entities: [{ type: 'customer' as const, id: 'customer-1', label: 'Martin' }],
+      };
+
+      expect(contextual.realtimeSemanticHostManifest(emptyContext).globalToolNames)
+        .not.toContain('contexte_ecran');
+      expect(contextual.realtimeSemanticHostManifest(entityContext).globalToolNames)
+        .toContain('contexte_ecran');
+    });
+  });
+
   it('payout : montant issu du domaine, lecture directe', async () => {
     const r = await makeAgent().ask('Combien je peux me verser ce mois-ci ?');
     expect(r.ok).toBe(true);
@@ -644,6 +705,40 @@ describe('BobAgent (démo)', () => {
 
 describe('BobAgent — chemin LLM (tool-calling) + fallback', () => {
   const routerWithKey = new ModelRouter({ hasClaudeKey: false, hasGlmKey: true });
+
+  it('askWithPlan exécute le plan injecté sans deuxième classification ni naturalisation', async () => {
+    const complete = vi.fn(async () => {
+      throw new Error('Le planificateur unique a déjà produit le plan.');
+    });
+    const generate = vi.fn(async () => {
+      throw new Error('Le tour Realtime ne doit jamais être naturalisé une seconde fois.');
+    });
+    const llm: LlmPort = {
+      id: 'fake',
+      complete,
+      generate,
+      async health() {
+        return { healthy: true };
+      },
+    };
+    const agent = new BobAgent({ router: routerWithKey, actions, llm });
+
+    const result = await agent.askWithPlan(
+      'La facture quatorze est réglée.',
+      {
+        schema: 'bob.preclassified-agent-plan',
+        version: 1,
+        steps: [{ intent: 'encaisser', reference: '2026-014' }],
+        model: 'gpt-semantic-planner',
+      },
+      { autonomy: 'auto' },
+    );
+
+    expect(result.ok && result.value.intent).toBe('encaisser');
+    expect(result.ok && result.value.kind).toBe('proposed');
+    expect(complete).not.toHaveBeenCalled();
+    expect(generate).not.toHaveBeenCalled();
+  });
 
   it('confidentialité : une réponse monétaire reste canonique et n atteint jamais naturalize', async () => {
     const generate = vi.fn(async () => ({ text: 'Ne doit jamais être appelée.', model: 'glm' }));
@@ -1815,6 +1910,32 @@ describe('lier_bon_commande — B8 : numéro d’engagement grands comptes attac
     expect(r.value.intent).toBe('generer_facture');
     expect(r.value.kind).toBe('proposed');
     expect(r.value.pending).toMatchObject({ tool: 'generer_facture', args: { quoteId: 'sign-ratp', mode: 'final' } });
+  });
+
+  it('askWithPlan ignore les continuations regex historiques et conserve le plan injecté comme autorité unique', async () => {
+    const r = await agentWith().askWithPlan(
+      'Non merci',
+      {
+        schema: 'bob.preclassified-agent-plan',
+        version: 1,
+        steps: [{ intent: 'factures', reference: null }],
+        model: 'gpt-semantic-planner',
+      },
+      {
+        history: [
+          { role: 'user', text: 'La RATP m’a envoyé un bon de commande n° 4500123' },
+          {
+            role: 'bob',
+            text: 'Je crée la facture du devis D2026-040 avec ce bon de commande ? Elle reprendra le numéro d’engagement automatiquement.',
+          },
+        ],
+      },
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.intent).toBe('factures');
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.title).not.toBe('Très bien');
   });
 
   it('enchaînement : « non » clôt proprement — le lien reste fait, aucune facture créée', async () => {

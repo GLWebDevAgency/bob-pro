@@ -11,6 +11,8 @@ import {
   Pressable,
   Text,
   View,
+  type AccessibilityRole,
+  type AccessibilityState,
   type StyleProp,
   type ViewStyle,
 } from 'react-native';
@@ -49,6 +51,8 @@ export interface ButtonProps {
   size?: ButtonSize;
   style?: StyleProp<ViewStyle>;
   accessibilityLabel?: string;
+  accessibilityRole?: AccessibilityRole;
+  accessibilityState?: AccessibilityState;
 }
 
 export function Button({
@@ -63,6 +67,8 @@ export function Button({
   size = 'regular',
   style,
   accessibilityLabel,
+  accessibilityRole = 'button',
+  accessibilityState,
 }: ButtonProps) {
   const { colors, semantic, controls, grad, theme } = useTheme();
   const compact = size === 'compact';
@@ -118,9 +124,13 @@ export function Button({
     <Pressable
       {...(onPress ? { onPress } : {})}
       disabled={disabled || loading}
-      accessibilityRole="button"
+      accessibilityRole={accessibilityRole}
       accessibilityLabel={accessibilityLabel ?? title}
-      accessibilityState={{ disabled, busy: loading }}
+      accessibilityState={{
+        ...accessibilityState,
+        disabled: disabled || accessibilityState?.disabled === true,
+        busy: loading || accessibilityState?.busy === true,
+      }}
       {...(compact ? { hitSlop: BUTTON_COMPACT_HIT_SLOP } : {})}
       style={({ pressed }) => [
         {

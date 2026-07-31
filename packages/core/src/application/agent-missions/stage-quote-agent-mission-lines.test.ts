@@ -129,6 +129,7 @@ describe('stageQuoteAgentMissionLinesInTransaction', () => {
       transaction: tx.value,
       owner: OWNER,
       mission: mission(),
+      confirmedLineCount: 0,
       candidates: [CANDIDATE, { ...CANDIDATE, serviceReference: 'Déplacement' }],
       origin: 'user_voice',
       occurredAt: OCCURRED_AT,
@@ -157,6 +158,7 @@ describe('stageQuoteAgentMissionLinesInTransaction', () => {
       transaction: tx.value,
       owner: OWNER,
       mission: mission(1),
+      confirmedLineCount: 0,
       candidates: [CANDIDATE],
       origin: 'user_tap',
       occurredAt: OCCURRED_AT,
@@ -186,6 +188,7 @@ describe('stageQuoteAgentMissionLinesInTransaction', () => {
       transaction: tx.value,
       owner: OWNER,
       mission: mission(),
+      confirmedLineCount: 0,
       candidates: [CANDIDATE],
       origin: 'user_voice',
       occurredAt: OCCURRED_AT,
@@ -203,12 +206,127 @@ describe('stageQuoteAgentMissionLinesInTransaction', () => {
     expect(tx.inserted).toHaveLength(0);
   });
 
+  it('priorise la limite du brouillon sur la capacité technique de la file', async () => {
+    const existing = Array.from({ length: 20 }, (_, index) => work({
+      id: `00000000-0000-4000-8000-${(index + 70).toString(16).padStart(12, '0')}`,
+      ordinal: index + 1,
+    }));
+    const tx = transaction({ existing });
+
+    const result = await stageQuoteAgentMissionLinesInTransaction({
+      transaction: tx.value,
+      owner: OWNER,
+      mission: mission(),
+      confirmedLineCount: 80,
+      candidates: [CANDIDATE],
+      origin: 'user_voice',
+      occurredAt: OCCURRED_AT,
+      ids: new SequenceIds(),
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        kind: 'conflict',
+        entity: 'agent_mission_quote_draft',
+        reason: 'line_limit_reached',
+      },
+    });
+    expect(tx.inserted).toHaveLength(0);
+  });
+
+  it('accepte exactement la centième ligne autoritaire du brouillon', async () => {
+    const tx = transaction({});
+
+    const result = await stageQuoteAgentMissionLinesInTransaction({
+      transaction: tx.value,
+      owner: OWNER,
+      mission: mission(),
+      confirmedLineCount: 99,
+      candidates: [CANDIDATE],
+      origin: 'user_voice',
+      occurredAt: OCCURRED_AT,
+      ids: new SequenceIds(),
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        firstQueueOrdinal: 1,
+        lastQueueOrdinal: 1,
+      },
+    });
+    expect(tx.inserted).toHaveLength(1);
+  });
+
+  it('refuse toute file qui pourrait dépasser les cent lignes du brouillon', async () => {
+    const tx = transaction({
+      existing: [
+        work({
+          id: '00000000-0000-4000-8000-000000000012',
+          ordinal: 1,
+        }),
+      ],
+    });
+
+    const result = await stageQuoteAgentMissionLinesInTransaction({
+      transaction: tx.value,
+      owner: OWNER,
+      mission: mission(),
+      confirmedLineCount: 99,
+      candidates: [CANDIDATE],
+      origin: 'user_voice',
+      occurredAt: OCCURRED_AT,
+      ids: new SequenceIds(),
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        kind: 'conflict',
+        entity: 'agent_mission_quote_draft',
+        reason: 'line_limit_reached',
+      },
+    });
+    expect(tx.inserted).toHaveLength(0);
+  });
+
+  it.each([-1, -0, 101, 1.5, Number.NaN])(
+    'refuse fail-closed un nombre autoritaire de lignes invalide (%s)',
+    async (confirmedLineCount) => {
+      const tx = transaction({});
+
+      const result = await stageQuoteAgentMissionLinesInTransaction({
+        transaction: tx.value,
+        owner: OWNER,
+        mission: mission(),
+        confirmedLineCount,
+        candidates: [CANDIDATE],
+        origin: 'user_voice',
+        occurredAt: OCCURRED_AT,
+        ids: new SequenceIds(),
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          kind: 'dependency',
+          port: 'quote_draft_slot',
+          cause: 'invalid_confirmed_line_count',
+        },
+      });
+      expect(tx.listCalls()).toBe(0);
+      expect(tx.inserted).toHaveLength(0);
+    },
+  );
+
   it('refuse une collision concurrente et un dépassement INT4', async () => {
     const conflictTx = transaction({ insertOutcome: 'conflict' });
     const conflict = await stageQuoteAgentMissionLinesInTransaction({
       transaction: conflictTx.value,
       owner: OWNER,
       mission: mission(),
+      confirmedLineCount: 0,
       candidates: [CANDIDATE],
       origin: 'user_voice',
       occurredAt: OCCURRED_AT,
@@ -233,6 +351,7 @@ describe('stageQuoteAgentMissionLinesInTransaction', () => {
       transaction: overflowTx.value,
       owner: OWNER,
       mission: mission(),
+      confirmedLineCount: 0,
       candidates: [CANDIDATE],
       origin: 'user_voice',
       occurredAt: OCCURRED_AT,

@@ -388,7 +388,10 @@ function harness(options: HarnessOptions = {}) {
     token: Symbol('mistral-conversation-test'),
   });
   const audio = {
-    acquire: vi.fn(async () => ({ ok: true as const, lease })),
+    acquire: vi.fn(async () => {
+      operations.push('audio:acquire');
+      return { ok: true as const, lease };
+    }),
     release: vi.fn(() => true),
     isCurrent: vi.fn((candidate: ProcessAudioLease | null | undefined) => candidate === lease),
     async withPermissionRequest<T>(run: () => Promise<T>): Promise<T> {
@@ -462,9 +465,10 @@ function harness(options: HarnessOptions = {}) {
     scrubRequiredCheckpoint: vi.fn(async () => undefined),
   };
 
-  const createRealtimeVoiceCall = vi.fn(async (input: RealtimeVoiceCallInput) => ok(
-    call(input, options.omitAgentMissionSession !== true),
-  ));
+  const createRealtimeVoiceCall = vi.fn(async (input: RealtimeVoiceCallInput) => {
+    operations.push('call:create');
+    return ok(call(input, options.omitAgentMissionSession !== true));
+  });
   const reconcileRealtimeVoiceBootstrap: RuntimeClient['reconcileRealtimeVoiceBootstrap'] = vi.fn(
     async () => {
       const next = reconciliation.shift();
@@ -702,6 +706,12 @@ describe('MistralConversationTransport', () => {
     expect(h.transport.state.phase).toBe('ready');
     expect(h.transport.getSessionHandle()).toBe(SESSION);
     expect(h.vadPort.start).not.toHaveBeenCalled();
+    expect(h.operations.indexOf('checkpoint:load')).toBeLessThan(
+      h.operations.indexOf('audio:acquire'),
+    );
+    expect(h.operations.indexOf('audio:acquire')).toBeLessThan(
+      h.operations.indexOf('call:create'),
+    );
   });
 
   it('refuse le bootstrap v2 si le serveur omet la négociation mission explicite', async () => {

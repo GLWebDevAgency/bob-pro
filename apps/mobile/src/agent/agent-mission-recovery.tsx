@@ -13,6 +13,7 @@ import {
   deriveAgentMissionRecoverySnapshot,
   type AgentMissionRecoverySnapshot,
 } from './agent-mission-recovery-state';
+import { loadQuoteAgentMissionRecovery } from './agent-mission-recovery-loader';
 
 interface AgentMissionRecoveryContextValue {
   readonly snapshot: AgentMissionRecoverySnapshot;
@@ -56,7 +57,12 @@ export function AgentMissionRecoveryProvider({
     ? `${session.user.id}:${client.companyId}`
     : 'unauthenticated';
   const queryKey = useMemo(
-    () => ['agent-mission-resume', 'quote-creation', identity] as const,
+    () => [
+      'agent-mission-resume',
+      'quote-creation',
+      'v2-first-v1-upgrade-fallback',
+      identity,
+    ] as const,
     [identity],
   );
   const query = useQuery({
@@ -67,11 +73,7 @@ export function AgentMissionRecoveryProvider({
     refetchOnMount: 'always',
     refetchOnWindowFocus: 'always',
     refetchOnReconnect: 'always',
-    queryFn: async ({ signal }) => {
-      const result = await client.getCurrentQuoteAgentMissionResume(signal);
-      if (!result.ok) throw result.error;
-      return result.value;
-    },
+    queryFn: ({ signal }) => loadQuoteAgentMissionRecovery(client, signal),
   });
   const snapshot = useMemo(
     () => deriveAgentMissionRecoverySnapshot({

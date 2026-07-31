@@ -17,6 +17,7 @@ import {
 } from '@bob/core';
 import {
   decodeAgentMissionCancel,
+  decodeAgentMissionCancelPendingQuoteLine,
   decodeAgentMissionCancelV2,
   decodeAgentMissionCatalogueChoice,
   decodeAgentMissionCurrent,
@@ -37,6 +38,8 @@ import {
   type RealtimeAgentMissionAcknowledgeQuoteScreenInput,
   type RealtimeAgentMissionAcknowledgeQuoteScreenOutputV2,
   type RealtimeAgentMissionCancelQuoteInput,
+  type RealtimeAgentMissionCancelPendingQuoteLineInput,
+  type RealtimeAgentMissionCancelPendingQuoteLineOutput,
   type RealtimeAgentMissionCatalogueChoiceInput,
   type RealtimeAgentMissionCatalogueChoiceOutput,
   type RealtimeAgentMissionLineProposalDecisionInput,
@@ -726,6 +729,64 @@ implements RealtimeAgentMissionSessionV2 {
       path: `/agent-missions/${encodeURIComponent(missionId)}/quote-line-patches`,
       body,
       decode: (value) => decodeAgentMissionPatchQuoteLine(value, missionId),
+      signal,
+    });
+  }
+
+  cancelPendingQuoteLine(
+    input: RealtimeAgentMissionCancelPendingQuoteLineInput,
+    signal?: AbortSignal,
+  ) {
+    if (!isCanonicalAgentMissionUuid(input?.missionId)) {
+      return validation<RealtimeAgentMissionCancelPendingQuoteLineOutput>(
+        'missionId',
+        'UUID canonique requis.',
+      );
+    }
+    if (!exactInput(input, [
+      'missionId',
+      'commandId',
+      'expectedMissionRevision',
+      'expectedDraftSessionId',
+      'expectedDraftSlotRevision',
+      'expectedDraftContentRevision',
+      'pendingLineId',
+      'expectedWorkRevision',
+    ])) {
+      return validation<RealtimeAgentMissionCancelPendingQuoteLineOutput>(
+        'command',
+        'Commande d’annulation de ligne exacte requise.',
+      );
+    }
+    const commonIssue = quoteLineCommandIssue(input);
+    if (commonIssue !== null) {
+      return validation<RealtimeAgentMissionCancelPendingQuoteLineOutput>(
+        commonIssue.field,
+        commonIssue.message,
+      );
+    }
+    if (!isCanonicalAgentMissionUuid(input.pendingLineId)) {
+      return validation<RealtimeAgentMissionCancelPendingQuoteLineOutput>(
+        'pendingLineId',
+        'UUID canonique requis.',
+      );
+    }
+    if (!revision(input.expectedWorkRevision)) {
+      return validation<RealtimeAgentMissionCancelPendingQuoteLineOutput>(
+        'expectedWorkRevision',
+        'Révision positive requise.',
+      );
+    }
+    const { missionId, ...body } = input;
+    return this.call<RealtimeAgentMissionCancelPendingQuoteLineOutput>({
+      method: 'POST',
+      path:
+        `/agent-missions/${encodeURIComponent(missionId)}/quote-line-cancellations`,
+      body,
+      decode: (value) => decodeAgentMissionCancelPendingQuoteLine(
+        value,
+        missionId,
+      ),
       signal,
     });
   }

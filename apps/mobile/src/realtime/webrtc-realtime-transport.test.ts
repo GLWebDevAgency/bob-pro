@@ -1,4 +1,5 @@
 import {
+  REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
   REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
   type BobClient,
   type RealtimeAgentMissionSession,
@@ -297,7 +298,13 @@ function speechSourcePolicy(sessionHandle: string) {
   };
 }
 
-function missionSessionStub(realtimeSessionId: string) {
+function missionSessionStub(
+  realtimeSessionId: string,
+  protocolVersion:
+    | typeof REALTIME_AGENT_MISSION_PROTOCOL_VERSION
+    | typeof REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION =
+      REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
+) {
   let disposed = false;
   const unused = async (): Promise<never> => {
     throw new Error('unused_agent_mission_method');
@@ -306,7 +313,7 @@ function missionSessionStub(realtimeSessionId: string) {
     disposed = true;
   });
   const session = {
-    protocolVersion: REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
+    protocolVersion,
     realtimeSessionId,
     get disposed() {
       return disposed;
@@ -323,33 +330,47 @@ function missionSessionStub(realtimeSessionId: string) {
 function client(
   answerSdp = RECEIVE_ONLY_SDP,
   config: RealtimeWebRtcNegotiation = realtimeConfig,
-  agentMissionSession: RealtimeAgentMissionSession | null = null,
+  agentMissionSession:
+    | RealtimeAgentMissionSession
+    | null
+    | ((realtimeSessionId: string) => RealtimeAgentMissionSession | null)
+    | undefined = undefined,
   includeAgentMissionSession = true,
 ): BobClient {
   return {
     realtimeVoiceConfig: vi.fn(async () => ({ ok: true, value: config })),
-    createRealtimeVoiceCall: vi.fn(async (input: { sdp: string; sessionHandle?: string }) => ({
-      ok: true,
-      value: {
-        transport: 'webrtc' as const,
-        answerSdp,
-        sessionHandle: input.sessionHandle ?? '00000000-0000-4000-8000-000000000001',
-        hardExpiresAt: new Date(Date.now() + 900_000).toISOString(),
-        model: config.model,
-        voice: config.voice,
-        configVersion: config.configVersion,
-        maxSessionSeconds: config.maxSessionSeconds,
-        speechDelivery: config.speechDelivery,
-        ...(includeAgentMissionSession ? { agentMissionSession } : {}),
-        ...(config.speechDelivery === 'audited-signed-url-v1'
-          ? {
-              speechSourcePolicy: speechSourcePolicy(
-                input.sessionHandle ?? '00000000-0000-4000-8000-000000000001',
-              ),
-            }
-          : {}),
-      },
-    })),
+    createRealtimeVoiceCall: vi.fn(async (input: { sdp: string; sessionHandle?: string }) => {
+      const sessionHandle =
+        input.sessionHandle ?? '00000000-0000-4000-8000-000000000001';
+      const resolvedAgentMissionSession =
+        typeof agentMissionSession === 'function'
+          ? agentMissionSession(sessionHandle)
+          : agentMissionSession === undefined
+            ? config.speechDelivery === 'audited-signed-url-v1'
+              ? missionSessionStub(sessionHandle).session
+              : null
+            : agentMissionSession;
+      return {
+        ok: true,
+        value: {
+          transport: 'webrtc' as const,
+          answerSdp,
+          sessionHandle,
+          hardExpiresAt: new Date(Date.now() + 900_000).toISOString(),
+          model: config.model,
+          voice: config.voice,
+          configVersion: config.configVersion,
+          maxSessionSeconds: config.maxSessionSeconds,
+          speechDelivery: config.speechDelivery,
+          ...(includeAgentMissionSession
+            ? { agentMissionSession: resolvedAgentMissionSession }
+            : {}),
+          ...(config.speechDelivery === 'audited-signed-url-v1'
+            ? { speechSourcePolicy: speechSourcePolicy(sessionHandle) }
+            : {}),
+        },
+      };
+    }),
     acknowledgeRealtimeVoiceNativeSpeechDelivery: vi.fn(async (
       _sessionHandle: string,
       turnId: string,
@@ -391,11 +412,21 @@ function transport(
   bobClient: BobClient,
   harness: RuntimeHarness,
   negotiation: RealtimeWebRtcNegotiation = realtimeConfig,
+  agentMissionProtocolVersion:
+    | typeof REALTIME_AGENT_MISSION_PROTOCOL_VERSION
+    | typeof REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
+    | null =
+      negotiation.speechDelivery === 'audited-signed-url-v1'
+        ? REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
+        : null,
 ): RealtimeWebRtcTransport {
   const value = new RealtimeWebRtcTransport(
     bobClient,
     negotiation,
-    { loadRuntime: () => harness.runtime },
+    {
+      loadRuntime: () => harness.runtime,
+      agentMissionProtocolVersion,
+    },
   );
   transports.push(value);
   return value;
@@ -648,7 +679,7 @@ describe('RealtimeWebRtcTransport — courses et autorite serveur', () => {
       transport: 'webrtc',
       configVersion: realtimeConfig.configVersion,
       speechDelivery: realtimeConfig.speechDelivery,
-      agentMissionProtocolVersion: REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
+      agentMissionProtocolVersion: REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
     });
     expect(bootstrapInput && 'sdp' in bootstrapInput ? bootstrapInput.sdp : null)
       .toBe(SEND_ONLY_SDP);
@@ -657,8 +688,15 @@ describe('RealtimeWebRtcTransport — courses et autorite serveur', () => {
   });
 
   it('transfère la capability mission exactement une fois sans la détruire après transfert', async () => {
-    const capability = missionSessionStub('00000000-0000-4000-8000-000000000301');
-    const bobClient = client(RECEIVE_ONLY_SDP, realtimeConfig, capability.session);
+    let capability!: ReturnType<typeof missionSessionStub>;
+    const bobClient = client(
+      RECEIVE_ONLY_SDP,
+      realtimeConfig,
+      (realtimeSessionId) => {
+        capability = missionSessionStub(realtimeSessionId);
+        return capability.session;
+      },
+    );
     const value = transport(bobClient, runtimeHarness(async () => new FakeStream()));
 
     await value.connect();
@@ -672,10 +710,85 @@ describe('RealtimeWebRtcTransport — courses et autorite serveur', () => {
     expect(capability.dispose).toHaveBeenCalledOnce();
   });
 
+  it('négocie et transfère explicitement une capability V1 lors d’une reprise M1-C', async () => {
+    let capability!: ReturnType<typeof missionSessionStub>;
+    const bobClient = client(
+      RECEIVE_ONLY_SDP,
+      realtimeConfig,
+      (realtimeSessionId) => {
+        capability = missionSessionStub(
+          realtimeSessionId,
+          REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
+        );
+        return capability.session;
+      },
+    );
+    const value = transport(
+      bobClient,
+      runtimeHarness(async () => new FakeStream()),
+      realtimeConfig,
+      REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
+    );
+
+    await value.connect();
+
+    expect(bobClient.createRealtimeVoiceCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentMissionProtocolVersion: REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
+      }),
+      expect.any(AbortSignal),
+    );
+    expect(value.takeAgentMissionSession()).toBe(capability.session);
+    await value.close('user');
+    expect(capability.dispose).not.toHaveBeenCalled();
+    capability.session.dispose();
+    expect(capability.dispose).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    {
+      label: 'OpenAI natif avec protocole V2',
+      negotiation: nativeRealtimeConfig,
+      protocolVersion: REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
+    },
+    {
+      label: 'WebRTC audité sans protocole Mission',
+      negotiation: realtimeConfig,
+      protocolVersion: null,
+    },
+  ] as const)(
+    'refuse $label avant lease audio, micro et réseau',
+    async ({ negotiation, protocolVersion }) => {
+      const bobClient = client(RECEIVE_ONLY_SDP, negotiation);
+      const harness = runtimeHarness(async () => new FakeStream());
+      const value = transport(
+        bobClient,
+        harness,
+        negotiation,
+        protocolVersion,
+      );
+
+      await expect(value.connect()).rejects.toMatchObject({
+        reason: 'agent_mission_negotiation_failed',
+      });
+
+      expect(harness.getUserMedia).not.toHaveBeenCalled();
+      expect(bobClient.createRealtimeVoiceCall).not.toHaveBeenCalled();
+      expect(processAudioSession.snapshot().active).toBeNull();
+    },
+  );
+
   it('détruit synchroniquement une capability non transférée avant d attendre le hangup', async () => {
-    const capability = missionSessionStub('00000000-0000-4000-8000-000000000302');
+    let capability!: ReturnType<typeof missionSessionStub>;
     const hangupGate = deferred<{ ok: true; value: { ended: true } }>();
-    const bobClient = client(RECEIVE_ONLY_SDP, realtimeConfig, capability.session);
+    const bobClient = client(
+      RECEIVE_ONLY_SDP,
+      realtimeConfig,
+      (realtimeSessionId) => {
+        capability = missionSessionStub(realtimeSessionId);
+        return capability.session;
+      },
+    );
     bobClient.hangupRealtimeVoiceCall = vi.fn(() => hangupGate.promise);
     const value = transport(bobClient, runtimeHarness(async () => new FakeStream()));
     await value.connect();
@@ -704,6 +817,61 @@ describe('RealtimeWebRtcTransport — courses et autorite serveur', () => {
       phase: 'closed',
       fallbackReason: 'agent_mission_negotiation_failed',
     });
+  });
+
+  it.each([
+    {
+      label: 'retourne null',
+      create: (_realtimeSessionId: string) => null,
+    },
+    {
+      label: 'retourne une capability V1',
+      create: (realtimeSessionId: string) =>
+        missionSessionStub(
+          realtimeSessionId,
+          REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
+        ),
+    },
+    {
+      label: 'retourne une capability liée à un autre handle',
+      create: (_realtimeSessionId: string) =>
+        missionSessionStub('00000000-0000-4000-8000-000000000099'),
+    },
+    {
+      label: 'retourne une capability déjà détruite',
+      create: (realtimeSessionId: string) => {
+        const capability = missionSessionStub(realtimeSessionId);
+        capability.session.dispose();
+        return capability;
+      },
+    },
+  ])('échoue fermé avant SDP et micro si le bootstrap $label', async ({ create }) => {
+    const capabilities: ReturnType<typeof missionSessionStub>[] = [];
+    const bobClient = client(
+      RECEIVE_ONLY_SDP,
+      realtimeConfig,
+      (realtimeSessionId) => {
+        const capability = create(realtimeSessionId);
+        if (capability !== null) capabilities.push(capability);
+        return capability?.session ?? null;
+      },
+    );
+    const stream = new FakeStream();
+    const harness = runtimeHarness(async () => stream);
+    const value = transport(bobClient, harness);
+
+    await expect(value.connect()).rejects.toMatchObject({
+      reason: 'agent_mission_negotiation_failed',
+    });
+
+    expect(harness.peers[0]?.setRemoteDescriptionCalls).toBe(0);
+    expect(stream.track.stopCalls).toBe(1);
+    expect(stream.releaseArguments).toEqual([true]);
+    for (const capability of capabilities) {
+      expect(capability.dispose).toHaveBeenCalledOnce();
+    }
+    expect(value.takeAgentMissionSession()).toBeNull();
+    expect(bobClient.hangupRealtimeVoiceCall).toHaveBeenCalledOnce();
   });
 
   it('après perte de réponse bootstrap, clôt le handle demandé et réserve un nouvel UUID au retry utilisateur', async () => {
@@ -1349,6 +1517,7 @@ describe('RealtimeWebRtcTransport — downlink OpenAI natif', () => {
       speechDelivery: 'openai-native-webrtc-v1',
       configVersion: nativeRealtimeConfig.configVersion,
       sdp: SEND_RECV_SDP,
+      agentMissionProtocolVersion: null,
     });
 
     const remote = peer.receiveRemoteTrack();

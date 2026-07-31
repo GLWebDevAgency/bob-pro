@@ -80,6 +80,9 @@ import {
 import {
   DecideQuoteAgentMissionLineProposal,
 } from './decide-quote-agent-mission-line-proposal';
+import {
+  CancelQuoteAgentMissionPendingLine,
+} from './cancel-quote-agent-mission-pending-line';
 
 const OWNER = {
   companyId: 'company-1',
@@ -766,6 +769,7 @@ function useCases(
   const patchLine = new PatchQuoteAgentMissionLine(deps);
   const continueLineResolution = new ContinueQuoteAgentMissionLineResolution(deps);
   const decideLineProposal = new DecideQuoteAgentMissionLineProposal(deps);
+  const cancelPendingLine = new CancelQuoteAgentMissionPendingLine(deps);
   return {
     unitOfWork,
     start: {
@@ -827,6 +831,14 @@ function useCases(
           'authority'
         >,
       ) => decideLineProposal.execute({ ...input, authority }),
+    },
+    cancelPendingLine: {
+      execute: (
+        input: Omit<
+          Parameters<CancelQuoteAgentMissionPendingLine['execute']>[0],
+          'authority'
+        >,
+      ) => cancelPendingLine.execute({ ...input, authority }),
     },
   };
 }
@@ -3929,4 +3941,97 @@ describe('AgentMission application M1-A', () => {
       expect(state.slot?.payload.draft.lines).toHaveLength(0);
     },
   );
+
+  it('annule la tête en phase détails, conserve le brouillon et rejoue sans seconde suppression', async () => {
+    const suite = preparedLineProposalMission();
+    const decision = suite.mission.payload.decision;
+    if (decision?.kind !== 'line_confirmation') {
+      throw new Error('line confirmation fixture missing decision');
+    }
+    const edited = await suite.decideLineProposal.execute({
+      ...OWNER,
+      missionId: suite.mission.id,
+      commandId: '80000000-0000-4000-8000-000000000012',
+      expectedMissionRevision: suite.mission.revision,
+      expectedDraftSessionId: suite.selectedPayload.draft.sessionId,
+      expectedDraftSlotRevision: 2,
+      expectedDraftContentRevision: 1,
+      origin: { actor: 'user_tap', correlation: null },
+      decisionId: decision.decisionId,
+      choiceSetRevision: decision.choiceSetRevision,
+      choiceSetHash: decision.choiceSetHash,
+      choiceId: suite.editChoiceId,
+      pendingLineId: decision.pendingLineId,
+      proposalId: decision.proposalId,
+      proposalRevision: decision.proposalRevision,
+      expectedWorkRevision: decision.expectedWorkRevision,
+      expectedCatalogue: decision.expectedCatalogue,
+      diffHash: decision.diffHash,
+    });
+    if (!edited.ok) throw new Error('line details fixture edit failed');
+    const before = suite.unitOfWork.snapshot();
+    const head = before.quoteLineWork.get(suite.work.id);
+    if (head === undefined || before.slot === null) {
+      throw new Error('line details fixture state missing');
+    }
+    const command = {
+      ...OWNER,
+      missionId: suite.mission.id,
+      commandId: '80000000-0000-4000-8000-000000000013',
+      expectedMissionRevision: edited.value.mission.revision,
+      expectedDraftSessionId: before.slot.payload.draft.sessionId,
+      expectedDraftSlotRevision: before.slot.revision,
+      expectedDraftContentRevision: before.slot.payload.draft.contentRevision,
+      origin: { actor: 'user_tap', correlation: null } as const,
+      pendingLineId: head.id,
+      expectedWorkRevision: head.revision,
+    };
+
+    expect(await suite.cancelPendingLine.execute(command)).toMatchObject({
+      ok: true,
+      value: {
+        outcome: 'cancelled',
+        pendingLineId: head.id,
+        mission: {
+          phase: 'awaiting_lines',
+          revision: edited.value.mission.revision + 1,
+        },
+        commandReceipt: {
+          commandId: command.commandId,
+          eventType: 'line_cancelled',
+        },
+      },
+    });
+    const after = suite.unitOfWork.snapshot();
+    expect(after.slot).toEqual(before.slot);
+    expect(after.quoteLineWork.size).toBe(0);
+    expect(after.events.at(-1)?.toSnapshot().data).toEqual({
+      kind: 'line_cancelled',
+      pendingLineId: head.id,
+      expectedWorkRevision: head.revision,
+      choiceId: null,
+      choiceSetHash: null,
+    });
+
+    expect(await suite.cancelPendingLine.execute(command)).toMatchObject({
+      ok: true,
+      value: {
+        outcome: 'replayed',
+        pendingLineId: head.id,
+      },
+    });
+    expect(suite.unitOfWork.snapshot()).toEqual(after);
+    expect(await suite.cancelPendingLine.execute({
+      ...command,
+      expectedWorkRevision: head.revision + 1,
+    })).toMatchObject({
+      ok: false,
+      error: {
+        kind: 'conflict',
+        entity: 'agent_mission_command',
+        reason: 'fingerprint_mismatch',
+      },
+    });
+    expect(suite.unitOfWork.snapshot()).toEqual(after);
+  });
 });

@@ -108,6 +108,34 @@ function serviceSpies() {
         mission: { id: '20000000-0000-4000-8000-000000000001' },
       },
     })),
+    patchLine: vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        outcome: 'patched',
+        pendingLineId: '60000000-0000-4000-8000-000000000001',
+        workRevisionAfter: 3,
+        continuation: { outcome: 'required_fact_presented' },
+        mission: { id: '20000000-0000-4000-8000-000000000001' },
+      },
+    })),
+    cancelPendingLine: vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        outcome: 'cancelled',
+        pendingLineId: '60000000-0000-4000-8000-000000000001',
+        continuation: { outcome: 'queue_empty' },
+        mission: { id: '20000000-0000-4000-8000-000000000001' },
+      },
+    })),
+    decideLineProposal: vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        outcome: 'applied',
+        pendingLineId: '60000000-0000-4000-8000-000000000001',
+        continuation: { outcome: 'queue_empty' },
+        mission: { id: '20000000-0000-4000-8000-000000000001' },
+      },
+    })),
   };
 }
 
@@ -439,6 +467,18 @@ describe('AgentMissionController M1-A', () => {
       HTTP_CODE_METADATA,
       AgentMissionController.prototype.decideCatalogueChoice,
     )).toBe(200);
+    expect(Reflect.getMetadata(
+      HTTP_CODE_METADATA,
+      AgentMissionController.prototype.patchQuoteLine,
+    )).toBe(200);
+    expect(Reflect.getMetadata(
+      HTTP_CODE_METADATA,
+      AgentMissionController.prototype.cancelPendingQuoteLine,
+    )).toBe(200);
+    expect(Reflect.getMetadata(
+      HTTP_CODE_METADATA,
+      AgentMissionController.prototype.decideQuoteLineProposal,
+    )).toBe(200);
   });
 
   it.each([
@@ -471,6 +511,15 @@ describe('AgentMissionController M1-A', () => {
     ['catalogue choice', (candidate: AgentMissionController) => (
       candidate.decideCatalogueChoice('not-a-uuid', null, undefined)
     )],
+    ['line patch', (candidate: AgentMissionController) => (
+      candidate.patchQuoteLine('not-a-uuid', null, undefined)
+    )],
+    ['pending line cancellation', (candidate: AgentMissionController) => (
+      candidate.cancelPendingQuoteLine('not-a-uuid', null, undefined)
+    )],
+    ['line proposal decision', (candidate: AgentMissionController) => (
+      candidate.decideQuoteLineProposal('not-a-uuid', null, undefined)
+    )],
   ] as const)(
     'l’autorité production refuse %s avant validation métier et appel de service',
     async (_operation, invoke) => {
@@ -491,6 +540,9 @@ describe('AgentMissionController M1-A', () => {
       expect(spies.decide).not.toHaveBeenCalled();
       expect(spies.stageLines).not.toHaveBeenCalled();
       expect(spies.decideCatalogueChoice).not.toHaveBeenCalled();
+      expect(spies.patchLine).not.toHaveBeenCalled();
+      expect(spies.cancelPendingLine).not.toHaveBeenCalled();
+      expect(spies.decideLineProposal).not.toHaveBeenCalled();
     },
   );
 
@@ -643,6 +695,64 @@ describe('AgentMissionController M1-A', () => {
     expect(forged).toBeInstanceOf(HttpException);
     expect((forged as HttpException).getStatus()).toBe(422);
     expect(spies.stageLines).toHaveBeenCalledOnce();
+  });
+
+  it('mappe l’annulation de la ligne en attente sans accepter décision ni champ forgé', async () => {
+    const authority = testAuthority(TEST_PROOF_V2);
+    const { controller: candidate, spies } = controller(authority);
+    const missionId = '20000000-0000-4000-8000-000000000001';
+    const body = {
+      commandId: '10000000-0000-4000-8000-000000000030',
+      expectedMissionRevision: 8,
+      expectedDraftSessionId: 'quote-draft-session-1',
+      expectedDraftSlotRevision: 3,
+      expectedDraftContentRevision: 2,
+      pendingLineId: '60000000-0000-4000-8000-000000000001',
+      expectedWorkRevision: 4,
+    };
+
+    await expect(candidate.cancelPendingQuoteLine(
+      missionId,
+      body,
+      TEST_CAPABILITY,
+    )).resolves.toMatchObject({
+      outcome: 'cancelled',
+      pendingLineId: body.pendingLineId,
+    });
+    expect(spies.cancelPendingLine).toHaveBeenCalledWith({
+      authorization: testAuthorization(
+        'cancel_pending_quote_line',
+        TEST_PROOF_V2,
+      ),
+      missionId,
+      ...body,
+    });
+    expect(authority.prepare).toHaveBeenCalledWith(
+      'cancel_pending_quote_line',
+      TEST_CAPABILITY,
+    );
+
+    const missingPendingLineId = {
+      commandId: body.commandId,
+      expectedMissionRevision: body.expectedMissionRevision,
+      expectedDraftSessionId: body.expectedDraftSessionId,
+      expectedDraftSlotRevision: body.expectedDraftSlotRevision,
+      expectedDraftContentRevision: body.expectedDraftContentRevision,
+      expectedWorkRevision: body.expectedWorkRevision,
+    };
+    for (const invalidBody of [
+      { ...body, choiceId: '40000000-0000-4000-8000-000000000001' },
+      missingPendingLineId,
+    ]) {
+      const invalid = await candidate.cancelPendingQuoteLine(
+        missionId,
+        invalidBody,
+        TEST_CAPABILITY,
+      ).catch((error: unknown) => error);
+      expect(invalid).toBeInstanceOf(HttpException);
+      expect((invalid as HttpException).getStatus()).toBe(422);
+    }
+    expect(spies.cancelPendingLine).toHaveBeenCalledOnce();
   });
 
   it('une autorité de test explicite ouvre le contrat exact, jamais un champ forgé', async () => {

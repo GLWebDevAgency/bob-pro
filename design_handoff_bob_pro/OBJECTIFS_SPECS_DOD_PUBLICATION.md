@@ -125,6 +125,23 @@ La sélection catalogue suit le même protocole : zéro candidat = création lib
 fort = suggestion explicite ; plusieurs candidats = options réelles numérotées ; aucun choix
 silencieux du LLM.
 
+#### 4.2.1 Un seul moteur pour toutes les interactions vocales
+
+Directive fondateur du 30 juillet 2026 : M2-A est le contrat de référence et non une exception.
+Tous les parcours vocaux historiques — devis, factures, clients, catalogue, documents,
+notifications, dépenses, clôture/comptabilité et navigation — doivent être absorbés par la même
+architecture missionnelle avant d'être annoncés comme disponibles.
+
+Le LLM interprète la transcription, le contexte écran et le manifeste des outils. Les use cases
+déterministes relisent les données tenantées, valident les références et appliquent les règles. La
+surface interactive présente ensuite les faits autoritaires et permet de valider, modifier,
+refuser, annuler ou préciser, avec les mêmes décisions scellées à la voix et au toucher.
+
+Une ancienne interaction fondée sur un parseur local, une regex métier, une mutation directe
+d'écran ou un outil annoncé mais non câblé reste fermée tant qu'elle n'a pas cette parité, cette
+reprise et une preuve E2E. Les données du tenant sont accessibles au modèle par outils de recherche
+bornés et revalidés ; elles ne sont jamais chargées en bloc dans le prompt.
+
 ### 4.3 Sécurité et vérité métier
 
 - Les lectures peuvent être automatiques. Toute mutation passe par un outil typé et audité.
@@ -242,6 +259,16 @@ l'intégration.
 - [ ] Une mission devis complète traverse au moins navigation → client → catalogue/ligne → TVA →
       revue → confirmation sans perdre son contexte.
 - [ ] Les mêmes choix peuvent être résolus au doigt ou à la voix avec le même identifiant.
+- [ ] Le fuseau conversationnel est confirmé par l'utilisateur, signé et lié au tenant ; il est
+      figé au bootstrap de session. Une préférence absente ou invalide ferme Bob Live au lieu
+      d'inventer `Europe/Paris`.
+- [ ] Le planner unique passe le corpus français versionné sur l'adapter et le modèle exacts de
+      staging avec une seule complétion, sans retry/fallback, et publie une preuve exact-SHA non-PII.
+- [ ] Aucun parcours vocal public ne garde un writer historique concurrent ; chaque interaction
+      annoncée est absorbée par un `mission kind` du moteur LLM unique ou explicitement fermée.
+- [ ] Devis, factures, clients, catalogue, documents, notifications, dépenses,
+      clôture/comptabilité et navigation possèdent chacun une matrice voix↔toucher↔use case et un
+      scénario E2E de reprise avant activation.
 - [ ] Les SLO de la section 4.4 sont mesurés sur au moins un iPhone réel et un Android réel.
 - [ ] Voice Trace permet de diagnostiquer chaque échec en une lecture et ne journalise aucune donnée
       vocale sensible.

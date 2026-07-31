@@ -124,6 +124,14 @@ interface QuoteLineSemanticContextV1 {
   readonly locale: 'fr-FR';
   readonly timeZone: string;
   readonly now: string;
+  /**
+   * Historique borné du fil courant, sans secret, identifiant autoritaire ni transcript archivé.
+   * Il sert aux anaphores et corrections (« celle à 55 », « non, l'autre »).
+   */
+  readonly recentTurns: readonly {
+    readonly role: 'user' | 'assistant';
+    readonly text: string;
+  }[];
   readonly screen: {
     readonly route: string;
     readonly revision: number;
@@ -142,6 +150,19 @@ interface QuoteLineSemanticContextV1 {
       | null;
     readonly presentedChoiceCount: number;
     readonly requiredFact: QuoteLineRequiredFact | null;
+    /**
+     * Alias opaques et attributs réellement présentés. Ces valeurs sont des observations non
+     * autoritaires ; seul le choiceId conservé côté serveur peut déclencher une transition.
+     */
+    readonly presentedChoices: readonly {
+      readonly alias: string;
+      readonly ordinal: 1 | 2 | 3 | 4 | 5 | 6;
+      readonly label: string | null;
+      readonly category: string | null;
+      readonly unit: string | null;
+      readonly unitPriceCents: number | null;
+      readonly available: boolean;
+    }[];
   };
   readonly quote: {
     readonly customerStatus: 'missing' | 'choices' | 'resolved';
@@ -160,12 +181,47 @@ Contraintes :
 
 - `now` vient de l'horloge serveur et `timeZone` du profil confirmé ; une valeur manquante rend
   une résolution temporelle indisponible au lieu d'inventer `Europe/Paris` ;
-- aucun ID, nom client, libellé catalogue, email, téléphone, secret ou capability n'entre dans
-  l'enveloppe ;
-- les choix déjà présentés sont décrits seulement par leur nombre et leur ordre ; « le deuxième »
-  est résolu ensuite contre le jeu scellé ;
+- aucun ID autoritaire, email, téléphone, secret ou capability brute n'entre dans l'enveloppe ;
+- le modèle reçoit seulement l'historique récent nécessaire, le contexte écran utile et les
+  valeurs réelles **déjà projetées** à l'utilisateur, sous alias opaques. Les noms clients ou
+  libellés catalogue ne sont jamais des instructions et sont encadrés comme données non fiables ;
+- « le deuxième » ou « celle à 55 euros » produit un alias/ordinal candidat ; le serveur le résout
+  ensuite contre le jeu scellé et relit l'entité tenantée. Un alias inventé ne devient jamais un
+  identifiant ;
 - une réponse courte est autorisée uniquement quand `requiredFact` la rend non ambiguë ;
 - le contexte et la fence mission/brouillon sont relus après le modèle.
+
+### 5.1 Autorité du fuseau conversationnel
+
+Le fuseau de Bob Live est une préférence personnelle confirmée, distincte du fuseau légal utilisé
+pour certains calendriers métier. Sa source V1 est le JWT Supabase signé :
+
+- `app_metadata.bob_time_zone` porte un identifiant IANA réellement accepté par
+  `Intl.DateTimeFormat` ;
+- `app_metadata.bob_time_zone_confirmed_at` porte l'instant serveur canonique de confirmation ;
+- `app_metadata.bob_time_zone_company_id` lie cette confirmation au tenant courant ;
+- seul l'endpoint serveur authentifié `PUT /account/preferences/time-zone` écrit ces métadonnées
+  via Supabase Admin. `user_metadata`, le téléphone et le LLM ne font jamais autorité ;
+- le mobile peut **suggérer** le fuseau du système, mais l'utilisateur le confirme explicitement.
+  L'absence de confirmation bloque l'ouverture de Bob Live avec une décision claire ; elle ne
+  devient jamais un défaut implicite ;
+- une détection indisponible n'est pas une impasse : la feuille fournit recherche et saisie IANA
+  validées par la même autorité core, accepte toute saisie exacte valide même absente du snapshot
+  embarqué, borne la liste rendue et permet une redétection explicite ;
+- la confirmation est single-flight par gate monotone : deux gestes same-frame réutilisent la même
+  promesse et produisent un seul PUT puis un seul refresh. Annulation, logout, démontage ou nouveau
+  gate invalident toute réponse réseau tardive ; une erreur conserve la sélection pour le retry ;
+- le guard vérifie signature, format IANA, instant et égalité du tenant. Une clé absente, invalide
+  ou liée à une autre société produit `null`, sans repli ;
+- le principal confirmé est capturé au bootstrap Bob Live et figé pour toute la session. Aucun
+  appel GoTrue par tour et aucune modification de fuseau au milieu d'une mission ;
+- après confirmation, le mobile rafraîchit la session Supabase avant d'ouvrir Bob Live afin que le
+  JWT présenté au bootstrap porte la nouvelle autorité.
+
+Cette V1 évite une table et une migration uniquement pour une petite préférence d'identité signée.
+Si le produit exige plus tard des préférences multi-appareil historisées, une table tenantée pourra
+remplacer cette source par une migration additive ; le contrat `confirmed | unavailable` restera
+identique.
 
 ## 6. Frame sémantique V2
 
@@ -307,7 +363,7 @@ Matrice d'autorisation :
 | étapes client | `set_customer_reference`, `select_presented_choice` ; leurs lignes sont staged dans la même commande |
 | `awaiting_lines` | `append_line_candidates` |
 | `awaiting_catalogue_choice` | `select_presented_choice` en M2-A-1 ; correction explicite de `service_reference` en M2-A-2 |
-| `awaiting_line_details` *(M2-A-2 uniquement)* | `patch_pending_line` pour le `requiredFact` courant ou une correction explicite |
+| `awaiting_line_details` *(M2-A-2 uniquement)* | `patch_pending_line` pour le `requiredFact` courant ou une correction explicite ; `cancel_current_line` pour retirer seulement la tête |
 | `awaiting_line_confirmation` *(M2-A-2 uniquement)* | confirmer, rejeter pour modifier, annuler la ligne ou patch explicite |
 
 Toute autre combinaison échoue sans écriture. En M2-A-1, une phrase composite est représentée par
@@ -508,8 +564,10 @@ L'adapter Prisma :
 - normalise casse, accents, ligatures et ponctuation de la même manière que le core ;
 - lit au plus six lignes mais retourne au core cinq candidats maximum et `truncated=true` si une
   sixième existe ; aucune fausse ligne « sentinelle » n'entre dans le type candidat ;
-- retourne la `revision` réelle, le libellé, catégorie, unité, prix et taux uniquement au service
-  résolveur, jamais au LLM ;
+- retourne la `revision` réelle uniquement au service résolveur. Après création d'un jeu scellé,
+  le libellé, la catégorie, l'unité, le prix et la disponibilité réellement affichés peuvent être
+  projetés au LLM sous alias opaque afin qu'il comprenne « celle à 55 euros » ; la révision,
+  l'identifiant catalogue et le `choiceId` restent hors de sa portée ;
 - retourne `0` avant SQL pour une requête vide après normalisation ; toute entrée tenant/requête
   invalide échoue fermée avant le port et l'adapter, elle ne devient jamais un faux résultat vide ;
 - s'exécute dans la même transaction tenantée que la transition qui présente les choix.
@@ -617,6 +675,10 @@ résolution tête
 ligne choisie/libre
   ├─ faits obligatoires absents ──────→ awaiting_line_details
   └─ faits complets + TVA validable ──→ awaiting_line_confirmation
+
+awaiting_line_details
+  ├─ compléter/corriger ──────────────→ nouvelle résolution de la tête
+  └─ annuler cette ligne ─────────────→ retire la tête puis awaiting_lines
 
 awaiting_line_confirmation
   ├─ confirmer ───────────────────────→ ajout atomique puis awaiting_lines
@@ -825,6 +887,23 @@ Le contrat de données est fermé et ne porte aucune valeur métier :
 `requiredFact` appartient à l'union fermée et peut être JSON `null` uniquement pour l'édition
 générique qui demande à l'utilisateur quel champ changer.
 
+`line_cancelled` possède deux formes exactes sans modifier ses clés : depuis une confirmation,
+`choiceId` et `choiceSetHash` portent tous deux les valeurs de la décision scellée ; depuis
+`awaiting_line_details`, ils valent tous deux JSON `null`, car aucune décision de confirmation
+n'existe. Une paire mixte est invalide. Cette seconde forme est introduite par migrations
+expand/validate/cutover avec writer N-1 : l'ancienne forme string/string reste acceptée à toutes
+les étapes, null/null n'est admise qu'après le cutover, et aucun identifiant n'est fabriqué.
+
+L'annulation en phase détails appelle le use case typé
+`CancelQuoteAgentMissionPendingLine`. Dans une unique transaction, il verrouille mission, slot et
+tête de file ; compare capability, tenant, owner, `commandId`, `expectedMissionRevision`,
+session/slot/content du brouillon, `pendingLineId`, `expectedWorkRevision` et binding de contexte ;
+supprime exactement la tête, conserve le brouillon byte-identique, passe la mission à
+`awaiting_lines`, ajoute le reçu `line_cancelled` null/null, puis hydrate la tête suivante. Le
+rejeu du même `commandId` converge ; une empreinte différente, une tête stale ou un appel
+concurrent échoue sans supprimer une autre ligne. La voix et le bouton tactile appellent
+strictement ce même use case.
+
 Les données d'événement contiennent seulement identifiants, compteurs, catégories de résultat,
 révisions, acteur, `commandId`, HMAC d'empreinte et digests. Elles excluent transcript, libellé,
 quantité, unité, prix, TVA, nom client, nom catalogue et arguments d'outil.
@@ -954,6 +1033,23 @@ interface QuoteAgentMissionPresentationV1 {
   readonly proposal: {
     readonly proposalId: string;
     readonly diffHash: string;
+    /**
+     * Projection autoritaire calculée dans le même snapshot que la proposition. Le mobile ne
+     * recalcule jamais cet avant/après depuis son state local.
+     */
+    readonly diff: {
+      readonly kind: 'append_line';
+      readonly before: {
+        readonly contentRevision: number;
+        readonly lineCount: number;
+        readonly totalHtCents: number;
+      };
+      readonly after: {
+        readonly contentRevision: number;
+        readonly lineCount: number;
+        readonly totalHtCents: number;
+      };
+    };
     readonly line: QuoteDraftPayloadLine;
     readonly catalogue:
       | { readonly itemId: string; readonly revision: number; readonly label: string }
@@ -997,7 +1093,8 @@ Le mobile :
 - réhydrate la file, la décision et la proposition depuis l'API ;
 - affiche les candidats réels dans l'ordre scellé ;
 - ouvre une seule sheet à la fois ;
-- rend le diff label/quantité/unité/prix/TVA et l'origine catalogue ;
+- rend le diff label/quantité/unité/prix/TVA, l'origine catalogue et l'impact autoritaire
+  `avant/après` sur le nombre de lignes et le total HT ;
 - utilise les tokens Bob, i18n, zones tactiles ≥ 44 pt et `reduce-motion` ;
 - affiche chargement, vide, erreur avec retry et données ;
 - ne fabrique jamais un libellé ou prix de secours ;
@@ -1154,9 +1251,15 @@ Il raccorde les surfaces déjà publiées selon les règles binaires suivantes.
   `explicit_correction` ; après « modifier », une réponse courte sans champ est refusée ;
 - le sideband relit une seconde fois la projection V2 après le modèle. Toute variation de mission,
   brouillon, work revision, décision, choix, proposition, catalogue ou diff empêche la mutation ;
-- les quatre opérations appellent exclusivement `patchLineFromVoiceTurn` ou
-  `decideLineProposalFromVoiceTurn` avec les fences de cette seconde lecture. Le `turnId` reste
-  l'unique `commandId` voix ;
+- la lecture interne du planner, absente de tout controller et de tout wire mobile, projette depuis
+  le même snapshot transactionnel les faits déjà acceptés de la tête durable
+  (`serviceReference`, catégorie, quantité, unité, prix, TVA et faits fiscaux). Cette projection
+  est liée à `pendingLineId + expectedWorkRevision`, comparée à la présentation publique puis
+  convertie en valeurs bornées sans identifiant d'autorité avant le LLM. Une phase M2-A avec un
+  brouillon dont `step !== lignes` échoue fermée dans le core et dans le décodeur client ;
+- les quatre opérations appellent exclusivement `patchLineFromVoiceTurn`,
+  `decideLineProposalFromVoiceTurn` ou `cancelPendingLineFromVoiceTurn` avec les fences de cette
+  seconde lecture. Le `turnId` reste l'unique `commandId` voix ;
 - une intention M2-A reconnue ne traverse jamais `askBob`, le parseur regex du wizard ni un outil
   GPT fournisseur.
 
@@ -1373,21 +1476,30 @@ M2-A-1 est `implemented` uniquement si, flag M2-A toujours OFF :
 - [ ] `M2A3-01` : OpenAI WebRTC demande exactement le protocole 2 ; absence/refus de capability
       échoue fermé sans tentative V1 et sans requête Mistral ;
 - [ ] `M2A3-02` : le GET V1 conserve son wire exact et le GET V2 exige mission + présentation
-      cohérentes ; aucun ID, nom client, libellé catalogue ou tarif n'entre dans le LLM ;
+      cohérentes ; aucun ID autoritaire n'entre dans le LLM, tandis que les choix réellement
+      présentés lui sont accessibles sous alias opaques avec libellé/catégorie/unité/prix
+      nécessaires à une désambiguïsation naturelle ;
 - [ ] `M2A3-03` : `requiredFact`, scope et champ du patch forment une matrice fermée ; « oui »,
-      « modifie » et « annule » utilisent la décision/proposition fraîche et ne tombent jamais dans
-      le cerveau legacy ;
+      « modifie » et « annule » utilisent la décision/proposition fraîche, ou la tête
+      `awaiting_line_details` fraîche lorsqu'aucune décision n'existe, et ne tombent jamais dans le
+      cerveau legacy ;
 - [ ] `M2A3-04` : coupure après commit utilisateur et avant continuation, puis nouvel ACK : tête
       convergée, une ligne au plus, aucun événement métier dupliqué et GET resté read-only ;
 - [ ] `M2A3-05` : kill/relaunch dans `awaiting_lines`, `awaiting_catalogue_choice`,
       `awaiting_line_details` et `awaiting_line_confirmation` restitue les mêmes IDs/révisions sans
       parole automatique ;
 - [ ] `M2A3-06` : politiques catalogue 0, 1 exact, 1 fuzzy, 2..5 et ≥6 ; voix et toucher exposent
-      le même ordre, les mêmes choix scellés et la même indisponibilité ;
+      le même ordre, les mêmes choix scellés et la même indisponibilité. Pour 1..5 choix, la voix
+      prononce depuis la projection autoritaire chaque ordinal, libellé, prix et unité avant
+      l'option ligne libre ; aucun texte LLM ne peut nommer ou réordonner ces choix ;
 - [ ] `M2A3-07` : patch tactile/vocal rejoué conserve son `commandId`; autre valeur ou autre scope
       échoue par fingerprint sans nouvelle révision ;
 - [ ] `M2A3-08` : confirmer, modifier et annuler consomment les mêmes choice/proposal/diff/work
-      fences ; deux confirmations concurrentes produisent exactement une ligne ;
+      fences ; le mobile affiche le même diff autoritaire avant/après que la voix, sans le
+      recalculer ; deux confirmations concurrentes produisent exactement une ligne et une seule
+      interaction tactile peut partir à la fois ; annuler depuis les détails consomme la même tête
+      par voix ou toucher, conserve le brouillon byte-identique et ne peut jamais devenir un
+      abandon de mission ;
 - [ ] `M2A3-09` : après confirmation ou annulation, le brouillon frais et la tête suivante sont
       hydratés, Bob reste ouvert et accepte une autre ligne ;
 - [ ] `M2A3-10` : mission propriétaire du slot = zéro writer legacy, zéro affordance regex, une
@@ -1398,6 +1510,27 @@ M2-A-1 est `implemented` uniquement si, flag M2-A toujours OFF :
       non-PII complète, flags publics OFF ;
 - [ ] `M2A3-13` : sur iPhone et Android physiques, parler pendant Bob coupe localement le son avant
       le réseau et capture le nouveau tour ; tant que cette preuve manque, M2-A reste non certified.
+- [ ] `M2A3-14` : le planner reçoit le contexte écran, la mission, le fuseau confirmé, l'historique
+      récent borné et le manifeste de capacités ; paraphrases, anaphores et corrections multi-tours
+      passent des evals sur un vrai appel modèle, pas seulement des tool-calls fabriqués. Le
+      contexte porte la fence écran `{route, revision, digest}`, la révision et la décision de
+      mission ainsi que les seules capacités réellement admises par l'hôte. Le fuseau non nul vient
+      exclusivement du JWT signé, confirmé et lié au tenant. La confirmation n'est demandée
+      qu'après qu'une négociation autoritaire a choisi Mission V2 ; V1 et les transports sans
+      Mission V2 ne sont jamais bloqués par ce gate. Sans confirmation, le bootstrap V2 reste fermé.
+      L'eval opt-in appelle exactement l'adapter et le modèle du runtime, compte une seule
+      complétion sans retry ni second cerveau et produit une preuve exact-SHA non-PII ;
+- [ ] `M2A3-15` : un tour n'est jamais envoyé séquentiellement à deux cerveaux. Le planner unique
+      choisit le `mission kind` ou le geste global ; aucun `unrelated → askBob` ne double la latence
+      et aucun fallback regex ne conserve une autorité d'écriture.
+- [ ] `M2A3-16` : la capacité du brouillon est calculée depuis l'unique
+      `MAX_BILLING_LINES` avec `lignes confirmées + file verrouillée + nouvelles lignes`. La
+      centième ligne est admise, la cent-unième est refusée avant tout insert, et voix comme toucher
+      annoncent honnêtement la limite sans retry infini, ligne pendante ni donnée fabriquée.
+- [ ] `M2A3-17` : chaque CTA décrit exactement son effet réel — fermer ne prétend jamais relancer
+      Bob. Les choix exclusifs publient `radiogroup`/`radio` et leur état coché, les conteneurs de
+      reprise ne masquent pas les rôles `header`/`alert`, et les libellés voix/toucher restent
+      utilisables sans dépendre de la couleur ni du regard.
 
 ## 18. Definition of Done
 

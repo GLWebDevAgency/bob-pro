@@ -1,21 +1,10 @@
-import { describe, expect, it, vi } from 'vitest';
-import type { LlmCompletion, LlmPort } from '../../llm/port';
+import { describe, expect, it } from 'vitest';
 import {
   parseQuoteCreationSemanticToolCallV2,
   QUOTE_CREATION_UNDERSTANDING_TOOL_V2,
-  understandQuoteCreationTurnV2,
 } from './quote-creation-v2';
 
 const TOOL_NAME = 'mettre_a_jour_mission_devis_v2';
-
-function llm(output: LlmCompletion): LlmPort {
-  return {
-    id: 'openai-live-test',
-    complete: vi.fn(async () => output),
-    generate: vi.fn(async () => ({ text: '', model: output.model })),
-    health: vi.fn(async () => ({ healthy: true })),
-  };
-}
 
 function call(operations: readonly Record<string, unknown>[]) {
   return { name: TOOL_NAME, arguments: { operations } };
@@ -306,6 +295,26 @@ describe('parseQuoteCreationSemanticToolCallV2', () => {
         model: 'gpt-realtime-2.1',
       })).toBeNull();
     }
+
+    expect(parseQuoteCreationSemanticToolCallV2({
+      call: call([{ kind: 'cancel_current_line' }]),
+      phase: 'awaiting_line_details',
+      presentedChoiceCount: 0,
+      requiredFact: 'unit_price',
+      model: 'gpt-realtime-2.1',
+    })?.operations[0]).toEqual({ kind: 'cancel_current_line' });
+    for (const kind of [
+      'confirm_current_proposal',
+      'reject_current_proposal',
+    ] as const) {
+      expect(parseQuoteCreationSemanticToolCallV2({
+        call: call([{ kind }]),
+        phase: 'awaiting_line_details',
+        presentedChoiceCount: 0,
+        requiredFact: 'unit_price',
+        model: 'gpt-realtime-2.1',
+      })).toBeNull();
+    }
   });
 
   it.each([
@@ -346,92 +355,5 @@ describe('parseQuoteCreationSemanticToolCallV2', () => {
       requiredFact: null,
       model: 'gpt-realtime-2.1',
     })).toBeNull();
-  });
-});
-
-describe('understandQuoteCreationTurnV2', () => {
-  it('n’envoie au modèle que le tour courant et un contexte structurel', async () => {
-    const sentinel = 'CATALOGUE SECRET 987 €';
-    const fake = llm({
-      text: null,
-      toolCalls: [call([{
-        kind: 'start_quote_creation',
-        customer_reference: 'Camping les Pins',
-        lines: [line()],
-      }])],
-      model: 'gpt-realtime-2.1',
-    });
-
-    const result = await understandQuoteCreationTurnV2(fake, {
-      transcript: 'Fais le devis Camping les Pins, ajoute deux heures à 55 euros',
-      phase: 'inactive',
-      presentedChoiceCount: 0,
-      requiredFact: null,
-      timeZone: null,
-      locale: 'fr-FR',
-    });
-
-    expect(result.status).toBe('understood');
-    const [messages, options] = vi.mocked(fake.complete).mock.calls[0]!;
-    expect(JSON.stringify(messages)).not.toContain(sentinel);
-    expect(messages).toHaveLength(1);
-    expect(options).toMatchObject({
-      toolChoice: 'required',
-      temperature: 0,
-      maxTokens: 2_048,
-      tools: [QUOTE_CREATION_UNDERSTANDING_TOOL_V2],
-    });
-  });
-
-  it('rejette le contexte incohérent avant tout appel fournisseur', async () => {
-    const fake = llm({
-      text: null,
-      toolCalls: [],
-      model: 'gpt-realtime-2.1',
-    });
-    await expect(understandQuoteCreationTurnV2(fake, {
-      transcript: 'Le deuxième',
-      phase: 'awaiting_catalogue_choice',
-      presentedChoiceCount: 0,
-      requiredFact: null,
-      timeZone: null,
-      locale: 'fr-FR',
-    })).resolves.toEqual({ status: 'rejected', reason: 'invalid_input' });
-    expect(fake.complete).not.toHaveBeenCalled();
-  });
-
-  it('refuse texte libre, outil multiple et outil inattendu', async () => {
-    const input = {
-      transcript: 'Ajoute deux heures',
-      phase: 'awaiting_lines' as const,
-      presentedChoiceCount: 0,
-      requiredFact: null,
-      timeZone: null,
-      locale: 'fr-FR' as const,
-    };
-    await expect(understandQuoteCreationTurnV2(llm({
-      text: 'Bien sûr.',
-      toolCalls: [],
-      model: 'gpt-realtime-2.1',
-    }), input)).resolves.toEqual({
-      status: 'rejected',
-      reason: 'missing_tool_call',
-    });
-    await expect(understandQuoteCreationTurnV2(llm({
-      text: null,
-      toolCalls: [call([]), call([])],
-      model: 'gpt-realtime-2.1',
-    }), input)).resolves.toEqual({
-      status: 'rejected',
-      reason: 'multiple_tool_calls',
-    });
-    await expect(understandQuoteCreationTurnV2(llm({
-      text: null,
-      toolCalls: [{ name: 'autre_outil', arguments: {} }],
-      model: 'gpt-realtime-2.1',
-    }), input)).resolves.toEqual({
-      status: 'rejected',
-      reason: 'unexpected_tool',
-    });
   });
 });

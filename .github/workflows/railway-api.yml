@@ -15,6 +15,7 @@ on:
           - release
           - m1b-staging-certification
           - m1b-staging-recovery
+          - m2a3-semantic-certification
           - k2-staging-schema
       environment:
         description: Railway environment
@@ -108,7 +109,7 @@ jobs:
           RELEASE_PURPOSE: ${{ inputs.purpose }}
         run: |
           case "$RELEASE_PURPOSE" in
-            release|m1b-staging-certification|m1b-staging-recovery|k2-staging-schema) ;;
+            release|m1b-staging-certification|m1b-staging-recovery|m2a3-semantic-certification|k2-staging-schema) ;;
             *) echo "Unsupported Railway release purpose" >&2; exit 1 ;;
           esac
 
@@ -140,6 +141,29 @@ jobs:
       founder_authorization_ref: ${{ inputs.founder_authorization_ref }}
       claude_countersign_ref: ${{ inputs.claude_countersign_ref }}
       gpt_countersign_ref: ${{ inputs.gpt_countersign_ref }}
+    secrets: inherit
+
+  route-m2a3-semantic-certification:
+    needs: validate-purpose
+    if: ${{ inputs.purpose == 'm2a3-semantic-certification' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    environment: staging
+    steps:
+      - name: Require the dedicated staging target
+        env:
+          RELEASE_ENVIRONMENT: ${{ inputs.environment }}
+          RELEASE_SERVICE: ${{ inputs.service }}
+          EXPECTED_SERVICE: ${{ vars.RAILWAY_API_SERVICE }}
+        run: |
+          test "$RELEASE_ENVIRONMENT" = staging
+          test -n "$EXPECTED_SERVICE"
+          test "$RELEASE_SERVICE" = "$EXPECTED_SERVICE"
+
+  certify-agent-mission-m2a3-semantic:
+    needs: route-m2a3-semantic-certification
+    if: ${{ inputs.purpose == 'm2a3-semantic-certification' && needs.route-m2a3-semantic-certification.result == 'success' }}
+    uses: ./.github/workflows/agent-mission-m2a3-semantic-staging.yml
     secrets: inherit
 
   certify-agent-mission-k2-staging-schema:

@@ -403,8 +403,8 @@ export type AgentMissionEventDataV1 =
       readonly kind: 'line_cancelled';
       readonly pendingLineId: string;
       readonly expectedWorkRevision: number;
-      readonly choiceId: string;
-      readonly choiceSetHash: string;
+      readonly choiceId: string | null;
+      readonly choiceSetHash: string | null;
     }
   | {
       readonly kind: 'mission_cancelled';
@@ -784,8 +784,8 @@ function validateData(
       kind: eventType,
       pendingLineId: value['pendingLineId'] as string,
       expectedWorkRevision: value['expectedWorkRevision'] as number,
-      choiceId: value['choiceId'] as string,
-      choiceSetHash: value['choiceSetHash'] as string,
+      choiceId: value['choiceId'] as string | null,
+      choiceSetHash: value['choiceSetHash'] as string | null,
     };
   } else if (eventType === 'mission_cancelled') {
     if (
@@ -949,7 +949,6 @@ function validateData(
     data.kind === 'line_proposal_presented'
     || data.kind === 'line_proposal_rejected'
     || data.kind === 'line_confirmed'
-    || data.kind === 'line_cancelled'
   ) {
     if (!SHA256.test(data.choiceSetHash)) {
       return invalid('data.choiceSetHash', 'invalid_digest');
@@ -958,10 +957,21 @@ function validateData(
   if (
     data.kind === 'line_proposal_rejected'
     || data.kind === 'line_confirmed'
-    || data.kind === 'line_cancelled'
   ) {
     if (!isCanonicalUuid(data.choiceId)) {
       return invalid('data.choiceId', 'invalid_uuid');
+    }
+  }
+  if (data.kind === 'line_cancelled') {
+    const sealedChoice = (
+      isCanonicalUuid(data.choiceId)
+      && typeof data.choiceSetHash === 'string'
+      && SHA256.test(data.choiceSetHash)
+    );
+    const pendingLineWithoutDecision =
+      data.choiceId === null && data.choiceSetHash === null;
+    if (!sealedChoice && !pendingLineWithoutDecision) {
+      return invalid('data', 'inconsistent_event');
     }
   }
 

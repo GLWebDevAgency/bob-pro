@@ -20,7 +20,7 @@ const MAX_ID_LENGTH = 200;
 const MAX_CUSTOMER_NAME_LENGTH = 300;
 const MAX_LINE_LABEL_LENGTH = 500;
 const MAX_UNIT_LENGTH = 40;
-const MAX_LINES = 200;
+export const MAX_QUOTE_DRAFT_LINES = 200;
 const MAX_FORM_VALUE_LENGTH = 500;
 
 const LINE_CATEGORIES: readonly LineCategory[] = [
@@ -325,7 +325,10 @@ export function parseQuoteDraftPayload(value: unknown): QuoteDraftPayloadResult 
     customer = { id: candidate['id'], name: candidate['name'] };
   }
 
-  if (!Array.isArray(draft['lines']) || draft['lines'].length > MAX_LINES) {
+  if (
+    !Array.isArray(draft['lines'])
+    || draft['lines'].length > MAX_QUOTE_DRAFT_LINES
+  ) {
     return fail('invalid_value', '$.draft.lines');
   }
   const lines: QuoteDraftPayloadLine[] = [];

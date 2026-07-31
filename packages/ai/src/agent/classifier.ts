@@ -370,7 +370,7 @@ export const LLM_TOOL_SPECS: LlmToolSpec[] = [
   },
 ];
 
-const TOOL_TO_INTENT: Record<string, BobIntent> = {
+export const TOOL_TO_INTENT = Object.freeze({
   contexte_ecran: 'contexte_ecran',
   marquer_notifications_lues: 'marquer_notifications_lues',
   tresorerie_versement: 'payout',
@@ -413,7 +413,15 @@ const TOOL_TO_INTENT: Record<string, BobIntent> = {
   top_clients: 'top_clients',
   etat_abonnement: 'abonnement',
   aide_capacites: 'aide',
-};
+} as const satisfies Readonly<Record<string, BobIntent>>);
+
+export type RealtimeGlobalToolName = keyof typeof TOOL_TO_INTENT;
+
+export function realtimeGlobalToolIntent(name: string): BobIntent | null {
+  return Object.hasOwn(TOOL_TO_INTENT, name)
+    ? TOOL_TO_INTENT[name as RealtimeGlobalToolName]
+    : null;
+}
 
 /** Une étape résolue d'un plan (une intention + sa référence éventuelle). */
 export interface PlanStep {
@@ -425,6 +433,182 @@ export interface PlanStep {
 export interface ClassifiedPlan {
   steps: PlanStep[];
   model: string;
+}
+
+/**
+ * Plan opaque produit et validé par le planificateur sémantique serveur.
+ *
+ * Il ne fait jamais partie du payload HTTP public. `schema` + `version` empêchent qu'un ancien
+ * objet `ClassifiedPlan` construit librement soit confondu avec la frontière Realtime stricte.
+ */
+export interface PreclassifiedAgentPlan {
+  readonly schema: 'bob.preclassified-agent-plan';
+  readonly version: 1;
+  readonly steps: readonly Readonly<PlanStep>[];
+  readonly model: string;
+}
+
+const MAX_STRICT_PLAN_STEPS = 8;
+const MAX_STRICT_REFERENCE_CHARS = 500;
+const MAX_STRICT_MODEL_CHARS = 200;
+
+function strictPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function strictCanonicalString(value: unknown, maximumLength: number): string | null {
+  if (typeof value !== 'string') return null;
+  // eslint-disable-next-line no-control-regex
+  const containsControlCharacter = /[\u0000-\u001f\u007f]/u.test(value);
+  if (
+    containsControlCharacter
+    || /[\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/iu.test(value)
+  ) return null;
+  const canonical = value.trim().replace(/\s+/gu, ' ');
+  return canonical.length > 0 && canonical.length <= maximumLength
+    ? canonical
+    : null;
+}
+
+export function isPreclassifiedAgentPlan(
+  value: unknown,
+): value is PreclassifiedAgentPlan {
+  if (
+    !strictPlainRecord(value)
+    || value['schema'] !== 'bob.preclassified-agent-plan'
+    || value['version'] !== 1
+    || Object.keys(value).some(
+      (key) => key !== 'schema' && key !== 'version' && key !== 'steps' && key !== 'model',
+    )
+    || !Array.isArray(value['steps'])
+    || value['steps'].length > MAX_STRICT_PLAN_STEPS
+  ) return false;
+  const model = strictCanonicalString(value['model'], MAX_STRICT_MODEL_CHARS);
+  if (model === null || model !== value['model']) return false;
+  const allowedIntents = new Set<BobIntent>(Object.values(TOOL_TO_INTENT));
+  return value['steps'].every((candidate) => {
+    if (
+      !strictPlainRecord(candidate)
+      || Object.keys(candidate).some((key) => key !== 'intent' && key !== 'reference')
+      || typeof candidate['intent'] !== 'string'
+      || !allowedIntents.has(candidate['intent'] as BobIntent)
+    ) return false;
+    if (candidate['reference'] === null) return true;
+    const reference = strictCanonicalString(
+      candidate['reference'],
+      MAX_STRICT_REFERENCE_CHARS,
+    );
+    return reference !== null && reference === candidate['reference'];
+  });
+}
+
+function toolAcceptsReference(spec: LlmToolSpec): boolean {
+  const parameters = spec.parameters;
+  const properties = strictPlainRecord(parameters['properties'])
+    ? parameters['properties']
+    : {};
+  return Object.hasOwn(properties, 'reference');
+}
+
+/**
+ * Manifeste global réellement exécutable après application de l'ownership Mission.
+ * Le filtrage est dérivé de la table unique tool→intent ; aucun nom d'outil n'est recopié dans
+ * le planner Realtime.
+ */
+export function llmToolSpecsWithoutIntents(
+  excludedIntents: ReadonlySet<BobIntent>,
+): readonly LlmToolSpec[] {
+  return Object.freeze(LLM_TOOL_SPECS.filter((spec) => {
+    const intent = realtimeGlobalToolIntent(spec.name);
+    return intent !== null && !excludedIntents.has(intent);
+  }));
+}
+
+/**
+ * Recharge les spécifications globales depuis le catalogue canonique.
+ *
+ * L'hôte ne fournit que des noms réellement câblés ; descriptions et schémas restent la
+ * propriété de ce module et ne peuvent donc jamais être injectés par un adaptateur runtime.
+ */
+export function llmToolSpecsForNames(
+  names: readonly RealtimeGlobalToolName[],
+): readonly LlmToolSpec[] {
+  const selected = new Set<RealtimeGlobalToolName>(names);
+  return Object.freeze(LLM_TOOL_SPECS.filter(
+    (spec): boolean => selected.has(spec.name as RealtimeGlobalToolName),
+  ));
+}
+
+/**
+ * Parseur fermé d'un plan global déjà choisi par le LLM.
+ *
+ * Contrairement au classifieur historique, un outil inconnu ou un argument supplémentaire
+ * invalide tout le tour. C'est la frontière utilisée par le monobrain Realtime : aucune sortie
+ * partielle ne peut se transformer en action différente.
+ */
+export function parseStrictLlmClassifiedPlan(input: {
+  readonly toolCalls: readonly {
+    readonly name: string;
+    readonly arguments: Record<string, unknown>;
+  }[];
+  readonly model: string;
+  readonly allowedTools: readonly LlmToolSpec[];
+}): PreclassifiedAgentPlan | null {
+  if (
+    input.toolCalls.length < 1
+    || input.toolCalls.length > MAX_STRICT_PLAN_STEPS
+  ) return null;
+  const model = strictCanonicalString(input.model, MAX_STRICT_MODEL_CHARS);
+  if (model === null) return null;
+
+  const allowed = new Map(input.allowedTools.map((spec) => [spec.name, spec]));
+  const steps: PlanStep[] = [];
+  for (const call of input.toolCalls) {
+    const spec = allowed.get(call.name);
+    const intent = realtimeGlobalToolIntent(call.name);
+    if (spec === undefined || intent === null || !strictPlainRecord(call.arguments)) {
+      return null;
+    }
+    const keys = Object.keys(call.arguments);
+    const acceptsReference = toolAcceptsReference(spec);
+    if (
+      keys.some((key) => key !== 'reference')
+      || (!acceptsReference && keys.length > 0)
+    ) return null;
+    let reference: string | null = null;
+    if (Object.hasOwn(call.arguments, 'reference')) {
+      const parsed = strictCanonicalString(
+        call.arguments['reference'],
+        MAX_STRICT_REFERENCE_CHARS,
+      );
+      if (parsed === null) return null;
+      reference = parsed;
+    }
+    steps.push(Object.freeze({ intent, reference }));
+  }
+  return Object.freeze({
+    schema: 'bob.preclassified-agent-plan',
+    version: 1,
+    steps: Object.freeze(steps),
+    model,
+  });
+}
+
+/**
+ * Seule voie de construction d'un plan préclassifié vide. Une abstention reste ainsi auditée par
+ * le même envelope BobAgent sans autoriser un appelant à fournir un tableau d'étapes vide arbitraire.
+ */
+export function preclassifiedOutOfScopePlan(
+  rawModel: string,
+): PreclassifiedAgentPlan | null {
+  const model = strictCanonicalString(rawModel, MAX_STRICT_MODEL_CHARS);
+  if (model === null) return null;
+  return Object.freeze({
+    schema: 'bob.preclassified-agent-plan',
+    version: 1,
+    steps: Object.freeze([]),
+    model,
+  });
 }
 
 /** Identité explicite du classifieur local : ce n'est ni un fournisseur ni une donnée simulée. */
@@ -477,8 +661,8 @@ export async function classifyWithLlm(
   signal?.throwIfAborted();
   const steps: PlanStep[] = [];
   for (const call of res.toolCalls) {
-    const intent = TOOL_TO_INTENT[call.name];
-    if (!intent) continue;
+    const intent = realtimeGlobalToolIntent(call.name);
+    if (intent === null) continue;
     const ref = call.arguments?.reference;
     steps.push({ intent, reference: typeof ref === 'string' && ref.trim() ? ref.trim() : null });
   }
@@ -524,5 +708,7 @@ export const INTENTS_HORS_OUTILLAGE_LLM: ReadonlySet<BobIntent> = new Set<BobInt
       'historique_equipement',
       'retirer_equipement',
     ] as const
-  ).filter((intent) => !Object.values(TOOL_TO_INTENT).includes(intent)),
+  ).filter(
+    (intent) => !new Set<BobIntent>(Object.values(TOOL_TO_INTENT)).has(intent),
+  ),
 );

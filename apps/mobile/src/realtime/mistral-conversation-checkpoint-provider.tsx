@@ -11,13 +11,11 @@ import {
 import { AppState } from 'react-native';
 
 import { useAuth } from '../data/auth';
-import { useBobClient } from '../data/client';
 import { companyIdFromAppMetadata } from '../data/tenant-identity';
 import {
   createNativeMistralConversationCheckpointStore,
 } from './mistral-conversation-checkpoint-store';
 import type { MistralConversationCheckpointBinding } from './mistral-conversation-runtime';
-import { recoverMistralConversationTerminalCheckpoint } from './mistral-conversation-terminal-recovery';
 
 interface PublishedBinding {
   readonly identityKey: string;
@@ -73,11 +71,13 @@ async function purgeBindingForAuthBoundary(
 }
 
 /**
- * Frontière auth durable du checkpoint terminal Mistral v2.
+ * Frontière auth LOCALE du checkpoint terminal Mistral v2.
  *
  * Elle reste montée au-dessus d'AuthGate : logout/switch purge et invalide l'ancien owner avant
- * d'en activer un autre. Une mission neuve n'obtient le binding qu'après reprise terminale
- * complète (ou preuve d'absence de checkpoint), jamais pendant une transition d'identité.
+ * d'en activer un autre. Elle ne lit et ne reprend JAMAIS le checkpoint réseau : seul
+ * `MistralConversationTransport.connect()`, construit après la négociation serveur autoritaire,
+ * peut le drainer. Un compte OpenAI conserve donc au plus une fence locale inerte et n'émet
+ * aucune requête ni aucun socket Mistral.
  */
 export function MistralConversationCheckpointProvider({
   children,
@@ -85,7 +85,6 @@ export function MistralConversationCheckpointProvider({
   readonly children: ReactNode;
 }) {
   const { enabled, session } = useAuth();
-  const client = useBobClient();
   const companyId = enabled && session
     ? companyIdFromAppMetadata(session.user.app_metadata)
     : null;
@@ -168,24 +167,13 @@ export function MistralConversationCheckpointProvider({
           retryCountRef.current = 0;
         }
 
-        const recovered = await recoverMistralConversationTerminalCheckpoint({
-          client,
-          store: binding.store,
-          fence: binding.fence,
-          signal: recoveryAbort.signal,
-        }).catch(() => false);
         if (
           transitionRef.current !== transition
           || recoveryAbort.signal.aborted
           || activeBindingRef.current !== binding
         ) return;
-        if (recovered) {
-          retryCountRef.current = 0;
-          setPublished(Object.freeze({ identityKey, identity, binding }));
-          return;
-        }
-
-        scheduleRetry();
+        retryCountRef.current = 0;
+        setPublished(Object.freeze({ identityKey, identity, binding }));
       })
       .catch(() => {
         scheduleRetry();
@@ -196,13 +184,13 @@ export function MistralConversationCheckpointProvider({
       if (recoveryAbortRef.current === recoveryAbort) recoveryAbortRef.current = null;
       if (transitionRef.current === transition) transitionRef.current += 1;
     };
-  }, [client, identity, identityKey, retryRevision]);
+  }, [identity, identityKey, retryRevision]);
 
   useEffect(() => {
     if (identityKey === null || published?.identityKey === identityKey) return undefined;
     const subscription = AppState.addEventListener('change', (state) => {
-      // Un retour au premier plan est une nouvelle preuve d'intention utilisateur et un bon
-      // signal de reseau restaure. Il rearme un cycle borne, sans boucle en arriere-plan.
+      // Un retour au premier plan réarme uniquement la frontière SecureStore locale. La reprise
+      // réseau reste enfermée dans le transport Mistral V2 après négociation.
       if (state === 'active') retryRecovery();
     });
     return () => subscription.remove();

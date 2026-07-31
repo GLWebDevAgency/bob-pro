@@ -1,7 +1,12 @@
 import { StrictMode, useEffect } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AgentMissionViewV1 } from '@bob/core';
+import {
+  computeQuoteMissionCatalogueChoiceSetHash,
+  computeQuoteMissionLineConfirmationChoiceSetHash,
+  type AgentMissionViewV1,
+  type QuoteAgentMissionPresentationV1,
+} from '@bob/core';
 import type { QuoteDraftAuthoritativeReference } from '../quote-draft/quote-draft-remote-store';
 import type {
   AgentMissionConfirmedContext,
@@ -55,6 +60,30 @@ const OTHER_DRAFT: QuoteDraftAuthoritativeReference = {
   contentRevision: 2,
 };
 const SCREEN_ID = 'devis-new:draft-session:3:1:lignes';
+const EMPTY_PRESENTATION = {
+  schema: 'bob.agent-mission.quote-presentation',
+  version: 1,
+  requiredFact: null,
+  pendingLine: null,
+  decision: null,
+  catalogueChoices: [],
+  freeLineChoiceId: null,
+  proposalStatus: { kind: 'absent' },
+  proposal: null,
+} as const satisfies QuoteAgentMissionPresentationV1;
+
+type QuoteLineRecoveryPhase =
+  | 'awaiting_lines'
+  | 'awaiting_catalogue_choice'
+  | 'awaiting_line_details'
+  | 'awaiting_line_confirmation';
+
+const QUOTE_LINE_RECOVERY_PHASES = [
+  'awaiting_lines',
+  'awaiting_catalogue_choice',
+  'awaiting_line_details',
+  'awaiting_line_confirmation',
+] as const satisfies readonly QuoteLineRecoveryPhase[];
 
 function confirmedContext(): AgentMissionConfirmedContext {
   return {
@@ -97,6 +126,185 @@ function boundMission(context: AgentMissionConfirmedContext): AgentMissionViewV1
   } as AgentMissionViewV1;
 }
 
+function recoveryPresentation(
+  phase: QuoteLineRecoveryPhase,
+  missionId: string,
+  missionRevision: number,
+): QuoteAgentMissionPresentationV1 {
+  if (phase === 'awaiting_lines') return EMPTY_PRESENTATION;
+  if (phase === 'awaiting_catalogue_choice') {
+    const choices = [{
+      choiceId: '50000000-0000-4000-8000-000000000010',
+      catalogueItemId: 'catalogue-labour-plumbing',
+      expectedCatalogueRevision: 3,
+    }];
+    const hash = computeQuoteMissionCatalogueChoiceSetHash({
+      missionId,
+      choiceSetRevision: missionRevision,
+      decisionId: '40000000-0000-4000-8000-000000000010',
+      pendingLineId: '60000000-0000-4000-8000-000000000001',
+      expectedDraft: DRAFT,
+      expectedWorkRevision: 2,
+      candidates: choices,
+      freeLineChoiceId: '50000000-0000-4000-8000-000000000011',
+    });
+    if (!hash.ok) throw new Error('Fixture catalogue invalide');
+    return {
+      ...EMPTY_PRESENTATION,
+      pendingLine: {
+        pendingLineId: '60000000-0000-4000-8000-000000000001',
+        expectedWorkRevision: 2,
+      },
+      decision: {
+        kind: 'catalogue',
+        decisionId: '40000000-0000-4000-8000-000000000010',
+        choiceSetRevision: missionRevision,
+        pendingLineId: '60000000-0000-4000-8000-000000000001',
+        expectedDraft: DRAFT,
+        expectedWorkRevision: 2,
+        choices,
+        freeLineChoiceId: '50000000-0000-4000-8000-000000000011',
+        choiceSetHash: hash.value,
+      },
+      catalogueChoices: [{
+        choiceId: '50000000-0000-4000-8000-000000000010',
+        available: true,
+        label: 'Heure de main-d’œuvre plomberie',
+        category: 'labor',
+        unit: 'heure',
+        unitPriceCents: 5_500,
+        vatRate: 20,
+      }],
+      freeLineChoiceId: '50000000-0000-4000-8000-000000000011',
+    };
+  }
+  if (phase === 'awaiting_line_details') {
+    return {
+      ...EMPTY_PRESENTATION,
+      requiredFact: 'unit_price',
+      pendingLine: {
+        pendingLineId: '60000000-0000-4000-8000-000000000001',
+        expectedWorkRevision: 2,
+      },
+    };
+  }
+  const choices = [
+    {
+      choiceId: '50000000-0000-4000-8000-000000000020',
+      action: 'confirm_line' as const,
+    },
+    {
+      choiceId: '50000000-0000-4000-8000-000000000021',
+      action: 'edit_line' as const,
+    },
+    {
+      choiceId: '50000000-0000-4000-8000-000000000022',
+      action: 'cancel_line' as const,
+    },
+  ] as const;
+  const hash = computeQuoteMissionLineConfirmationChoiceSetHash({
+    missionId,
+    choiceSetRevision: missionRevision,
+    decisionId: '40000000-0000-4000-8000-000000000020',
+    pendingLineId: '60000000-0000-4000-8000-000000000001',
+    proposalId: '70000000-0000-4000-8000-000000000001',
+    proposalRevision: 1,
+    expectedDraft: DRAFT,
+    expectedWorkRevision: 2,
+    expectedCatalogue: {
+      itemId: 'catalogue-labour-plumbing',
+      revision: 3,
+    },
+    expectedVatContextDigest: 'd'.repeat(64),
+    diffHash: 'f'.repeat(64),
+    choices,
+  });
+  if (!hash.ok) throw new Error('Fixture proposition invalide');
+  return {
+    ...EMPTY_PRESENTATION,
+    pendingLine: {
+      pendingLineId: '60000000-0000-4000-8000-000000000001',
+      expectedWorkRevision: 2,
+    },
+    decision: {
+      kind: 'line_confirmation',
+      decisionId: '40000000-0000-4000-8000-000000000020',
+      choiceSetRevision: missionRevision,
+      pendingLineId: '60000000-0000-4000-8000-000000000001',
+      proposalId: '70000000-0000-4000-8000-000000000001',
+      proposalRevision: 1,
+      expectedDraft: DRAFT,
+      expectedWorkRevision: 2,
+      expectedCatalogue: {
+        itemId: 'catalogue-labour-plumbing',
+        revision: 3,
+      },
+      expectedVatContextDigest: 'd'.repeat(64),
+      diffHash: 'f'.repeat(64),
+      choices,
+      choiceSetHash: hash.value,
+    },
+    proposalStatus: { kind: 'available' },
+    proposal: {
+      proposalId: '70000000-0000-4000-8000-000000000001',
+      diffHash: 'f'.repeat(64),
+      diff: {
+        kind: 'append_line',
+        before: {
+          contentRevision: DRAFT.contentRevision,
+          lineCount: 0,
+          totalHtCents: 0,
+        },
+        after: {
+          contentRevision: DRAFT.contentRevision + 1,
+          lineCount: 1,
+          totalHtCents: 11_000,
+        },
+      },
+      line: {
+        label: 'Main-d’œuvre plomberie',
+        category: 'labor',
+        qty: 2,
+        unitPriceHT: 5_500,
+        vatRate: 20,
+        unit: 'heures',
+      },
+      catalogue: {
+        itemId: 'catalogue-labour-plumbing',
+        revision: 3,
+        label: 'Heure de main-d’œuvre plomberie',
+      },
+    },
+  };
+}
+
+function coldRecoveryV2(
+  phase: QuoteLineRecoveryPhase,
+): Extract<AgentMissionRecoverySnapshot, { readonly phase: 'resumable' }> {
+  const base = boundMission(confirmedContext());
+  const phaseOrdinal = QUOTE_LINE_RECOVERY_PHASES.indexOf(phase);
+  const missionRevision = base.revision + phaseOrdinal;
+  return {
+    phase: 'resumable',
+    value: {
+      protocolVersion: 2,
+      mission: {
+        id: base.id,
+        status: 'active',
+        phase,
+        revision: missionRevision,
+        actionable: true,
+        draft: DRAFT,
+        idleExpiresAt: base.idleExpiresAt,
+        hardExpiresAt: base.hardExpiresAt,
+      },
+      draft: { ...DRAFT, step: 'lignes' },
+      customerChoices: [],
+      presentation: recoveryPresentation(phase, base.id, missionRevision),
+    },
+  };
+}
+
 function handedOffMission(context: AgentMissionConfirmedContext): AgentMissionViewV1 {
   return {
     ...boundMission(context),
@@ -108,13 +316,56 @@ function handedOffMission(context: AgentMissionConfirmedContext): AgentMissionVi
   } as AgentMissionViewV1;
 }
 
+function recoveredV2(
+  current: AgentMissionViewV1,
+): AgentMissionRecoverySnapshot {
+  return {
+    phase: 'resumable',
+    value: {
+      protocolVersion: 2,
+      mission: {
+        id: current.id,
+        status: 'active',
+        phase: current.phase,
+        revision: current.revision,
+        actionable: true,
+        draft: DRAFT,
+        idleExpiresAt: current.idleExpiresAt,
+        hardExpiresAt: current.hardExpiresAt,
+      },
+      draft: { ...DRAFT, step: 'lignes' },
+      customerChoices: [],
+      presentation: EMPTY_PRESENTATION,
+    },
+  };
+}
+
+function unimplementedQuoteLineActions(): Pick<
+  AgentMissionRuntimeActions,
+  | 'stageQuoteLines'
+  | 'decideQuoteCatalogueChoice'
+  | 'patchQuoteLine'
+  | 'cancelPendingQuoteLine'
+  | 'decideQuoteLineProposal'
+  | 'abandonQuoteCreation'
+> {
+  return {
+    stageQuoteLines: vi.fn(),
+    decideQuoteCatalogueChoice: vi.fn(),
+    patchQuoteLine: vi.fn(),
+    cancelPendingQuoteLine: vi.fn(),
+    decideQuoteLineProposal: vi.fn(),
+    abandonQuoteCreation: vi.fn(),
+  };
+}
+
 async function mount(input: {
   readonly authoritativeDraft: QuoteDraftAuthoritativeReference | null;
   readonly hydrateDraft?: (
     expected: QuoteDraftAuthoritativeReference,
   ) => Promise<{ readonly status: 'ready'; readonly reference: QuoteDraftAuthoritativeReference }>;
   readonly suspendLiveForManualHandoff?: () => Promise<boolean>;
-  readonly stopLiveAfterManualHandoff?: () => Promise<void>;
+  readonly stopLiveAfterManualHandoff?: () => Promise<number | null>;
   readonly strict?: boolean;
 }): Promise<{
   readonly current: () => QuoteScreenMissionBinding;
@@ -134,7 +385,7 @@ async function mount(input: {
       suspendLiveForManualHandoff:
         input.suspendLiveForManualHandoff ?? (async () => true),
       stopLiveAfterManualHandoff:
-        input.stopLiveAfterManualHandoff ?? (async () => undefined),
+        input.stopLiveAfterManualHandoff ?? (async () => fixtures.snapshot.generation),
     });
     useEffect(() => {
       binding = current;
@@ -186,10 +437,12 @@ describe('useQuoteScreenMissionBinding — frontière React', () => {
     fixtures.snapshot = {
       generation: 0,
       realtimeSessionId: null,
+      protocolVersion: null,
       confirmedContext: null,
       lastTurnSettlement: null,
     };
     fixtures.actions = {
+      ...unimplementedQuoteLineActions(),
       readCurrentQuoteCreation: vi.fn(),
       acknowledgeQuoteScreen: vi.fn(),
       decideQuoteCreation: vi.fn(),
@@ -210,41 +463,45 @@ describe('useQuoteScreenMissionBinding — frontière React', () => {
     fixtures.snapshot = {
       generation: 0,
       realtimeSessionId: null,
+      protocolVersion: null,
       confirmedContext: null,
       lastTurnSettlement: null,
     };
     fixtures.actions = {
+      ...unimplementedQuoteLineActions(),
       readCurrentQuoteCreation: vi.fn(),
       acknowledgeQuoteScreen: vi.fn(),
       decideQuoteCreation: vi.fn(),
       manualHandoffQuoteCreation: vi.fn(),
     };
-    fixtures.recovery = {
-      snapshot: {
-        phase: 'resumable',
-        value: {
-          mission: {
-            id: coldMission.id,
-            status: 'active',
-            phase: coldMission.phase,
-            revision: coldMission.revision,
-            actionable: true,
-            draft: DRAFT,
-            idleExpiresAt: coldMission.idleExpiresAt,
-            hardExpiresAt: coldMission.hardExpiresAt,
-          },
-          draft: { ...DRAFT, step: 'lignes' },
-          customerChoices: [],
+    const coldRecovery: AgentMissionRecoverySnapshot = {
+      phase: 'resumable',
+      value: {
+        protocolVersion: 1,
+        mission: {
+          id: coldMission.id,
+          status: 'active',
+          phase: coldMission.phase,
+          revision: coldMission.revision,
+          actionable: true,
+          draft: DRAFT,
+          idleExpiresAt: coldMission.idleExpiresAt,
+          hardExpiresAt: coldMission.hardExpiresAt,
         },
+        draft: { ...DRAFT, step: 'lignes' },
+        customerChoices: [],
+        presentation: null,
       },
+    };
+    fixtures.recovery = {
+      snapshot: coldRecovery,
       refresh: vi.fn(async (): Promise<AgentMissionRecoverySnapshot> => ({
         phase: 'error',
         reason: 'unavailable',
       })),
-      refreshAfterMutation: vi.fn(async (): Promise<AgentMissionRecoverySnapshot> => ({
-        phase: 'error',
-        reason: 'unavailable',
-      })),
+      refreshAfterMutation: vi.fn(
+        async (): Promise<AgentMissionRecoverySnapshot> => coldRecovery,
+      ),
     };
 
     const mounted = await mount({ authoritativeDraft: null });
@@ -258,18 +515,70 @@ describe('useQuoteScreenMissionBinding — frontière React', () => {
     expect(fixtures.recovery.refresh).not.toHaveBeenCalled();
   });
 
+  it.each(QUOTE_LINE_RECOVERY_PHASES)(
+    'reprend à froid %s avec la présentation exacte et zéro commande métier',
+    async (phase) => {
+      fixtures.snapshot = {
+        generation: 0,
+        realtimeSessionId: null,
+        protocolVersion: null,
+        confirmedContext: null,
+        lastTurnSettlement: null,
+      };
+      const quoteLineActions = unimplementedQuoteLineActions();
+      const readCurrentQuoteCreation = vi.fn();
+      const acknowledgeQuoteScreen = vi.fn();
+      const decideQuoteCreation = vi.fn();
+      const manualHandoffQuoteCreation = vi.fn();
+      fixtures.actions = {
+        ...quoteLineActions,
+        readCurrentQuoteCreation,
+        acknowledgeQuoteScreen,
+        decideQuoteCreation,
+        manualHandoffQuoteCreation,
+      };
+      const coldRecovery = coldRecoveryV2(phase);
+      const refreshAfterMutation = vi.fn(
+        async (): Promise<AgentMissionRecoverySnapshot> => coldRecovery,
+      );
+      fixtures.recovery = {
+        snapshot: coldRecovery,
+        refresh: vi.fn(async (): Promise<AgentMissionRecoverySnapshot> => coldRecovery),
+        refreshAfterMutation,
+      };
+
+      const mounted = await mount({ authoritativeDraft: null });
+      renderer = mounted.renderer;
+
+      expect(mounted.current().state).toEqual({
+        phase: 'resume_required',
+        recovery: coldRecovery.value,
+      });
+      expect(refreshAfterMutation).toHaveBeenCalledOnce();
+      expect(readCurrentQuoteCreation).not.toHaveBeenCalled();
+      expect(acknowledgeQuoteScreen).not.toHaveBeenCalled();
+      expect(decideQuoteCreation).not.toHaveBeenCalled();
+      expect(manualHandoffQuoteCreation).not.toHaveBeenCalled();
+      expect(quoteLineActions.stageQuoteLines).not.toHaveBeenCalled();
+      expect(quoteLineActions.decideQuoteCatalogueChoice).not.toHaveBeenCalled();
+      expect(quoteLineActions.patchQuoteLine).not.toHaveBeenCalled();
+      expect(quoteLineActions.decideQuoteLineProposal).not.toHaveBeenCalled();
+    },
+  );
+
   it('bloque le writer puis libère M1-C seulement après la passation durable', async () => {
     const order: string[] = [];
     const context = confirmedContext();
     fixtures.snapshot = {
       generation: 2,
       realtimeSessionId: REALTIME_ID,
+      protocolVersion: 1,
       confirmedContext: context,
       lastTurnSettlement: null,
     };
     const readCurrentQuoteCreation = vi.fn(async () => ({
       status: 'completed' as const,
-      value: { mission: boundMission(context) },
+      value: { mission: boundMission(context), presentation: null },
     }));
     const manualHandoffQuoteCreation = vi.fn(async () => {
       order.push('cancel');
@@ -282,6 +591,7 @@ describe('useQuoteScreenMissionBinding — frontière React', () => {
       };
     });
     fixtures.actions = {
+      ...unimplementedQuoteLineActions(),
       readCurrentQuoteCreation,
       acknowledgeQuoteScreen: vi.fn(),
       decideQuoteCreation: vi.fn(),
@@ -300,6 +610,15 @@ describe('useQuoteScreenMissionBinding — frontière React', () => {
       },
       stopLiveAfterManualHandoff: async () => {
         order.push('stop');
+        // Le provider réel publie synchroniquement la génération sans capability pendant stop().
+        fixtures.snapshot = {
+          generation: 3,
+          realtimeSessionId: null,
+          protocolVersion: null,
+          confirmedContext: null,
+          lastTurnSettlement: null,
+        };
+        return 3;
       },
     });
     renderer = mounted.renderer;
@@ -327,6 +646,352 @@ describe('useQuoteScreenMissionBinding — frontière React', () => {
       mission: { id: MISSION_ID, status: 'cancelled', revision: 6 },
     });
     expect(order).toEqual(['suspend', 'cancel', 'stop', 'refresh']);
+    expect(fixtures.recovery.refreshAfterMutation).toHaveBeenCalledOnce();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mounted.current().state.phase).toBe('handoff');
+    expect(fixtures.recovery.refreshAfterMutation).toHaveBeenCalledOnce();
+  });
+
+  it('conserve Bob Live et ferme le writer legacy à awaiting_lines sous V2', async () => {
+    const context = confirmedContext();
+    const current = boundMission(context);
+    fixtures.snapshot = {
+      generation: 2,
+      realtimeSessionId: REALTIME_ID,
+      protocolVersion: 2,
+      confirmedContext: context,
+      lastTurnSettlement: null,
+    };
+    fixtures.actions = {
+      ...unimplementedQuoteLineActions(),
+      readCurrentQuoteCreation: vi.fn(async () => ({
+        status: 'completed' as const,
+        value: { mission: current, presentation: EMPTY_PRESENTATION },
+      })),
+      acknowledgeQuoteScreen: vi.fn(),
+      decideQuoteCreation: vi.fn(),
+      manualHandoffQuoteCreation: vi.fn(),
+    };
+    const mounted = await mount({ authoritativeDraft: DRAFT });
+    renderer = mounted.renderer;
+
+    expect(mounted.current().state).toEqual({
+      phase: 'ready',
+      protocolVersion: 2,
+      mission: current,
+      customerChoices: [],
+      presentation: EMPTY_PRESENTATION,
+    });
+    expect(fixtures.actions.manualHandoffQuoteCreation).not.toHaveBeenCalled();
+  });
+
+  it('abandonne V2 avec une commande unique, ferme le transport puis libère le writer', async () => {
+    const context = confirmedContext();
+    const current = boundMission(context);
+    const terminal = {
+      ...current,
+      status: 'cancelled',
+      actionable: false,
+      revision: current.revision + 1,
+      terminalAt: '2026-07-30T12:00:00.000Z',
+    } as AgentMissionViewV1;
+    const order: string[] = [];
+    fixtures.snapshot = {
+      generation: 2,
+      realtimeSessionId: REALTIME_ID,
+      protocolVersion: 2,
+      confirmedContext: context,
+      lastTurnSettlement: null,
+    };
+    const abandonQuoteCreation = vi.fn(async () => {
+      order.push('cancel');
+      return {
+        status: 'completed' as const,
+        value: { outcome: 'cancelled' as const, mission: terminal },
+      };
+    });
+    fixtures.actions = {
+      ...unimplementedQuoteLineActions(),
+      abandonQuoteCreation,
+      readCurrentQuoteCreation: vi.fn(async () => ({
+        status: 'completed' as const,
+        value: { mission: current, presentation: EMPTY_PRESENTATION },
+      })),
+      acknowledgeQuoteScreen: vi.fn(),
+      decideQuoteCreation: vi.fn(),
+      manualHandoffQuoteCreation: vi.fn(),
+    };
+    fixtures.recovery.refreshAfterMutation = vi.fn(async () => {
+      order.push('refresh');
+      return { phase: 'absent' as const };
+    });
+    const mounted = await mount({
+      authoritativeDraft: DRAFT,
+      suspendLiveForManualHandoff: async () => {
+        order.push('suspend');
+        return true;
+      },
+      stopLiveAfterManualHandoff: async () => {
+        order.push('stop');
+        fixtures.snapshot = {
+          generation: 3,
+          realtimeSessionId: null,
+          protocolVersion: null,
+          confirmedContext: null,
+          lastTurnSettlement: null,
+        };
+        return 3;
+      },
+    });
+    renderer = mounted.renderer;
+    expect(mounted.current().state.phase).toBe('ready');
+
+    let first!: Promise<boolean>;
+    let doubled!: Promise<boolean>;
+    await act(async () => {
+      first = mounted.current().abandonMission();
+      doubled = mounted.current().abandonMission();
+      expect(doubled).toBe(first);
+      await expect(Promise.all([first, doubled])).resolves.toEqual([true, true]);
+    });
+
+    expect(abandonQuoteCreation).toHaveBeenCalledOnce();
+    expect(abandonQuoteCreation).toHaveBeenCalledWith({
+      missionId: MISSION_ID,
+      commandId: expect.stringMatching(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+      ),
+      expectedMissionRevision: current.revision,
+      expectedScreenInstanceId: SCREEN_ID,
+    });
+    expect(order).toEqual(['suspend', 'cancel', 'stop', 'refresh']);
+    expect(mounted.current().state).toEqual({
+      phase: 'manual',
+      reason: 'no_mission',
+    });
+  });
+
+  it('refuse de rendre la main si le GET causal retrouve la mission après abandon', async () => {
+    const context = confirmedContext();
+    const current = boundMission(context);
+    fixtures.snapshot = {
+      generation: 2,
+      realtimeSessionId: REALTIME_ID,
+      protocolVersion: 2,
+      confirmedContext: context,
+      lastTurnSettlement: null,
+    };
+    fixtures.actions = {
+      ...unimplementedQuoteLineActions(),
+      abandonQuoteCreation: vi.fn(async () => ({ status: 'unavailable' as const })),
+      readCurrentQuoteCreation: vi.fn(async () => ({
+        status: 'completed' as const,
+        value: { mission: current, presentation: EMPTY_PRESENTATION },
+      })),
+      acknowledgeQuoteScreen: vi.fn(),
+      decideQuoteCreation: vi.fn(),
+      manualHandoffQuoteCreation: vi.fn(),
+    };
+    fixtures.recovery.refreshAfterMutation = vi.fn(async () => recoveredV2(current));
+    const mounted = await mount({ authoritativeDraft: DRAFT });
+    renderer = mounted.renderer;
+
+    await act(async () => {
+      await expect(mounted.current().abandonMission()).resolves.toBe(false);
+    });
+
+    expect(mounted.current().state).toMatchObject({
+      phase: 'resume_required',
+      recovery: { mission: { id: MISSION_ID, status: 'active' } },
+    });
+  });
+
+  it('borne les GET de reprise malgré l’alternance loading et snapshot périmé du même tuple', async () => {
+    const context = confirmedContext();
+    const base = boundMission(context);
+    const current = {
+      ...base,
+      phase: 'awaiting_customer_choice' as const,
+      payload: {
+        ...base.payload,
+        decision: {
+          kind: 'customer' as const,
+          decisionId: '40000000-0000-4000-8000-000000000001',
+          choiceSetRevision: 3,
+          candidates: [{
+            choiceId: '50000000-0000-4000-8000-000000000001',
+            customerId: 'customer-a',
+          }],
+          choiceSetHash: 'f'.repeat(64),
+        },
+      },
+    } as AgentMissionViewV1;
+    const staleRecovery: AgentMissionRecoverySnapshot = {
+      phase: 'resumable',
+      value: {
+        protocolVersion: 2,
+        mission: {
+          id: current.id,
+          status: 'active',
+          phase: current.phase,
+          revision: current.revision - 1,
+          actionable: true,
+          draft: DRAFT,
+          idleExpiresAt: current.idleExpiresAt,
+          hardExpiresAt: current.hardExpiresAt,
+        },
+        draft: { ...DRAFT, step: 'client' },
+        customerChoices: [{
+          status: 'available',
+          choiceId: '50000000-0000-4000-8000-000000000001',
+          label: 'Camping Les Pins',
+        }],
+        presentation: EMPTY_PRESENTATION,
+      },
+    };
+    fixtures.snapshot = {
+      generation: 2,
+      realtimeSessionId: REALTIME_ID,
+      protocolVersion: 2,
+      confirmedContext: context,
+      lastTurnSettlement: null,
+    };
+    const readCurrentQuoteCreation = vi.fn(async () => ({
+      status: 'completed' as const,
+      value: { mission: current, presentation: EMPTY_PRESENTATION },
+    }));
+    fixtures.actions = {
+      ...unimplementedQuoteLineActions(),
+      readCurrentQuoteCreation,
+      acknowledgeQuoteScreen: vi.fn(),
+      decideQuoteCreation: vi.fn(),
+      manualHandoffQuoteCreation: vi.fn(),
+    };
+    fixtures.recovery.snapshot = { phase: 'loading' };
+    fixtures.recovery.refresh = vi.fn(async () => {
+      // React Query publie `loading` pendant le GET. La réponse N-1 reste périmée et sera
+      // republiée par le test, comme lors d'une réplication temporairement en retard.
+      fixtures.recovery.snapshot = { phase: 'loading' };
+      return { phase: 'loading' as const };
+    });
+    const hydrateDraft = async (expected: QuoteDraftAuthoritativeReference) => ({
+      status: 'ready' as const,
+      reference: expected,
+    });
+    const suspendLiveForManualHandoff = async () => true;
+    const stopLiveAfterManualHandoff = async () => fixtures.snapshot.generation;
+
+    let binding: QuoteScreenMissionBinding | null = null;
+    function Probe({ publication }: { readonly publication: number }) {
+      void publication;
+      const currentBinding = useQuoteScreenMissionBinding({
+        screenInstanceId: SCREEN_ID,
+        authoritativeDraft: DRAFT,
+        persistenceStatus: 'ready',
+        hydrateDraft,
+        suspendLiveForManualHandoff,
+        stopLiveAfterManualHandoff,
+      });
+      useEffect(() => {
+        binding = currentBinding;
+      }, [currentBinding]);
+      return null;
+    }
+    const currentBinding = (): QuoteScreenMissionBinding => {
+      if (binding === null) throw new Error('Binding non publié');
+      return binding;
+    };
+
+    await act(async () => {
+      renderer = create(<Probe publication={0} />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(currentBinding().state.phase).toBe('waiting_recovery');
+
+    for (let publication = 1; publication <= 7; publication += 1) {
+      fixtures.recovery.snapshot = staleRecovery;
+      await act(async () => {
+        renderer?.update(<Probe publication={publication} />);
+        for (let flush = 0; flush < 6; flush += 1) await Promise.resolve();
+      });
+    }
+
+    expect(fixtures.recovery.refresh).toHaveBeenCalledTimes(7);
+    expect(currentBinding().state).toEqual({
+      phase: 'error',
+      reason: 'slot_unavailable',
+    });
+    // Une lecture mission par publication `loading` ou `resumable`, jamais une hot-loop autonome.
+    expect(readCurrentQuoteCreation.mock.calls.length).toBeLessThanOrEqual(15);
+  });
+
+  it('après perte runtime, exige un GET causal avant tout writer puis propose la reprise V2', async () => {
+    const context = confirmedContext();
+    const current = boundMission(context);
+    fixtures.snapshot = {
+      generation: 2,
+      realtimeSessionId: REALTIME_ID,
+      protocolVersion: 2,
+      confirmedContext: context,
+      lastTurnSettlement: null,
+    };
+    fixtures.actions = {
+      ...unimplementedQuoteLineActions(),
+      readCurrentQuoteCreation: vi.fn(async () => ({
+        status: 'completed' as const,
+        value: { mission: current, presentation: EMPTY_PRESENTATION },
+      })),
+      acknowledgeQuoteScreen: vi.fn(),
+      decideQuoteCreation: vi.fn(),
+      manualHandoffQuoteCreation: vi.fn(),
+    };
+    let resolveRecovery!: (value: AgentMissionRecoverySnapshot) => void;
+    fixtures.recovery.refreshAfterMutation = vi.fn(
+      () => new Promise<AgentMissionRecoverySnapshot>((resolvePromise) => {
+        resolveRecovery = (value) => {
+          // Le vrai provider publie le résultat dans React Query avant de résoudre.
+          fixtures.recovery.snapshot = value;
+          resolvePromise(value);
+        };
+      }),
+    );
+    const mounted = await mount({ authoritativeDraft: DRAFT, strict: true });
+    renderer = mounted.renderer;
+    expect(mounted.current().state.phase).toBe('ready');
+
+    fixtures.snapshot = {
+      generation: 3,
+      realtimeSessionId: null,
+      protocolVersion: null,
+      confirmedContext: null,
+      lastTurnSettlement: null,
+    };
+    await act(async () => {
+      mounted.current().retry();
+      await Promise.resolve();
+    });
+
+    expect(mounted.current().state.phase).not.toBe('manual');
+    expect(fixtures.recovery.refreshAfterMutation).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveRecovery(recoveredV2(current));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mounted.current().state).toMatchObject({
+      phase: 'resume_required',
+      recovery: {
+        protocolVersion: 2,
+        mission: { id: MISSION_ID, revision: 5 },
+      },
+    });
+    expect(fixtures.actions.manualHandoffQuoteCreation).not.toHaveBeenCalled();
   });
 
   it('ne libère jamais le writer si la lecture causale retrouve une mission active', async () => {
@@ -335,6 +1000,7 @@ describe('useQuoteScreenMissionBinding — frontière React', () => {
     fixtures.snapshot = {
       generation: 2,
       realtimeSessionId: REALTIME_ID,
+      protocolVersion: 1,
       confirmedContext: context,
       lastTurnSettlement: null,
     };
@@ -346,9 +1012,10 @@ describe('useQuoteScreenMissionBinding — frontière React', () => {
       },
     }));
     fixtures.actions = {
+      ...unimplementedQuoteLineActions(),
       readCurrentQuoteCreation: vi.fn(async () => ({
         status: 'completed' as const,
-        value: { mission: current },
+        value: { mission: current, presentation: null },
       })),
       acknowledgeQuoteScreen: vi.fn(),
       decideQuoteCreation: vi.fn(),
@@ -357,6 +1024,7 @@ describe('useQuoteScreenMissionBinding — frontière React', () => {
     const recovered: AgentMissionRecoverySnapshot = {
       phase: 'resumable',
       value: {
+        protocolVersion: 1,
         mission: {
           id: current.id,
           status: 'active',
@@ -369,6 +1037,7 @@ describe('useQuoteScreenMissionBinding — frontière React', () => {
         },
         draft: { ...DRAFT, step: 'lignes' },
         customerChoices: [],
+        presentation: null,
       },
     };
     fixtures.recovery.refreshAfterMutation = vi.fn(async () => recovered);
@@ -398,13 +1067,15 @@ describe('useQuoteScreenMissionBinding — frontière React', () => {
     fixtures.snapshot = {
       generation: 2,
       realtimeSessionId: REALTIME_ID,
+      protocolVersion: 1,
       confirmedContext: context,
       lastTurnSettlement: null,
     };
     fixtures.actions = {
+      ...unimplementedQuoteLineActions(),
       readCurrentQuoteCreation: vi.fn(async () => ({
         status: 'completed' as const,
-        value: { mission: boundMission(context) },
+        value: { mission: boundMission(context), presentation: null },
       })),
       acknowledgeQuoteScreen: vi.fn(),
       decideQuoteCreation: vi.fn(),
@@ -440,12 +1111,13 @@ describe('useQuoteScreenMissionBinding — frontière React', () => {
     fixtures.snapshot = {
       generation: 2,
       realtimeSessionId: REALTIME_ID,
+      protocolVersion: 1,
       confirmedContext: context,
       lastTurnSettlement: null,
     };
     const readCurrentQuoteCreation = vi.fn(async () => ({
       status: 'completed' as const,
-      value: { mission: boundMission(context) },
+      value: { mission: boundMission(context), presentation: null },
     }));
     const manualHandoffQuoteCreation = vi.fn(async () => ({
       status: 'completed' as const,
@@ -455,6 +1127,7 @@ describe('useQuoteScreenMissionBinding — frontière React', () => {
       },
     }));
     fixtures.actions = {
+      ...unimplementedQuoteLineActions(),
       readCurrentQuoteCreation,
       acknowledgeQuoteScreen: vi.fn(),
       decideQuoteCreation: vi.fn(),
@@ -478,7 +1151,7 @@ describe('useQuoteScreenMissionBinding — frontière React', () => {
         persistenceStatus: 'ready',
         hydrateDraft,
         suspendLiveForManualHandoff: async () => true,
-        stopLiveAfterManualHandoff: async () => undefined,
+        stopLiveAfterManualHandoff: async () => fixtures.snapshot.generation,
       });
       useEffect(() => {
         binding = current;
@@ -524,6 +1197,7 @@ describe('useQuoteScreenMissionBinding — frontière React', () => {
     fixtures.snapshot = {
       generation: 2,
       realtimeSessionId: REALTIME_ID,
+      protocolVersion: 1,
       confirmedContext: context,
       lastTurnSettlement: null,
     };
@@ -537,9 +1211,10 @@ describe('useQuoteScreenMissionBinding — frontière React', () => {
       currentBinding: null,
     } as AgentMissionViewV1;
     fixtures.actions = {
+      ...unimplementedQuoteLineActions(),
       readCurrentQuoteCreation: vi.fn(async () => ({
         status: 'completed' as const,
-        value: { mission },
+        value: { mission, presentation: null },
       })),
       acknowledgeQuoteScreen: vi.fn(),
       decideQuoteCreation: vi.fn(),
@@ -554,7 +1229,7 @@ describe('useQuoteScreenMissionBinding — frontière React', () => {
         persistenceStatus: 'saving',
         hydrateDraft,
         suspendLiveForManualHandoff: async () => true,
-        stopLiveAfterManualHandoff: async () => undefined,
+        stopLiveAfterManualHandoff: async () => fixtures.snapshot.generation,
       });
       useEffect(() => {
         binding = current;

@@ -1,10 +1,12 @@
 import {
-  understandQuoteCreationTurn,
-  understandQuoteCreationTurnV2,
   type AgentHistoryTurn,
-  type LlmPort,
+  type QuoteCreationSemanticFrameV1,
+  type QuoteCreationSemanticFrameV2,
   type QuoteCreationUnderstandingPhase,
   type QuoteCreationUnderstandingPhaseV2,
+  type RealtimeQuoteSemanticMissionContext,
+  type RealtimeSemanticCurrentLine,
+  type RealtimeSemanticPresentedChoice,
 } from '@bob/ai';
 import type {
   AgentMissionOwner,
@@ -17,10 +19,14 @@ import type {
   AppError,
   DecideQuoteAgentMissionOutput,
   QuoteAgentMissionPresentationV1,
+  QuoteAgentMissionPlannerResumeV2,
+  QuoteAgentMissionResumeViewV2,
   Result,
   StartQuoteAgentMissionOutput,
 } from '@bob/core';
+import { MAX_BILLING_LINES } from '@bob/core';
 import type {
+  CancelQuoteAgentMissionPendingLineServiceOutput,
   DecideQuoteAgentMissionLineProposalServiceOutput,
   AgentMissionLineContinuationServiceOutput,
   AgentMissionServiceAuthorization,
@@ -43,6 +49,9 @@ export interface RealtimeQuoteMissionGateway {
   getCurrentV2(
     authorization: AgentMissionServiceAuthorization,
   ): Promise<Result<GetCurrentQuoteAgentMissionServiceOutputV2, AppError>>;
+  getCurrentPlannerResumeV2(
+    authorization: AgentMissionServiceAuthorization,
+  ): Promise<Result<QuoteAgentMissionPlannerResumeV2, AppError>>;
   startFromVoiceTurn(input: {
     readonly authorization: AgentMissionServiceAuthorization;
     readonly realtimeSessionId: string;
@@ -125,6 +134,22 @@ export interface RealtimeQuoteMissionGateway {
     readonly scope: AgentMissionQuoteLinePatchScope;
     readonly patch: AgentMissionQuoteLinePatchV1;
   }): Promise<Result<PatchQuoteAgentMissionLineServiceOutput, AppError>>;
+  cancelPendingLineFromVoiceTurn(input: {
+    readonly authorization: AgentMissionServiceAuthorization;
+    readonly missionId: string;
+    readonly turnId: string;
+    readonly realtimeSessionId: string;
+    readonly contextRevision: number;
+    readonly contextDigest: string;
+    readonly expectedMissionRevision: number;
+    readonly expectedDraftSessionId: string;
+    readonly expectedDraftSlotRevision: number;
+    readonly expectedDraftContentRevision: number;
+    readonly pendingLineId: string;
+    readonly expectedWorkRevision: number;
+  }): Promise<
+    Result<CancelQuoteAgentMissionPendingLineServiceOutput, AppError>
+  >;
   decideLineProposalFromVoiceTurn(input: {
     readonly authorization: AgentMissionServiceAuthorization;
     readonly missionId: string;
@@ -164,7 +189,6 @@ export interface RealtimeQuoteMissionOrchestrationInput {
 }
 
 export type RealtimeQuoteMissionOrchestrationOutcome =
-  | { readonly status: 'not_applicable' }
   | { readonly status: 'failed'; readonly canonicalSpeech: string }
   | {
       readonly status: 'handled';
@@ -177,16 +201,59 @@ export type RealtimeQuoteMissionOrchestrationOutcome =
       readonly navigate: '/devis/new';
     };
 
+export type RealtimeQuoteMissionPreparedTurn =
+  | {
+      readonly protocolVersion: 1;
+      readonly snapshot: Readonly<{ readonly mission: AgentMissionViewV1 | null }>;
+      readonly semanticContext: RealtimeQuoteSemanticMissionContext;
+      readonly availableCapabilities: readonly string[];
+    }
+  | {
+      readonly protocolVersion: 2;
+      readonly snapshot: Readonly<GetCurrentQuoteAgentMissionServiceOutputV2>;
+      readonly semanticContext: RealtimeQuoteSemanticMissionContext;
+      readonly availableCapabilities: readonly string[];
+    };
+
+export type RealtimeQuoteMissionPreparationOutcome =
+  | {
+      readonly status: 'prepared';
+      readonly prepared: RealtimeQuoteMissionPreparedTurn;
+    }
+  | { readonly status: 'failed'; readonly canonicalSpeech: string };
+
 export interface RealtimeQuoteMissionOrchestratorPort {
-  run(
+  prepare(
     input: RealtimeQuoteMissionOrchestrationInput,
-  ): Promise<RealtimeQuoteMissionOrchestrationOutcome>;
+  ): Promise<RealtimeQuoteMissionPreparationOutcome>;
+  runPlanned(input: {
+    readonly request: RealtimeQuoteMissionOrchestrationInput;
+    readonly prepared: RealtimeQuoteMissionPreparedTurn;
+    readonly frame: QuoteCreationSemanticFrameV1 | QuoteCreationSemanticFrameV2;
+  }): Promise<RealtimeQuoteMissionOrchestrationOutcome>;
 }
 
 const TEMPORARY_FAILURE =
   'Je rencontre un souci temporaire et je ne peux pas vérifier l’état de la mission. Consulte l’écran avant de réessayer.';
 const UNSAFE_UNDERSTANDING =
   'Je n’ai pas pu sécuriser cette demande. Rien n’a été exécuté. Reformule-la simplement.';
+const QUOTE_LINE_LIMIT_REACHED =
+  `Ce devis contient déjà ${MAX_BILLING_LINES} lignes, soit la limite autorisée. Je n’ai ajouté aucune nouvelle ligne. Pour modifier ses lignes, arrête cette mission Bob : le brouillon restera enregistré et l’édition manuelle sera libérée.`;
+const QUOTE_SEMANTIC_CAPABILITIES_V2 = Object.freeze([
+  'quote.line.stage',
+  'quote.catalogue.search',
+  'quote.line.patch',
+  'quote.line.confirm',
+] as const);
+const QUOTE_SEMANTIC_CAPABILITIES_V1 = Object.freeze([
+  'quote.customer.resolve',
+] as const);
+
+function isQuoteLineLimitReached(error: AppError): boolean {
+  return error.kind === 'conflict'
+    && error.entity === 'agent_mission_quote_draft'
+    && error.reason === 'line_limit_reached';
+}
 
 function understandingState(mission: AgentMissionViewV1 | null): {
   readonly phase: QuoteCreationUnderstandingPhase;
@@ -293,6 +360,275 @@ function understandingStateV2(snapshot: RealtimeQuoteMissionSnapshotV2): {
   return 'mission_locked';
 }
 
+function choiceAlias(index: number): RealtimeSemanticPresentedChoice['alias'] {
+  return `C${index + 1}` as RealtimeSemanticPresentedChoice['alias'];
+}
+
+function semanticContextV1(
+  mission: AgentMissionViewV1 | null,
+): RealtimeQuoteSemanticMissionContext {
+  const state = understandingState(mission);
+  const missionFence = {
+    missionAlias: mission === null ? null : 'M1' as const,
+    missionRevision: mission?.revision ?? 0,
+    confirmedLineCount: 0,
+    pendingLineCount: 0,
+    pendingDecisionKind:
+      mission?.payload.decision?.kind === 'customer'
+        ? 'customer' as const
+        : null,
+  };
+  if (state === 'mission_locked') {
+    return {
+      ...missionFence,
+      protocolVersion: 1,
+      phase: 'locked',
+      presentedChoices: [],
+    };
+  }
+  return {
+    ...missionFence,
+    protocolVersion: 1,
+    phase: state.phase,
+    presentedChoices: Object.freeze(
+      Array.from({ length: state.presentedCustomerCount }, (_, index) => Object.freeze({
+        alias: choiceAlias(index),
+        kind: 'customer' as const,
+        available: true,
+        label: null,
+        category: null,
+        unit: null,
+        unitPriceDecimal: null,
+        currency: null,
+      })),
+    ),
+  };
+}
+
+function plannerResumeMatchesSnapshot(
+  snapshot: RealtimeQuoteMissionSnapshotV2,
+  planner: QuoteAgentMissionPlannerResumeV2,
+): boolean {
+  const { resume, currentLine } = planner;
+  if (snapshot.mission === null || snapshot.presentation === null) {
+    return snapshot.mission === null
+      && snapshot.presentation === null
+      && resume.mission === null
+      && resume.presentation === null
+      && currentLine === null;
+  }
+  if (resume.mission === null || resume.presentation === null) return false;
+  const draft = snapshot.mission.payload.draft;
+  const pendingLine = snapshot.presentation.pendingLine;
+  return draft !== null
+    && resume.mission.id === snapshot.mission.id
+    && resume.mission.status === snapshot.mission.status
+    && resume.mission.phase === snapshot.mission.phase
+    && resume.mission.revision === snapshot.mission.revision
+    && resume.mission.actionable === snapshot.mission.actionable
+    && resume.mission.draft.sessionId === draft.sessionId
+    && resume.mission.draft.slotRevision === draft.slotRevision
+    && resume.mission.draft.contentRevision === draft.contentRevision
+    && (
+      pendingLine === null
+        ? currentLine === null
+        : currentLine !== null
+          && currentLine.pendingLineId === pendingLine.pendingLineId
+          && currentLine.expectedWorkRevision === pendingLine.expectedWorkRevision
+    )
+    && sameSnapshot(
+      { mission: snapshot.mission, presentation: resume.presentation },
+      snapshot,
+    );
+}
+
+function customerSemanticChoices(
+  snapshot: RealtimeQuoteMissionSnapshotV2,
+  resume: QuoteAgentMissionResumeViewV2,
+): readonly RealtimeSemanticPresentedChoice[] | null {
+  const decision = snapshot.mission?.payload.decision;
+  if (
+    snapshot.mission?.phase !== 'awaiting_customer_choice'
+    || decision?.kind !== 'customer'
+  ) {
+    return resume.mission === null || resume.customerChoices.length === 0 ? [] : null;
+  }
+  if (
+    resume.mission === null
+    || resume.customerChoices.length !== decision.candidates.length
+    || resume.customerChoices.length < 1
+    || resume.customerChoices.length > 5
+  ) return null;
+  const choices: RealtimeSemanticPresentedChoice[] = [];
+  for (let index = 0; index < decision.candidates.length; index += 1) {
+    const sealed = decision.candidates[index];
+    const projected = resume.customerChoices[index];
+    if (
+      sealed === undefined
+      || projected === undefined
+      || sealed.choiceId !== projected.choiceId
+    ) return null;
+    choices.push(Object.freeze({
+      alias: choiceAlias(index),
+      kind: 'customer',
+      available: projected.status === 'available',
+      label: projected.status === 'available' ? projected.label : null,
+      category: null,
+      unit: null,
+      unitPriceDecimal: null,
+      currency: null,
+    }));
+  }
+  return Object.freeze(choices);
+}
+
+function catalogueSemanticChoices(
+  snapshot: RealtimeQuoteMissionSnapshotV2,
+): readonly RealtimeSemanticPresentedChoice[] | null {
+  const { mission, presentation } = snapshot;
+  if (
+    mission?.phase !== 'awaiting_catalogue_choice'
+    || presentation?.decision?.kind !== 'catalogue'
+  ) return [];
+  if (
+    presentation.catalogueChoices.length < 1
+    || presentation.catalogueChoices.length > 5
+    || presentation.freeLineChoiceId === null
+    || presentation.catalogueChoices.length
+      !== presentation.decision.choices.length
+  ) return null;
+  const choices: RealtimeSemanticPresentedChoice[] = [];
+  for (let index = 0; index < presentation.catalogueChoices.length; index += 1) {
+    const projected = presentation.catalogueChoices[index];
+    const sealed = presentation.decision.choices[index];
+    if (
+      projected === undefined
+      || sealed === undefined
+      || projected.choiceId !== sealed.choiceId
+    ) return null;
+    choices.push(Object.freeze({
+      alias: choiceAlias(index),
+      kind: 'catalogue',
+      available: projected.available,
+      label: projected.label,
+      category: projected.category,
+      unit: projected.unit,
+      unitPriceDecimal: projected.unitPriceCents === null
+        ? null
+        : (projected.unitPriceCents / 100).toFixed(2),
+      currency: projected.unitPriceCents === null ? null : 'EUR',
+    }));
+  }
+  choices.push(Object.freeze({
+    alias: choiceAlias(choices.length),
+    kind: 'free_line',
+    available: true,
+    label: 'Créer une ligne libre',
+    category: null,
+    unit: null,
+    unitPriceDecimal: null,
+    currency: null,
+  }));
+  return Object.freeze(choices);
+}
+
+function scaledDecimal(value: number, scale: number): string {
+  const sign = value < 0 ? '-' : '';
+  const absolute = Math.abs(value);
+  const whole = Math.floor(absolute / scale);
+  const fraction = String(absolute % scale)
+    .padStart(String(scale - 1).length, '0')
+    .replace(/0+$/u, '');
+  return `${sign}${whole}${fraction === '' ? '' : `.${fraction}`}`;
+}
+
+function semanticCurrentLine(
+  current: QuoteAgentMissionPlannerResumeV2['currentLine'],
+  presentation: QuoteAgentMissionPresentationV1 | null,
+): RealtimeSemanticCurrentLine | null {
+  const line = presentation?.proposal?.line;
+  if (line !== undefined) {
+    return Object.freeze({
+      label: line.label,
+      category: line.category,
+      quantityDecimal: String(line.qty),
+      unit: line.unit ?? null,
+      unitPriceDecimal: scaledDecimal(line.unitPriceHT, 100),
+      currency: 'EUR',
+      vatRate: String(line.vatRate),
+      priceBasis: current?.priceBasis ?? 'per_unit',
+      housingOlderThan2y: current?.housingOlderThan2y ?? null,
+      energyRenovation: current?.energyRenovation ?? null,
+    });
+  }
+  if (current === null) return null;
+  return Object.freeze({
+    label: current.serviceReference,
+    category: current.category,
+    quantityDecimal: current.quantityMilli === null
+      ? null
+      : scaledDecimal(current.quantityMilli, 1_000),
+    unit: current.unit,
+    unitPriceDecimal: current.unitPriceCents === null
+      ? null
+      : scaledDecimal(current.unitPriceCents, 100),
+    currency: current.unitPriceCents === null ? null : 'EUR',
+    vatRate: current.requestedVatRate === null
+      ? null
+      : String(current.requestedVatRate),
+    priceBasis: current.priceBasis,
+    housingOlderThan2y: current.housingOlderThan2y,
+    energyRenovation: current.energyRenovation,
+  });
+}
+
+function semanticContextV2(
+  snapshot: RealtimeQuoteMissionSnapshotV2,
+  planner: QuoteAgentMissionPlannerResumeV2,
+): RealtimeQuoteSemanticMissionContext | null {
+  if (!plannerResumeMatchesSnapshot(snapshot, planner)) return null;
+  const { resume } = planner;
+  const state = understandingStateV2(snapshot);
+  const pendingDecisionKind =
+    snapshot.mission?.payload.decision?.kind === 'customer'
+      ? 'customer' as const
+      : snapshot.presentation?.decision?.kind ?? null;
+  const missionFence = {
+    missionAlias: snapshot.mission === null ? null : 'M1' as const,
+    missionRevision: snapshot.mission?.revision ?? 0,
+    confirmedLineCount: planner.confirmedLineCount,
+    pendingLineCount: planner.pendingLineCount,
+    pendingDecisionKind,
+  };
+  if (state === 'mission_locked') {
+    return {
+      ...missionFence,
+      protocolVersion: 2,
+      phase: 'locked',
+      presentedChoices: [],
+    };
+  }
+  const customerChoices = customerSemanticChoices(snapshot, resume);
+  const catalogueChoices = catalogueSemanticChoices(snapshot);
+  if (customerChoices === null || catalogueChoices === null) return null;
+  const presentedChoices = state.phase === 'awaiting_customer_choice'
+    ? customerChoices
+    : state.phase === 'awaiting_catalogue_choice'
+      ? catalogueChoices
+      : [];
+  return {
+    ...missionFence,
+    protocolVersion: 2,
+    phase: state.phase,
+    requiredFact: state.requiredFact,
+    presentedChoices,
+    currentLine: semanticCurrentLine(
+      planner.currentLine,
+      snapshot.presentation,
+    ),
+  };
+}
+
 function canonicalStartSpeech(mission: AgentMissionViewV1): string {
   if (mission.phase === 'awaiting_draft_decision') {
     return 'J’ai retrouvé un brouillon en cours. Je l’ouvre pour que tu choisisses de le reprendre ou de recommencer.';
@@ -314,43 +650,75 @@ function currentCatalogueChoiceState(
   mission: AgentMissionViewV1,
   presentation: QuoteAgentMissionPresentationV1,
 ): {
-  readonly totalCount: number;
-  readonly availableCount: number;
-  readonly unavailableOrdinals: readonly number[];
+  readonly choices: readonly {
+    readonly available: boolean;
+    readonly label: string | null;
+    readonly unit: string | null;
+    readonly unitPriceCents: number | null;
+  }[];
 } | null {
   return mission.status === 'active'
     && mission.phase === 'awaiting_catalogue_choice'
     && presentation.decision?.kind === 'catalogue'
     && presentation.freeLineChoiceId !== null
     ? {
-        totalCount: presentation.catalogueChoices.length,
-        availableCount: presentation.catalogueChoices.filter(
-          (choice) => choice.available,
-        ).length,
-        unavailableOrdinals: presentation.catalogueChoices.flatMap(
-          (choice, index) => choice.available ? [] : [index + 1],
-        ),
+        choices: Object.freeze(presentation.catalogueChoices.map((choice) => (
+          Object.freeze({
+            available: choice.available,
+            label: choice.label,
+            unit: choice.unit,
+            unitPriceCents: choice.unitPriceCents,
+          })
+        ))),
       }
     : null;
 }
 
 function canonicalCatalogueChoiceSpeech(state: {
-  readonly totalCount: number;
-  readonly availableCount: number;
-  readonly unavailableOrdinals: readonly number[];
+  readonly choices: readonly {
+    readonly available: boolean;
+    readonly label: string | null;
+    readonly unit: string | null;
+    readonly unitPriceCents: number | null;
+  }[];
 }): string {
-  if (state.unavailableOrdinals.length > 0) {
-    const unavailable = state.unavailableOrdinals.length === 1
-      ? `La prestation numéro ${state.unavailableOrdinals[0]} n’est plus disponible.`
-      : `Les prestations numéros ${state.unavailableOrdinals.join(', ')} ne sont plus disponibles.`;
-    const available = state.availableCount === 0
-      ? 'Aucune prestation catalogue affichée ne peut être sélectionnée.'
-      : `${state.availableCount} prestation${state.availableCount > 1 ? 's restent disponibles' : ' reste disponible'}.`;
-    return `${unavailable} ${available} La ligne libre reste le dernier choix affiché.`;
-  }
-  return state.totalCount > 1
-    ? `J’ai trouvé ${state.totalCount} prestations disponibles dans ton catalogue, plus l’option de créer une ligne libre. Elles sont conservées dans cet ordre pour ton choix.`
-    : 'J’ai trouvé une prestation disponible dans ton catalogue, plus l’option de créer une ligne libre. Les deux choix sont conservés dans cet ordre.';
+  const ordinalLabels = [
+    'Premier choix',
+    'Deuxième choix',
+    'Troisième choix',
+    'Quatrième choix',
+    'Cinquième choix',
+  ] as const;
+  const catalogueChoices = state.choices.map((choice, index) => {
+    const ordinal = ordinalLabels[index] ?? `Choix numéro ${index + 1}`;
+    if (
+      !choice.available
+      || choice.label === null
+      || choice.unit === null
+      || choice.unitPriceCents === null
+    ) {
+      return `${ordinal} : cette prestation n’est plus disponible.`;
+    }
+    return [
+      `${ordinal} : « ${choice.label} »`,
+      `à ${formatFrenchEuros(choice.unitPriceCents / 100)} hors taxes par ${choice.unit}.`,
+    ].join(', ');
+  });
+  const availableCount = state.choices.filter((choice) => (
+    choice.available
+    && choice.label !== null
+    && choice.unit !== null
+    && choice.unitPriceCents !== null
+  )).length;
+  const introduction = availableCount === 0
+    ? 'Aucune prestation catalogue affichée ne peut être sélectionnée.'
+    : `J’ai trouvé ${availableCount} prestation${availableCount > 1 ? 's' : ''} disponible${availableCount > 1 ? 's' : ''} dans ton catalogue.`;
+  return [
+    introduction,
+    ...catalogueChoices,
+    'Dernier choix : créer une ligne libre.',
+    'Tu peux dire le premier, le deuxième, ou le choix que tu veux.',
+  ].join(' ');
 }
 
 function requiredFactSpeech(fact: AgentMissionQuoteLineRequiredFact | null): string {
@@ -413,10 +781,17 @@ function canonicalProposalSpeech(
   const catalogue = proposal.catalogue === null
     ? 'ligne libre'
     : `catalogue « ${proposal.catalogue.label} »`;
+  const totalBefore = formatFrenchEuros(
+    proposal.diff.before.totalHtCents / 100,
+  );
+  const totalAfter = formatFrenchEuros(
+    proposal.diff.after.totalHtCents / 100,
+  );
   return [
     `J’ai préparé « ${line.label} » : ${formatFrenchNumber(line.qty)}${unit},`,
     `${formatFrenchEuros(line.unitPriceHT / 100)} hors taxes par unité,`,
     `TVA ${formatFrenchNumber(line.vatRate)} %, depuis ${catalogue}.`,
+    `Le total hors taxes du devis passerait de ${totalBefore} à ${totalAfter}.`,
     'Dis-moi si tu confirmes, si tu veux la corriger ou l’annuler.',
   ].join(' ');
 }
@@ -513,10 +888,7 @@ function canonicalV2MissionState(
   };
 }
 
-function sameV2Snapshot(
-  left: RealtimeQuoteMissionSnapshotV2,
-  right: RealtimeQuoteMissionSnapshotV2,
-): boolean {
+function sameSnapshot(left: unknown, right: unknown): boolean {
   try {
     return JSON.stringify(left) === JSON.stringify(right);
   } catch {
@@ -701,10 +1073,7 @@ function canonicalDecisionOutcome(
  */
 export class RealtimeQuoteMissionOrchestrator
 implements RealtimeQuoteMissionOrchestratorPort {
-  constructor(
-    private readonly llm: LlmPort,
-    private readonly missions: RealtimeQuoteMissionGateway,
-  ) {}
+  constructor(private readonly missions: RealtimeQuoteMissionGateway) {}
 
   private async convergeAfterUncertainDecision(input: {
     readonly authorization: AgentMissionServiceAuthorization;
@@ -744,40 +1113,13 @@ implements RealtimeQuoteMissionOrchestratorPort {
     readonly request: RealtimeQuoteMissionOrchestrationInput;
     readonly authorization: AgentMissionServiceAuthorization;
     readonly snapshot: RealtimeQuoteMissionSnapshotV2;
+    readonly frame: QuoteCreationSemanticFrameV2;
   }): Promise<RealtimeQuoteMissionOrchestrationOutcome> {
-    const state = understandingStateV2(input.snapshot);
-    if (state === 'mission_locked') {
-      return {
-        status: 'failed',
-        canonicalSpeech:
-          'La mission attend la confirmation de l’étape affichée. Rien de nouveau n’a été exécuté.',
-      };
-    }
-
-    let understood: Awaited<ReturnType<typeof understandQuoteCreationTurnV2>>;
-    try {
-      understood = await understandQuoteCreationTurnV2(this.llm, {
-        transcript: input.request.transcript,
-        phase: state.phase,
-        presentedChoiceCount: state.presentedChoiceCount,
-        requiredFact: state.requiredFact,
-        timeZone: null,
-        locale: 'fr-FR',
-        signal: input.request.signal,
-      });
-    } catch {
-      input.request.signal.throwIfAborted();
-      return { status: 'failed', canonicalSpeech: TEMPORARY_FAILURE };
-    }
     input.request.signal.throwIfAborted();
-    if (understood.status === 'rejected') {
-      return { status: 'failed', canonicalSpeech: UNSAFE_UNDERSTANDING };
-    }
-    const operation = understood.frame.operations[0];
+    const operation = input.frame.operations[0];
     if (operation === undefined) {
       return { status: 'failed', canonicalSpeech: UNSAFE_UNDERSTANDING };
     }
-    if (operation.kind === 'unrelated') return { status: 'not_applicable' };
 
     let refreshed: Awaited<
       ReturnType<RealtimeQuoteMissionGateway['getCurrentV2']>
@@ -792,7 +1134,7 @@ implements RealtimeQuoteMissionOrchestratorPort {
     if (!refreshed.ok) {
       return { status: 'failed', canonicalSpeech: TEMPORARY_FAILURE };
     }
-    if (!sameV2Snapshot(input.snapshot, refreshed.value)) {
+    if (!sameSnapshot(input.snapshot, refreshed.value)) {
       return canonicalV2MissionState(refreshed.value);
     }
 
@@ -813,7 +1155,17 @@ implements RealtimeQuoteMissionOrchestratorPort {
         return { status: 'failed', canonicalSpeech: TEMPORARY_FAILURE };
       }
       input.request.signal.throwIfAborted();
-      if (!started.ok || started.value.mission.status !== 'active') {
+      if (!started.ok) {
+        if (isQuoteLineLimitReached(started.error)) {
+          return {
+            status: 'handled',
+            canonicalSpeech: QUOTE_LINE_LIMIT_REACHED,
+            speechPurpose: 'action_result',
+          };
+        }
+        return { status: 'failed', canonicalSpeech: TEMPORARY_FAILURE };
+      }
+      if (started.value.mission.status !== 'active') {
         return { status: 'failed', canonicalSpeech: TEMPORARY_FAILURE };
       }
       return {
@@ -857,6 +1209,13 @@ implements RealtimeQuoteMissionOrchestratorPort {
       }
       input.request.signal.throwIfAborted();
       if (!staged.ok) {
+        if (isQuoteLineLimitReached(staged.error)) {
+          return {
+            status: 'handled',
+            canonicalSpeech: QUOTE_LINE_LIMIT_REACHED,
+            speechPurpose: 'action_result',
+          };
+        }
         return this.convergeAfterUncertainDecision({
           authorization: input.authorization,
           signal: input.request.signal,
@@ -935,6 +1294,13 @@ implements RealtimeQuoteMissionOrchestratorPort {
       }
       input.request.signal.throwIfAborted();
       if (!decided.ok) {
+        if (isQuoteLineLimitReached(decided.error)) {
+          return {
+            status: 'handled',
+            canonicalSpeech: QUOTE_LINE_LIMIT_REACHED,
+            speechPurpose: 'action_result',
+          };
+        }
         return this.convergeAfterUncertainDecision({
           authorization: input.authorization,
           signal: input.request.signal,
@@ -1014,6 +1380,13 @@ implements RealtimeQuoteMissionOrchestratorPort {
       }
       input.request.signal.throwIfAborted();
       if (!decided.ok) {
+        if (isQuoteLineLimitReached(decided.error)) {
+          return {
+            status: 'handled',
+            canonicalSpeech: QUOTE_LINE_LIMIT_REACHED,
+            speechPurpose: 'action_result',
+          };
+        }
         return this.convergeAfterUncertainDecision({
           authorization: input.authorization,
           signal: input.request.signal,
@@ -1090,6 +1463,64 @@ implements RealtimeQuoteMissionOrchestratorPort {
           mission: patched.value.mission,
           presentation: patched.value.presentation,
         },
+      );
+    }
+
+    if (
+      operation.kind === 'cancel_current_line'
+      && mission.phase === 'awaiting_line_details'
+    ) {
+      const pendingLine = presentation.pendingLine;
+      if (
+        pendingLine === null
+        || presentation.decision !== null
+        || pendingLine.pendingLineId.length === 0
+      ) {
+        return canonicalV2MissionState(refreshed.value);
+      }
+      let cancelled: Awaited<
+        ReturnType<
+          RealtimeQuoteMissionGateway['cancelPendingLineFromVoiceTurn']
+        >
+      >;
+      try {
+        cancelled = await this.missions.cancelPendingLineFromVoiceTurn({
+          authorization: input.authorization,
+          missionId: mission.id,
+          turnId: input.request.turnId,
+          realtimeSessionId: input.request.authority.realtimeSessionId,
+          contextRevision: input.request.contextRevision,
+          contextDigest: input.request.contextDigest,
+          expectedMissionRevision: mission.revision,
+          expectedDraftSessionId: draft.sessionId,
+          expectedDraftSlotRevision: draft.slotRevision,
+          expectedDraftContentRevision: draft.contentRevision,
+          pendingLineId: pendingLine.pendingLineId,
+          expectedWorkRevision: pendingLine.expectedWorkRevision,
+        });
+      } catch {
+        input.request.signal.throwIfAborted();
+        return this.convergeAfterUncertainDecision({
+          authorization: input.authorization,
+          signal: input.request.signal,
+        });
+      }
+      input.request.signal.throwIfAborted();
+      if (!cancelled.ok) {
+        return this.convergeAfterUncertainDecision({
+          authorization: input.authorization,
+          signal: input.request.signal,
+        });
+      }
+      return withCanonicalPrefix(
+        'La ligne est retirée de la mission. Le devis n’a pas été modifié.',
+        canonicalLineContinuationState(
+          cancelled.value.continuation,
+          {
+            mission: cancelled.value.mission,
+            presentation: cancelled.value.presentation,
+          },
+        ),
       );
     }
 
@@ -1174,79 +1605,35 @@ implements RealtimeQuoteMissionOrchestratorPort {
     return { status: 'failed', canonicalSpeech: UNSAFE_UNDERSTANDING };
   }
 
-  async run(
-    input: RealtimeQuoteMissionOrchestrationInput,
-  ): Promise<RealtimeQuoteMissionOrchestrationOutcome> {
-    input.signal.throwIfAborted();
-    const authorization: AgentMissionServiceAuthorization = {
-      owner: input.authority.owner,
-      proof: input.authority.proof,
-    };
-    if (input.authority.proof.protocolVersion === 2) {
-      let currentV2: Awaited<
-        ReturnType<RealtimeQuoteMissionGateway['getCurrentV2']>
-      >;
-      try {
-        currentV2 = await this.missions.getCurrentV2(authorization);
-      } catch {
-        input.signal.throwIfAborted();
-        return { status: 'failed', canonicalSpeech: TEMPORARY_FAILURE };
-      }
-      input.signal.throwIfAborted();
-      if (!currentV2.ok) {
-        return { status: 'failed', canonicalSpeech: TEMPORARY_FAILURE };
-      }
-      return this.runV2({
-        request: input,
-        authorization,
-        snapshot: currentV2.value,
-      });
-    }
-    let current: Awaited<ReturnType<RealtimeQuoteMissionGateway['getCurrent']>>;
-    try {
-      current = await this.missions.getCurrent(authorization);
-    } catch {
-      input.signal.throwIfAborted();
-      return { status: 'failed', canonicalSpeech: TEMPORARY_FAILURE };
-    }
-    input.signal.throwIfAborted();
-    if (!current.ok) {
-      return { status: 'failed', canonicalSpeech: TEMPORARY_FAILURE };
-    }
-    const state = understandingState(current.value.mission);
-    if (state === 'mission_locked') {
-      return {
-        status: 'failed',
-        canonicalSpeech:
-          'La mission est déjà en cours. J’attends que l’étape affichée soit confirmée avant de poursuivre.',
-      };
-    }
-
-    let understood: Awaited<ReturnType<typeof understandQuoteCreationTurn>>;
-    try {
-      understood = await understandQuoteCreationTurn(this.llm, {
-        transcript: input.transcript,
-        phase: state.phase,
-        presentedCustomerCount: state.presentedCustomerCount,
-        history: input.history,
-        signal: input.signal,
-      });
-    } catch {
-      input.signal.throwIfAborted();
-      return { status: 'failed', canonicalSpeech: TEMPORARY_FAILURE };
-    }
-    input.signal.throwIfAborted();
-    if (understood.status === 'rejected') {
+  private async runV1(input: {
+    readonly request: RealtimeQuoteMissionOrchestrationInput;
+    readonly authorization: AgentMissionServiceAuthorization;
+    readonly snapshot: Readonly<{ readonly mission: AgentMissionViewV1 | null }>;
+    readonly frame: QuoteCreationSemanticFrameV1;
+  }): Promise<RealtimeQuoteMissionOrchestrationOutcome> {
+    const operation = input.frame.operation;
+    if (operation.kind === 'unrelated') {
       return { status: 'failed', canonicalSpeech: UNSAFE_UNDERSTANDING };
     }
-
-    const operation = understood.frame.operation;
-    if (operation.kind === 'unrelated') return { status: 'not_applicable' };
+    let refreshed: Awaited<ReturnType<RealtimeQuoteMissionGateway['getCurrent']>>;
+    try {
+      refreshed = await this.missions.getCurrent(input.authorization);
+    } catch {
+      input.request.signal.throwIfAborted();
+      return { status: 'failed', canonicalSpeech: TEMPORARY_FAILURE };
+    }
+    input.request.signal.throwIfAborted();
+    if (!refreshed.ok) {
+      return { status: 'failed', canonicalSpeech: TEMPORARY_FAILURE };
+    }
+    if (!sameSnapshot(input.snapshot, refreshed.value)) {
+      return canonicalConvergedDecision(refreshed.value.mission);
+    }
     if (
       operation.kind === 'set_customer_reference'
       || operation.kind === 'select_presented_customer'
     ) {
-      const mission = current.value.mission;
+      const mission = refreshed.value.mission;
       const draft = mission?.payload.draft ?? null;
       if (mission === null || draft === null) {
         return { status: 'failed', canonicalSpeech: TEMPORARY_FAILURE };
@@ -1279,12 +1666,12 @@ implements RealtimeQuoteMissionOrchestratorPort {
       >;
       try {
         decided = await this.missions.decideFromVoiceTurn({
-          authorization,
+          authorization: input.authorization,
           missionId: mission.id,
-          turnId: input.turnId,
-          realtimeSessionId: input.authority.realtimeSessionId,
-          contextRevision: input.contextRevision,
-          contextDigest: input.contextDigest,
+          turnId: input.request.turnId,
+          realtimeSessionId: input.request.authority.realtimeSessionId,
+          contextRevision: input.request.contextRevision,
+          contextDigest: input.request.contextDigest,
           expectedMissionRevision: mission.revision,
           expectedDraftSessionId: draft.sessionId,
           expectedDraftSlotRevision: draft.slotRevision,
@@ -1293,17 +1680,17 @@ implements RealtimeQuoteMissionOrchestratorPort {
           lines: [],
         });
       } catch {
-        input.signal.throwIfAborted();
+        input.request.signal.throwIfAborted();
         return this.convergeAfterUncertainDecision({
-          authorization,
-          signal: input.signal,
+          authorization: input.authorization,
+          signal: input.request.signal,
         });
       }
-      input.signal.throwIfAborted();
+      input.request.signal.throwIfAborted();
       if (!decided.ok || decided.value.mission.status !== 'active') {
         return this.convergeAfterUncertainDecision({
-          authorization,
-          signal: input.signal,
+          authorization: input.authorization,
+          signal: input.request.signal,
         });
       }
       return canonicalDecisionOutcome(decided.value);
@@ -1312,19 +1699,19 @@ implements RealtimeQuoteMissionOrchestratorPort {
     let started: Awaited<ReturnType<RealtimeQuoteMissionGateway['startFromVoiceTurn']>>;
     try {
       started = await this.missions.startFromVoiceTurn({
-        authorization,
-        realtimeSessionId: input.authority.realtimeSessionId,
-        turnId: input.turnId,
-        contextRevision: input.contextRevision,
-        contextDigest: input.contextDigest,
+        authorization: input.authorization,
+        realtimeSessionId: input.request.authority.realtimeSessionId,
+        turnId: input.request.turnId,
+        contextRevision: input.request.contextRevision,
+        contextDigest: input.request.contextDigest,
         customerReference: operation.customerReference,
         lines: [],
       });
     } catch {
-      input.signal.throwIfAborted();
+      input.request.signal.throwIfAborted();
       return { status: 'failed', canonicalSpeech: TEMPORARY_FAILURE };
     }
-    input.signal.throwIfAborted();
+    input.request.signal.throwIfAborted();
     if (!started.ok || started.value.mission.status !== 'active') {
       return { status: 'failed', canonicalSpeech: TEMPORARY_FAILURE };
     }
@@ -1333,5 +1720,113 @@ implements RealtimeQuoteMissionOrchestratorPort {
       canonicalSpeech: canonicalStartSpeech(started.value.mission),
       navigate: '/devis/new',
     };
+  }
+
+  async prepare(
+    input: RealtimeQuoteMissionOrchestrationInput,
+  ): Promise<RealtimeQuoteMissionPreparationOutcome> {
+    input.signal.throwIfAborted();
+    const authorization: AgentMissionServiceAuthorization = {
+      owner: input.authority.owner,
+      proof: input.authority.proof,
+    };
+    if (input.authority.proof.protocolVersion === 2) {
+      let current: Awaited<ReturnType<RealtimeQuoteMissionGateway['getCurrentV2']>>;
+      let resume: Awaited<
+        ReturnType<RealtimeQuoteMissionGateway['getCurrentPlannerResumeV2']>
+      >;
+      try {
+        current = await this.missions.getCurrentV2(authorization);
+        input.signal.throwIfAborted();
+        resume = await this.missions.getCurrentPlannerResumeV2(authorization);
+      } catch {
+        input.signal.throwIfAborted();
+        return { status: 'failed', canonicalSpeech: TEMPORARY_FAILURE };
+      }
+      input.signal.throwIfAborted();
+      if (!current.ok || !resume.ok) {
+        return { status: 'failed', canonicalSpeech: TEMPORARY_FAILURE };
+      }
+      const semanticContext = semanticContextV2(current.value, resume.value);
+      if (semanticContext === null) {
+        return { status: 'failed', canonicalSpeech: TEMPORARY_FAILURE };
+      }
+      return {
+        status: 'prepared',
+        prepared: Object.freeze({
+          protocolVersion: 2,
+          snapshot: current.value,
+          semanticContext,
+          availableCapabilities:
+            semanticContext.phase === 'locked'
+              ? Object.freeze([])
+              : QUOTE_SEMANTIC_CAPABILITIES_V2,
+        }),
+      };
+    }
+    let current: Awaited<ReturnType<RealtimeQuoteMissionGateway['getCurrent']>>;
+    try {
+      current = await this.missions.getCurrent(authorization);
+    } catch {
+      input.signal.throwIfAborted();
+      return { status: 'failed', canonicalSpeech: TEMPORARY_FAILURE };
+    }
+    input.signal.throwIfAborted();
+    if (!current.ok) {
+      return { status: 'failed', canonicalSpeech: TEMPORARY_FAILURE };
+    }
+    const semanticContext = semanticContextV1(current.value.mission);
+    return {
+      status: 'prepared',
+      prepared: Object.freeze({
+        protocolVersion: 1,
+        snapshot: current.value,
+        semanticContext,
+        availableCapabilities:
+          semanticContext.phase === 'locked'
+            ? Object.freeze([])
+            : QUOTE_SEMANTIC_CAPABILITIES_V1,
+      }),
+    };
+  }
+
+  runPlanned(input: {
+    readonly request: RealtimeQuoteMissionOrchestrationInput;
+    readonly prepared: RealtimeQuoteMissionPreparedTurn;
+    readonly frame: QuoteCreationSemanticFrameV1 | QuoteCreationSemanticFrameV2;
+  }): Promise<RealtimeQuoteMissionOrchestrationOutcome> {
+    input.request.signal.throwIfAborted();
+    const authorization: AgentMissionServiceAuthorization = {
+      owner: input.request.authority.owner,
+      proof: input.request.authority.proof,
+    };
+    if (
+      input.prepared.semanticContext.phase === 'locked'
+      || input.prepared.protocolVersion !== input.frame.version
+      || input.request.authority.proof.protocolVersion !== input.prepared.protocolVersion
+    ) {
+      return Promise.resolve({
+        status: 'failed',
+        canonicalSpeech: UNSAFE_UNDERSTANDING,
+      });
+    }
+    return input.prepared.protocolVersion === 2 && input.frame.version === 2
+      ? this.runV2({
+          request: input.request,
+          authorization,
+          snapshot: input.prepared.snapshot,
+          frame: input.frame,
+        })
+      : input.prepared.protocolVersion === 1 && input.frame.version === 1
+        ? this.runV1({
+            request: input.request,
+            authorization,
+            snapshot: input.prepared.snapshot,
+            frame: input.frame,
+          })
+        : Promise.resolve({
+            status: 'failed',
+            canonicalSpeech: UNSAFE_UNDERSTANDING,
+          });
   }
 }

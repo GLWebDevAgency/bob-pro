@@ -14,8 +14,19 @@ import { randomUUID } from 'expo-crypto';
 import { echoOverlap, isAllowedAgentNavigationRoute, type AgentRun, type AskOptions , planSpokenDelivery, summarizeVoiceLatency, type VoiceLatencyTrace } from '@bob/ai';
 import { t } from '@bob/i18n';
 import { useTheme } from '@bob/ui';
+import {
+  REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
+  REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
+  type RealtimeAgentMissionProtocolVersion,
+} from '@bob/api-client';
 import { makeBobAgent } from '../data/bob';
+import { useAuth } from '../data/auth';
 import { useBobClient } from '../data/client';
+import { supabase } from '../data/supabase';
+import {
+  confirmedTimeZoneFromAppMetadata,
+  detectDeviceTimeZone,
+} from '../data/tenant-identity';
 import {
   useSpeak,
   useVoiceInput,
@@ -42,14 +53,16 @@ import { clearWizardHint, setWizardHint } from './wizard-hints';
 import { RealtimeControlAcknowledgementGate } from '../realtime/realtime-control-gate';
 import { RealtimeAuditedConversationTransport } from '../realtime/realtime-audited-conversation-transport';
 import { composeRealtimeConversationTransport } from '../realtime/realtime-conversation-transport-factory';
+import {
+  ConversationTimeZoneGateCoordinator,
+  type ConversationTimeZoneConfirmationState,
+} from './conversation-time-zone-gate';
 import { ExpoRealtimeAuditedSpeechPlayback } from '../realtime/expo-realtime-audited-speech-playback';
 import { RealtimeResilienceOrchestrator } from '../realtime/realtime-resilience-orchestrator';
 import {
-  isRealtimeWebRtcNegotiation,
   RealtimeWebRtcTransport,
 } from '../realtime/webrtc-realtime-transport';
 import {
-  isRealtimeMistralPcmNegotiation,
   MistralRealtimeTransport,
 } from '../realtime/mistral-realtime-transport';
 import {
@@ -59,10 +72,9 @@ import {
 } from '../realtime/mistral-conversation-runtime';
 import {
   useMistralConversationCheckpointBinding,
-  useRetryMistralConversationCheckpointRecovery,
 } from '../realtime/mistral-conversation-checkpoint-provider';
-import { RealtimeTransportError } from '../realtime/realtime-transport';
 import { RealtimeSessionController } from './realtime-session';
+import { createRealtimePrimaryTransport } from './realtime-primary-transport';
 import { registerBeforeSignOutCleanup } from '../data/session-cleanup';
 import { useAgentMissionRuntimeBridge } from './agent-mission-provider';
 
@@ -105,13 +117,23 @@ export interface AgentSessionValue {
   readonly reviewRequired: boolean;
   readonly contextAtTurn: AgentContext | null;
   readonly handoff: AgentSessionHandoff | null;
+  readonly timeZoneConfirmation: ConversationTimeZoneConfirmationState | null;
+  readonly confirmConversationTimeZone: (timeZone: string) => Promise<void>;
+  readonly redetectConversationTimeZone: () => void;
+  readonly cancelTimeZoneConfirmation: () => void;
   readonly start: () => void;
-  /** Reprise de mission V1 strictement Live ; ne lance jamais l'ASR/TTS historique. */
-  readonly resumeMissionV1: () => Promise<boolean>;
+  /** Reprise de mission durable au protocole déjà prouvé ; aucun fallback inter-protocole. */
+  readonly resumeMission: (
+    protocolVersion: RealtimeAgentMissionProtocolVersion,
+  ) => Promise<boolean>;
   /** Coupe l'oreille et attend le terminal du tour courant sans perdre la capability. */
   readonly suspendForManualHandoff: () => Promise<boolean>;
   /** Détruit la capability terminalisée puis attend la fermeture complète du transport. */
-  readonly stopAfterManualHandoff: () => Promise<void>;
+  /**
+   * Ferme le transport et rend la génération runtime sans capability qui a été certifiée.
+   * `null` interdit au writer manuel de prendre la main.
+   */
+  readonly stopAfterManualHandoff: () => Promise<number | null>;
   readonly stop: () => void;
   readonly toggle: () => void;
   readonly dismissResponse: () => void;
@@ -131,10 +153,10 @@ function wait(ms: number): Promise<void> {
 
 export function AgentSessionProvider({ children }: { readonly children: ReactNode }) {
   const { personality } = useTheme();
+  const { session: authSession } = useAuth();
   const client = useBobClient();
   const agentMissionRuntime = useAgentMissionRuntimeBridge();
   const mistralConversationCheckpoint = useMistralConversationCheckpointBinding();
-  const retryMistralConversationCheckpoint = useRetryMistralConversationCheckpointRecovery();
   const mistralConversationCheckpointRef = useRef(mistralConversationCheckpoint);
   mistralConversationCheckpointRef.current = mistralConversationCheckpoint;
   const agent = useMemo(() => makeBobAgent(client), [client]);
@@ -159,6 +181,17 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
   const handoffRef = useRef<AgentSessionHandoff | null>(null);
   handoffRef.current = handoff;
   const historyRef = useRef<AgentConversationTurn[]>([]);
+  const authSessionRef = useRef(authSession);
+  authSessionRef.current = authSession;
+  const [timeZoneConfirmation, setTimeZoneConfirmation] =
+    useState<AgentSessionValue['timeZoneConfirmation']>(null);
+  const timeZoneGateCoordinatorRef =
+    useRef<ConversationTimeZoneGateCoordinator | null>(null);
+  if (timeZoneGateCoordinatorRef.current === null) {
+    timeZoneGateCoordinatorRef.current = new ConversationTimeZoneGateCoordinator(
+      setTimeZoneConfirmation,
+    );
+  }
   const turnGenerationRef = useRef(0);
   const lastSpokenRef = useRef<{ readonly text: string; readonly endedAt: number }>({
     text: '',
@@ -173,6 +206,49 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
   const setSessionPhase = useCallback((next: AgentSessionPhase): void => {
     setPhase(next);
   }, []);
+
+  const requireConfirmedTimeZone = useCallback((): Promise<boolean> => {
+    if (
+      confirmedTimeZoneFromAppMetadata(
+        authSessionRef.current?.user.app_metadata,
+      ) !== null
+    ) {
+      return Promise.resolve(true);
+    }
+    return timeZoneGateCoordinatorRef.current!.require(detectDeviceTimeZone());
+  }, []);
+
+  const confirmConversationTimeZone = useCallback(
+    (timeZone: string): Promise<void> =>
+      timeZoneGateCoordinatorRef.current!.confirm(timeZone, {
+        save: async (candidate) => {
+          const confirmed = await client.confirmConversationTimeZone(candidate);
+          return confirmed.ok ? confirmed.value : null;
+        },
+        refreshAuthority: async () => {
+          const refreshed = await supabase.auth.refreshSession();
+          if (refreshed.error !== null) return null;
+          return confirmedTimeZoneFromAppMetadata(
+            refreshed.data.session?.user.app_metadata,
+          );
+        },
+      }),
+    [client],
+  );
+
+  const redetectConversationTimeZone = useCallback((): void => {
+    timeZoneGateCoordinatorRef.current!.redetect(detectDeviceTimeZone());
+  }, []);
+
+  const cancelTimeZoneConfirmation = useCallback((): void => {
+    timeZoneGateCoordinatorRef.current!.cancel();
+  }, []);
+
+  useEffect(() => {
+    if (authSession === null) {
+      timeZoneGateCoordinatorRef.current?.invalidate();
+    }
+  }, [authSession]);
 
   const transcriptHandlerRef = useRef<(text: string) => void>(() => undefined);
 
@@ -195,36 +271,55 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
           const config = await client.realtimeVoiceConfig();
           return config.ok ? config.value : null;
         },
+        ensureConfirmedTimeZoneForMissionV2: requireConfirmedTimeZone,
         updateContext: async (handle, update) => client.updateRealtimeVoiceContext(handle, update),
-        createOrchestrator: (negotiation, legacyFallback, currentFence, onPrimaryCreated) => {
+        createOrchestrator: (
+          negotiation,
+          agentMissionProtocolVersion,
+          legacyFallback,
+          currentFence,
+          onPrimaryCreated,
+        ) => {
           const conversationV2 = isRealtimeMistralConversationNegotiation(negotiation);
           return new RealtimeResilienceOrchestrator({
             createPrimary: () => {
               // Le provider choisi par le serveur est autoritaire : une mission n'essaie jamais
               // une seconde clé en parallèle. V2 possède sa mission durable et ses reprises b2/r2.
-              const uplink = isRealtimeWebRtcNegotiation(negotiation)
-                ? new RealtimeWebRtcTransport(client, negotiation)
-                : conversationV2
-                  ? (() => {
-                      const checkpoint = mistralConversationCheckpointRef.current;
-                      if (checkpoint === null) {
-                        throw new RealtimeTransportError('bootstrap_failed');
-                      }
-                      realtimeMistralCheckpointUsedRef.current = checkpoint;
-                      return new MistralConversationTransport(client, negotiation, {
-                        getInitialContext: () => snapshotAgentContext(contextRef.current),
-                        checkpoint,
-                      });
-                    })()
-                  : isRealtimeMistralPcmNegotiation(negotiation)
-                  ? new MistralRealtimeTransport(client, negotiation, {
+              const selection = createRealtimePrimaryTransport({
+                negotiation,
+                checkpoint: mistralConversationCheckpointRef.current,
+                factories: {
+                  webRtc: (webRtcNegotiation) => new RealtimeWebRtcTransport(
+                    client,
+                    webRtcNegotiation,
+                    {
+                    agentMissionProtocolVersion,
+                    },
+                  ),
+                  mistralConversation: (
+                    mistralConversationNegotiation,
+                    checkpoint,
+                  ) => new MistralConversationTransport(
+                    client,
+                    mistralConversationNegotiation,
+                    {
                       getInitialContext: () => snapshotAgentContext(contextRef.current),
-                    })
-                  : null;
-              if (uplink === null) throw new RealtimeTransportError('backend_disabled');
+                      checkpoint,
+                    },
+                  ),
+                  mistralPcm: (mistralPcmNegotiation) => new MistralRealtimeTransport(
+                    client,
+                    mistralPcmNegotiation,
+                    {
+                      getInitialContext: () => snapshotAgentContext(contextRef.current),
+                    },
+                  ),
+                },
+              });
+              realtimeMistralCheckpointUsedRef.current = selection.checkpointUsed;
               const transport = composeRealtimeConversationTransport(
                 negotiation,
-                uplink,
+                selection.uplink,
                 (auditedUplink) => new RealtimeAuditedConversationTransport(auditedUplink, {
                   client,
                   currentFence,
@@ -466,8 +561,15 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
   );
 
   const stopAfterManualHandoff = useCallback(
-    (): Promise<void> => stopWithReason('user', true),
-    [stopWithReason],
+    async (): Promise<number | null> => {
+      if (realtimeRef.current === null) return null;
+      await stopWithReason('user', true);
+      const released = agentMissionRuntime.currentSnapshot?.();
+      return released !== undefined && released.realtimeSessionId === null
+        ? released.generation
+        : null;
+    },
+    [agentMissionRuntime, stopWithReason],
   );
 
   useEffect(
@@ -762,14 +864,9 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
   }, [liveContextKey]);
 
   const beginSession = useCallback(async (
-    requireMissionV1: boolean,
+    requiredMissionProtocolVersion: RealtimeAgentMissionProtocolVersion | null,
   ): Promise<boolean> => {
     if (activeRef.current) return false;
-    if (mistralConversationCheckpointRef.current === null) {
-      // Le tap Bob est le retry utilisateur explicite. La mission courante reste fail-closed ;
-      // une reprise reussie publiera la capability pour le prochain demarrage.
-      retryMistralConversationCheckpoint?.();
-    }
     // Nouvelle session = nouvelle mission : guidages, historique et disjoncteur repartent à zéro.
     spokenGreetingsRef.current.clear();
     historyRef.current = [];
@@ -789,12 +886,15 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     setContextAtTurn(null);
     setHandoff(null);
     setSessionPhase('thinking');
-    // TEMPS RÉEL d'abord — le serveur décide (plan voice_live + rollout). Une reprise M1-C
-    // interdit structurellement le repli historique : sans capability+contexte, elle échoue.
+    // TEMPS RÉEL d'abord — le serveur décide (plan voice_live + rollout). Une reprise durable
+    // interdit structurellement le repli historique et tout changement silencieux de protocole.
     const controller = getRealtimeController();
-    const outcome = requireMissionV1
-      ? await controller.resumeMissionV1()
-      : await controller.start();
+    const outcome =
+      requiredMissionProtocolVersion === REALTIME_AGENT_MISSION_PROTOCOL_VERSION
+        ? await controller.resumeMissionV1()
+        : requiredMissionProtocolVersion === REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
+          ? await controller.resumeMissionV2()
+          : await controller.start();
       if (
         !activeRef.current
         || sessionGeneration !== sessionGenerationRef.current
@@ -811,8 +911,18 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
         realtimeActiveRef.current = true;
         return true; // EXCLUSIVITÉ : aucune oreille/bouche legacy tant que le temps réel vit.
       }
+      if (outcome === 'cancelled') {
+        driverRef.current = 'idle';
+        realtimeActiveRef.current = false;
+        activeRef.current = false;
+        setActive(false);
+        setIssue(null);
+        setResponse(null);
+        setSessionPhase('idle');
+        return false;
+      }
       if (outcome === 'fallback') return false; // onFallback a DÉJÀ relancé la boucle historique
-      if (outcome === 'failed_closed' || requireMissionV1) {
+      if (outcome === 'failed_closed' || requiredMissionProtocolVersion !== null) {
         driverRef.current = 'idle';
         realtimeActiveRef.current = false;
         activeRef.current = false;
@@ -834,14 +944,16 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
         void say(t('live.on', { personality }), true);
       }
       return false;
-  }, [personality, retryMistralConversationCheckpoint, say, speakGreeting]);
+  }, [personality, say, speakGreeting]);
 
   const start = useCallback((): void => {
-    void beginSession(false);
+    void beginSession(null);
   }, [beginSession]);
 
-  const resumeMissionV1 = useCallback(
-    (): Promise<boolean> => beginSession(true),
+  const resumeMission = useCallback(
+    (
+      protocolVersion: RealtimeAgentMissionProtocolVersion,
+    ): Promise<boolean> => beginSession(protocolVersion),
     [beginSession],
   );
 
@@ -940,6 +1052,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     return () => {
       mounted = false;
       subscription.remove();
+      timeZoneGateCoordinatorRef.current?.invalidate();
       void stopWithReason('unmount');
     };
   }, [stopWithReason]);
@@ -971,8 +1084,12 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
       reviewRequired,
       contextAtTurn,
       handoff,
+      timeZoneConfirmation,
+      confirmConversationTimeZone,
+      redetectConversationTimeZone,
+      cancelTimeZoneConfirmation,
       start,
-      resumeMissionV1,
+      resumeMission,
       suspendForManualHandoff,
       stopAfterManualHandoff,
       stop,
@@ -983,6 +1100,8 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     }),
     [
       active,
+      cancelTimeZoneConfirmation,
+      confirmConversationTimeZone,
       contextAtTurn,
       consumeHandoff,
       dismissResponse,
@@ -990,7 +1109,8 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
       issue,
       phase,
       requestHandoff,
-      resumeMissionV1,
+      redetectConversationTimeZone,
+      resumeMission,
       response,
       reviewRequired,
       start,
@@ -998,6 +1118,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
       stopAfterManualHandoff,
       suspendForManualHandoff,
       toggle,
+      timeZoneConfirmation,
       transcript,
     ],
   );

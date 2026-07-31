@@ -528,6 +528,62 @@ describe('GetResumableQuoteAgentMissionV2', () => {
         },
       },
     });
+
+    const planner = await new GetResumableQuoteAgentMissionV2({
+      unitOfWork,
+    }).executeForPlanner(OWNER);
+    expect(planner).toMatchObject({
+      ok: true,
+      value: {
+        resume: {
+          mission: { phase: 'awaiting_line_details' },
+        },
+        currentLine: {
+          pendingLineId: WORK_ID,
+          expectedWorkRevision: 2,
+          serviceReference: 'Main-d’œuvre plomberie',
+          category: 'labor',
+          quantityMilli: 2_000,
+          unit: 'heure',
+          unitPriceCents: null,
+          requestedVatRate: 20,
+          priceBasis: null,
+          housingOlderThan2y: null,
+          energyRenovation: null,
+        },
+        confirmedLineCount: 0,
+        pendingLineCount: 1,
+      },
+    });
+    if (!planner.ok) return;
+    expect(planner.value.resume).not.toHaveProperty('currentLine');
+  });
+
+  it('refuse une phase M2-A projetée hors de l’étape lignes du brouillon', async () => {
+    const fixture = detailsFixture();
+    const unitOfWork = new ResumeV2MemoryUnitOfWork();
+    unitOfWork.mission = fixture.mission;
+    unitOfWork.slot = {
+      ...fixture.slot,
+      payload: {
+        ...fixture.slot.payload,
+        draft: {
+          ...fixture.slot.payload.draft,
+          step: 'client',
+        },
+      },
+    };
+    unitOfWork.workItems = [fixture.work];
+
+    await expect(
+      new GetResumableQuoteAgentMissionV2({ unitOfWork }).execute(OWNER),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: {
+        kind: 'dependency',
+        cause: 'phase_draft_step_mismatch',
+      },
+    });
   });
 
   it.each([
@@ -753,6 +809,7 @@ describe('GetResumableQuoteAgentMissionV2', () => {
           proposal: {
             proposalId: PROPOSAL_ID,
             diffHash: fixture.proposal.diffHash,
+            diff: fixture.proposal.diff,
             line: fixture.proposal.line,
             catalogue: {
               itemId: CATALOGUE_ONE.id,

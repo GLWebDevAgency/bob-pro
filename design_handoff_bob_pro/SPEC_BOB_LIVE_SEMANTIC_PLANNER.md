@@ -328,6 +328,74 @@ M2 étend le cadre aux lignes, catalogue, quantité, unité, prix, TVA, dates et
 missions contrat, facture, client, catalogue, document et notification ajoutent ensuite leurs
 schemas et use cases sans introduire un second cerveau.
 
+### Convergence obligatoire des parcours vocaux historiques
+
+**Directive fondateur — conversation Codex du 30 juillet 2026.**
+
+M2-A n'est pas une verticale premium isolée. Elle devient le contrat de référence auquel tous les
+parcours vocaux antérieurs doivent converger avant leur activation publique :
+
+| Surface | Capacité cible absorbée par le moteur unique |
+| --- | --- |
+| devis | création complète, client, lignes, catalogue, TVA, conditions, revue et émission |
+| factures | création depuis devis ou libre, lignes, échéance, paiement, relance et avoir |
+| clients | recherche, création, correction et désambiguïsation |
+| catalogue | recherche, proposition d'usage, création et modification confirmées |
+| documents | scan, explication, classement, choix de dossier et corrections |
+| notifications | briefing, ouverture de l'entité, lecture et action confirmée |
+| dépenses | capture, qualification, affectation et paiement confirmé |
+| clôture/comptabilité | lecture, explication, résolution guidée et escalade cabinet |
+| navigation/contexte écran | lecture de l'écran, résumé agrégé et navigation sans perte de mission |
+
+Pour chaque surface :
+
+- la transcription et le contexte réel sont interprétés par le LLM au moyen d'un manifeste de
+  capacités et de contrats d'outils typés ; aucune liste de tournures, regex métier ou handler
+  écran ne devient le moteur principal de compréhension ;
+- le LLM reçoit un accès **outillé et tenanté** aux données utiles, pas un dump global du tenant :
+  clients, catalogue et documents sont recherchés à la demande, bornés et relus sous leurs fences ;
+- le domaine reste déterministe : il valide la frame candidate, résout les références, applique
+  invariants et politiques de confirmation, puis produit une projection et un diff autoritaires ;
+- une ambiguïté ou un fait manquant produit une question minimale avec les mêmes choix réels à la
+  voix et au toucher ;
+- accepter, modifier, refuser ou annuler consomme la même décision scellée, quelle que soit
+  l'affordance ;
+- la mission reprend après navigation, interruption, reconnexion ou kill sans relire un transcript
+  ni réexécuter un effet déjà commité ;
+- l'ancien writer devient inerte dès que la mission possède la capacité ; aucun fallback silencieux
+  ne réactive un parseur local ou un deuxième cerveau.
+
+L'inventaire des anciens outils et handlers est une **surface à absorber**, pas une API publique à
+figer. Un parcours historique reste OFF ou explicitement limité tant qu'un test contractuel ne
+prouve pas compréhension LLM, parité voix/toucher, reprise, données tenant réelles et effet domaine
+unique.
+
+### Preuve M2-A-3 sur le modèle réellement déployé
+
+Les tests avec `LlmPort` fabriqué prouvent le parseur et les fences, mais pas la compréhension. Le
+train M2-A-3 ajoute donc un corpus français V1 et une suite réseau opt-in qui :
+
+- appelle exclusivement `buildLlmForProvider('openai')` puis `planRealtimeSemanticTurn` ;
+- exige le provider, le modèle planner, la clé, l'URL officielle et le SHA exact ; une activation
+  partielle échoue au lieu de sauter la suite ;
+- couvre au minimum une formulation directe, une formulation familière, une anaphore de choix,
+  une réponse elliptique à un fait requis et une correction multi-tours ;
+- vérifie une seule opération, zéro fait inventé, un seul `complete`, zéro `generate`, zéro retry,
+  zéro fallback legacy et zéro deuxième planner ;
+- écrit seulement un rapport non-PII : version du corpus, SHA, provider/modèle, résultat et latence
+  de chaque identifiant de cas. Aucun transcript, prompt, argument d'outil ou donnée tenant n'entre
+  dans l'artefact ;
+- s'exécute sur le SHA de certification staging et non sur chaque PR. La PR exécute en permanence
+  le corpus et le scoreur déterministes.
+
+Une nouvelle tournure française observée en échec rejoint ce corpus versionné. Elle n'ajoute jamais
+une regex métier dans le chemin de production.
+
+Cette preuve est strictement bornée à `quote_line_m2a3`. Elle ne certifie ni les dates relatives,
+ni les contrats, ni les futurs `mission kinds` : chacun recevra son propre corpus versionné et sa
+preuve exacte avant activation. Elle ne devient donc jamais, à elle seule, une attestation
+« Jarvis général ».
+
 ## 7. Critères d'acceptation binaires
 
 - [ ] Le cas canonique contrat produit tous les faits candidats attendus en une passe.
@@ -341,6 +409,11 @@ schemas et use cases sans introduire un second cerveau.
 - [ ] Une mission reprend après kill sans transcript et sans perdre les faits acceptés.
 - [ ] Aucun test de langue ajouté ne dépend de mocks atteignables en production.
 - [ ] p95 compréhension + résolution est mesuré séparément du transport et de la parole.
+- [ ] Chaque parcours vocal public appartient à un `mission kind` du moteur unique ; aucun handler
+      regex/local historique ne conserve une autorité d'écriture concurrente.
+- [ ] L'inventaire devis, facture, client, catalogue, document, notification, dépense,
+      clôture/comptabilité et navigation indique pour chaque geste : use case commun,
+      confirmation, reprise et preuve E2E.
 
 ## 8. Definition of Done
 
@@ -350,5 +423,7 @@ schemas et use cases sans introduire un second cerveau.
 - [ ] Tests d'intégration sur vraies données tenantées pour chaque résolveur livré.
 - [ ] Scénarios E2E voix/tap/reprise/interruption sur staging exact-SHA.
 - [ ] Aucun changement de modèle ou de prompt publié sans eval de non-régression et mesure latency.
+- [ ] Les parcours historiques absorbés passent le même test-contractuel voix/toucher/reprise que
+      M2-A ; un parcours non absorbé est fermé ou décrit honnêtement comme limité.
 - [ ] Le registre reste `implemented` jusqu'aux preuves device et staging ; aucun pourcentage ne
       remplace ces preuves.

@@ -1,17 +1,21 @@
 import { createHash } from 'node:crypto';
 import {
-  detectIntent,
   isAllowedAgentNavigationRoute,
-  legacyBlockedIntents,
   type AgentAskPayload,
   type AgentContext,
   type AgentHistoryTurn,
   type AgentRun,
+  type PreclassifiedAgentPlan,
   type Provider,
+  type RealtimeQuoteSemanticMissionContext,
+  type RealtimeSemanticHostManifest,
+  type RealtimeSemanticPlannerInput,
+  type RealtimeSemanticPlannerResult,
 } from '@bob/ai';
 import {
   QUOTE_CREATION_MISSION_KIND_V1,
   type AppError,
+  type ConfirmedTimeZone,
   type MissionKindId,
   type Result,
 } from '@bob/core';
@@ -24,19 +28,18 @@ import type {
 import { prepareRealtimeContext } from './realtime-context';
 import type {
   RealtimeQuoteMissionAuthority,
+  RealtimeQuoteMissionOrchestrationInput,
   RealtimeQuoteMissionOrchestratorPort,
+  RealtimeQuoteMissionPreparedTurn,
 } from './realtime-quote-mission-orchestrator';
 
 const MAX_CANONICAL_SPEECH_CHARS = 2_400;
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
-const QUOTE_MISSION_BLOCKED_LEGACY_INTENTS = legacyBlockedIntents([
-  QUOTE_CREATION_MISSION_KIND_V1,
-]);
-const QUOTE_MISSION_BLOCKED_LEGACY_INTENT_SET = new Set(
-  QUOTE_MISSION_BLOCKED_LEGACY_INTENTS,
-);
 const MISSION_OWNERSHIP_REFUSAL =
   'Je garde la création du devis dans la mission sécurisée. Rien n’a été exécuté. Reformule uniquement l’étape du devis.';
+const SEMANTIC_PLANNER_FAILURE =
+  'Je n’ai pas pu sécuriser cette demande. Rien n’a été exécuté. Reformule-la simplement.';
+const MAX_REALTIME_PLANNER_HISTORY_TURNS = 6;
 
 export interface RealtimeAgentTurnInput {
   /** Clé stable dérivée de la session et de l'item provider avant tout appel LLM ou métier. */
@@ -46,6 +49,8 @@ export interface RealtimeAgentTurnInput {
   readonly transcript: string;
   readonly history: readonly AgentHistoryTurn[];
   readonly context?: AgentContext;
+  /** Autorité signée et figée au bootstrap ; absente sur les transports N-1 non certifiés. */
+  readonly confirmedTimeZone?: ConfirmedTimeZone;
   /** Autorité serveur dérivée de la lease admise ; jamais fournie par le modèle ou le client. */
   readonly agentMissionAuthority?: RealtimeQuoteMissionAuthority;
   /** Fence durable lu au début du tour, puis relu juste avant toute publication. */
@@ -92,14 +97,25 @@ export interface RealtimeAgentTurnPort {
 export type RealtimeAgentProvider = Extract<Provider, 'openai' | 'mistral'>;
 
 export interface RealtimeBobAgentExecutor {
-  askBob(
+  prepareRealtimeSemanticHost(input: {
+    readonly context?: AgentContext;
+    readonly admittedMissionKinds: readonly MissionKindId[];
+  }): Promise<Result<RealtimeSemanticHostManifest, AppError>>;
+
+  askBobWithPlan(
     input: AgentAskPayload,
+    plan: PreclassifiedAgentPlan,
     execution: {
       readonly signal: AbortSignal;
       readonly requiredProvider: RealtimeAgentProvider;
       readonly admittedMissionKinds?: readonly MissionKindId[];
+      readonly plannerDurationMs: number;
     },
   ): Promise<Result<AgentRun, AppError>>;
+}
+
+export interface RealtimeSemanticPlannerPort {
+  plan(input: RealtimeSemanticPlannerInput): Promise<RealtimeSemanticPlannerResult>;
 }
 
 interface ContextSnapshotLike {
@@ -218,6 +234,8 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
     private readonly requiredProvider: RealtimeAgentProvider,
     private readonly resolveExecutor: () => RealtimeBobAgentExecutor,
     private readonly quoteMissions: RealtimeQuoteMissionOrchestratorPort | null = null,
+    private readonly semanticPlanner: RealtimeSemanticPlannerPort | null = null,
+    private readonly now: () => Date = () => new Date(),
   ) {}
 
   async run(input: RealtimeAgentTurnInput): Promise<RealtimeAgentTurnOutcome> {
@@ -240,6 +258,23 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
     if (!sameContextVersion(inputContextVersion, input.contextFence.expected)) {
       return { status: 'failed', canonicalSpeech: CONTEXT_UNAVAILABLE_SPEECH };
     }
+
+    let missionRequest: RealtimeQuoteMissionOrchestrationInput | null = null;
+    let preparedMission: RealtimeQuoteMissionPreparedTurn | null = null;
+    let semanticMission: RealtimeQuoteSemanticMissionContext = {
+      missionAlias: null,
+      missionRevision: 0,
+      confirmedLineCount: 0,
+      pendingLineCount: 0,
+      pendingDecisionKind: null,
+      protocolVersion: null,
+      phase: 'unavailable',
+      presentedChoices: [],
+    };
+    const admittedMissionKinds = input.agentMissionAuthority === undefined
+      ? Object.freeze([]) as readonly MissionKindId[]
+      : Object.freeze([QUOTE_CREATION_MISSION_KIND_V1]);
+    const executor = this.resolveExecutor();
 
     if (input.agentMissionAuthority !== undefined) {
       const authority = input.agentMissionAuthority;
@@ -267,21 +302,162 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
         return { status: 'aborted' };
       }
 
-      let missionOutcome: Awaited<ReturnType<RealtimeQuoteMissionOrchestratorPort['run']>>;
+      missionRequest = {
+        authority,
+        turnId: input.turnId,
+        transcript: input.transcript,
+        history: input.history,
+        contextRevision,
+        contextDigest: input.contextFence.expected.digest,
+        signal: input.signal,
+      };
+      let preparation: Awaited<
+        ReturnType<RealtimeQuoteMissionOrchestratorPort['prepare']>
+      >;
+      try {
+        preparation = await requestContext.run(
+          {
+            correlationId: `bob-live-turn-${input.turnId}`,
+            principal: { userId: input.userId, companyId: input.companyId },
+          },
+          () => quoteMissions.prepare(missionRequest!),
+        );
+      } catch {
+        if (input.signal.aborted) return { status: 'aborted' };
+        return {
+          status: 'failed',
+          canonicalSpeech: 'Je rencontre un souci temporaire. Rien n’a été exécuté.',
+        };
+      }
+      if (input.signal.aborted) return { status: 'aborted' };
+      if (preparation.status === 'failed') return preparation;
+      preparedMission = preparation.prepared;
+      semanticMission = preparation.prepared.semanticContext;
+    }
+
+    if (this.semanticPlanner === null) {
+      return {
+        status: 'failed',
+        canonicalSpeech: 'Je ne peux pas joindre le planificateur sécurisé. Rien n’a été exécuté.',
+      };
+    }
+
+    let hostManifest: RealtimeSemanticHostManifest;
+    try {
+      const preparedHost = await requestContext.run(
+        {
+          correlationId: `bob-live-turn-${input.turnId}`,
+          principal: {
+            userId: input.userId,
+            companyId: input.companyId,
+            ...(input.confirmedTimeZone === undefined
+              ? {}
+              : { confirmedTimeZone: input.confirmedTimeZone }),
+          },
+        },
+        () => this.persistence.runWithTenant(
+          input.companyId,
+          () => executor.prepareRealtimeSemanticHost({
+            ...(input.context === undefined ? {} : { context: input.context }),
+            admittedMissionKinds,
+          }),
+        ),
+      );
+      if (!preparedHost.ok) {
+        return {
+          status: 'failed',
+          canonicalSpeech: 'Je ne peux pas vérifier mes capacités. Rien n’a été exécuté.',
+        };
+      }
+      hostManifest = preparedHost.value;
+    } catch {
+      if (input.signal.aborted) return { status: 'aborted' };
+      return {
+        status: 'failed',
+        canonicalSpeech: 'Je ne peux pas vérifier mes capacités. Rien n’a été exécuté.',
+      };
+    }
+    if (input.signal.aborted) return { status: 'aborted' };
+
+    let planning: RealtimeSemanticPlannerResult;
+    try {
+      planning = await requestContext.run(
+        {
+          correlationId: `bob-live-turn-${input.turnId}`,
+          principal: {
+            userId: input.userId,
+            companyId: input.companyId,
+            ...(input.confirmedTimeZone === undefined
+              ? {}
+              : { confirmedTimeZone: input.confirmedTimeZone }),
+          },
+        },
+        () => this.semanticPlanner!.plan({
+          transcript: input.transcript,
+          history: input.history.slice(-MAX_REALTIME_PLANNER_HISTORY_TURNS),
+          ...(input.context === undefined ? {} : { context: input.context }),
+          screen:
+            input.context === undefined
+            || input.contextFence.expected.revision === null
+              ? null
+              : {
+                  route: input.context.screen.name,
+                  revision: input.contextFence.expected.revision,
+                  digest: input.contextFence.expected.digest,
+                },
+          quoteMission: semanticMission,
+          hostManifest,
+          missionCapabilities:
+            preparedMission?.availableCapabilities ?? Object.freeze([]),
+          locale: 'fr-FR',
+          // Préférence conversationnelle explicitement confirmée et figée au bootstrap. Un
+          // transport N-1 sans claim reste null : jamais de repli sur le fuseau légal Paris.
+          timeZone: input.confirmedTimeZone?.timeZone ?? null,
+          now: this.now().toISOString(),
+          signal: input.signal,
+        }),
+      );
+    } catch {
+      if (input.signal.aborted) return { status: 'aborted' };
+      return {
+        status: 'failed',
+        canonicalSpeech: 'Je rencontre un souci temporaire. Rien n’a été exécuté.',
+      };
+    }
+    if (input.signal.aborted) return { status: 'aborted' };
+    if (planning.status === 'rejected') {
+      return { status: 'failed', canonicalSpeech: SEMANTIC_PLANNER_FAILURE };
+    }
+
+    if (planning.status === 'mission_frame') {
+      if (
+        missionRequest === null
+        || preparedMission === null
+        || this.quoteMissions === null
+      ) {
+        return {
+          status: 'failed',
+          canonicalSpeech: 'Je ne peux pas sécuriser la mission. Rien n’a été exécuté.',
+        };
+      }
+      const currentContextBeforeMission = await this.revalidateContext(input);
+      if (currentContextBeforeMission === 'aborted') return { status: 'aborted' };
+      if (currentContextBeforeMission === 'failed') {
+        return { status: 'failed', canonicalSpeech: CONTEXT_UNAVAILABLE_SPEECH };
+      }
+      let missionOutcome: Awaited<
+        ReturnType<RealtimeQuoteMissionOrchestratorPort['runPlanned']>
+      >;
       try {
         missionOutcome = await requestContext.run(
           {
             correlationId: `bob-live-turn-${input.turnId}`,
             principal: { userId: input.userId, companyId: input.companyId },
           },
-          () => quoteMissions.run({
-            authority,
-            turnId: input.turnId,
-            transcript: input.transcript,
-            history: input.history,
-            contextRevision,
-            contextDigest: input.contextFence.expected.digest,
-            signal: input.signal,
+          () => this.quoteMissions!.runPlanned({
+            request: missionRequest!,
+            prepared: preparedMission!,
+            frame: planning.frame,
           }),
         );
       } catch {
@@ -293,58 +469,33 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
       }
       if (input.signal.aborted) return { status: 'aborted' };
       if (missionOutcome.status === 'failed') return missionOutcome;
-      if (
-        missionOutcome.status === 'ready'
-        || missionOutcome.status === 'handled'
-      ) {
-        let afterMission: RealtimeAgentContextVersion;
-        try {
-          afterMission = await input.contextFence.revalidate(input.signal);
-        } catch {
-          if (input.signal.aborted) return { status: 'aborted' };
-          return { status: 'failed', canonicalSpeech: CONTEXT_UNAVAILABLE_SPEECH };
-        }
-        if (input.signal.aborted) return { status: 'aborted' };
-        if (!sameContextVersion(afterMission, input.contextFence.expected)) {
-          return { status: 'aborted' };
-        }
-        if (missionOutcome.status === 'handled') {
-          return {
-            status: 'ready',
-            turnId: input.turnId,
-            canonicalSpeech: missionOutcome.canonicalSpeech,
-            kind: 'answer',
-            speechPurpose: missionOutcome.speechPurpose,
-            speechSource: 'card_body',
-            hasTenantContext: true,
-            contextVersion: input.contextFence.expected,
-          };
-        }
+      const currentContext = await this.revalidateContext(input);
+      if (currentContext === 'aborted') return { status: 'aborted' };
+      if (currentContext === 'failed') {
+        return { status: 'failed', canonicalSpeech: CONTEXT_UNAVAILABLE_SPEECH };
+      }
+      if (missionOutcome.status === 'handled') {
         return {
           status: 'ready',
           turnId: input.turnId,
           canonicalSpeech: missionOutcome.canonicalSpeech,
           kind: 'answer',
-          speechPurpose: 'navigation',
+          speechPurpose: missionOutcome.speechPurpose,
           speechSource: 'card_body',
           hasTenantContext: true,
           contextVersion: input.contextFence.expected,
-          navigate: missionOutcome.navigate,
         };
       }
-    }
-
-    // Défense avant dispatcher : si le planner Mission s'est abstenu mais que le fallback
-    // déterministe reconnaît l'intention possédée, le cerveau legacy n'est même pas construit.
-    // Le garde interne BobAgent reste nécessaire pour les formulations reconnues uniquement
-    // par son classifieur LLM et pour les plans composites.
-    if (
-      input.agentMissionAuthority !== undefined
-      && QUOTE_MISSION_BLOCKED_LEGACY_INTENT_SET.has(detectIntent(input.transcript))
-    ) {
       return {
-        status: 'failed',
-        canonicalSpeech: MISSION_OWNERSHIP_REFUSAL,
+        status: 'ready',
+        turnId: input.turnId,
+        canonicalSpeech: missionOutcome.canonicalSpeech,
+        kind: 'answer',
+        speechPurpose: 'navigation',
+        speechSource: 'card_body',
+        hasTenantContext: true,
+        contextVersion: input.contextFence.expected,
+        navigate: missionOutcome.navigate,
       };
     }
 
@@ -357,21 +508,34 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
       ...(input.context === undefined ? {} : { context: input.context }),
     };
 
+    const currentContextBeforeGlobal = await this.revalidateContext(input);
+    if (currentContextBeforeGlobal === 'aborted') return { status: 'aborted' };
+    if (currentContextBeforeGlobal === 'failed') {
+      return { status: 'failed', canonicalSpeech: CONTEXT_UNAVAILABLE_SPEECH };
+    }
+
     let result: Result<AgentRun, AppError>;
     try {
       result = await requestContext.run(
         {
           correlationId: `bob-live-turn-${input.turnId}`,
-          principal: { userId: input.userId, companyId: input.companyId },
+          principal: {
+            userId: input.userId,
+            companyId: input.companyId,
+            ...(input.confirmedTimeZone === undefined
+              ? {}
+              : { confirmedTimeZone: input.confirmedTimeZone }),
+          },
         },
         () => this.persistence.runWithTenant(
           input.companyId,
-          () => this.resolveExecutor().askBob(payload, {
+          () => executor.askBobWithPlan(payload, planning.plan, {
             signal: input.signal,
             requiredProvider: this.requiredProvider,
-            ...(input.agentMissionAuthority === undefined
+            plannerDurationMs: planning.plannerDurationMs,
+            ...(admittedMissionKinds.length === 0
               ? {}
-              : { admittedMissionKinds: [QUOTE_CREATION_MISSION_KIND_V1] }),
+              : { admittedMissionKinds }),
           }),
         ),
       );
@@ -380,16 +544,11 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
       return { status: 'failed', canonicalSpeech: 'Je rencontre un souci temporaire. Rien n’a été exécuté.' };
     }
     if (input.signal.aborted) return { status: 'aborted' };
-    let currentContext: RealtimeAgentContextVersion;
-    try {
-      currentContext = await input.contextFence.revalidate(input.signal);
-    } catch {
-      if (input.signal.aborted) return { status: 'aborted' };
+    const currentContext = await this.revalidateContext(input);
+    if (currentContext === 'aborted') return { status: 'aborted' };
+    if (currentContext === 'failed') {
       return { status: 'failed', canonicalSpeech: CONTEXT_UNAVAILABLE_SPEECH };
     }
-    if (input.signal.aborted) return { status: 'aborted' };
-    // Un changement d'écran/révision invalide silencieusement tout texte, navigation ou proposition.
-    if (!sameContextVersion(currentContext, input.contextFence.expected)) return { status: 'aborted' };
     if (!result.ok) return { status: 'failed', canonicalSpeech: safeFailureSpeech(result.error) };
 
     const speech = canonicalSpeech(result.value);
@@ -422,5 +581,19 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
       ...(typeof pending?.proposalId === 'string' ? { proposalId: pending.proposalId } : {}),
       ...(typeof pending?.expiresAt === 'string' ? { proposalExpiresAt: pending.expiresAt } : {}),
     };
+  }
+
+  private async revalidateContext(
+    input: RealtimeAgentTurnInput,
+  ): Promise<'current' | 'aborted' | 'failed'> {
+    let current: RealtimeAgentContextVersion;
+    try {
+      current = await input.contextFence.revalidate(input.signal);
+    } catch {
+      return input.signal.aborted ? 'aborted' : 'failed';
+    }
+    if (input.signal.aborted) return 'aborted';
+    // Un changement d'écran/révision invalide silencieusement tout texte, navigation ou proposition.
+    return sameContextVersion(current, input.contextFence.expected) ? 'current' : 'aborted';
   }
 }

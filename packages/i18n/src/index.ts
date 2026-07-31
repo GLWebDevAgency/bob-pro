@@ -3536,6 +3536,76 @@ const legacyFr = {
     pro: 'Relancer la vérification sans quitter cet écran.',
     direct: 'Relancer la vérification.',
   },
+  'agent.global.timeZoneTitle': {
+    pote: 'Ton heure locale',
+    pro: 'Confirmer votre fuseau horaire',
+    direct: 'Fuseau horaire',
+  },
+  'agent.global.timeZoneBody': {
+    pote: 'Pour comprendre « demain », « lundi matin » ou une échéance sans me tromper, je dois savoir dans quel fuseau tu travailles.',
+    pro: 'Bob utilise ce fuseau pour interpréter les dates relatives sans décalage. Il ne sera jamais choisi sans votre confirmation.',
+    direct: 'Requis pour comprendre les dates relatives sans décalage.',
+  },
+  'agent.global.timeZoneConfirm': {
+    pote: 'Oui, utiliser {timeZone}',
+    pro: 'Confirmer {timeZone}',
+    direct: 'Utiliser {timeZone}',
+  },
+  'agent.global.timeZoneConfirmSelection': {
+    pote: 'Choisis d’abord ton fuseau',
+    pro: 'Sélectionnez un fuseau',
+    direct: 'Choisis un fuseau',
+  },
+  'agent.global.timeZoneSearchPlaceholder': {
+    pote: 'Recherche une ville, par exemple Paris',
+    pro: 'Rechercher une ville ou saisir Europe/Paris',
+    direct: 'Ville ou Europe/Paris',
+  },
+  'agent.global.timeZoneSearchLabel': {
+    pote: 'Rechercher ton fuseau horaire',
+    pro: 'Rechercher ou saisir un fuseau horaire IANA',
+    direct: 'Rechercher le fuseau',
+  },
+  'agent.global.timeZoneSuggested': {
+    pote: 'détecté sur ce téléphone',
+    pro: 'détecté sur cet appareil',
+    direct: 'détecté',
+  },
+  'agent.global.timeZoneInvalid': {
+    pote: 'Je ne reconnais pas encore ce fuseau. Essaie avec une ville ou un nom comme Europe/Paris.',
+    pro: 'Fuseau non reconnu. Recherchez une ville ou saisissez un identifiant comme Europe/Paris.',
+    direct: 'Fuseau invalide. Exemple : Europe/Paris.',
+  },
+  'agent.global.timeZoneDetectionUnavailable': {
+    pote: 'Je n’ai pas pu le détecter, mais tu peux le rechercher ou le saisir ici.',
+    pro: 'La détection est indisponible. Recherchez ou saisissez votre fuseau ci-dessus.',
+    direct: 'Détection indisponible. Saisis le fuseau.',
+  },
+  'agent.global.timeZoneRedetect': {
+    pote: 'Redétecter sur ce téléphone',
+    pro: 'Relancer la détection',
+    direct: 'Redétecter',
+  },
+  'agent.global.timeZoneCancel': {
+    pote: 'Pas maintenant',
+    pro: 'Plus tard',
+    direct: 'Annuler',
+  },
+  'agent.global.timeZoneSaving': {
+    pote: 'Je sécurise ce réglage…',
+    pro: 'Enregistrement sécurisé…',
+    direct: 'Enregistrement…',
+  },
+  'agent.global.timeZoneUnknown': {
+    pote: 'Fuseau non détecté',
+    pro: 'Fuseau non détecté',
+    direct: 'Non détecté',
+  },
+  'agent.global.timeZoneError': {
+    pote: 'Je n’ai pas pu confirmer ce fuseau. Rien n’a démarré ; réessaie.',
+    pro: 'Le fuseau n’a pas pu être confirmé. Bob Live reste fermé ; veuillez réessayer.',
+    direct: 'Confirmation impossible. Bob reste fermé.',
+  },
   'agent.global.context': {
     pote: 'Je vois : {context}',
     pro: 'Contexte actif : {context}',
@@ -4720,6 +4790,11 @@ const legacyFr = {
     pro: 'Le brouillon reste protégé. Relancez Bob afin qu’il vérifie la situation avant toute reprise.',
     direct: 'Brouillon protégé. Relance Bob pour vérifier la suite.',
   },
+  'devis.mission.resumeExpiredAction': {
+    pote: 'Fermer sans rien modifier',
+    pro: 'Fermer sans modifier',
+    direct: 'Fermer',
+  },
   'devis.mission.resumeAction': {
     pote: 'Reprendre avec Bob',
     pro: 'Reprendre avec Bob',
@@ -4734,6 +4809,306 @@ const legacyFr = {
     pote: 'Le client est confirmé et le devis est libéré. Tu peux continuer les prestations à l’écran.',
     pro: 'Le client est confirmé et le devis est libéré. Vous pouvez poursuivre les prestations à l’écran.',
     direct: 'Client confirmé, devis libéré. Continue les prestations.',
+  },
+  'devis.mission.line.title': {
+    pote: 'Bob construit ce devis avec toi',
+    pro: 'Bob construit ce devis avec vous',
+    direct: 'Bob pilote le devis',
+  },
+  'devis.mission.line.liveHint': {
+    pote: 'Continue à parler ou touche un choix : c’est la même mission, sans double saisie.',
+    pro: 'Poursuivez à la voix ou sélectionnez une option : les deux canaux partagent la même mission.',
+    direct: 'Voix ou toucher. Même mission, même résultat.',
+  },
+  'devis.mission.line.abandonAction': {
+    pote: 'Arrêter cette mission Bob',
+    pro: 'Abandonner cette mission Bob',
+    direct: 'Abandonner la mission',
+  },
+  'devis.mission.line.abandonHint': {
+    pote: 'Le brouillon reste enregistré et tu pourras continuer à la main.',
+    pro: 'Le brouillon reste enregistré et pourra être poursuivi manuellement.',
+    direct: 'Conserve le brouillon et libère la saisie manuelle.',
+  },
+  'devis.mission.line.abandonTitle': {
+    pote: 'Arrêter Bob sur ce devis ?',
+    pro: 'Abandonner la mission Bob ?',
+    direct: 'Abandonner la mission ?',
+  },
+  'devis.mission.line.abandonBody': {
+    pote: 'Je garderai le brouillon tel quel et tu pourras continuer à la main. La ligne en attente ne sera pas ajoutée.',
+    pro: 'Le brouillon sera conservé et rendu à la saisie manuelle. Toute ligne encore en attente sera écartée.',
+    direct: 'Brouillon conservé. Ligne en attente écartée. Saisie manuelle disponible.',
+  },
+  'devis.mission.line.abandoning': {
+    pote: 'Je sécurise le brouillon…',
+    pro: 'Abandon sécurisé en cours…',
+    direct: 'Abandon sécurisé…',
+  },
+  'devis.mission.line.abandonError': {
+    pote: 'Je n’ai pas pu confirmer l’abandon. Le brouillon reste protégé et Bob garde la main.',
+    pro: 'L’abandon n’a pas pu être confirmé. Le brouillon reste protégé et la mission demeure propriétaire.',
+    direct: 'Abandon non confirmé. Brouillon protégé.',
+  },
+  'devis.mission.line.stateUpdated': {
+    pote: 'Le devis a été mis à jour.',
+    pro: 'La mission de devis a été mise à jour.',
+    direct: 'Devis mis à jour.',
+  },
+  'devis.mission.line.busy': {
+    pote: 'Je vérifie et j’enregistre.',
+    pro: 'Vérification et enregistrement.',
+    direct: 'Enregistrement.',
+  },
+  'devis.mission.line.confirmedTitle': {
+    pote: 'Déjà dans le devis',
+    pro: 'Lignes déjà enregistrées',
+    direct: 'Lignes enregistrées',
+  },
+  'devis.mission.line.confirmedEmpty': {
+    pote: 'Aucune ligne pour l’instant. Dis-moi ce que tu factures.',
+    pro: 'Aucune ligne pour le moment. Dictez ou saisissez la première prestation.',
+    direct: 'Aucune ligne. Dicte ou saisis la première.',
+  },
+  'devis.mission.line.catalogueTitle': {
+    pote: 'J’ai trouvé ça dans ton catalogue',
+    pro: 'Correspondances trouvées dans votre catalogue',
+    direct: 'Correspondances catalogue',
+  },
+  'devis.mission.line.catalogueBody': {
+    pote: 'Choisis la bonne entrée, ou continue avec une prestation qui n’y est pas encore.',
+    pro: 'Sélectionnez l’entrée exacte ou poursuivez avec une prestation hors catalogue.',
+    direct: 'Choisis une entrée ou une prestation libre.',
+  },
+  'devis.mission.line.catalogueChoiceA11y': {
+    pote: 'Choix {ordinal}, {label}. {details}',
+    pro: 'Choix {ordinal}, {label}. {details}',
+    direct: 'Choix {ordinal}, {label}. {details}',
+  },
+  'devis.mission.line.catalogueChoiceDetails': {
+    pote: '{category} · {price} par {unit} · {vat}',
+    pro: '{category} · {price} par {unit} · {vat}',
+    direct: '{category} · {price}/{unit} · {vat}',
+  },
+  'devis.mission.line.notSpecified': {
+    pote: 'à préciser',
+    pro: 'à préciser',
+    direct: 'à préciser',
+  },
+  'devis.mission.line.catalogueUnavailable': {
+    pote: 'Cette entrée n’est plus disponible',
+    pro: 'Entrée désormais indisponible',
+    direct: 'Entrée indisponible',
+  },
+  'devis.mission.line.catalogueFree': {
+    pote: 'Aucune — créer cette prestation',
+    pro: 'Aucune — poursuivre en saisie libre',
+    direct: 'Nouvelle prestation',
+  },
+  'devis.mission.line.proposalTitle': {
+    pote: 'Voilà la ligne que je te propose',
+    pro: 'Ligne proposée pour validation',
+    direct: 'Ligne proposée',
+  },
+  'devis.mission.line.diffTitle': {
+    pote: 'Ce qui va changer dans ton devis',
+    pro: 'Impact de la validation sur le devis',
+    direct: 'Avant / après',
+  },
+  'devis.mission.line.diffBefore': {
+    pote: 'Avant',
+    pro: 'Avant validation',
+    direct: 'Avant',
+  },
+  'devis.mission.line.diffAfter': {
+    pote: 'Après ajout',
+    pro: 'Après validation',
+    direct: 'Après',
+  },
+  'devis.mission.line.diffSummaryOne': {
+    pote: '1 ligne · {total} HT',
+    pro: '1 ligne · total HT {total}',
+    direct: '1 ligne · {total} HT',
+  },
+  'devis.mission.line.diffSummaryMany': {
+    pote: '{count} lignes · {total} HT',
+    pro: '{count} lignes · total HT {total}',
+    direct: '{count} lignes · {total} HT',
+  },
+  'devis.mission.line.diffAccessibility': {
+    pote: 'Impact sur ton devis. Avant : {before}. Après ajout : {after}.',
+    pro: 'Impact sur le devis. Avant validation : {before}. Après validation : {after}.',
+    direct: 'Impact. Avant : {before}. Après : {after}.',
+  },
+  'devis.mission.line.vatValue': {
+    pote: 'TVA {rate} %',
+    pro: 'TVA {rate} %',
+    direct: 'TVA {rate} %',
+  },
+  'devis.mission.line.catalogueSource': {
+    pote: 'Reprise du catalogue : {label}',
+    pro: 'Source catalogue : {label}',
+    direct: 'Catalogue : {label}',
+  },
+  'devis.mission.line.confirm': {
+    pote: 'Oui, ajouter cette ligne',
+    pro: 'Valider et ajouter la ligne',
+    direct: 'Ajouter la ligne',
+  },
+  'devis.mission.line.modify': {
+    pote: 'Modifier avant d’ajouter',
+    pro: 'Modifier la proposition',
+    direct: 'Modifier',
+  },
+  'devis.mission.line.cancel': {
+    pote: 'Ne pas ajouter cette ligne',
+    pro: 'Écarter cette ligne',
+    direct: 'Annuler la ligne',
+  },
+  'devis.mission.line.modifyTitle': {
+    pote: 'Qu’est-ce que tu veux corriger ?',
+    pro: 'Sélectionnez l’élément à corriger',
+    direct: 'Élément à corriger',
+  },
+  'devis.mission.line.factTitle': {
+    pote: 'Il me manque juste une information',
+    pro: 'Information nécessaire pour poursuivre',
+    direct: 'Information requise',
+  },
+  'devis.mission.line.fact.service': {
+    pote: 'Description de la prestation',
+    pro: 'Description de la prestation',
+    direct: 'Description',
+  },
+  'devis.mission.line.fact.category': {
+    pote: 'Type de prestation',
+    pro: 'Catégorie de prestation',
+    direct: 'Catégorie',
+  },
+  'devis.mission.line.fact.quantity': {
+    pote: 'Quantité',
+    pro: 'Quantité',
+    direct: 'Quantité',
+  },
+  'devis.mission.line.fact.unit': {
+    pote: 'Unité',
+    pro: 'Unité',
+    direct: 'Unité',
+  },
+  'devis.mission.line.fact.price': {
+    pote: 'Prix unitaire HT',
+    pro: 'Prix unitaire hors taxes',
+    direct: 'Prix unitaire HT',
+  },
+  'devis.mission.line.fact.vat': {
+    pote: 'Taux de TVA',
+    pro: 'Taux de TVA',
+    direct: 'TVA',
+  },
+  'devis.mission.line.fact.housingAge': {
+    pote: 'Le logement a plus de 2 ans',
+    pro: 'Logement achevé depuis plus de deux ans',
+    direct: 'Logement de plus de 2 ans',
+  },
+  'devis.mission.line.fact.energy': {
+    pote: 'Travaux de rénovation énergétique',
+    pro: 'Nature de rénovation énergétique',
+    direct: 'Rénovation énergétique',
+  },
+  'devis.mission.line.yes': {
+    pote: 'Oui',
+    pro: 'Oui',
+    direct: 'Oui',
+  },
+  'devis.mission.line.no': {
+    pote: 'Non',
+    pro: 'Non',
+    direct: 'Non',
+  },
+  'devis.mission.line.submit': {
+    pote: 'Envoyer cette correction',
+    pro: 'Valider cette correction',
+    direct: 'Valider',
+  },
+  'devis.mission.line.back': {
+    pote: 'Revenir à la proposition',
+    pro: 'Revenir à la proposition',
+    direct: 'Retour',
+  },
+  'devis.mission.line.staleTitle': {
+    pote: 'Cette proposition a changé',
+    pro: 'Proposition à réviser',
+    direct: 'Proposition périmée',
+  },
+  'devis.mission.line.staleCatalogue': {
+    pote: 'Le catalogue a évolué depuis ma proposition. Corrige la ligne ou annule-la ; je ne validerai jamais un ancien prix.',
+    pro: 'Le catalogue a changé depuis le calcul. Modifiez ou annulez la ligne avant toute validation.',
+    direct: 'Catalogue modifié. Corrige ou annule la ligne.',
+  },
+  'devis.mission.line.staleVat': {
+    pote: 'Le contexte de TVA a évolué depuis ma proposition. Corrige la ligne ou annule-la pour repartir sur les règles actuelles.',
+    pro: 'Le contexte de TVA a changé. Modifiez ou annulez la ligne avant toute validation.',
+    direct: 'TVA modifiée. Corrige ou annule la ligne.',
+  },
+  'devis.mission.line.manualTitle': {
+    pote: 'Ou ajoute une prestation au clavier',
+    pro: 'Ajouter une prestation manuellement',
+    direct: 'Saisie manuelle',
+  },
+  'devis.mission.line.limitTitle': {
+    pote: 'Ce devis est complet',
+    pro: 'Limite de lignes atteinte',
+    direct: 'Limite atteinte',
+  },
+  'devis.mission.line.limitBody': {
+    pote: 'Le devis contient déjà {count} lignes. Pour les modifier, arrête cette mission Bob : ton brouillon restera enregistré et la saisie manuelle sera libérée.',
+    pro: 'Le devis contient déjà les {count} lignes autorisées. Abandonnez cette mission Bob pour conserver le brouillon et libérer sa modification manuelle.',
+    direct: '{count} lignes atteintes. Abandonne la mission pour conserver le brouillon et libérer la saisie manuelle.',
+  },
+  'devis.mission.line.service': {
+    pote: 'Prestation',
+    pro: 'Prestation',
+    direct: 'Prestation',
+  },
+  'devis.mission.line.quantity': {
+    pote: 'Qté',
+    pro: 'Quantité',
+    direct: 'Qté',
+  },
+  'devis.mission.line.unit': {
+    pote: 'Unité',
+    pro: 'Unité',
+    direct: 'Unité',
+  },
+  'devis.mission.line.price': {
+    pote: 'Prix HT',
+    pro: 'Prix HT',
+    direct: 'Prix HT',
+  },
+  'devis.mission.line.add': {
+    pote: 'Proposer cette ligne',
+    pro: 'Proposer cette ligne',
+    direct: 'Proposer',
+  },
+  'devis.mission.line.finishingTitle': {
+    pote: 'Je termine cette ligne',
+    pro: 'Finalisation de la ligne en cours',
+    direct: 'Ligne en cours de finalisation',
+  },
+  'devis.mission.line.finishingBody': {
+    pote: 'La demande est enregistrée. Je relis le résultat avant de te proposer la suite.',
+    pro: 'La demande est enregistrée. Le résultat autoritaire est relu avant la prochaine décision.',
+    direct: 'Demande enregistrée. Vérification du résultat.',
+  },
+  'devis.mission.line.error': {
+    pote: 'Je n’ai pas pu vérifier le résultat. Réessaie : je renverrai exactement la même commande, sans créer de doublon.',
+    pro: 'Le résultat n’a pas pu être vérifié. Une nouvelle tentative rejouera strictement la même commande idempotente.',
+    direct: 'Résultat non vérifié. Réessaie avec la même commande, sans doublon.',
+  },
+  'devis.mission.line.retry': {
+    pote: 'Réessayer sans doublon',
+    pro: 'Réessayer la même commande',
+    direct: 'Réessayer',
   },
   'devis.mission.handoffTitle': {
     pote: 'Le client est confirmé',

@@ -1,4 +1,5 @@
 import { type Provider } from '@nestjs/common';
+import { parseIanaTimeZone } from '@bob/core';
 import { AppLogger } from '../observability/logger';
 
 export const SUPABASE_ADMIN = Symbol('SUPABASE_ADMIN');
@@ -12,6 +13,17 @@ type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 export interface SupabaseAdminPort {
   /** Écrit app_metadata.company_id sur le user (les autres clés d'app_metadata sont préservées). */
   setUserCompanyId(userId: string, companyId: string): Promise<void>;
+  /**
+   * Écrit atomiquement la préférence conversationnelle confirmée et son binding tenant.
+   * Optionnelle uniquement pour préserver les doubles de bounded contexts qui ne démarrent jamais
+   * Bob Live ; l'orchestrateur échoue fermé si la capacité manque.
+   */
+  setUserConfirmedTimeZone?(
+    userId: string,
+    companyId: string,
+    timeZone: string,
+    confirmedAt: string,
+  ): Promise<void>;
   /** Source serveur pour l'acceptation d'invitation ; null tant que l'email n'est pas confirmé. */
   getVerifiedEmail?(userId: string): Promise<string | null>;
   /** Enrichissement d'affichage uniquement ; ne participe jamais au RBAC. */
@@ -57,6 +69,50 @@ export class HttpSupabaseAdmin implements SupabaseAdminPort {
     });
     if (!res.ok) throw new Error(`Supabase admin HTTP ${res.status} (PUT app_metadata.company_id)`);
     this.logger.audit('auth.company_id_provisioned', { userId, companyId });
+  }
+
+  async setUserConfirmedTimeZone(
+    userId: string,
+    companyId: string,
+    timeZone: string,
+    confirmedAt: string,
+  ): Promise<void> {
+    const canonicalTimeZone = parseIanaTimeZone(timeZone);
+    const parsedConfirmedAt = new Date(confirmedAt);
+    if (
+      canonicalTimeZone === null ||
+      Number.isNaN(parsedConfirmedAt.getTime()) ||
+      parsedConfirmedAt.toISOString() !== confirmedAt
+    ) {
+      throw new Error('Confirmation de fuseau invalide avant écriture Supabase Admin.');
+    }
+
+    const base = this.opts.url.replace(/\/$/, '');
+    const res = await this.fetchFn(`${base}/auth/v1/admin/users/${encodeURIComponent(userId)}`, {
+      method: 'PUT',
+      headers: {
+        apikey: this.opts.serviceRoleKey,
+        authorization: `Bearer ${this.opts.serviceRoleKey}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        app_metadata: {
+          bob_time_zone: canonicalTimeZone,
+          bob_time_zone_confirmed_at: confirmedAt,
+          bob_time_zone_company_id: companyId,
+        },
+      }),
+      signal: AbortSignal.timeout(12_000),
+    });
+    if (!res.ok) {
+      throw new Error(`Supabase admin HTTP ${res.status} (PUT app_metadata.bob_time_zone)`);
+    }
+    this.logger.audit('auth.time_zone_confirmed', {
+      userId,
+      companyId,
+      timeZone: canonicalTimeZone,
+      confirmedAt,
+    });
   }
 
   async getVerifiedEmail(userId: string): Promise<string | null> {
@@ -128,6 +184,11 @@ export class MisconfiguredSupabaseAdmin implements SupabaseAdminPort {
   }
   async getVerifiedEmail(): Promise<string | null> {
     throw new Error('Supabase Admin non configuré — vérification serveur de l’email impossible.');
+  }
+  async setUserConfirmedTimeZone(): Promise<void> {
+    throw new Error(
+      'SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY manquants — confirmation du fuseau impossible.',
+    );
   }
   async getUserIdentity(): Promise<{ email: string | null; displayName: string | null }> {
     throw new Error('Supabase Admin non configuré — annuaire des identités indisponible.');

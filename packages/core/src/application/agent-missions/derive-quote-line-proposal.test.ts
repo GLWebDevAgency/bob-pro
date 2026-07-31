@@ -112,6 +112,19 @@ describe('deriveQuoteLineProposal', () => {
           interaction: 'voice',
         },
         vatDecision: { rate: 20 },
+        diff: {
+          kind: 'append_line',
+          before: {
+            contentRevision: 1,
+            lineCount: 0,
+            totalHtCents: 0,
+          },
+          after: {
+            contentRevision: 2,
+            lineCount: 1,
+            totalHtCents: 120_000,
+          },
+        },
       },
     });
     if (result.kind !== 'resolved') throw new Error('expected proposal');
@@ -148,6 +161,32 @@ describe('deriveQuoteLineProposal', () => {
             source: 'perso',
             indicative: false,
           },
+        },
+      },
+    });
+  });
+
+  it('projette le même arrondi de centime que les pièces commerciales', () => {
+    const result = deriveQuoteLineProposal({
+      workItem: work({
+        quantityMilli: 9,
+        unitPriceCents: 1_500,
+      }),
+      payload: payload(),
+      selectedCatalogue: null,
+      vatContext,
+    });
+
+    expect(result).toMatchObject({
+      kind: 'resolved',
+      proposal: {
+        line: {
+          qty: 0.009,
+          unitPriceHT: 1_500,
+        },
+        diff: {
+          before: { totalHtCents: 0 },
+          after: { totalHtCents: 13 },
         },
       },
     });
@@ -265,6 +304,7 @@ describe('deriveQuoteLineProposal', () => {
       line: { ...proposal.line, unitPriceHT: proposal.line.unitPriceHT + 1 },
       metadata: proposal.metadata,
       vatDecision: proposal.vatDecision,
+      diff: proposal.diff,
     })).not.toBe(proposal.diffHash);
     expect(computeQuoteDraftAppendLineDiffHash({
       payload: {
@@ -274,6 +314,79 @@ describe('deriveQuoteLineProposal', () => {
       line: proposal.line,
       metadata: proposal.metadata,
       vatDecision: proposal.vatDecision,
+      diff: proposal.diff,
     })).not.toBe(proposal.diffHash);
+    expect(computeQuoteDraftAppendLineDiffHash({
+      payload: payload(),
+      line: proposal.line,
+      metadata: proposal.metadata,
+      vatDecision: proposal.vatDecision,
+      diff: {
+        ...proposal.diff,
+        before: {
+          ...proposal.diff.before,
+          totalHtCents: proposal.diff.before.totalHtCents + 1,
+        },
+      },
+    })).not.toBe(proposal.diffHash);
+  });
+
+  it('refuse une 101e ligne et un total qui dépasserait le plafond de la pièce finale', () => {
+    const base = payload();
+    const existingLine = {
+      label: 'Ligne existante',
+      category: 'labor' as const,
+      qty: 1,
+      unit: 'unité',
+      unitPriceHT: 1,
+      vatRate: 20 as const,
+    };
+    const existingMetadata = {
+      id: 'existing-line',
+      interaction: 'manual' as const,
+    };
+    const fullPayload: QuoteDraftPayloadV1 = {
+      ...base,
+      draft: {
+        ...base.draft,
+        lines: Array.from({ length: 100 }, (_, index) => ({
+          ...existingLine,
+          label: `Ligne existante ${index + 1}`,
+        })),
+        lineMetadata: Array.from({ length: 100 }, (_, index) => ({
+          ...existingMetadata,
+          id: `existing-line-${index + 1}`,
+        })),
+        vatDecision: { rate: 20 },
+      },
+    };
+    expect(deriveQuoteLineProposal({
+      workItem: work(),
+      payload: fullPayload,
+      selectedCatalogue: null,
+      vatContext,
+    })).toEqual({ kind: 'rejected', reason: 'line_limit_reached' });
+
+    const expensivePayload: QuoteDraftPayloadV1 = {
+      ...base,
+      draft: {
+        ...base.draft,
+        lines: [{
+          ...existingLine,
+          unitPriceHT: 1_499_999_999,
+        }],
+        lineMetadata: [existingMetadata],
+        vatDecision: { rate: 20 },
+      },
+    };
+    expect(deriveQuoteLineProposal({
+      workItem: work({
+        quantityMilli: 1_000,
+        unitPriceCents: 2,
+      }),
+      payload: expensivePayload,
+      selectedCatalogue: null,
+      vatContext,
+    })).toEqual({ kind: 'rejected', reason: 'amount_out_of_bounds' });
   });
 });
