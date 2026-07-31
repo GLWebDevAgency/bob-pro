@@ -51,6 +51,22 @@ describe('journal local — logique pure', () => {
     expect(entries[0]?.code).toBe(`BOB-API-${ERROR_JOURNAL_MAX_ENTRIES + 9}`);
   });
 
+  it('BORNE EN DUR à 50 (spec §5.1) : 60 échecs poussés → EXACTEMENT 50, le plus ancien évincé', () => {
+    // Valeur LITTÉRALE, jamais dérivée de la constante : le mutant « borne 50 → 1000 » rougit
+    // ici, là où la boucle symbolique ci-dessus survivrait (elle suit la constante mutée).
+    expect(ERROR_JOURNAL_MAX_ENTRIES).toBe(50);
+
+    let entries: ErrorJournalEntry[] = [];
+    for (let index = 0; index < 60; index += 1) {
+      entries = appendJournalEntry(entries, entry({ code: `BOB-API-${index}` }));
+    }
+    expect(entries).toHaveLength(50);
+    // Plus récent en tête (#59) ; le plus ancien CONSERVÉ est #10 ; #0..#9 sont évincés.
+    expect(entries[0]?.code).toBe('BOB-API-59');
+    expect(entries.at(-1)?.code).toBe('BOB-API-10');
+    expect(entries.some((item) => item.code === 'BOB-API-9')).toBe(false);
+  });
+
   it('construit une entrée par LISTE BLANCHE : jamais cause/message, chemin ré-expurgé', () => {
     const report: ApiErrorReport = {
       at: '2026-07-31T14:03:00.000Z',
