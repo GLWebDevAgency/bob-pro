@@ -53,7 +53,19 @@ import { PressableRow } from '../src/components/pressable-row';
 import { SettingsToggle } from '../src/components/settings-toggle';
 import { IbanEditSheet } from '../src/components/billing/iban-edit-sheet';
 import { LegalIdentityEditSheet } from '../src/components/billing/legal-identity-edit-sheet';
+import { formatCapitalSocialEuros } from '../src/components/billing/legal-identity-edit.logic';
 import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
+
+/** Ligne du bloc §Identité — `missing` colore la valeur en alerte, `editable` ouvre la feuille
+ *  d'identité légale (LegalIdentityEditSheet, seule porte d'écriture de ces champs). */
+interface IdentityRow {
+  readonly key: string;
+  readonly label: string;
+  readonly value: string;
+  readonly tabular?: boolean;
+  readonly missing?: boolean;
+  readonly editable?: boolean;
+}
 
 /** Dernière facture ÉMISE (numéro légal posé) — max lexicographique des F-AAAA-nnn (année en tête). */
 function lastIssuedInvoice(invoices: readonly InvoiceView[]): InvoiceView | null {
@@ -126,9 +138,15 @@ export default function ReglagesFacturation() {
   const prefs = billingPrefs.prefs;
 
   // Company.of() revalide SIREN/SIRET (déjà valides en base) — uniquement pour réutiliser
-  // isBtp() SANS dupliquer BTP_TRADES ici (source unique : packages/core/src/domain/company/company.ts).
+  // isBtp()/isSociete() SANS dupliquer BTP_TRADES ni CAPITAL_LEGAL_FORMS ici (source unique :
+  // packages/core/src/domain/company/company.ts).
   const companyEntity = useMemo(() => (data ? Company.of(data) : null), [data]);
   const isBtp = companyEntity?.ok ? companyEntity.value.isBtp() : null;
+  // Société à capital (EURL/SASU/SARL/SAS) : pilote la ligne « Capital social » — une EI n'a
+  // pas de capital, la ligne serait un mensonge d'interface (art. R123-238).
+  const isSociete = companyEntity?.ok === true && companyEntity.value.isSociete();
+  // Hors franchise, assertCanIssue exige un n° de TVA réellement attribué.
+  const tvaRequired = data !== null && data.vatRegime !== 'franchise';
   // MÊME prédicat que le gate d'émission (DocumentActions → companyIncompleteGateSpec) : cet
   // écran est désormais la DESTINATION de ce gate, il doit donc dire exactement la même vérité.
   const canIssue = companyCanIssue(data);
@@ -313,9 +331,10 @@ export default function ReglagesFacturation() {
               </Text>
             </View>
 
-            {/* ── Identité sur les factures — n° RCS/RM, TVA et adresse ÉDITABLES (PATCH
-                /company/legal) : ce sont les exigences de Company.assertCanIssue(). Sans elles
-                l'émission est bloquée, et sans CET écran le gate était un cul-de-sac. ── */}
+            {/* ── Identité sur les factures — n° RCS/RM, capital social (société), TVA et
+                adresse ÉDITABLES (PATCH /company/legal) : les QUATRE exigences de
+                Company.assertCanIssue(). Sans elles l'émission est bloquée, et sans CET écran
+                le gate était un cul-de-sac (RCS/adresse 20/07, capital 30/07 FLY SERVICES). ── */}
             <SectionHeader title={t('reglages.sectionIdentity', { personality })} />
             {/* Bandeau d'alerte UNIQUEMENT quand l'émission est réellement bloquée — même
                 prédicat que le gate (companyCanIssue), jamais une alarme décorative. */}
@@ -377,6 +396,33 @@ export default function ReglagesFacturation() {
                     missing: !data.rcsOrRm,
                     editable: true,
                   },
+                  // Capital social — SOCIÉTÉS uniquement : le champ dont l'invisibilité a
+                  // bloqué FLY SERVICES (exigé par assertCanIssue, éditable nulle part).
+                  ...(isSociete
+                    ? [
+                        {
+                          key: 'capital',
+                          label: t('reglages.identityCapital', { personality }),
+                          value:
+                            data.capitalSocialCents === undefined
+                              ? t('reglages.identityEmpty', { personality })
+                              : formatCapitalSocialEuros(data.capitalSocialCents),
+                          missing: data.capitalSocialCents === undefined,
+                          editable: true,
+                        },
+                      ]
+                    : []),
+                  // N° TVA — « À compléter » SEULEMENT quand assertCanIssue l'exige (régime
+                  // réel) ; en franchise sans numéro attribué : « — », rien à faire.
+                  {
+                    key: 'tva',
+                    label: t('reglages.identityTva', { personality }),
+                    value:
+                      data.tvaIntracom ??
+                      (tvaRequired ? t('reglages.identityEmpty', { personality }) : '—'),
+                    missing: tvaRequired && !data.tvaIntracom,
+                    editable: true,
+                  },
                   {
                     key: 'address',
                     label: t('reglages.identityAddress', { personality }),
@@ -384,12 +430,14 @@ export default function ReglagesFacturation() {
                       data.address.line1 && data.address.city
                         ? `${data.address.line1}, ${data.address.zip} ${data.address.city}`
                         : t('reglages.identityEmpty', { personality }),
-                    missing: !data.address.line1 || !data.address.city,
+                    // Le domaine exige l'adresse COMPLÈTE (rue + CP + ville) — le CP fait
+                    // partie du « manquant », sinon la ligne dirait « tout va bien » à tort.
+                    missing: !data.address.line1 || !data.address.zip || !data.address.city,
                     editable: true,
                   },
-                ] as const
+                ] as readonly IdentityRow[]
               ).map((row, index, rows) => {
-                const missing = 'missing' in row && row.missing;
+                const missing = row.missing === true;
                 const separator = {
                   borderBottomWidth: index === rows.length - 1 ? 0 : 1,
                   borderBottomColor: colors.lineSoft,
@@ -408,15 +456,16 @@ export default function ReglagesFacturation() {
                         flexShrink: 1,
                         textAlign: 'right',
                       },
-                      'tabular' in row && row.tabular ? { fontVariant: ['tabular-nums'] } : null,
+                      row.tabular === true ? { fontVariant: ['tabular-nums'] } : null,
                     ]}
                   >
                     {row.value}
                   </Text>
                 );
                 // Raison sociale et SIRET restent en lecture (identité posée à l'inscription,
-                // elle engage les pièces déjà émises) — seuls RCS/RM et adresse s'éditent ici.
-                if (!('editable' in row && row.editable)) {
+                // elle engage les pièces déjà émises) — RCS/RM, capital, TVA et adresse
+                // s'éditent ici via la feuille d'identité légale.
+                if (row.editable !== true) {
                   return (
                     <View
                       key={row.key}

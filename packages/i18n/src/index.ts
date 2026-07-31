@@ -8917,13 +8917,27 @@ const legacyFr = {
   },
   'reglages.identitySiret': { pote: 'SIRET', pro: 'SIRET', direct: 'SIRET' },
   'reglages.identityRm': { pote: 'N° RM / RCS', pro: 'N° RM / RCS', direct: 'RM / RCS' },
+  /** Ligne visible pour les SOCIÉTÉS uniquement (Company.isSociete()) — une EI n'a pas de
+   *  capital ; montant affiché en euros français (« 10 000 € »), formatCapitalSocialEuros. */
+  'reglages.identityCapital': {
+    pote: 'Capital social',
+    pro: 'Capital social',
+    direct: 'Capital social',
+  },
+  /** « À compléter » seulement hors franchise (assertCanIssue) — en franchise : « — ». */
+  'reglages.identityTva': {
+    pote: 'N° TVA intracommunautaire',
+    pro: 'N° TVA intracommunautaire',
+    direct: 'TVA intracom',
+  },
   'reglages.identityAddress': { pote: 'Adresse', pro: 'Adresse', direct: 'Adresse' },
   // Raison sociale et SIRET restent non éditables (identité posée à l'inscription, elle
-  // engage les pièces déjà émises) — mais le n° RCS/RM et l'adresse, eux, se corrigent ici.
+  // engage les pièces déjà émises) — le n° RCS/RM, le capital, la TVA et l'adresse, eux,
+  // se corrigent ici (feuille d'identité légale).
   'reglages.identityNotEditableNote': {
-    pote: 'Ta raison sociale et ton SIRET viennent de ton inscription — écris-nous pour les corriger. Le n° RCS/RM et l’adresse, tu peux les modifier toi-même juste au-dessus.',
-    pro: 'La raison sociale et le SIRET proviennent de votre inscription — contactez-nous pour les corriger. Le n° RCS/RM et l’adresse sont modifiables ci-dessus.',
-    direct: 'Raison sociale et SIRET : nous écrire. N° RCS/RM et adresse : modifiables au-dessus.',
+    pote: 'Ta raison sociale et ton SIRET viennent de ton inscription — écris-nous pour les corriger. Le reste (n° RCS/RM, capital, TVA, adresse), tu peux le modifier toi-même juste au-dessus.',
+    pro: 'La raison sociale et le SIRET proviennent de votre inscription — contactez-nous pour les corriger. Le n° RCS/RM, le capital social, le n° de TVA et l’adresse sont modifiables ci-dessus.',
+    direct: 'Raison sociale et SIRET : nous écrire. Le reste : modifiable au-dessus.',
   },
   'reglages.identityEmpty': { pote: 'À compléter', pro: 'À compléter', direct: 'À compléter' },
   /** Bandeau d'alerte affiché quand l'émission est RÉELLEMENT bloquée (assertCanIssue KO). */
@@ -8933,9 +8947,9 @@ const legacyFr = {
     direct: 'Info manquante pour facturer',
   },
   'reglages.identityBlockingBody': {
-    pote: 'Il me faut ton n° d’immatriculation, ton adresse et, si tu factures la TVA, le numéro qui t’a été attribué. Deux minutes et c’est réglé.',
-    pro: 'Le numéro d’immatriculation, l’adresse complète et, hors franchise, le numéro de TVA attribué sont requis avant émission.',
-    direct: 'Immatriculation + adresse + TVA au réel requis.',
+    pote: 'Il me faut ton n° d’immatriculation, ton adresse complète, ton capital social si tu es en société et, si tu factures la TVA, le numéro qui t’a été attribué. Deux minutes et c’est réglé.',
+    pro: 'Le numéro d’immatriculation, l’adresse complète, le capital social pour une société et, hors franchise, le numéro de TVA attribué sont requis avant émission.',
+    direct: 'Immatriculation + adresse + capital (société) + TVA au réel requis.',
   },
   'reglages.identityFixCta': {
     pote: 'Compléter maintenant',

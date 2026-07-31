@@ -967,21 +967,26 @@ describe('i18n — Réglages facturation, fusion proto (retours device fondateur
     expect(t('catalogue.back', { personality: 'pro' })).toBe('Facturation');
   });
 
-  it('aperçu en direct + identité (RCS/RM et adresse ÉDITABLES, raison sociale/SIRET non)', () => {
+  it('aperçu en direct + identité (RCS/RM, capital, TVA et adresse ÉDITABLES, raison sociale/SIRET non)', () => {
     expect(t('reglages.previewLive')).toBe('Aperçu en direct');
     expect(t('reglages.sectionIdentity', { personality: 'direct' })).toBe('Identité');
     expect(t('reglages.identityRm')).toBe('N° RM / RCS');
+    // Lignes ajoutées avec le correctif FLY SERVICES : le capital (sociétés) et la TVA doivent
+    // être VISIBLES dans §Identité — leur invisibilité était la moitié du cul-de-sac.
+    expect(t('reglages.identityCapital')).toBe('Capital social');
+    expect(t('reglages.identityTva', { personality: 'direct' })).toBe('TVA intracom');
     // La note ne peut plus dire « non modifiable » de TOUT le bloc : depuis le correctif du
-    // cul-de-sac d'émission, le n° RCS/RM et l'adresse s'éditent ici (les deux exigences
-    // d'assertCanIssue). Seuls raison sociale et SIRET restent verrouillés.
+    // cul-de-sac d'émission, les QUATRE exigences d'assertCanIssue s'éditent ici. Seuls
+    // raison sociale et SIRET restent verrouillés.
     for (const personality of ['pote', 'pro', 'direct'] as const) {
       const note = t('reglages.identityNotEditableNote', { personality });
       expect(note).toContain('SIRET');
-      expect(note).toContain('RCS/RM');
     }
     expect(t('reglages.identityNotEditableNote', { personality: 'pro' })).toBe(
-      'La raison sociale et le SIRET proviennent de votre inscription — contactez-nous pour les corriger. Le n° RCS/RM et l’adresse sont modifiables ci-dessus.',
+      'La raison sociale et le SIRET proviennent de votre inscription — contactez-nous pour les corriger. Le n° RCS/RM, le capital social, le n° de TVA et l’adresse sont modifiables ci-dessus.',
     );
+    // Le bandeau de blocage nomme désormais AUSSI le capital — il listait tout sauf lui.
+    expect(t('reglages.identityBlockingBody', { personality: 'pro' })).toContain('capital social');
   });
 
   it('logo — ajout/suppression ×3, permission refusée, note PDF à venir', () => {
