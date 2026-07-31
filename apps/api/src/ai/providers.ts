@@ -31,6 +31,8 @@ const MAX_TTS_JSON_BYTES = Math.ceil(MAX_TTS_AUDIO_BYTES * 4 / 3) + 64 * 1024;
 const MAX_TTS_STREAM_EVENT_BYTES = 512 * 1024;
 const MAX_TTS_STREAM_AUDIO_CHUNK_BYTES = 256 * 1024;
 const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
+const SAFE_OPENAI_CHAT_MODEL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/u;
+export const DEFAULT_OPENAI_CHAT_MODEL = 'gpt-4o-mini';
 const OPENAI_AUDIO_SPEECH_ENDPOINT = 'https://api.openai.com/v1/audio/speech';
 const OPENAI_REALTIME_TTS_MODEL = 'gpt-4o-mini-tts-2025-12-15';
 const OPENAI_REALTIME_TTS_VOICE = 'marin';
@@ -42,6 +44,24 @@ const OPENAI_REALTIME_TTS_INSTRUCTIONS = [
   'Lis exactement le texte fourni sans rien ajouter ni omettre.',
 ].join(' ');
 const MISTRAL_AUDIO_API_BASE_URL = 'https://api.mistral.ai/v1';
+
+/**
+ * Source de vérité unique du modèle chat OpenAI réellement demandé par le runtime.
+ *
+ * La matrice de publication interdit de poser un override Railway en V1 : l'absence sélectionne
+ * donc le défaut versionné. Une variable présente mais vide ou ambiguë ne doit jamais se rabattre
+ * silencieusement sur ce défaut.
+ */
+export function resolveOpenAiChatModel(configured = process.env.OPENAI_MODEL): string {
+  if (configured === undefined) return DEFAULT_OPENAI_CHAT_MODEL;
+  if (
+    configured !== configured.trim()
+    || !SAFE_OPENAI_CHAT_MODEL.test(configured)
+  ) {
+    throw new Error('OPENAI_MODEL doit être un identifiant de modèle valide.');
+  }
+  return configured;
+}
 
 function boundedProviderSignal(callerSignal?: AbortSignal): AbortSignal {
   const timeout = AbortSignal.timeout(VOICE_PROVIDER_TIMEOUT_MS);
@@ -558,7 +578,7 @@ export function buildLlmForProvider(provider: Provider): LlmPort | undefined {
             id: 'openai',
             baseUrl: env.OPENAI_URL ?? 'https://api.openai.com/v1',
             apiKey: env.OPENAI_API_KEY,
-            model: env.OPENAI_MODEL ?? 'gpt-4o-mini',
+            model: resolveOpenAiChatModel(env.OPENAI_MODEL),
           })
         : undefined;
   }

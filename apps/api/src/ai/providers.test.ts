@@ -1,14 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  buildLlmForProvider,
   buildSttCloud,
   buildTtsCloud,
   buildRealtimeSpeechAuditStt,
   buildRealtimeSpeechTts,
+  DEFAULT_OPENAI_CHAT_MODEL,
   LocalWhisperAuditSttAdapter,
   OpenAiRealtimeSpeechTtsAdapter,
   MistralVoxtralSttAdapter,
   MistralVoxtralTtsAdapter,
   OpenAiCompatibleLlmAdapter,
+  resolveOpenAiChatModel,
 } from './providers';
 import { LOCAL_WHISPER_AUDIT_CONTRACT } from './local-whisper-audit-contract';
 
@@ -38,6 +41,53 @@ afterEach(() => {
   process.env = { ...ORIGINAL_ENV };
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+describe('OpenAI chat model runtime contract', () => {
+  it('résout le défaut versionné quand Railway ne pose aucun override', () => {
+    delete process.env.OPENAI_MODEL;
+    expect(resolveOpenAiChatModel()).toBe(DEFAULT_OPENAI_CHAT_MODEL);
+  });
+
+  it('conserve un snapshot explicite valide sans le normaliser', () => {
+    expect(resolveOpenAiChatModel('gpt-4o-mini-2026-07-18')).toBe(
+      'gpt-4o-mini-2026-07-18',
+    );
+  });
+
+  it.each(['', ' ', ' gpt-4o-mini', 'gpt-4o-mini ', 'gpt/model'])(
+    'refuse fermement un override ambigu %j',
+    (configured) => {
+      expect(() => resolveOpenAiChatModel(configured)).toThrow(
+        /OPENAI_MODEL doit être un identifiant de modèle valide/u,
+      );
+    },
+  );
+
+  it('branche le modèle résolu dans la requête réelle de l’adapter', async () => {
+    process.env.OPENAI_API_KEY = 'openai-test-key';
+    delete process.env.OPENAI_MODEL;
+    const fetchMock = vi.fn(
+      async (_url: string | URL | Request, _init?: RequestInit) =>
+        new Response(JSON.stringify({
+          model: DEFAULT_OPENAI_CHAT_MODEL,
+          choices: [{ message: { content: 'ok', tool_calls: [] } }],
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const llm = buildLlmForProvider('openai');
+    await expect(llm?.complete([{ role: 'user', content: 'Bonjour' }]))
+      .resolves.toMatchObject({ model: DEFAULT_OPENAI_CHAT_MODEL });
+
+    const body = JSON.parse(
+      (fetchMock.mock.calls[0]?.[1] as RequestInit).body as string,
+    ) as { readonly model?: unknown };
+    expect(body.model).toBe(DEFAULT_OPENAI_CHAT_MODEL);
+  });
 });
 
 describe('Mistral Voxtral providers', () => {

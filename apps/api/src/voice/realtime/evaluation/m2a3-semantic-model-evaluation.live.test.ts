@@ -1,7 +1,10 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { buildLlmForProvider } from '../../../ai/providers';
+import {
+  buildLlmForProvider,
+  resolveOpenAiChatModel,
+} from '../../../ai/providers';
 import {
   M2A3_SEMANTIC_MODEL_CORPUS,
   instrumentM2A3Llm,
@@ -65,7 +68,7 @@ describeLive('M2-A-3 — évaluation opt-in du vrai modèle runtime', () => {
       ) {
         throw new Error('OPENAI_URL doit être absente ou pointer vers l’API officielle.');
       }
-      requestedModel = requiredEnvironment('OPENAI_MODEL');
+      requestedModel = resolveOpenAiChatModel();
       releaseSha = requiredEnvironment('BOB_LIVE_M2A3_EVAL_RELEASE_SHA');
       if (!/^[0-9a-f]{40}$/u.test(releaseSha)) {
         throw new Error('BOB_LIVE_M2A3_EVAL_RELEASE_SHA doit être un SHA Git exact.');

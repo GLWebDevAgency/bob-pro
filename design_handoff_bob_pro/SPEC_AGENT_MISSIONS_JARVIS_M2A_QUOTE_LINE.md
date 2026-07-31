@@ -1623,6 +1623,11 @@ noms exacts avant de chaîner intents et reçus preflight/certified.
       `checkout=github.sha=expected_sha` avant toute installation. Le
       one-shot surcharge `BOB_LIVE_PROVIDER=openai` dans son seul processus, sans modifier la
       configuration Railway canonique de staging qui reste `mistral`. Le
+      modèle chat demandé par ce one-shot est résolu par la même source de vérité que
+      `buildLlmForProvider('openai')` : l'absence gouvernée de `OPENAI_MODEL` certifie donc le
+      défaut runtime versionné, sans poser d'override Railway ni recopier un nom de modèle dans le
+      workflow. Une valeur vide ou mal formée échoue fermée ; la preuve porte le modèle
+      effectivement demandé et refuse tout modèle retourné incompatible. Le
       fournisseur ne reçoit qu'une enveloppe JSON de rôle `user` : seul
       `currentUserUtterance` porte la demande actuelle ; `recentTurns`, `uiContext` et les labels
       sont redigés et restent des données non fiables, y compris lorsqu'une parole Bob mémorisée
