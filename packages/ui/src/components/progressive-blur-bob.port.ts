@@ -12,13 +12,43 @@
  * CE QUE LE SCEAU AJOUTE, et pourquoi. Le port est du code que `packages/ui` ne contrôle pas.
  * Une fonction nue ne dit rien : elle n'a jamais déclaré qu'elle rend UNE couche et rien
  * d'autre — ni voile, ni dégradé, ni conteneur —, ni qu'elle applique `spec.style` TEL QUEL.
- * `defineBlurPort` est cette déclaration, et le sceau est un symbole de MODULE : `Symbol()` et
- * non `Symbol.for()`, donc introuvable dans le registre global, ni exporté, ni falsifiable.
- * Personne ne peut fabriquer un port « scellé » sans passer par cette porte.
+ * `defineBlurPort` est cette déclaration.
+ *
+ * ─── LE SCEAU N'EST PAS UNE PROPRIÉTÉ, C'EST UNE APPARTENANCE ────────────────────────────
+ * Première rédaction de ce fichier : « le sceau est un symbole de MODULE, `Symbol()` et non
+ * `Symbol.for()`, donc introuvable dans le registre global, ni exporté, ni falsifiable ».
+ * C'ÉTAIT FAUX, et une revue adversariale l'a démontré par TROIS forgeries qui marchaient :
+ *
+ *   1. `Object.getOwnPropertySymbols(defineBlurPort(() => null))[0]` RESTITUE le symbole.
+ *      `defineBlurPort` est exporté : n'importe qui fabrique un port scellé et lit le sceau
+ *      dessus. Un symbole non exporté n'est pas un symbole introuvable ;
+ *   2. `Object.setPrototypeOf(hostile, portScellé)` — lire `value[SCEAU]` traverse la chaîne
+ *      des prototypes. Ce n'est pas une lecture de propriété PROPRE ;
+ *   3. `new Proxy(hostile, { get: () => true })` — répond « oui » à tout symbole, et
+ *      `typeof proxy === 'function'`.
+ *
+ * Le registre ci-dessous est insensible aux trois : `WeakSet.has()` compare des IDENTITÉS
+ * d'objet, il n'y a plus AUCUNE propriété à lire, à hériter ou à simuler. Un `Proxy` est un
+ * objet DIFFÉRENT de la fonction enregistrée, donc il échoue lui aussi — sans que le kit ait
+ * eu à deviner qu'il en était un.
+ *
+ * BÉNÉFICE COLLATÉRAL, et il vaut le premier : `resolveBlurPort` ne LIT plus rien sur un objet
+ * fourni par l'application. Un accesseur hostile qui jetait pendant la résolution — donc
+ * pendant le RENDU, sans frontière au-dessus — emportait l'écran. Il n'y a plus de lecture.
+ *
+ * CE QUE LE SCEAU GARANTIT, exactement : que la valeur est SORTIE de `defineBlurPort`. Il ne
+ * dit rien du COMPORTEMENT de la fonction enveloppée — c'est une DÉCLARATION d'intention, pas
+ * une preuve. Ce que le port rend est vérifié ailleurs, au rendu (`BlurLayerSlot`).
  *
  * Une fonction NON scellée n'est pas une erreur : elle est traitée comme ABSENTE — repli
  * opaque unique, rang normal de l'algorithme — et le développeur reçoit un avertissement
  * NOMMÉ qui lui dit quoi faire. Fail-closed, jamais fail-open, jamais à moitié.
+ *
+ * L'ÉLÉMENT RENDU EST VÉRIFIÉ, LUI AUSSI (ajout du kit, voir `BlurLayerSlot`) : il doit porter
+ * `spec.intensity`, `spec.tint` et `spec.style` TELS QUELS — même valeur, et pour le style la
+ * même RÉFÉRENCE, celle de l'objet gelé qu'on lui a remis — et n'avoir AUCUN enfant. Sinon la
+ * pile se ferme sur le rang `material-tampered`. C'est ce qui empêche un port scellé de
+ * réécrire la matière ou de glisser du texte dans une zone qui n'en porte jamais.
  *
  * Adaptateur attendu côté `apps/mobile`, à l'étape d'ADOPTION (décision D08, hors de ce lot) :
  *
@@ -52,35 +82,34 @@ import type { BlurPortStatus } from './progressive-blur-bob.logic';
 import type { RenderBlurLayer } from './progressive-blur-bob.types';
 
 /**
- * SCEAU du kit — symbole de MODULE, ni exporté ni enregistrable. Une propriété homonyme posée
- * de l'extérieur ne peut pas l'égaler : deux `Symbol()` ne sont jamais identiques.
+ * REGISTRE DES PORTS SCELLÉS — portée MODULE, jamais exporté, jamais énumérable : un `WeakSet`
+ * n'a pas d'itérateur, donc il ne dit à personne ce qu'il contient. Faible, donc un port oublié
+ * par l'application est collecté avec elle : ce registre ne retient jamais un écran en mémoire.
  */
-const PORT_SEAL: unique symbol = Symbol('@bob/ui:renderBlurLayer');
+const SEALED_PORTS = new WeakSet<object>();
 
 /**
  * LA porte d'entrée du port. Rend une fonction de type `RenderBlurLayer` — la signature du
- * contrat, inchangée — portant le sceau en propriété NON énumérable et NON configurable.
+ * contrat, inchangée — INSCRITE au registre du module.
  *
- * On enveloppe plutôt que de marquer la fonction reçue : marquer muterait un objet étranger,
- * et un second appel sur la même fonction lèverait sur une propriété non configurable. Ici,
- * sceller est idempotent et sans effet de bord observable.
+ * On enveloppe plutôt que d'inscrire la fonction reçue : inscrire marquerait un objet étranger,
+ * et la valeur rendue doit être celle que le kit reconnaît. Ici, sceller est idempotent — la
+ * fonction d'origine reste intacte — et sans effet de bord observable de l'extérieur.
  */
 export function defineBlurPort(render: RenderBlurLayer): RenderBlurLayer {
   const sealed: RenderBlurLayer = (spec) => render(spec);
-  Object.defineProperty(sealed, PORT_SEAL, {
-    value: true,
-    enumerable: false,
-    writable: false,
-    configurable: false,
-  });
+  SEALED_PORTS.add(sealed);
   return sealed;
 }
 
-/** Vrai seulement pour une fonction passée par `defineBlurPort`. */
+/**
+ * Vrai seulement pour une fonction SORTIE de `defineBlurPort`. Aucune lecture de propriété :
+ * `WeakSet.prototype.has` est total — il rend `false` pour tout non-objet au lieu de lever — et
+ * il compare des identités, donc ni un prototype, ni un `Proxy`, ni un symbole recopié ne
+ * peuvent le tromper.
+ */
 export function isSealedBlurPort(value: unknown): value is RenderBlurLayer {
-  return (
-    typeof value === 'function' && (value as unknown as Record<symbol, unknown>)[PORT_SEAL] === true
-  );
+  return typeof value === 'function' && SEALED_PORTS.has(value);
 }
 
 export interface ResolvedBlurPort {
