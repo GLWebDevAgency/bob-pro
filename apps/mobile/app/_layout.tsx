@@ -254,6 +254,7 @@ function RootLayout() {
                                 <Stack.Screen name="catalogue" />
                                 <Stack.Screen name="reglages-facturation" />
                                 <Stack.Screen name="diagnostic" />
+                                <Stack.Screen name="diagnostic-technique" />
                                 <Stack.Screen name="notifications" />
                                 <Stack.Screen name="onboarding" />
                                 <Stack.Screen

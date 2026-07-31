@@ -46,6 +46,20 @@ export function appErrorLogSummary(body: unknown): AppErrorLogSummary | null {
   return summary;
 }
 
+/**
+ * Enrichit le corps d'une réponse d'ERREUR avec le correlationId de la requête
+ * (SPEC_SYSTEME_ERREUR §3.2). ADDITIF et à la RACINE du corps uniquement : jamais DANS `error`,
+ * dont les clés exactes sont validées par les décodeurs clients déployés. Hors contexte de
+ * requête (`'-'`, ex. tests unitaires du filtre), le corps reste intact — rien à corréler.
+ */
+export function withResponseCorrelation(body: unknown, correlationId: string): unknown {
+  if (correlationId === '-') return body;
+  if (typeof body === 'object' && body !== null && !Array.isArray(body)) {
+    return { ...body, correlationId };
+  }
+  return body;
+}
+
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
   constructor(@Inject(ERROR_REPORTER) private readonly reporter: ErrorReporter) {}
@@ -57,6 +71,19 @@ export class AllExceptionsFilter implements ExceptionFilter {
       exception instanceof HttpException
         ? exception.getResponse()
         : { statusCode: 500, message: 'Internal server error' };
+    if (status >= 400 && status < 500) {
+      const appError = appErrorLogSummary(body);
+      if (appError) {
+        // Un 4xx porteur d'AppError est un REFUS applicatif normal (jamais warn/error, jamais
+        // le reporter — la décision DEGRADED_KINDS du 20/07 ne concerne que les 5xx). Sans
+        // cette ligne, le 404/422 du lookup SIRET n'existait dans Railway que par son statut :
+        // impossible de trancher « introuvable » vs « invalide » depuis les logs.
+        rootLogger.info(
+          { correlationId: getCorrelationId(), status, appError },
+          'refus applicatif',
+        );
+      }
+    }
     if (status >= 500) {
       // La stack d'une HttpException issue de unwrap() est muette (« Http Exception ») : le
       // résumé du AppError (kind + service/port/cause) rend le log diagnosticable en une lecture.
@@ -81,12 +108,26 @@ export class AllExceptionsFilter implements ExceptionFilter {
         if (appError.kind !== 'unavailable') {
           this.reporter.captureException(exception, { correlationId: getCorrelationId() });
         }
-        res.status(status).json(typeof body === 'object' ? body : { message: body });
+        res
+          .status(status)
+          .json(
+            withResponseCorrelation(
+              typeof body === 'object' ? body : { message: body },
+              getCorrelationId(),
+            ),
+          );
         return;
       }
       rootLogger.error(record, 'unhandled exception');
       this.reporter.captureException(exception, { correlationId: getCorrelationId() });
     }
-    res.status(status).json(typeof body === 'object' ? body : { message: body });
+    res
+      .status(status)
+      .json(
+        withResponseCorrelation(
+          typeof body === 'object' ? body : { message: body },
+          getCorrelationId(),
+        ),
+      );
   }
 }

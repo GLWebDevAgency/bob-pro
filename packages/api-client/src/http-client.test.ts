@@ -200,6 +200,8 @@ describe('HttpBobClient', () => {
         kind: 'dependency',
         port: 'api-contract',
         cause: 'Réponse API invalide pour POST /devices.',
+        code: 'BOB-API-502',
+        correlationId: expect.stringMatching(/^[0-9a-f-]{8,64}$/),
       },
     });
   });
@@ -401,6 +403,8 @@ describe('HttpBobClient', () => {
         kind: 'dependency',
         port: 'api-contract',
         cause: 'Réponse API invalide pour POST /quotes.',
+        code: 'BOB-API-502',
+        correlationId: expect.stringMatching(/^[0-9a-f-]{8,64}$/),
       },
     });
   });
@@ -475,6 +479,8 @@ describe('HttpBobClient', () => {
         kind: 'dependency',
         port: 'api-contract',
         cause: 'Réponse API invalide pour POST /expenses.',
+        code: 'BOB-API-502',
+        correlationId: expect.stringMatching(/^[0-9a-f-]{8,64}$/),
       },
     });
   });
@@ -568,6 +574,8 @@ describe('HttpBobClient', () => {
         kind: 'dependency',
         port: 'api-contract',
         cause: 'Réponse API invalide pour GET /documents/document-1.',
+        code: 'BOB-API-502',
+        correlationId: expect.stringMatching(/^[0-9a-f-]{8,64}$/),
       },
     });
     const download = await client.documentDownloadUrl('document-1');
@@ -971,6 +979,8 @@ describe('HttpBobClient', () => {
         kind: 'dependency',
         port: 'api-contract',
         cause: 'Réponse API invalide pour GET /invoices/inv-1/accounting-preview.',
+        code: 'BOB-API-502',
+        correlationId: expect.stringMatching(/^[0-9a-f-]{8,64}$/),
       },
     });
   });
@@ -1134,7 +1144,15 @@ describe('HttpBobClient', () => {
     const r = await client.getFiscalCalendar();
 
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toEqual({ kind: 'not_found', entity: 'company', id: 'co-fantome' });
+    if (!r.ok) {
+      expect(r.error).toEqual({
+        kind: 'not_found',
+        entity: 'company',
+        id: 'co-fantome',
+        code: 'BOB-API-404',
+        correlationId: expect.stringMatching(/^[0-9a-f-]{8,64}$/),
+      });
+    }
   });
 
   it('PONT-SERVEUR v1 : getCompanyMe → GET /company/me (JWT seul), fiche société rendue telle quelle', async () => {
@@ -1186,7 +1204,15 @@ describe('HttpBobClient', () => {
     const r = await client.getCompanyMe();
 
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toEqual({ kind: 'not_found', entity: 'company', id: 'co-fantome' });
+    if (!r.ok) {
+      expect(r.error).toEqual({
+        kind: 'not_found',
+        entity: 'company',
+        id: 'co-fantome',
+        code: 'BOB-API-404',
+        correlationId: expect.stringMatching(/^[0-9a-f-]{8,64}$/),
+      });
+    }
   });
 
   it('PONT-SERVEUR v1 : payExpense / listPayments / createCreditNote frappent EXACTEMENT les routes servies', async () => {
@@ -1591,7 +1617,14 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
     const r = await client.confirmBob(proposedRun.pending!);
 
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toEqual({ kind: 'forbidden', reason: "L'assistant Bob est inclus à partir de l'offre Solo." });
+    if (!r.ok) {
+      expect(r.error).toEqual({
+        kind: 'forbidden',
+        reason: "L'assistant Bob est inclus à partir de l'offre Solo.",
+        code: 'BOB-API-403',
+        correlationId: expect.stringMatching(/^[0-9a-f-]{8,64}$/),
+      });
+    }
   });
 
   it('getRunJournal lit GET /ai/runs/:runId/journal (audit append-only company-scoped)', async () => {

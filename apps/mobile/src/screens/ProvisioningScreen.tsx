@@ -22,7 +22,6 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   Siret,
-  type AppError,
   type CompanyLookupResult,
   type LegalForm,
   type VatRegime,
@@ -43,6 +42,10 @@ import {
 } from '../data/company-draft';
 import { CompanyFicheCard, formatSiret } from '../components/CompanyFicheCard';
 import { SparkIcon } from '../components/icons';
+import {
+  discriminateSiretLookupError,
+  type SiretLookupFailureReason,
+} from '../lib/siret-lookup-error';
 
 type Phase = 'auto' | 'siret' | 'confirm';
 
@@ -52,20 +55,21 @@ const VAT_OPTIONS: readonly { id: VatRegime; label: I18nKey }[] = [
   { id: 'reel_normal', label: 'onboard.vatReelNormal' },
 ];
 
-/** Erreur AppError du lookup SIRET → copy (introuvable ≠ invalide ≠ annuaire en panne). */
-function lookupErrorKey(error: AppError): I18nKey {
-  switch (error.kind) {
-    case 'not_found':
-      return 'auth.errSiretNotFound';
-    case 'domain':
-    case 'validation':
-      return 'auth.errSiretInvalid';
-    case 'dependency':
-      return 'auth.errLookupDown';
-    default:
-      return 'auth.errUnknown';
-  }
-}
+/**
+ * Motif du discriminateur PARTAGÉ (`lib/siret-lookup-error`) → copy auth — même table que
+ * LoginScreen : l'îlot dupliqué est remplacé par le module commun (spec §8).
+ */
+const AUTH_SIRET_ERROR_KEY: Record<SiretLookupFailureReason, I18nKey> = {
+  invalid: 'auth.errSiretInvalid',
+  not_found: 'auth.errSiretNotFound',
+  rate_limited: 'auth.errRateLimited',
+  contract: 'auth.errLookupDown',
+  lookup_down: 'auth.errLookupDown',
+  unknown: 'auth.errUnknown',
+};
+
+const lookupErrorKey = (error: unknown): I18nKey =>
+  AUTH_SIRET_ERROR_KEY[discriminateSiretLookupError(error).reason];
 
 export function ProvisioningScreen() {
   const { session, signOut } = useAuth();

@@ -35,13 +35,17 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Siret, type AppError, type CompanyLookupResult } from '@bob/core';
+import { Siret, type CompanyLookupResult } from '@bob/core';
 import { themes } from '@bob/tokens';
 import { t, type I18nKey } from '@bob/i18n';
 import { Card, Stepper, font, useTheme } from '@bob/ui';
 import { useAuth, type AuthErrorCode } from '../data/auth';
 import { markFreshLogin } from '../data/biometric';
 import { useLookupCompany } from '../data/hooks';
+import {
+  discriminateSiretLookupError,
+  type SiretLookupFailureReason,
+} from '../lib/siret-lookup-error';
 import { CompanyFicheCard, formatSiret } from '../components/CompanyFicheCard';
 import { ChevronLeftIcon, LockIcon, MailIcon, SparkIcon } from '../components/icons';
 
@@ -60,20 +64,22 @@ const AUTH_ERR_KEY: Record<AuthErrorCode, I18nKey> = {
   unknown: 'auth.errUnknown',
 };
 
-/** Erreur AppError du lookup SIRET → copy (introuvable ≠ invalide ≠ annuaire en panne). */
-function lookupErrorKey(error: AppError): I18nKey {
-  switch (error.kind) {
-    case 'not_found':
-      return 'auth.errSiretNotFound';
-    case 'domain':
-    case 'validation':
-      return 'auth.errSiretInvalid';
-    case 'dependency':
-      return 'auth.errLookupDown';
-    default:
-      return 'auth.errUnknown';
-  }
-}
+/**
+ * Motif du discriminateur PARTAGÉ (`lib/siret-lookup-error`) → copy auth. `contract` et
+ * `lookup_down` partagent une copy car l'ACTION est identique à cette étape (réessayer ou
+ * passer) — règle spec §8 : deux motifs peuvent partager une copy, jamais un booléen.
+ */
+const AUTH_SIRET_ERROR_KEY: Record<SiretLookupFailureReason, I18nKey> = {
+  invalid: 'auth.errSiretInvalid',
+  not_found: 'auth.errSiretNotFound',
+  rate_limited: 'auth.errRateLimited',
+  contract: 'auth.errLookupDown',
+  lookup_down: 'auth.errLookupDown',
+  unknown: 'auth.errUnknown',
+};
+
+const lookupErrorKey = (error: unknown): I18nKey =>
+  AUTH_SIRET_ERROR_KEY[discriminateSiretLookupError(error).reason];
 
 const MIN_PASSWORD_LENGTH = 8;
 
@@ -305,7 +311,7 @@ export function LoginScreen() {
       setCompany(found);
       goTo('company');
     } catch (e) {
-      setError(say(lookupErrorKey(e as AppError)));
+      setError(say(lookupErrorKey(e)));
     }
   }
 

@@ -39,6 +39,12 @@ export * from './components/delete-icon-button';
 export * from './components/eyebrow';
 export * from './components/section-header';
 export * from './components/money-text';
+export * from './components/error-notice';
+export {
+  errorNoticeReportText,
+  resolveErrorNoticeCopy,
+  type ErrorNoticeFacts,
+} from './components/error-notice.logic';
 
 // Accueil
 export * from './components/app-header-navy';

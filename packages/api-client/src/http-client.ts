@@ -247,11 +247,29 @@ import {
   type RealtimeAgentMissionProtocolVersion,
   type RealtimeAgentMissionSession,
 } from './agent-mission-session';
+import {
+  bobErrorCode,
+  bobErrorContextForRoute,
+  newCorrelationId,
+  withErrorTransport,
+} from './error-codes';
+import {
+  emitApiErrorReport,
+  redactPathForDiagnostics,
+  type ApiErrorReport,
+} from './error-report';
 
 export interface HttpBobClientOptions {
   baseUrl: string;
   companyId: string;
   getToken?: () => Promise<string | null>;
+  /**
+   * Observateur des échecs API (SPEC_SYSTEME_ERREUR §4) : reçoit un rapport SANS PII (chemin
+   * expurgé, code court, correlationId, statut, durée) pour CHAQUE Result d'erreur des trois
+   * chemins de requête. Jamais appelé sur un succès ; une exception de l'observateur est
+   * avalée — elle ne doit pas fabriquer un second échec.
+   */
+  onError?: (report: ApiErrorReport) => void;
 }
 
 const DOCUMENT_READ_TIMEOUT_MS = 20_000;
@@ -316,6 +334,38 @@ const REALTIME_SPEECH_CANCELLATION_REASONS = new Set<RealtimeVoiceSpeechCancella
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Interruption LOCALE d'une requête (timeout maison, annulation externe). Classe dédiée pour que
+ * la lecture tolérante du corps d'erreur (§req) puisse la re-jeter TELLE QUELLE : le message
+ * exact des sentinelles est un contrat (`isRealtimeBootstrapTimeoutError` classifie dessus).
+ */
+class LocalInterruptError extends Error {}
+
+const CORRELATION_ID_MAX_CHARS = 64;
+
+function isTransportCorrelationId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= CORRELATION_ID_MAX_CHARS;
+}
+
+/** `correlationId` RACINE du corps d'erreur `{ ok:false, error, correlationId }` (spec §3.2). */
+function correlationIdFromBody(data: unknown): string | null {
+  if (!isRecord(data)) return null;
+  return isTransportCorrelationId(data.correlationId) ? data.correlationId : null;
+}
+
+/** Repli header (`x-correlation-id` nouveau, `x-request-id` legacy — les deux valent). */
+function correlationIdFromHeaders(res: {
+  headers?: { get?: (name: string) => string | null };
+}): string | null {
+  try {
+    const value =
+      res.headers?.get?.('x-correlation-id') ?? res.headers?.get?.('x-request-id') ?? null;
+    return isTransportCorrelationId(value) ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 function isCanonicalBase64Url256Ticket(
@@ -444,7 +494,13 @@ function canRetryRealtimeAgentMissionBootstrapReceipt(error: AppError): boolean 
  * session ambiguë et prouver durablement qu'aucune lease ne subsiste.
  */
 export function isRealtimeBootstrapTimeoutError(error: unknown): error is AppError {
-  if (!isRecord(error) || !hasExactKeys(error, ['kind', 'port', 'cause'])) return false;
+  if (!isRecord(error)) return false;
+  // Seules les métadonnées de TRANSPORT (code court, corrélation — SPEC_SYSTEME_ERREUR §2.2)
+  // sont tolérées en plus du variant exact : tout autre champ inconnu reste disqualifiant.
+  const withoutTransport = Object.keys(error).filter(
+    (key) => key !== 'code' && key !== 'correlationId',
+  );
+  if (withoutTransport.sort().join(',') !== 'cause,kind,port') return false;
   return (
     error.kind === 'dependency'
     && error.port === 'api'
@@ -2157,6 +2213,39 @@ export class HttpBobClient implements BobClient {
     this.companyId = opts.companyId;
   }
 
+  /**
+   * Frontière d'échec UNIQUE des trois chemins de requête (SPEC_SYSTEME_ERREUR §4) : attache le
+   * transport (code court projeté du kind + contexte de route, correlationId corps > header >
+   * généré localement) puis émet le rapport développeur — sans jamais jeter.
+   */
+  private failResult(
+    error: AppError,
+    at: {
+      readonly method: string;
+      readonly path: string;
+      readonly startedAt: number;
+      readonly localCorrelationId: string;
+      readonly status: number | null;
+      readonly bodyCorrelationId?: string | null;
+      readonly headerCorrelationId?: string | null;
+    },
+  ): { ok: false; error: AppError } {
+    const correlationId =
+      at.bodyCorrelationId ?? at.headerCorrelationId ?? at.localCorrelationId;
+    const code = bobErrorCode(error, bobErrorContextForRoute(at.method, at.path));
+    const enriched = withErrorTransport(error, { code, correlationId });
+    emitApiErrorReport(this.opts.onError, {
+      at: new Date().toISOString(),
+      method: at.method,
+      path: redactPathForDiagnostics(at.path),
+      status: at.status,
+      durationMs: Math.max(0, Date.now() - at.startedAt),
+      code,
+      error: enriched,
+    });
+    return { ok: false, error: enriched };
+  }
+
   private async req<T>(
     method: string,
     path: string,
@@ -2168,8 +2257,10 @@ export class HttpBobClient implements BobClient {
   ): Promise<Result<T, AppError>> {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let removeExternalAbort: (() => void) | undefined;
+    const startedAt = Date.now();
+    const localCorrelationId = newCorrelationId();
     try {
-      if (externalSignal?.aborted) throw new Error('Requête annulée.');
+      if (externalSignal?.aborted) throw new LocalInterruptError('Requête annulée.');
       const controller =
         timeoutMs === undefined && externalSignal === undefined ? null : new AbortController();
       const externalDeadline =
@@ -2178,7 +2269,7 @@ export class HttpBobClient implements BobClient {
           : new Promise<never>((_resolve, reject) => {
               const abort = (): void => {
                 controller?.abort();
-                reject(new Error('Requête annulée.'));
+                reject(new LocalInterruptError('Requête annulée.'));
               };
               externalSignal.addEventListener('abort', abort, { once: true });
               removeExternalAbort = () => externalSignal.removeEventListener('abort', abort);
@@ -2189,7 +2280,7 @@ export class HttpBobClient implements BobClient {
           : new Promise<never>((_resolve, reject) => {
               timeout = setTimeout(() => {
                 controller?.abort();
-                reject(new Error(`Délai réseau dépassé après ${timeoutMs} ms.`));
+                reject(new LocalInterruptError(`Délai réseau dépassé après ${timeoutMs} ms.`));
               }, timeoutMs);
             });
       const withinDeadline = <V>(operation: Promise<V>): Promise<V> => {
@@ -2203,7 +2294,7 @@ export class HttpBobClient implements BobClient {
       const token = await withinDeadline(
         this.opts.getToken ? this.opts.getToken() : Promise.resolve(null),
       );
-      if (externalSignal?.aborted) throw new Error('Requête annulée.');
+      if (externalSignal?.aborted) throw new LocalInterruptError('Requête annulée.');
       const init: RequestInit = {
         method,
         // Un 307/308 ne doit jamais rejouer token/secret de binding vers une autre origine.
@@ -2212,6 +2303,8 @@ export class HttpBobClient implements BobClient {
         headers: {
           'content-type': 'application/json',
           ...headers,
+          // Corrélation bout-en-bout (spec §3.1) — après le spread : un appelant ne l'écrase pas.
+          'x-correlation-id': localCorrelationId,
           ...(token ? { authorization: `Bearer ${token}` } : {}),
         },
       };
@@ -2225,38 +2318,75 @@ export class HttpBobClient implements BobClient {
       ) {
         throw new Error('Redirection API cross-origin refusée.');
       }
-      const data: unknown = await withinDeadline(res.json());
+      let data: unknown;
+      try {
+        data = await withinDeadline(res.json());
+      } catch (parseError) {
+        // Les sentinelles locales (timeout/annulation) gardent leur message EXACT — contrat de
+        // classification (`isRealtimeBootstrapTimeoutError`) et vérité de l'interruption.
+        if (parseError instanceof LocalInterruptError || res.ok) throw parseError;
+        // Réponse d'ERREUR au corps non-JSON (page HTML d'un 502 Railway/edge) : le statut est
+        // la vérité — sans cette branche, un 502 amont était indistinguable d'une coupure réseau.
+        return this.failResult(
+          { kind: 'dependency', port: 'api', cause: `HTTP ${res.status} (réponse non JSON).` },
+          {
+            method,
+            path,
+            startedAt,
+            localCorrelationId,
+            status: res.status,
+            headerCorrelationId: correlationIdFromHeaders(res),
+          },
+        );
+      }
       if (!res.ok) {
         const error: AppError =
           data && typeof data === 'object' && 'error' in data
             ? (data as { error: AppError }).error
             : { kind: 'dependency', port: 'api', cause: `HTTP ${res.status}` };
-        return { ok: false, error };
+        return this.failResult(error, {
+          method,
+          path,
+          startedAt,
+          localCorrelationId,
+          status: res.status,
+          bodyCorrelationId: correlationIdFromBody(data),
+          headerCorrelationId: correlationIdFromHeaders(res),
+        });
       }
       if (decode) {
         const decoded = decode(data);
         if (decoded === null) {
-          return {
-            ok: false,
-            error: {
+          // Le « 200 servi mais vu en échec » du cas terrain SIRET : désormais porteur de
+          // code + correlationId, donc diagnosticable depuis l'écran sans les logs Railway.
+          return this.failResult(
+            {
               kind: 'dependency',
               port: 'api-contract',
               cause: `Réponse API invalide pour ${method} ${path}.`,
             },
-          };
+            {
+              method,
+              path,
+              startedAt,
+              localCorrelationId,
+              status: res.status,
+              headerCorrelationId: correlationIdFromHeaders(res),
+            },
+          );
         }
         return { ok: true, value: decoded };
       }
       return { ok: true, value: data as T };
     } catch (e) {
-      return {
-        ok: false,
-        error: {
+      return this.failResult(
+        {
           kind: 'dependency',
           port: 'api',
           cause: e instanceof Error ? e.message : 'réseau',
         },
-      };
+        { method, path, startedAt, localCorrelationId, status: null },
+      );
     } finally {
       if (timeout !== undefined) clearTimeout(timeout);
       removeExternalAbort?.();
@@ -2294,8 +2424,10 @@ export class HttpBobClient implements BobClient {
   ): Promise<Result<T, AppError>> {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let removeExternalAbort: (() => void) | undefined;
+    const startedAt = Date.now();
+    const localCorrelationId = newCorrelationId();
     try {
-      if (signal?.aborted) throw new Error('Requête annulée.');
+      if (signal?.aborted) throw new LocalInterruptError('Requête annulée.');
       const controller = new AbortController();
       const externalDeadline =
         signal === undefined
@@ -2303,7 +2435,7 @@ export class HttpBobClient implements BobClient {
           : new Promise<never>((_resolve, reject) => {
               const abort = (): void => {
                 controller.abort();
-                reject(new Error('Requête annulée.'));
+                reject(new LocalInterruptError('Requête annulée.'));
               };
               signal.addEventListener('abort', abort, { once: true });
               removeExternalAbort = () => signal.removeEventListener('abort', abort);
@@ -2311,7 +2443,11 @@ export class HttpBobClient implements BobClient {
       const deadline = new Promise<never>((_resolve, reject) => {
         timeout = setTimeout(() => {
           controller.abort();
-          reject(new Error(`Délai réseau dépassé après ${REALTIME_SPEECH_REQUEST_TIMEOUT_MS} ms.`));
+          reject(
+            new LocalInterruptError(
+              `Délai réseau dépassé après ${REALTIME_SPEECH_REQUEST_TIMEOUT_MS} ms.`,
+            ),
+          );
         }, REALTIME_SPEECH_REQUEST_TIMEOUT_MS);
       });
       const withinDeadline = <V>(operation: Promise<V>): Promise<V> =>
@@ -2319,7 +2455,7 @@ export class HttpBobClient implements BobClient {
       const token = await withinDeadline(
         this.opts.getToken ? this.opts.getToken() : Promise.resolve(null),
       );
-      if (signal?.aborted) throw new Error('Requête annulée.');
+      if (signal?.aborted) throw new LocalInterruptError('Requête annulée.');
       const init: RequestInit = {
         method,
         signal: controller.signal,
@@ -2330,6 +2466,7 @@ export class HttpBobClient implements BobClient {
           accept: 'application/json',
           'cache-control': 'no-store',
           'content-type': 'application/json',
+          'x-correlation-id': localCorrelationId,
           ...(token ? { authorization: `Bearer ${token}` } : {}),
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -2341,32 +2478,47 @@ export class HttpBobClient implements BobClient {
       const decoded = decode(response.status, data);
       if (decoded !== null) return { ok: true, value: decoded };
       if (!response.ok) {
-        return {
-          ok: false,
-          error: decodeHttpAppError(data) ?? {
+        return this.failResult(
+          decodeHttpAppError(data) ?? {
             kind: 'dependency',
             port: 'api',
             cause: `HTTP ${response.status}`,
           },
-        };
+          {
+            method,
+            path,
+            startedAt,
+            localCorrelationId,
+            status: response.status,
+            bodyCorrelationId: correlationIdFromBody(data),
+            headerCorrelationId: correlationIdFromHeaders(response),
+          },
+        );
       }
-      return {
-        ok: false,
-        error: {
+      return this.failResult(
+        {
           kind: 'dependency',
           port: 'api-contract',
           cause: `Réponse API invalide pour ${method} ${path}.`,
         },
-      };
+        {
+          method,
+          path,
+          startedAt,
+          localCorrelationId,
+          status: response.status,
+          headerCorrelationId: correlationIdFromHeaders(response),
+        },
+      );
     } catch (error) {
-      return {
-        ok: false,
-        error: {
+      return this.failResult(
+        {
           kind: 'dependency',
           port: 'api',
           cause: error instanceof Error ? error.message : 'réseau',
         },
-      };
+        { method, path, startedAt, localCorrelationId, status: null },
+      );
     } finally {
       if (timeout !== undefined) clearTimeout(timeout);
       removeExternalAbort?.();
@@ -2378,12 +2530,14 @@ export class HttpBobClient implements BobClient {
     timeoutMs = TEXT_EXPORT_TIMEOUT_MS,
   ): Promise<Result<{ content: string; headers: Headers; contentType: string | null }, AppError>> {
     let timeout: ReturnType<typeof setTimeout> | undefined;
+    const startedAt = Date.now();
+    const localCorrelationId = newCorrelationId();
     try {
       const controller = new AbortController();
       const deadline = new Promise<never>((_resolve, reject) => {
         timeout = setTimeout(() => {
           controller.abort();
-          reject(new Error(`Délai réseau dépassé après ${timeoutMs} ms.`));
+          reject(new LocalInterruptError(`Délai réseau dépassé après ${timeoutMs} ms.`));
         }, timeoutMs);
       });
       const withinDeadline = <V>(operation: Promise<V>): Promise<V> =>
@@ -2394,6 +2548,7 @@ export class HttpBobClient implements BobClient {
           method: 'GET',
           signal: controller.signal,
           headers: {
+            'x-correlation-id': localCorrelationId,
             ...(token ? { authorization: `Bearer ${token}` } : {}),
           },
         }),
@@ -2401,30 +2556,36 @@ export class HttpBobClient implements BobClient {
       const contentType = res.headers.get('content-type');
       const content = await withinDeadline(res.text());
       if (!res.ok) {
+        let data: unknown = null;
         try {
-          const data = JSON.parse(content) as unknown;
-          const error: AppError =
-            data && typeof data === 'object' && 'error' in data
-              ? (data as { error: AppError }).error
-              : { kind: 'dependency', port: 'api', cause: `HTTP ${res.status}` };
-          return { ok: false, error };
+          data = JSON.parse(content) as unknown;
         } catch {
-          return {
-            ok: false,
-            error: { kind: 'dependency', port: 'api', cause: `HTTP ${res.status}` },
-          };
+          data = null; // corps non JSON : le statut HTTP reste la vérité rendue ci-dessous.
         }
+        const error: AppError =
+          data && typeof data === 'object' && 'error' in data
+            ? (data as { error: AppError }).error
+            : { kind: 'dependency', port: 'api', cause: `HTTP ${res.status}` };
+        return this.failResult(error, {
+          method: 'GET',
+          path,
+          startedAt,
+          localCorrelationId,
+          status: res.status,
+          bodyCorrelationId: correlationIdFromBody(data),
+          headerCorrelationId: correlationIdFromHeaders(res),
+        });
       }
       return { ok: true, value: { content, headers: res.headers, contentType } };
     } catch (e) {
-      return {
-        ok: false,
-        error: {
+      return this.failResult(
+        {
           kind: 'dependency',
           port: 'api',
           cause: e instanceof Error ? e.message : 'réseau',
         },
-      };
+        { method: 'GET', path, startedAt, localCorrelationId, status: null },
+      );
     } finally {
       if (timeout !== undefined) clearTimeout(timeout);
     }

@@ -102,7 +102,13 @@ describe('HttpBobClient — QuoteDraft BDD owner-scoped', () => {
     await expect(client.saveQuoteDraft({ expectedRevision: 1, payload: payload('stale') }))
       .resolves.toEqual({
         ok: false,
-        error: { kind: 'conflict', entity: 'quote_draft_slot', reason: 'stale_revision' },
+        error: {
+          kind: 'conflict',
+          entity: 'quote_draft_slot',
+          reason: 'stale_revision',
+          code: 'BOB-API-409',
+          correlationId: expect.stringMatching(/^[0-9a-f-]{8,64}$/),
+        },
       });
   });
 

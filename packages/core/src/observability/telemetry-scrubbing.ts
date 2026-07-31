@@ -124,6 +124,24 @@ const VERBATIM_EVENT_KEYS = [
  * structuré d'AppError produit par le filtre d'exception), soit standard côté SDK. Toute
  * étiquette inconnue est écartée : c'est par les étiquettes qu'une donnée client se faufile
  * le plus facilement (un `customerName` posé « juste pour debug »).
+ *
+ * Le bloc « diagnostic d'échec API » ci-dessous est le contrat EXACT de SPEC_SYSTEME_ERREUR
+ * §5.3 : un échec `dependency` remonte à Sentry en tags (code, kind, port, correlationId,
+ * méthode, chemin expurgé, statut). Ce sont des MÉTADONNÉES TECHNIQUES, jamais des données
+ * personnelles — c'est même leur raison d'être : le développeur retrouve l'incident SANS les
+ * logs serveur. Chacune est sûre :
+ *  · `code`   — code court du registre fermé (patron `^BOB-[A-Z]{2,6}-\d{3}$`), projection
+ *               calculée, aucune saisie utilisateur ;
+ *  · `method` — verbe HTTP (`GET`/`POST`…), ensemble fini ;
+ *  · `path`   — chemin de ROUTE déjà expurgé par `redactPathForDiagnostics` (query supprimée,
+ *               segments id/num/token → `:id`/`:num`/`:token`) : c'est le TEMPLATE
+ *               `/company/lookup`, JAMAIS un id concret. Défense en profondeur : `safeText`
+ *               re-masque ici tout motif PII résiduel (un SIRET dans un chemin brut ressort
+ *               `[siren]`) ;
+ *  · `status` — statut HTTP numérique (404, 502…).
+ * `kind`, `port` et `correlationId` (déjà présents plus haut) complètent les sept. Ces clés ne
+ * furent JAMAIS transmises avant ce correctif : elles étaient écartées EN SILENCE, la spec
+ * promettant ce que le code jetait.
  */
 const ALLOWED_TAG_KEYS: ReadonlySet<string> = new Set([
   'correlationId',
@@ -141,6 +159,11 @@ const ALLOWED_TAG_KEYS: ReadonlySet<string> = new Set([
   'release',
   'runtime',
   'os',
+  // Diagnostic d'échec API — contrat SPEC_SYSTEME_ERREUR §5.3 (justification par clé ci-dessus).
+  'code',
+  'method',
+  'path',
+  'status',
 ]);
 
 const DEFAULT_ALLOWED_CONTEXTS = ['runtime', 'os', 'app', 'trace'] as const;

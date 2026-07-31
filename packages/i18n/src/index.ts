@@ -1127,10 +1127,39 @@ const legacyFr = {
     direct: 'SIRET',
   },
   'clients.createSiretSearch': { pote: 'Rechercher', pro: 'Rechercher', direct: 'Rechercher' },
-  'clients.createSiretError': {
-    pote: 'Je ne trouve pas cette fiche. Tu peux continuer à la main.',
-    pro: 'Fiche introuvable. Vous pouvez poursuivre la saisie manuellement.',
-    direct: 'Introuvable. Saisie manuelle.',
+  // ── SPEC_SYSTEME_ERREUR §8 — refus du lookup SIRET DISCRIMINÉS (vitrine anti-écrasement).
+  // Un seul « introuvable » écrasait 404/422/429/502 : le fondateur a vu « non trouvé » pour un
+  // SIRET servi en 200. Chaque motif porte SON copy actionnable ; le code court est affiché par
+  // ErrorNotice, jamais dans ces textes.
+  'clients.createSiretErrorInvalid': {
+    pote: 'Ce SIRET a l’air bancal — 14 chiffres, vérifie-le ? Tu peux aussi continuer à la main.',
+    pro: 'SIRET invalide : 14 chiffres attendus. Vous pouvez poursuivre la saisie manuellement.',
+    direct: 'SIRET invalide. 14 chiffres, ou saisie manuelle.',
+  },
+  'clients.createSiretErrorNotFound': {
+    pote: 'L’annuaire officiel ne connaît pas ce SIRET. Vérifie le numéro, ou continue à la main.',
+    pro: 'SIRET introuvable à l’annuaire des entreprises. Vérifiez le numéro ou poursuivez manuellement.',
+    direct: 'Introuvable à l’annuaire. Vérifie, ou saisie manuelle.',
+  },
+  'clients.createSiretErrorRateLimited': {
+    pote: 'Trop de recherches d’un coup — réessaie dans {seconds} s, la fiche t’attend.',
+    pro: 'Limite de recherches atteinte. Réessayez dans {seconds} secondes.',
+    direct: 'Throttle. Réessaie dans {seconds} s.',
+  },
+  'clients.createSiretErrorLookupDown': {
+    pote: 'L’annuaire des entreprises ne répond pas, là. Réessaie dans un instant, ou remplis la fiche à la main.',
+    pro: 'L’annuaire des entreprises ne répond pas. Réessayez ou poursuivez la saisie manuellement.',
+    direct: 'Annuaire KO. Réessaie ou saisie manuelle.',
+  },
+  'clients.createSiretErrorContract': {
+    pote: 'L’annuaire a répondu quelque chose que je n’arrive pas à lire — c’est de notre côté. Réessaie, ou continue à la main.',
+    pro: 'Réponse de l’annuaire illisible (anomalie de notre côté). Réessayez ou poursuivez manuellement.',
+    direct: 'Réponse annuaire illisible (chez nous). Réessaie ou saisie manuelle.',
+  },
+  'clients.createSiretErrorUnknown': {
+    pote: 'La recherche a échoué sans raison claire. Réessaie, ou continue à la main.',
+    pro: 'La recherche a échoué pour une raison inattendue. Réessayez ou poursuivez manuellement.',
+    direct: 'Échec inattendu. Réessaie ou saisie manuelle.',
   },
   'clients.createSiretFound': {
     pote: 'Trouvé : {name} — je préremplis la fiche.',
@@ -9758,6 +9787,109 @@ const legacyFr = {
     pote: 'À déclarer au plus tard le {date}',
     pro: 'À déclarer au plus tard le {date}',
     direct: 'Déclaration : {date} max.',
+  },
+
+  // ── SPEC_SYSTEME_ERREUR — chrome ErrorNotice (les deux faces, §6) ──────────
+  'errors.noticeDetails': {
+    pote: 'Détails techniques',
+    pro: 'Détails techniques',
+    direct: 'Détails',
+  },
+  'errors.noticeHide': {
+    pote: 'Masquer les détails',
+    pro: 'Masquer les détails',
+    direct: 'Masquer',
+  },
+  'errors.noticeShare': {
+    pote: 'Partager le rapport',
+    pro: 'Partager le rapport',
+    direct: 'Partager',
+  },
+  'errors.noticeReference': { pote: 'Référence', pro: 'Référence', direct: 'Réf.' },
+  'errors.noticeCorrelation': { pote: 'Corrélation', pro: 'Corrélation', direct: 'Corr.' },
+  'errors.noticeKind': { pote: 'Type', pro: 'Type', direct: 'Type' },
+  'errors.noticeAt': { pote: 'Heure', pro: 'Heure', direct: 'Heure' },
+  'errors.noticeDetailsHint': {
+    pote: 'De quoi me donner la référence exacte si tu appelles à l’aide.',
+    pro: 'Références exactes à communiquer au support.',
+    direct: 'Références support.',
+  },
+
+  // ── SPEC_SYSTEME_ERREUR — écran « Diagnostic technique » (§5.2) ────────────
+  'diagtech.eyebrow': {
+    pote: 'Sous le capot',
+    pro: 'Support technique',
+    direct: 'Technique',
+  },
+  'diagtech.title': {
+    pote: 'Diagnostic technique',
+    pro: 'Diagnostic technique',
+    direct: 'Diagnostic technique',
+  },
+  'diagtech.subtitle': {
+    pote: 'Les derniers pépins techniques, avec leurs références. Aucune donnée client là-dedans.',
+    pro: 'Les derniers incidents techniques et leurs références. Aucune donnée client.',
+    direct: 'Derniers incidents + références. Zéro donnée client.',
+  },
+  'diagtech.empty': {
+    pote: 'Rien à signaler : aucun échec technique enregistré sur cet appareil.',
+    pro: 'Aucun échec technique enregistré sur cet appareil.',
+    direct: 'Aucun échec enregistré.',
+  },
+  'diagtech.share': { pote: 'Partager', pro: 'Partager', direct: 'Partager' },
+  'diagtech.shareUnavailable': {
+    pote: 'Le partage n’est pas dispo sur cet appareil, là.',
+    pro: 'Le partage est indisponible sur cet appareil.',
+    direct: 'Partage indisponible.',
+  },
+  'diagtech.clear': { pote: 'Vider', pro: 'Vider', direct: 'Vider' },
+  'diagtech.clearConfirmTitle': {
+    pote: 'Vider le journal ?',
+    pro: 'Vider le journal ?',
+    direct: 'Vider ?',
+  },
+  'diagtech.clearConfirmBody': {
+    pote: 'Les références des derniers échecs seront effacées de cet appareil.',
+    pro: 'Les références des derniers échecs seront effacées de cet appareil.',
+    direct: 'Effacement local des références.',
+  },
+  'diagtech.clearConfirmYes': { pote: 'Vider', pro: 'Vider', direct: 'Vider' },
+  'diagtech.sectionJournal': {
+    pote: 'Derniers échecs',
+    pro: 'Derniers échecs',
+    direct: 'Échecs',
+  },
+  'diagtech.channelTitle': {
+    pote: 'Canal de crash',
+    pro: 'Canal de crash',
+    direct: 'Canal crash',
+  },
+  'diagtech.channelActive': {
+    pote: 'Actif sur ce build — les plantages remontent (sans aucune donnée client).',
+    pro: 'Actif sur ce build : les plantages sont remontés, sans donnée client.',
+    direct: 'Actif. Zéro donnée client.',
+  },
+  'diagtech.channelDormant': {
+    pote: 'Dormant sur ce build — rien ne quitte l’appareil.',
+    pro: 'Dormant sur ce build : aucune télémétrie ne quitte l’appareil.',
+    direct: 'Dormant. Rien ne sort.',
+  },
+  'diagtech.statusLine': {
+    pote: '{count} échec(s) gardé(s) en mémoire, sur les {max} derniers max.',
+    pro: '{count} échec(s) conservé(s) (maximum {max}).',
+    direct: '{count}/{max} échecs.',
+  },
+
+  // ── Mon compte — accès au diagnostic technique ─────────────────────────────
+  'account.diagnosticRow': {
+    pote: 'Diagnostic technique',
+    pro: 'Diagnostic technique',
+    direct: 'Diagnostic technique',
+  },
+  'account.diagnosticRowSub': {
+    pote: 'Les références des derniers pépins, à partager au support',
+    pro: 'Références des derniers incidents, partageables au support',
+    direct: 'Références incidents',
   },
 } as const satisfies Record<string, Copy>;
 

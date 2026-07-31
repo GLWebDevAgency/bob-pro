@@ -616,6 +616,33 @@ export default function Compte() {
                 </Pressable>
               ))}
             </Card>
+            {/* Diagnostic TECHNIQUE (SPEC_SYSTEME_ERREUR §5.2) — les références des derniers
+                échecs API, partageables au support. Distinct de /diagnostic (comptable). */}
+            <Card padding={0} style={{ marginBottom: 6, paddingHorizontal: 15 }}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`${say('account.diagnosticRow')}. ${say('account.diagnosticRowSub')}`}
+                onPress={() => router.push('/diagnostic-technique')}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 11,
+                  paddingVertical: 13,
+                  minHeight: 44,
+                }}
+              >
+                <Feather name="activity" color={colors.ink600} size={17} />
+                <View style={{ flex: 1 }}>
+                  <Text style={[font('sub', 600), { fontSize: 14, color: colors.ink800 }]}>
+                    {say('account.diagnosticRow')}
+                  </Text>
+                  <Text style={[font('meta'), { color: colors.slate400, marginTop: 1 }]}>
+                    {say('account.diagnosticRowSub')}
+                  </Text>
+                </View>
+                <ChevronRightIcon color={colors.slate300} size={16} />
+              </Pressable>
+            </Card>
             <Text style={[font('meta'), { color: colors.slate300, marginBottom: 20 }]}>
               {say('account.appVersion', { version: appVersion })}
             </Text>

@@ -65,6 +65,20 @@ describe('Souveraineté — seule la région UE est admise', () => {
   });
 });
 
+describe('Build de développement — canal dormant (SPEC_SYSTEME_ERREUR §5.3)', () => {
+  it('un build __DEV__ reste dormant MÊME avec un DSN UE valide, sans jamais lever', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    expect(resolveCrashReporterConfig(EU_DSN, 'production', true)).toBeNull();
+
+    expect(String(warn.mock.calls[0]?.[0])).toContain('build de développement');
+  });
+
+  it('hors dev (défaut des tests node), le même DSN active le canal', () => {
+    expect(resolveCrashReporterConfig(EU_DSN, 'production', false)?.dsn).toBe(EU_DSN);
+  });
+});
+
 describe('Initialisation — jamais une cause de plantage', () => {
   it('initialise le SDK avec les options minimisées quand le DSN est conforme', async () => {
     const sdk = sdkDouble();
@@ -165,6 +179,39 @@ describe('Minimisation — preuve qu’aucune donnée client ne sort', () => {
 
     expect(sdk.captureException).toHaveBeenCalledWith(error, {
       captureContext: { tags: { screen: 'profil-fiscal' } },
+    });
+  });
+
+  it('un échec dependency remonte les SEPT étiquettes de la spec §5.3 jusqu’au SDK, chemin en template', async () => {
+    // Le vrai bout de chaîne on-device : `reportApiFailure` compose ce contexte pour un
+    // `dependency` (cf. api-failure-reporter) → `captureCrash` → `telemetryTagsFrom` → SDK.
+    // La spec §5.3 promet exactement ces sept tags ; ils doivent atteindre `captureException`.
+    const sdk = sdkDouble();
+    await initCrashReporter(resolveCrashReporterConfig(EU_DSN), async () => sdk);
+    const error = new Error('api_failure BOB-SIRET-502');
+
+    captureCrash(error, {
+      code: 'BOB-SIRET-502',
+      kind: 'dependency',
+      port: 'recherche-entreprises',
+      correlationId: 'corr-dep-1234',
+      method: 'GET',
+      // Chemin déjà expurgé par `redactPathForDiagnostics` en amont : le TEMPLATE, pas un id.
+      path: '/company/lookup',
+      status: 502,
+    });
+
+    const hint = sdk.captureException.mock.calls[0]?.[1] as {
+      captureContext: { tags: Record<string, string> };
+    };
+    expect(hint.captureContext.tags).toEqual({
+      code: 'BOB-SIRET-502',
+      kind: 'dependency',
+      port: 'recherche-entreprises',
+      correlationId: 'corr-dep-1234',
+      method: 'GET',
+      path: '/company/lookup',
+      status: '502',
     });
   });
 
