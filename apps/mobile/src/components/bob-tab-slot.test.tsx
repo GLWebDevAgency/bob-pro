@@ -192,6 +192,26 @@ describe('5 · fade-through — l’entrant fond, le sortant disparaît', () => 
     expect(hoisted.timings).toEqual([]);
   });
 
+  /**
+   * « MASQUÉ » DOIT ÊTRE VRAI, PAS SEULEMENT ÉCRIT. Le commentaire du composant affirmait que
+   * l'écran sortant était « masqué instantanément (`display: none` côté conteneur) » : aucun
+   * conteneur du dépôt ne pose `display: none`, et une vue à opacité 0 reste PARFAITEMENT
+   * tactile. Un doigt qui tombait dessus touchait l'écran d'à côté. La coupure est maintenant
+   * faite ici, et elle est prouvée.
+   */
+  it('l’écran SORTANT ne reçoit plus aucune touche — l’opacité 0 ne suffit pas', async () => {
+    const renderer = await mount(true);
+    const focusedRoot = renderer.toJSON() as unknown as { props: Record<string, unknown> };
+    expect(focusedRoot.props['pointerEvents']).toBe('auto');
+
+    await update(renderer, false);
+    const blurredRoot = renderer.toJSON() as unknown as {
+      props: Record<string, unknown>;
+      // Le style est lu pour montrer que l'opacité, elle, ne suffirait pas.
+    };
+    expect(blurredRoot.props['pointerEvents']).toBe('none');
+  });
+
   it('applique la micro-échelle 0,985 → 1 : jamais une entrée depuis rien', async () => {
     const renderer = await mount(false);
     const root = renderer.toJSON() as unknown as { props: { style: unknown[] } };

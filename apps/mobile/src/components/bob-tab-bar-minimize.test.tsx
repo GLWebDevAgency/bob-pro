@@ -6,7 +6,7 @@
  * C'est la seule chose qui interdise aux deux de diverger.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { minimizeDecision } from '@bob/ui';
+import { MINIMIZE_DEAD_ZONE, minimizeDecision } from '@bob/ui';
 
 const hoisted = vi.hoisted(() => ({
   springs: [] as number[],
@@ -126,15 +126,34 @@ beforeEach(() => {
 });
 
 describe('1 · pilote de scroll — la même décision que la spécification pure', () => {
-  it('replie en descendant, déplie en remontant, et ne bouge pas dans la zone morte', () => {
+  /**
+   * ─── LE RECROISEMENT DE LA ROUE DÉCLARÉE n° 2 ─────────────────────────────────────────
+   *
+   * `minimizeDecision` est REDITE en ligne dans le worklet (un worklet n'appelle pas une
+   * fonction importée). Deux écritures d'une même règle peuvent diverger sans bruit : ce test
+   * est la seule chose qui l'interdise, et il compare DEUX sorties à chaque pas, pas une —
+   *  · la CIBLE du ressort (`target`) ;
+   *  · l'OFFSET CLAMPÉ mémorisé (`previousY`).
+   * Comparer la seule cible laisserait passer une divergence de CLAMP, c'est-à-dire précisément
+   * le défaut que le clamp existe pour corriger : un `dy` inversé par le rubber-band produit la
+   * bonne cible une frame sur deux, et le test resterait vert.
+   *
+   * La course est DENSE et adverse : plateaux (dy = 0), micro-tremblements dans la zone morte,
+   * inversions de direction, sur-défilement haut et bas, retour sous le seuil de dépli forcé.
+   */
+  const COURSE = [
+    0, 8, 23, 24, 25, 28, 27, 26, 40, 42, 45, 45, 45, 90, 88, 60, 10, 0, -50, -200, 500, 1000,
+    3200, 3200, 9999, 9999, 3000, 1200, 100, 26, 24, 23, 5, 0,
+  ];
+
+  it('replie, déplie, et ne bouge pas dans la zone morte — recroisé pas à pas', () => {
     const handler = useMinimizeOnScroll() as unknown as ScrollHandler;
-    const [progress, , animated] = hoisted.boxes as { value: unknown }[];
+    const [progress, , animated, previousBox] = hoisted.boxes as { value: unknown }[];
     // `animated` à vrai : on veut voir les ressorts partir.
     if (animated) animated.value = true;
 
-    // On rejoue un parcours de scroll et on compare, étape par étape, avec `minimizeDecision`.
     let previousY = 0;
-    for (const y of [0, 40, 42, 90, 88, 60, 10, 500, 200]) {
+    for (const y of COURSE) {
       const before = progress?.value;
       handler.onScroll(scroll(y));
       const expected = minimizeDecision({
@@ -143,13 +162,39 @@ describe('1 · pilote de scroll — la même décision que la spécification pur
         layoutHeight: 800,
         previousY,
       });
-      previousY = expected.y;
+      // (1) l'offset CLAMPÉ que le worklet a mémorisé — la moitié qui manquait.
+      expect(previousBox?.value, `y=${y} : offset clampé`).toBe(expected.y);
+      // (2) la cible du ressort.
       if (expected.target === null) {
         expect(progress?.value, `y=${y} : zone morte`).toBe(before);
       } else {
         expect(progress?.value, `y=${y}`).toBe(expected.target);
       }
+      previousY = expected.y;
     }
+  });
+
+  it('les deux écritures partagent les MÊMES seuils — importés, jamais recopiés', () => {
+    const handler = useMinimizeOnScroll() as unknown as ScrollHandler;
+    const [progress, , animated] = hoisted.boxes as { value: unknown }[];
+    if (animated) animated.value = true;
+    // Exactement à la frontière de la zone morte : rien ne bouge. Un seuil recopié à 2 ou à 4
+    // ici, et la spécification pure dirait le contraire — ce test le verrait.
+    handler.onScroll(scroll(200));
+    const atThreshold = progress?.value;
+    handler.onScroll(scroll(200 + MINIMIZE_DEAD_ZONE));
+    expect(progress?.value).toBe(atThreshold);
+    expect(
+      minimizeDecision({
+        contentOffsetY: 200 + MINIMIZE_DEAD_ZONE,
+        contentHeight: 4000,
+        layoutHeight: 800,
+        previousY: 200,
+      }).target,
+    ).toBeNull();
+    // Un point de plus, et les deux écritures basculent ENSEMBLE.
+    handler.onScroll(scroll(200 + MINIMIZE_DEAD_ZONE + 1));
+    expect(progress?.value).toBe(1);
   });
 
   it('CLAMPE l’offset — le rubber-band ne peut pas inverser la direction une frame', () => {

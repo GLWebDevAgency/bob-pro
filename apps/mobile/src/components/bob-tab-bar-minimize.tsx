@@ -15,11 +15,24 @@
  *
  * AUCUN `setState` PAR FRAME : tout se passe sur le thread UI, dans un worklet de scroll.
  *
- * ─── POURQUOI LE PILOTE EST LIVRÉ MAIS N'EST BRANCHÉ SUR AUCUN ÉCRAN ─────────────────────
- * `useMinimizeOnScroll` doit être posé sur la liste défilante de CHAQUE écran d'onglet. Le faire
- * ici modifierait cinq écrans LIVRÉS, ce que la borne de livraison n° 1 du socle interdit tant
- * que la refonte visuelle est reportée. Le pilote est donc livré, testé et exporté ; son
- * adoption écran par écran est une étape distincte, sous le flag `mobile_tabs_experiment_v1`.
+ * ─── OÙ CE PILOTE EST BRANCHÉ ────────────────────────────────────────────────────────────
+ * Sur la vue défilante de QUATRE des cinq écrans d'onglet — `index`, `clients`, `argent`,
+ * `documents` — par la couture `TabsScrollView` (`bob-tabs-scroll-view.tsx`), et uniquement
+ * quand `mobile_tabs_experiment_v1` est allumé. Hors flag, la couture rend un `ScrollView` NU :
+ * aucun gestionnaire n'est attaché, l'arbre livré est identique, et le bras OFF de `PERF-13` ne
+ * paie rien par frame.
+ *
+ * LE CINQUIÈME ÉCRAN, `assistant`, N'EST PAS BRANCHÉ, et c'est un choix motivé : sa vue
+ * défilante est un FIL DE CHAT qui se recale tout seul en bas à chaque nouveau message
+ * (`onContentSizeChange` → `scrollToEnd`). Chacun de ces recalages est un défilement vers le
+ * bas, donc replierait la barre sans que l'utilisateur ait bougé le doigt. Y brancher le pilote
+ * demanderait d'abord de distinguer un défilement PROVOQUÉ d'un défilement SUBI — un travail
+ * de conception, pas un branchement. Le fait est écrit ici plutôt que passé sous silence.
+ *
+ * *(Rédaction précédente : « le pilote est livré mais n'est branché sur aucun écran… la borne de
+ * livraison n° 1 l'interdit ». La borne n° 1 porte sur la `BottomTabBar` (« n'est ni restylée ni
+ * supprimée »), pas sur les écrans : elle n'interdisait pas ce branchement. Et un comportement
+ * qui n'est monté nulle part n'est pas livré.)*
  */
 import { createContext, useContext, useMemo, type PropsWithChildren, type ReactElement } from 'react';
 import {
@@ -93,10 +106,18 @@ export function setMinimized(state: TabBarMinimizeState, next: 0 | 1): void {
  * CLAMPÉS à la plage réellement défilable : sans ce clamp, le rubber-band d'overscroll inverse
  * le signe de `dy` le temps d'une frame et fait CLIGNOTER la barre.
  *
- * La décision elle-même est spécifiée et testée dans `bob-tab-bar.logic.ts`
- * (`minimizeDecision`) ; elle est réécrite ici en ligne parce qu'un worklet ne peut pas appeler
- * une fonction importée non workletisée. Les deux seuils, eux, sont IMPORTÉS — aucune constante
- * n'est recopiée dans un thread où personne ne pourrait la relire.
+ * ─── ROUE DÉCLARÉE n° 2 · `minimizeDecision` EST RÉÉCRITE ICI EN LIGNE ───────────────────
+ * La décision est spécifiée et testée dans `bob-tab-bar.logic.ts` (`minimizeDecision`). Elle est
+ * REDITE ici, ligne à ligne, parce qu'un worklet ne peut pas appeler une fonction importée non
+ * workletisée : ce n'est pas un choix de style, c'est une contrainte du runtime.
+ *
+ * CE QUI EMPÊCHE LES DEUX ÉCRITURES DE DIVERGER — et c'est la seule chose qui compte : le test
+ * `bob-tab-bar-minimize.test.tsx` EXÉCUTE ce worklet sur une course dense d'offsets (plateaux,
+ * inversions, zone morte, sur-défilement des deux côtés) et compare, à CHAQUE pas, DEUX choses à
+ * `minimizeDecision` : la cible du ressort ET l'offset clampé mémorisé. Comparer la seule cible
+ * laisserait passer une divergence de clamp — exactement le défaut que le clamp existe pour
+ * corriger. Les deux seuils, eux, sont IMPORTÉS : aucune constante n'est recopiée dans un thread
+ * où personne ne pourrait la relire.
  */
 export function useMinimizeOnScroll(): ReturnType<typeof useAnimatedScrollHandler> {
   const state = useTabBarMinimizeState();

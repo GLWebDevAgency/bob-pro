@@ -16,12 +16,19 @@
  *  · c'est le levier de ROLLBACK nommé au § Owners : un seul indicateur hors seuil, le flag
  *    retombe et la barre livrée reprend la main sans migration à chaud.
  *
- * Le navigateur, lui, ne change PAS d'une branche à l'autre : ce sont les mêmes routes, les mêmes
- * écrans, les mêmes options. Seul le rendu de la barre change — et aucun écran livré n'est
- * touché, conformément à la borne de livraison n° 1.
+ * Les ROUTES ne changent pas d'une branche à l'autre : mêmes écrans, mêmes options. Ce qui change
+ * sous le flag, ce sont les COMPORTEMENTS montés autour d'eux — et ils le sont RÉELLEMENT :
+ *  · la barre portée à la place de la barre livrée ;
+ *  · le FADE-THROUGH (comportement 5), monté par `screenLayout` autour de CHAQUE écran. C'est ce
+ *    qui manquait : `BobTabSlotFade` existait, testé, et n'était monté par personne — donc jamais
+ *    rendu, flag allumé ou non ;
+ *  · le RETOUR EN HAUT au retap de l'onglet actif, l'un des points où le socle exige que Bob ne
+ *    régresse pas vers la référence (§ Ce que la référence ne fait PAS).
+ * Hors flag, l'arbre reste rigoureusement celui d'avant : aucun fournisseur, aucun enveloppeur.
  */
-import { Tabs } from 'expo-router';
+import { Tabs, useIsFocused } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import type { ReactElement, ReactNode } from 'react';
 import { patterns } from '@bob/tokens';
 import { BottomTabBar, type BottomTabItem } from '@bob/ui';
 import {
@@ -35,6 +42,12 @@ import { BobTabBar, type BobTabBarItem } from '../../src/components/bob-tab-bar'
 import { tabHapticPort } from '../../src/components/bob-tab-bar-haptics';
 import { TabBarMinimizeProvider } from '../../src/components/bob-tab-bar-minimize';
 import { isMobileTabsExperimentEnabled } from '../../src/components/bob-tab-bar-flag';
+import { BobTabSlotFade } from '../../src/components/bob-tab-slot';
+import {
+  TabSceneFocus,
+  TabScrollTopProvider,
+  useTabScrollTop,
+} from '../../src/components/bob-tabs-scroll-view';
 
 const ITEMS: readonly BottomTabItem[] = [
   { key: 'index', label: "Aujourd'hui", icon: (s) => <SunriseIcon color={s.color} size={s.size} /> },
@@ -60,13 +73,28 @@ interface TabBarSlotProps {
   };
 }
 
-/** Sélection commune aux deux barres : l'événement `tabPress` reste émis, et respecté. */
+/**
+ * Sélection commune aux deux barres : l'événement `tabPress` reste émis, et respecté.
+ *
+ * RETAP SUR L'ONGLET ACTIF → RETOUR EN HAUT. La référence laisse ce cas mort : `router.navigate`
+ * sur la route courante est un no-op, et rien ne se passe. Le socle l'exige des deux côtés —
+ * § Exigences communes (« retap sur l'onglet actif : retour en haut ») et le tableau « Ce que la
+ * référence ne fait PAS ». On remonte la vue défilante FOCUSÉE, et on ne navigue pas : naviguer
+ * vers là où on est déjà réinitialiserait la pile de l'onglet, ce que le socle interdit
+ * explicitement (« il ne modifie pas un formulaire en cours »).
+ */
 function useTabSelect({ state, navigation }: TabBarSlotProps): (key: string) => void {
+  const scrollToTop = useTabScrollTop();
   return (key: string) => {
     const route = state.routes.find((r) => r.name === key);
     if (!route) return;
     const event = navigation.emit({ type: 'tabPress', target: route.key, canPreventDefault: true });
-    if (!event.defaultPrevented) navigation.navigate(route.name);
+    if (event.defaultPrevented) return;
+    if (state.routes[state.index]?.name === route.name) {
+      scrollToTop();
+      return;
+    }
+    navigation.navigate(route.name);
   };
 }
 
@@ -103,11 +131,30 @@ function PortedTabBar(props: TabBarSlotProps) {
   );
 }
 
+/**
+ * COMPORTEMENT 5, RÉELLEMENT MONTÉ. `screenLayout` enveloppe le contenu de CHAQUE écran d'onglet
+ * — c'est le point d'accroche prévu par le navigateur, et il ne touche aucun écran livré.
+ * `useIsFocused` donne le focus de façon RÉACTIVE : `navigation.isFocused()` ne re-rendrait rien.
+ */
+function TabSceneFade({ children }: { readonly children: ReactNode }): ReactElement {
+  const focused = useIsFocused();
+  return (
+    <BobTabSlotFade focused={focused} testID="bob-tab-slot">
+      {/* Le focus descend jusqu'à la vue défilante : c'est ce qui désigne LA cible du retour en
+          haut parmi cinq écrans montés en même temps. */}
+      <TabSceneFocus focused={focused}>{children}</TabSceneFocus>
+    </BobTabSlotFade>
+  );
+}
+
 export default function TabsLayout() {
   const ported = isMobileTabsExperimentEnabled();
   const layout = (
     <Tabs
       screenOptions={{ headerShown: false }}
+      // Le fade-through n'existe que dans la branche portée : hors flag, `screenLayout` est
+      // absent et les écrans sont montés exactement comme avant, sans enveloppeur.
+      {...(ported ? { screenLayout: ({ children }) => <TabSceneFade>{children}</TabSceneFade> } : {})}
       tabBar={(props) =>
         ported ? (
           <PortedTabBar {...(props as unknown as TabBarSlotProps)} />
@@ -124,7 +171,13 @@ export default function TabsLayout() {
     </Tabs>
   );
 
-  // Le fournisseur de repli n'est monté QUE dans la branche portée : hors flag, l'arbre livré
+  // Les deux fournisseurs ne sont montés QUE dans la branche portée : hors flag, l'arbre livré
   // reste rigoureusement le même — un composant de plus, c'est déjà un changement.
-  return ported ? <TabBarMinimizeProvider>{layout}</TabBarMinimizeProvider> : layout;
+  return ported ? (
+    <TabBarMinimizeProvider>
+      <TabScrollTopProvider>{layout}</TabScrollTopProvider>
+    </TabBarMinimizeProvider>
+  ) : (
+    layout
+  );
 }

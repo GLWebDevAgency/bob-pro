@@ -3,8 +3,8 @@
  *
  * L'écran ENTRANT fond de 0 à 1 avec une micro-échelle 0,985 → 1, en `motionSemantic.replace`
  * (280 ms, token LIVRÉ et gelé), courbe `easing.enter`. L'écran SORTANT n'est pas animé du
- * tout : il est masqué INSTANTANÉMENT — jamais deux écrans animés qui se croisent. Le tout
- * premier écran au lancement n'est pas animé non plus.
+ * tout : sa progression est REMISE À 0 dans la frame — jamais deux écrans animés qui se
+ * croisent. Le tout premier écran au lancement n'est pas animé non plus.
  *
  * ─── CE QU'ON N'A PAS RECOPIÉ DE LA RÉFÉRENCE ───────────────────────────────────────────
  *  · sa durée de 220 ms (`fading-tab-slot.tsx` l. 28) : un fade-through est EXACTEMENT le cas
@@ -16,7 +16,13 @@
  *
  * ─── ZÉRO ÉCRAN LIVRÉ N'EST TOUCHÉ ──────────────────────────────────────────────────────
  * Ce composant est un enveloppeur de SLOT, pas un restyling : il ne connaît pas le contenu qu'il
- * enveloppe. Il n'est monté que par le layout d'onglets sous flag `mobile_tabs_experiment_v1`.
+ * enveloppe. Il est monté par `apps/mobile/app/(tabs)/_layout.tsx` via `screenLayout`, autour de
+ * CHAQUE écran d'onglet, et uniquement quand `mobile_tabs_experiment_v1` est allumé. Hors flag,
+ * `screenLayout` n'est pas passé au navigateur et ce composant n'apparaît nulle part.
+ *
+ * *(Rédaction précédente, FAUSSE : « Il n'est monté que par le layout d'onglets sous flag » — le
+ * layout ne l'importait pas. Le fade-through n'était donc rendu NULLE PART, flag allumé ou non :
+ * un comportement écrit, testé, et jamais livré. La phrase disait le contraire.)*
  */
 import { useEffect, useRef, type PropsWithChildren, type ReactElement } from 'react';
 import Animated, {
@@ -68,8 +74,17 @@ export function BobTabSlotFade({
     const plan = fadeThroughPlan({ focused, firstRender, reduceMotion });
 
     if (plan.hideInstantly) {
-      // L'écran sortant est masqué instantanément (`display: none` côté conteneur) : on remet
-      // la progression à 0 pour que son prochain retour reparte d'une entrée propre.
+      /*
+       * L'ÉCRAN SORTANT — sa progression retombe à 0 dans la frame, sans course : opacité 0,
+       * échelle 0,985. Et il cesse de recevoir des touches (voir `pointerEvents` ci-dessous),
+       * ce qui est la seule chose qui rende « masqué » vrai : une vue à opacité 0 reste
+       * PARFAITEMENT tactile, et un doigt qui tombe dessus toucherait l'écran d'à côté.
+       *
+       * *(Rédaction précédente, FAUSSE : « masqué instantanément (`display: none` côté
+       * conteneur) ». Aucun conteneur du dépôt ne pose `display: none` — le navigateur peut
+       * détacher ses scènes, mais ce n'est ni notre code ni notre garantie. On ne s'appuie
+       * donc plus dessus : on coupe nous-mêmes le dispatch.)*
+       */
       progress.value = 0;
       return;
     }
@@ -90,7 +105,14 @@ export function BobTabSlotFade({
   }));
 
   return (
-    <Animated.View testID={testID} style={[{ flex: 1 }, style]}>
+    <Animated.View
+      testID={testID}
+      // Un écran non focusé est invisible ET intouchable. `pointerEvents` suit le FOCUS, pas
+      // l'opacité : la coupure doit être vraie dès la frame du changement d'onglet, sans
+      // attendre la fin d'une animation qui, pour l'écran sortant, n'existe même pas.
+      pointerEvents={focused ? 'auto' : 'none'}
+      style={[{ flex: 1 }, style]}
+    >
       {children}
     </Animated.View>
   );
