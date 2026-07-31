@@ -1,12 +1,16 @@
 /**
- * LegalIdentityEditSheet — édition du n° d'immatriculation (RCS/RM) et de l'adresse du siège
+ * LegalIdentityEditSheet — édition de l'identité légale imprimée et BLOQUANTE pour l'émission
  * (Réglages facturation §Identité sur les factures, PATCH /company/legal).
  *
- * POURQUOI CET ÉCRAN EXISTE : `Company.assertCanIssue()` (@bob/core) exige `rcsOrRm` non vide
- * ET `address.line1`/`address.city` avant toute émission (art. R123-237 c. com.). Ces deux
- * données sont provisionnées par le lookup SIRET… qui ne les fournit pas toujours. Sans champ
- * pour les saisir, le gate « entreprise incomplète » renvoyait vers un écran qui ne les portait
- * pas : cul-de-sac total, aucune facture émissible à vie. Cette feuille est la sortie.
+ * POURQUOI CET ÉCRAN EXISTE : `Company.assertCanIssue()` (@bob/core) exige, avant toute
+ * émission : `rcsOrRm` (art. R123-237 c. com.), l'adresse COMPLÈTE du siège (rue + code postal
+ * + ville), le capital social pour une société (art. R123-238 c. com.) et le n° de TVA
+ * intracommunautaire hors franchise. Ces données sont provisionnées par le lookup SIRET… qui ne
+ * les fournit pas toutes (jamais le capital). Sans champ pour les saisir, le gate « entreprise
+ * incomplète » était un cul-de-sac : aucune pièce émissible à vie (bug 20/07 pour RCS/adresse,
+ * bug FLY SERVICES 30/07 pour le capital d'une SAS). Cette feuille est la sortie — TOUTES les
+ * exigences d'identité du domaine s'éditent ici, et le verrou anti-récidive de
+ * document-gates.logic.test.ts casse si l'une d'elles perd son éditeur.
  *
  * MÊME PATRON PREMIUM que IbanEditSheet (feuille @bob/ui, jamais d'Alert natif) : titre, corps,
  * champs ≥ 44 pt, erreurs inline, bandeau d'échec réseau, boutons Enregistrer / Annuler.
@@ -18,12 +22,13 @@
  * siège) et un bouton explicite « Utiliser cette valeur ». Pour un artisan au répertoire des
  * métiers, aucune valeur n'est proposée — seul le format est rappelé.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
-import { suggestRegistrationNumber, type CompanyProps } from '@bob/core';
+import { Company, suggestRegistrationNumber, type CompanyProps } from '@bob/core';
 import { t, type I18nKey, type Personality } from '@bob/i18n';
 import { Button, LegalHint, Sheet, font, useTheme } from '@bob/ui';
 import { useUpdateCompanyLegal } from '../../data/hooks';
+import { formatCentsForEuroInput } from '../../finance/parse-euro-amount';
 import {
   buildLegalIdentityPatch,
   canSaveLegalIdentity,
@@ -41,6 +46,12 @@ export interface LegalIdentityEditSheetProps {
 const valuesOf = (company: CompanyProps): LegalIdentityValues => ({
   rcsOrRm: company.rcsOrRm ?? '',
   tvaIntracom: company.tvaIntracom ?? '',
+  // Centimes → euros EXACTS avec virgule française (« 10000,50 ») — arithmétique entière,
+  // même aller-retour que le solde bancaire (BankBalanceSheet).
+  capitalSocialEuros:
+    company.capitalSocialCents === undefined
+      ? ''
+      : formatCentsForEuroInput(company.capitalSocialCents),
   line1: company.address.line1 ?? '',
   zip: company.address.zip ?? '',
   city: company.address.city ?? '',
@@ -57,7 +68,17 @@ export function LegalIdentityEditSheet({
   const current = valuesOf(company);
   const [values, setValues] = useState<LegalIdentityValues>(current);
   const [touched, setTouched] = useState(false);
-  const legalContext = { siren: company.siren, vatRequired: company.vatRegime !== 'franchise' };
+  // Le DOMAINE décide si un capital est exigé (`isSociete()` — art. R123-238) : l'écran ne
+  // connaît aucune forme juridique. `Company.of` ne peut échouer qu'avec une fiche serveur
+  // incohérente ; on retombe alors sur « pas de champ capital » — l'émission reste de toute
+  // façon fermée par le gate (companyCanIssue, fail-closed).
+  const domainCompany = useMemo(() => Company.of(company), [company]);
+  const capitalRequired = domainCompany.ok && domainCompany.value.isSociete();
+  const legalContext = {
+    siren: company.siren,
+    vatRequired: company.vatRegime !== 'franchise',
+    capitalRequired,
+  };
 
   useEffect(() => {
     if (visible) {
@@ -266,6 +287,67 @@ export function LegalIdentityEditSheet({
         </Text>
       ) : null}
 
+      {/* Capital social — SOCIÉTÉS UNIQUEMENT (capitalRequired, décidé par le domaine) : une
+          EI/micro n'a pas de capital, lui montrer ce champ serait un mensonge d'interface.
+          Saisie en euros, conversion en centimes par arithmétique entière (jamais de flottant),
+          aucune valeur déduite de l'annuaire : le montant vient des statuts, saisi par l'humain. */}
+      {capitalRequired ? (
+        <>
+          <Text
+            style={[
+              font('sub', 600),
+              { fontSize: 13.5, color: colors.ink800, marginBottom: 6, marginTop: 4 },
+            ]}
+          >
+            {say('reglages.legalSheetCapitalLabel')}
+          </Text>
+          <View
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              minHeight: 44,
+              borderWidth: 1,
+              borderColor: touched && errors.capitalSocial ? semantic.danger : colors.line,
+              borderRadius: 12,
+              paddingHorizontal: 12,
+              marginBottom: 6,
+            }}
+          >
+            <TextInput
+              value={values.capitalSocialEuros}
+              onChangeText={(next) => {
+                setValues((v) => ({ ...v, capitalSocialEuros: next }));
+                setTouched(true);
+              }}
+              onBlur={() => setTouched(true)}
+              editable={!busy}
+              keyboardType="decimal-pad"
+              placeholder={say('reglages.legalSheetCapitalPlaceholder')}
+              placeholderTextColor={colors.slate400}
+              accessibilityLabel={say('reglages.legalSheetCapitalLabel')}
+              style={[font('body'), { flex: 1, minHeight: 42, color: colors.ink900 }]}
+            />
+            <Text style={[font('sub', 600), { fontSize: 13.5, color: colors.slate400 }]}>€</Text>
+          </View>
+          <Text
+            style={[
+              font('meta', touched && errors.capitalSocial ? 600 : 500),
+              {
+                color: touched && errors.capitalSocial ? semantic.danger : colors.slate400,
+                lineHeight: 17,
+                marginBottom: 10,
+              },
+            ]}
+          >
+            {say(
+              touched && errors.capitalSocial
+                ? 'reglages.legalSheetCapitalInvalid'
+                : 'reglages.legalSheetCapitalHint',
+            )}
+          </Text>
+        </>
+      ) : null}
+
       <Text
         style={[
           font('sub', 600),
@@ -300,12 +382,13 @@ export function LegalIdentityEditSheet({
               setValues((v) => ({ ...v, zip: next }));
               setTouched(true);
             }}
+            onBlur={() => setTouched(true)}
             editable={!busy}
             keyboardType="number-pad"
             placeholder={say('reglages.legalSheetZipPlaceholder')}
             placeholderTextColor={colors.slate400}
             accessibilityLabel={say('reglages.legalSheetZipLabel')}
-            style={fieldStyle(false)}
+            style={fieldStyle(touched && errors.zip)}
           />
         </View>
         <View style={{ flex: 1 }}>
@@ -324,6 +407,13 @@ export function LegalIdentityEditSheet({
           />
         </View>
       </View>
+      {/* Le code postal est exigé par assertCanIssue (adresse complète) — son erreur s'affiche
+          sous la rangée CP + ville, au même patron que les autres champs. */}
+      {touched && errors.zip ? (
+        <Text style={[font('meta', 600), { color: semantic.danger, marginBottom: 6 }]}>
+          {say('reglages.legalSheetZipInvalid')}
+        </Text>
+      ) : null}
       {touched && errors.city ? (
         <Text style={[font('meta', 600), { color: semantic.danger, marginBottom: 6 }]}>
           {say('reglages.legalSheetCityInvalid')}

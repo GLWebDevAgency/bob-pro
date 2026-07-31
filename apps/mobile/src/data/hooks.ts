@@ -769,10 +769,12 @@ export function useUpdateCompanyBilling() {
 }
 
 /**
- * Réglages facturation §Identité légale — écrit le n° d'immatriculation RCS/RM et l'adresse du
- * siège (PATCH /company/legal). Ce sont les DEUX seules données qu'exige
- * `Company.assertCanIssue()` : tant qu'elles manquaient sans écran pour les saisir, le gate
- * « entreprise incomplète » était un cul-de-sac et aucune facture ne pouvait être émise.
+ * Réglages facturation §Identité légale — écrit les données d'identité qu'exige
+ * `Company.assertCanIssue()` (PATCH /company/legal) : n° d'immatriculation RCS/RM, adresse du
+ * siège, capital social en CENTIMES pour une société (art. R123-238 — `null` = effacement
+ * explicite, jamais un zéro) et n° de TVA intracommunautaire. Tant qu'une de ces données
+ * manquait sans écran pour la saisir, le gate « entreprise incomplète » était un cul-de-sac et
+ * aucune facture ne pouvait être émise (RCS/adresse le 20/07, capital le 30/07 — FLY SERVICES).
  * Invalide les mêmes caches que le profil : la complétude pilote le gate (`companyCanIssue`),
  * le diagnostic conformité et les mentions relues au rendu des pièces.
  */
@@ -783,6 +785,7 @@ export function useUpdateCompanyLegal() {
     mutationFn: async (input: {
       rcsOrRm?: string | null;
       tvaIntracom?: string | null;
+      capitalSocialCents?: number | null;
       address?: { line1: string; zip: string; city: string };
     }) => {
       const result = await client.updateCompanyLegal(input);

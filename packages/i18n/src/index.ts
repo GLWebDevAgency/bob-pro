@@ -8901,9 +8901,10 @@ const legacyFr = {
     direct: 'Aperçu seulement pour l’instant. PDF à venir.',
   },
 
-  // ── Identité sur les factures — n° RCS/RM et adresse du siège ÉDITABLES (PATCH /company/legal) :
-  // ce sont les 2 exigences de Company.assertCanIssue(), sans écran pour les saisir le gate
-  // « entreprise incomplète » était un cul-de-sac (aucune facture émissible). ─────────────────
+  // ── Identité sur les factures — les QUATRE exigences de Company.assertCanIssue() ÉDITABLES
+  // (PATCH /company/legal) : n° RCS/RM, adresse complète, capital social (société) et n° de TVA
+  // intracommunautaire. Sans écran pour les saisir, le gate « entreprise incomplète » était un
+  // cul-de-sac (aucune facture émissible) — RCS/adresse le 20/07, capital le 30/07. ───────────
   'reglages.sectionIdentity': {
     pote: 'Identité sur les factures',
     pro: 'Identité sur les factures',
@@ -8988,6 +8989,28 @@ const legacyFr = {
     pro: 'Ce numéro ne correspond pas à votre SIREN ou sa clé est invalide.',
     direct: 'N° TVA incohérent avec le SIREN.',
   },
+  // Capital social — champ affiché aux SOCIÉTÉS uniquement (Company.isSociete(), art. R123-238) :
+  // le montant vient des STATUTS, jamais de l'annuaire (qui ne le fournit pas) ni d'une déduction.
+  'reglages.legalSheetCapitalLabel': {
+    pote: 'Capital social',
+    pro: 'Capital social',
+    direct: 'Capital social',
+  },
+  'reglages.legalSheetCapitalPlaceholder': {
+    pote: '10 000',
+    pro: '10 000',
+    direct: '10 000',
+  },
+  'reglages.legalSheetCapitalHint': {
+    pote: 'Le montant de tes statuts, en euros — la loi l’imprime sur les factures d’une société (art. R123-238).',
+    pro: 'Le montant figurant dans vos statuts, en euros — mention obligatoire sur les factures d’une société (art. R123-238).',
+    direct: 'Montant des statuts, en euros. Obligatoire sur les factures (art. R123-238).',
+  },
+  'reglages.legalSheetCapitalInvalid': {
+    pote: 'Il me faut ton capital en euros — celui de tes statuts. Zéro ou négatif, ça n’existe pas pour une société.',
+    pro: 'Un montant en euros strictement positif est requis — celui de vos statuts (deux décimales maximum).',
+    direct: 'Capital invalide : euros > 0, 2 décimales max.',
+  },
   'reglages.legalSheetAddressLabel': {
     pote: 'Adresse du siège',
     pro: 'Adresse du siège',
@@ -9006,6 +9029,13 @@ const legacyFr = {
   },
   'reglages.legalSheetZipLabel': { pote: 'Code postal', pro: 'Code postal', direct: 'CP' },
   'reglages.legalSheetZipPlaceholder': { pote: '75019', pro: '75019', direct: '75019' },
+  // Exigé depuis le durcissement d'assertCanIssue (adresse complète = rue + CP + ville) : sans
+  // ce message, un CP vide s'enregistrait et l'émission restait bloquée sans erreur visible.
+  'reglages.legalSheetZipInvalid': {
+    pote: 'Il me faut le code postal de ton siège.',
+    pro: 'Le code postal du siège est requis.',
+    direct: 'Code postal requis.',
+  },
   'reglages.legalSheetCityLabel': { pote: 'Ville', pro: 'Ville', direct: 'Ville' },
   'reglages.legalSheetCityPlaceholder': { pote: 'Paris', pro: 'Paris', direct: 'Paris' },
   'reglages.legalSheetCityInvalid': {

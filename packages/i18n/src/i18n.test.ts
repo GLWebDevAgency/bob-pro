@@ -1004,6 +1004,19 @@ describe('i18n — Réglages facturation, fusion proto (retours device fondateur
     expect(t('reglages.ibanSheetSave')).toBe('Enregistrer');
   });
 
+  it('feuille identité légale — capital social (sociétés, art. R123-238) et code postal exigé', () => {
+    expect(t('reglages.legalSheetCapitalLabel')).toBe('Capital social');
+    for (const personality of ['pote', 'pro', 'direct'] as const) {
+      // La pédagogie légale cite sa source au point de décision (doctrine LegalHint).
+      expect(t('reglages.legalSheetCapitalHint', { personality })).toContain('R123-238');
+      expect(t('reglages.legalSheetCapitalInvalid', { personality }).length).toBeGreaterThan(0);
+      expect(t('reglages.legalSheetZipInvalid', { personality }).length).toBeGreaterThan(0);
+    }
+    expect(t('reglages.legalSheetZipInvalid', { personality: 'pro' })).toBe(
+      'Le code postal du siège est requis.',
+    );
+  });
+
   it('assurance — adaptatif BTP (décennale) vs hors bâtiment (RC Pro)', () => {
     expect(t('reglages.sectionInsuranceBtp')).toBe('Assurance');
     expect(t('reglages.sectionInsuranceOther', { personality: 'direct' })).toBe('RC Pro');
