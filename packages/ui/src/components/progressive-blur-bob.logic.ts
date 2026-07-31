@@ -24,6 +24,13 @@
  * RÉSOUT la matière depuis nos tokens, la GÈLE, et compose PAR-DESSUS l'échantillon un lavis
  * de NOTRE teinte dans chaque bande. `bobTintShareAt()` chiffre ce que cela garantit,
  * profondeur par profondeur, et un test le plancher.
+ *
+ * DEUX GARANTIES DE NATURES DIFFÉRENTES, à ne jamais confondre — c'est la confusion qui a fait
+ * écrire ici des affirmations fausses :
+ *  · CONFORMITÉ — le lavis et le voile teintent CE QUE LE PORT A PEINT, en supposant qu'il a
+ *    appliqué la matière remise. Chiffrée par `bobTintShareAt`, et nulle au bord libre ;
+ *  · CONSTRUCTION — la vérification de l'élément rendu (`BlurLayerSlot`, rang
+ *    `material-tampered`) et le CLIP de la bande, qui ne supposent rien du port.
  */
 import {
   patterns,
@@ -59,22 +66,31 @@ export type BlurPortStatus = 'absent' | 'unsealed' | 'ready';
  *                      `ProgressiveBlurBob` n'appelle plus le port et sert le repli » ;
  * · `partial-stack`  — TOUT OU RIEN violé : un élément à un index, `null` à un autre. Une pile
  *                      partielle produirait une courbe qui n'est ni celle du mode flouté ni
- *                      celle du repli ; le contrat l'interdit, le kit la fait échouer fermé ;
+ *                      celle du repli ; le contrat l'interdit, le kit la fait échouer fermé —
+ *                      et il le fait PENDANT LE RENDU, avant tout commit, faute de quoi la
+ *                      pile partielle serait bel et bien peinte le temps d'une frame ;
  * · `factory-threw`  — l'APPEL à `renderBlurLayer` a levé pendant la construction ;
  * · `element-threw`  — la fabrique a rendu un élément VALIDE qui a levé pendant SON rendu ou
  *                      dans un effet. Un `try`/`catch` de l'appelant n'attrape rien de cela :
  *                      il faut une frontière d'erreur. Voir `progressive-blur-bob.tsx` ;
- * · `invalid-element` — la fabrique a rendu autre chose qu'un `ReactElement` ou `null` : une
- *                      chaîne, un nombre, un tableau. Le typage ne protège que le code typé ;
- *                      au rendu, React peindrait une chaîne en TEXTE, dans une zone que le
- *                      contrat déclare sans texte ni information. Refusé, fermé.
+ * · `invalid-element` — la fabrique a rendu autre chose qu'UN ÉLÉMENT DE COUCHE : une chaîne,
+ *                      un nombre, un tableau — ou un FRAGMENT, que `isValidElement()` accepte
+ *                      et qui peut porter une chaîne (`<>{'texte'}</>`). Le typage ne protège
+ *                      que le code typé ; au rendu, React peindrait ce texte dans une zone que
+ *                      le contrat déclare sans texte ni information. Refusé, fermé ;
+ * · `material-tampered` — la fabrique a rendu un élément VALIDE qui ne porte pas la matière
+ *                      qu'on lui a remise : `intensity`, `tint` ou `style` réécrits, ou des
+ *                      ENFANTS ajoutés (« une couche, et rien d'autre »). C'est la seule
+ *                      barrière qui ferme la classe entière du matériau hostile — voir
+ *                      `bobTintShareAt` pour ce que le lavis, lui, ne peut PAS garantir.
  */
 export type BlurPortFailure =
   | 'null-at-zero'
   | 'partial-stack'
   | 'factory-threw'
   | 'element-threw'
-  | 'invalid-element';
+  | 'invalid-element'
+  | 'material-tampered';
 
 /**
  * Ce que l'APPLICATION constate et que `@bob/ui` ne peut pas deviner : version d'Android,
@@ -95,6 +111,25 @@ export type BlurSurfaceUnder = 'unknown' | 'static' | 'virtualized-list';
 /** Préférence système « réduire la transparence ». `'unknown'` = pas encore résolue. */
 export type TransparencyPreference = 'unknown' | 'reduced' | 'standard';
 
+/**
+ * ASSERTION D'ENGLOBEMENT du § 4 du socle, rendue TRI-ÉTAT — et c'est une correction, pas un
+ * raffinement. Le socle écrit : « Assertion de développement OBLIGATOIRE, `__DEV__` uniquement :
+ * `height <= hauteur mesurée du shell` ». Une assertion obligatoire qui ne s'exécute que
+ * lorsque l'appelant a bien voulu fournir la mesure n'est pas obligatoire : c'était le SEUL
+ * défaut fail-OPEN du composant, et il portait sur une OBLIGATION du contrat.
+ *
+ * · `unverified` — la hauteur du shell n'a pas été déclarée : l'assertion N'A PAS PU être
+ *                  faite. L'inconnu vaut REFUS, comme pour les trois autres tri-états ;
+ * · `within`     — `height <= hauteur mesurée du shell`, l'englobement est constaté ;
+ * · `overflow`   — l'enveloppe dépasse le shell : les couches ne sont plus englobées.
+ *
+ * En PRODUCTION aucune mesure n'est faite — le socle l'écrit, l'invariant y est structurel :
+ * le composant transmet alors `within`. La conséquence est voulue et vertueuse : un écran qui
+ * n'a jamais déclaré sa hauteur de shell ne voit JAMAIS de flou en développement, donc le
+ * manquement se constate avant la publication, pas après.
+ */
+export type BlurEnvelopeAssertion = 'unverified' | 'within' | 'overflow';
+
 /** Pourquoi le plan a atterri sur son mode. Les cinq coupures du contrat, sans zone grise. */
 export type EdgeFalloffReason =
   | 'blurred'
@@ -111,7 +146,8 @@ export type EdgeFalloffReason =
   // COUPURE 5 — liste virtualisée.
   | 'surface-unknown'
   | 'virtualized-list'
-  // Garde-fou d'englobement, `__DEV__` uniquement.
+  // Assertion d'englobement du § 4, `__DEV__` uniquement — refus par défaut.
+  | 'envelope-unverified'
   | 'envelope-overflow'
   // Demande de l'appelant : le défaut normatif est 0.
   | 'no-layer-requested';
@@ -145,8 +181,11 @@ export interface ProgressiveBlurPlanInput {
   readonly material: BobBlurMaterial;
   readonly capability?: BlurRenderCapability | undefined;
   readonly surfaceUnder?: BlurSurfaceUnder | undefined;
-  /** Dépassement d'enveloppe constaté par l'assertion `__DEV__` (jamais mesuré en prod). */
-  readonly envelopeOverflow?: boolean | undefined;
+  /**
+   * Résultat de l'assertion d'englobement du § 4. ABSENT vaut `'unverified'`, donc REFUS :
+   * l'omission ne peut pas ouvrir le flou, c'est tout l'objet du tri-état.
+   */
+  readonly envelope?: BlurEnvelopeAssertion | undefined;
 }
 
 export interface ProgressiveBlurPlan {
@@ -364,18 +403,26 @@ export function progressiveBlurPlan(input: ProgressiveBlurPlanInput): Progressiv
    */
   const capped = !(input.layers <= granted);
   const visibleLayers = Math.min(granted, visibleLayerCount(input.material));
-  const tinted = (reason: EdgeFalloffReason): ProgressiveBlurPlan => ({
-    mode: 'tinted',
-    reason,
-    layers: [],
-    material: input.material,
-    requested: input.layers,
-    granted,
-    capped,
-    peakIntensity: 0,
-    visibleLayers: 0,
-    hiddenLayers: 0,
-  });
+  /*
+   * LE PLAN EST GELÉ, comme la matière et comme chaque spec. Ce n'est pas de la coquetterie :
+   * il est remis TEL QUEL au rappel `onPlan` de l'application, puis relu par
+   * `progressiveBlurWarnings`, qui interpole ses nombres dans des messages. Un plan mutable
+   * laisserait un rappel hostile — ou simplement maladroit — réécrire ce que le kit journalise
+   * ensuite. On gèle donc l'objet ET son tableau de couches.
+   */
+  const tinted = (reason: EdgeFalloffReason): ProgressiveBlurPlan =>
+    Object.freeze({
+      mode: 'tinted' as const,
+      reason,
+      layers: Object.freeze([]),
+      material: input.material,
+      requested: input.layers,
+      granted,
+      capped,
+      peakIntensity: 0,
+      visibleLayers: 0,
+      hiddenLayers: 0,
+    });
 
   // RANG 0 — ACCESSIBILITÉ D'ABORD, avant toute autre décision. COUPURE 2 du contrat.
   //          L'inconnu compte comme actif : jamais un flash de flou avant de savoir.
@@ -391,13 +438,15 @@ export function progressiveBlurPlan(input: ProgressiveBlurPlanInput): Progressiv
   // RANG 3 — nature du contenu échantillonné. COUPURE 5.
   if (input.surfaceUnder === 'virtualized-list') return tinted('virtualized-list');
   if (input.surfaceUnder !== 'static') return tinted('surface-unknown');
-  // RANG 4 — garde-fou d'englobement, constaté en développement uniquement.
-  if (input.envelopeOverflow === true) return tinted('envelope-overflow');
+  // RANG 4 — assertion d'englobement du § 4, constatée en développement uniquement. Le tri-état
+  //          refuse par défaut : une assertion qu'on n'a pas pu faire n'autorise rien.
+  if (input.envelope === 'overflow') return tinted('envelope-overflow');
+  if (input.envelope !== 'within') return tinted('envelope-unverified');
   // RANG 5 — demande de l'appelant. Le défaut normatif est 0.
   if (granted === 0) return tinted('no-layer-requested');
 
-  const layers: readonly BlurLayerSpec[] = FALLOFF.layerHeightsPercent.slice(0, granted).map(
-    (heightPercent, index) =>
+  const layers: readonly BlurLayerSpec[] = Object.freeze(
+    FALLOFF.layerHeightsPercent.slice(0, granted).map((heightPercent, index) =>
       Object.freeze({
         index,
         layerCount: granted,
@@ -407,11 +456,12 @@ export function progressiveBlurPlan(input: ProgressiveBlurPlanInput): Progressiv
         anchor: input.anchor,
         style: blurLayerStyle(input.anchor, heightPercent, input.height),
       }),
+    ),
   );
 
-  return {
-    mode: 'blurred',
-    reason: 'blurred',
+  return Object.freeze({
+    mode: 'blurred' as const,
+    reason: 'blurred' as const,
     layers,
     material: input.material,
     requested: input.layers,
@@ -420,7 +470,7 @@ export function progressiveBlurPlan(input: ProgressiveBlurPlanInput): Progressiv
     peakIntensity: granted * FALLOFF.layerIntensity,
     visibleLayers,
     hiddenLayers: Math.max(granted - visibleLayers, 0),
-  };
+  });
 }
 
 /**
@@ -443,7 +493,9 @@ export const BLUR_PORT_FAILURE_WARNINGS: Readonly<Partial<Record<BlurPortFailure
     'element-threw':
       "ProgressiveBlurBob : l'élément rendu par le port renderBlurLayer a LEVÉ pendant son rendu ou dans un effet — frontière d'erreur déclenchée, repli opaque unique, définitif pour ce montage.",
     'invalid-element':
-      "ProgressiveBlurBob : le port renderBlurLayer a rendu autre chose qu'un ReactElement ou null — la retombée ne porte jamais de texte ni d'information. Repli opaque unique, définitif pour ce montage.",
+      "ProgressiveBlurBob : le port renderBlurLayer a rendu autre chose qu'un élément de couche — chaîne, nombre, tableau ou Fragment. La retombée ne porte jamais de texte ni d'information. Repli opaque unique, définitif pour ce montage.",
+    'material-tampered':
+      "ProgressiveBlurBob : le port renderBlurLayer a rendu un élément qui n'applique pas la matière remise — intensity, tint ou style réécrits, ou des enfants ajoutés. Le port choisit le matériau, jamais la teinte ni la géométrie. Repli opaque unique, définitif pour ce montage.",
   });
 
 /**
@@ -491,6 +543,11 @@ export function progressiveBlurWarnings(plan: ProgressiveBlurPlan): readonly str
         "ProgressiveBlurBob : la hauteur d'enveloppe dépasse celle du shell — les couches ne sont plus englobées par la cible de flou du shell. Repli opaque unique.",
       );
     }
+    if (plan.reason === 'envelope-unverified') {
+      warnings.push(
+        "ProgressiveBlurBob : l'assertion d'englobement n'a pas pu être faite — la hauteur mesurée du shell n'est pas déclarée (devShellHeight). Le socle la rend obligatoire en développement : l'inconnu vaut refus, repli opaque unique.",
+      );
+    }
   }
   if (plan.hiddenLayers > 0) {
     warnings.push(
@@ -518,6 +575,27 @@ export function effectiveIntensityAt(depth: number, layers: readonly BlurLayerSp
  * réunis, PAR-DESSUS tout ce que le port a bien pu peindre. C'est la doctrine rendue
  * exécutable — « surfaces teintées par NOS tokens » cesse d'être une consigne écrite dans un
  * commentaire pour devenir un nombre qu'un test peut plancher.
+ *
+ * ─── CE QUE CE NOMBRE VAUT VRAIMENT, ET CE QU'IL NE VAUT PAS ─────────────────────────────
+ * Ce fichier a d'abord affirmé que le lavis « rend STRUCTURELLEMENT impossible qu'un port
+ * impose sa teinte ». C'ÉTAIT FAUX au bord libre, et une revue adversariale l'a mesuré. Le
+ * lavis est une RAMPE : il vaut 0 au bord libre de CHAQUE bande, et le voile y vaut 0 aussi.
+ * Donc `bobTintShareAt(0, plan) === 0` — À LA PROFONDEUR 0, LE MATÉRIAU DU PORT EST SEUL.
+ *
+ * Table MESURÉE sur les tokens livrés (canvas / light, N = 10), part du PORT :
+ *   0 → 1.0000 · 0,02 → 0.9368 · 0,05 → 0.8434 · 0,16 → 0.5071 · 0,32 → 0.0653 · 0,60 → 0.
+ * `progressive-blur-bob.logic.test.ts` la rejoue, valeur par valeur, plutôt que de la croire.
+ *
+ * CE QUI EST VRAI, et qui tient : à la profondeur 0, exactement UNE couche couvre le pixel —
+ * celle de 100 % —, donc l'intensité effective y vaut `layerIntensity` (5), le flou le plus
+ * LÉGER du profil ; et notre part remonte à 93 % dès le stop médian (0,32) puis à 100 % dès
+ * 0,60. La couleur du port n'est donc jamais dominante ailleurs qu'à l'extrême bord libre, là
+ * où il n'y a presque rien à teinter.
+ *
+ * C'est une garantie de CONFORMITÉ : elle suppose un port qui applique la matière remise. Elle
+ * NE SE DÉCLARE PAS garantie de CONSTRUCTION. Ce qui la rend structurelle est ailleurs, au
+ * rendu : `BlurLayerSlot` vérifie que l'élément porte `spec.intensity`, `spec.tint` et
+ * `spec.style` TELS QUELS, et ferme la pile sur `material-tampered` sinon.
  */
 export function bobTintShareAt(depth: number, plan: ProgressiveBlurPlan): number {
   const through = plan.layers.reduce(
@@ -598,8 +676,12 @@ export interface EdgeWashGradient extends GradientAxis {
  * LE LAVIS — NOTRE teinte composée PAR-DESSUS l'échantillon de flou, DANS SA BANDE. Une RAMPE
  * et jamais un aplat : au bord libre de la bande le lavis vaut 0, donc aucune couture là où
  * le voile vaut encore 0 ; au bord ancré il vaut `layerWash`. Empilé par le recouvrement, il
- * épaissit notre teinte exactement au rythme où l'intensité monte — et il rend
- * STRUCTURELLEMENT impossible qu'un port impose la sienne.
+ * épaissit notre teinte exactement au rythme où l'intensité monte.
+ *
+ * CE QU'IL NE FAIT PAS, et il faut le dire ici : parce que c'est une rampe qui part de ZÉRO,
+ * il ne « rend pas structurellement impossible » qu'un port impose sa teinte — au bord libre
+ * il ne la couvre pas du tout. Voir `bobTintShareAt` pour la table mesurée et pour la barrière
+ * qui, elle, est structurelle (vérification de la matière rendue, `BlurLayerSlot`).
  */
 export function edgeWashGradient(
   material: BobBlurMaterial,

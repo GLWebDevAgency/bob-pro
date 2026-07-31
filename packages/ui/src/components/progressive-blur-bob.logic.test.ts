@@ -52,6 +52,9 @@ function nominal(overrides: Partial<ProgressiveBlurPlanInput> = {}): Progressive
     material: resolveBlurMaterial('canvas', 'light'),
     capability: 'capable',
     surfaceUnder: 'static',
+    // L'assertion d'englobement du § 4 est un tri-état fail-CLOSED : une entrée « nominale »
+    // doit la déclarer CONSTATÉE, sinon le plan refuse — et c'est bien ce qu'on veut d'elle.
+    envelope: 'within',
     ...overrides,
   };
 }
@@ -196,8 +199,11 @@ describe('LES CINQ COUPURES — le repli opaque unique, sans exception', () => {
     ['5 · liste virtualisée', { surfaceUnder: 'virtualized-list' }, 'virtualized-list'],
     ['5 · nature du contenu NON DÉCLARÉE', { surfaceUnder: 'unknown' }, 'surface-unknown'],
     ['5 · nature absente des props', { surfaceUnder: undefined }, 'surface-unknown'],
-    // Garde-fou d'englobement.
-    ["· enveloppe plus haute que le shell (__DEV__)", { envelopeOverflow: true }, 'envelope-overflow'],
+    // Assertion d'englobement du § 4 — DEUX rangs, et le second est le correctif du seul
+    // défaut fail-OPEN qu'avait le composant : ne pas pouvoir faire l'assertion ferme aussi.
+    ['· enveloppe plus haute que le shell (__DEV__)', { envelope: 'overflow' }, 'envelope-overflow'],
+    ['· hauteur de shell NON DÉCLARÉE (__DEV__)', { envelope: 'unverified' }, 'envelope-unverified'],
+    ['· assertion absente de l’entrée', { envelope: undefined }, 'envelope-unverified'],
   ] as const;
 
   for (const [label, override, reason] of coupures) {
@@ -237,11 +243,15 @@ describe('FAIL-CLOSED — l’accessibilité passe AVANT toute autre décision',
     expect(plan.reason).toBe('preference-unresolved');
   });
 
-  it('les TROIS tri-états refusent par défaut : aucune ignorance ne s’arbitre en faveur du flou', () => {
+  it('les QUATRE tri-états refusent par défaut : aucune ignorance ne s’arbitre en faveur du flou', () => {
     for (const key of ['transparency', 'capability', 'surfaceUnder'] as const) {
       const plan = progressiveBlurPlan(nominal({ layers: 3, [key]: 'unknown' }));
       expect(plan.mode, `${key} inconnu doit fermer le flou`).toBe('tinted');
     }
+    // Le QUATRIÈME, ajouté après la revue : l'assertion d'englobement du § 4. Son inconnu
+    // s'écrit `unverified` — « je n'ai pas pu vérifier » — et il refuse comme les autres.
+    expect(progressiveBlurPlan(nominal({ layers: 3, envelope: 'unverified' })).mode).toBe('tinted');
+    expect(progressiveBlurPlan(nominal({ layers: 3, envelope: undefined })).mode).toBe('tinted');
   });
 });
 
@@ -312,6 +322,34 @@ describe('LA TEINTE EST LA NÔTRE — courbe du voile et plancher de notre part'
     }
   });
 
+  /**
+   * LE PLANCHER RÉEL, mesuré — et il vaut ZÉRO au bord libre.
+   *
+   * Ce fichier et ses tokens ont affirmé que le lavis rendait « structurellement impossible
+   * qu'un port impose sa teinte » et qu'« il n'a aucun moyen de la réduire ». Les deux étaient
+   * faux, et aucun test ne les regardait : les tests hostiles vérifiaient l'ORDRE des nœuds et
+   * les COULEURS de nos dégradés — deux propriétés vraies qui ne prouvent pas celle-là.
+   *
+   * Ce test-ci mesure la seule chose qui compte : la part du PORT, profondeur par profondeur.
+   * Il est écrit pour ÉCHOUER le jour où l'un des deux commentaires réaffirmera l'impossible.
+   */
+  it('AU BORD LIBRE, le matériau du port est SEUL : notre part y vaut exactement 0', () => {
+    const plan = progressiveBlurPlan(nominal({ layers: 10 }));
+    // La table de la revue adversariale, rejouée valeur par valeur (canvas / light, N = 10).
+    const portShareAt = (depth: number): number => Number((1 - bobTintShareAt(depth, plan)).toFixed(4));
+    expect(portShareAt(0), 'à la profondeur 0 le port est seul — c’est un fait, pas un défaut').toBe(1);
+    expect(portShareAt(0.02)).toBe(0.9368);
+    expect(portShareAt(0.05)).toBe(0.8434);
+    expect(portShareAt(0.16)).toBe(0.5071);
+    expect(portShareAt(0.32)).toBe(0.0653);
+    expect(portShareAt(0.6)).toBe(0);
+    // Ce qui rachète le bord libre, et qui est vrai : une SEULE couche y couvre le pixel, donc
+    // l'intensité effective y vaut `layerIntensity` — le flou le PLUS LÉGER du profil.
+    expect(effectiveIntensityAt(0, plan.layers)).toBe(patterns.edgeFalloff.layerIntensity);
+    // Et notre part devient majoritaire dès qu'on quitte l'extrême bord.
+    expect(bobTintShareAt(0.2, plan)).toBeGreaterThan(0.5);
+  });
+
   it('le voile `canvas` reproduit à l’identique le fondu déjà livré de la tab bar', () => {
     expect(surfaceVeil.light.canvas.stops).toEqual(patterns.bottomTabBar.fade);
     expect(patterns.edgeFalloff.veilLocations).toEqual(patterns.bottomTabBar.fadeLocations);
@@ -362,7 +400,8 @@ describe('AVERTISSEMENTS — parler des intentions non tenues, se taire sur les 
       { capability: 'unknown' },
       { surfaceUnder: 'virtualized-list' },
       { surfaceUnder: 'unknown' },
-      { envelopeOverflow: true },
+      { envelope: 'overflow' },
+      { envelope: 'unverified' },
     ] as Partial<ProgressiveBlurPlanInput>[]) {
       const warnings = progressiveBlurWarnings(progressiveBlurPlan(nominal({ layers: 3, ...override })));
       expect(warnings.length, JSON.stringify(override)).toBeGreaterThan(0);

@@ -88,15 +88,31 @@ async function mount(props: Props): Promise<ReactTestRenderer> {
   return renderer;
 }
 
-/** Port HONNÊTE : scellé, rend UNE couche, applique `spec.style` tel quel. */
+/**
+ * Port HONNÊTE : scellé, rend UNE couche, applique la matière remise TELLE QUELLE — les trois
+ * champs, pas seulement le style. C'est la forme exacte de l'adaptateur documenté dans
+ * `progressive-blur-bob.port.ts`, et depuis la revue c'est aussi la forme EXIGÉE : le kit
+ * vérifie `intensity`, `tint` et l'IDENTITÉ de `style`, et ferme la pile sinon.
+ */
 function honestPort(onSpec?: (spec: BlurLayerSpec) => void) {
   return defineBlurPort((spec) => {
     onSpec?.(spec);
-    return <BlurProbe key={spec.index} {...{ style: spec.style }} />;
+    return (
+      <BlurProbe
+        key={spec.index}
+        {...{ style: spec.style, intensity: spec.intensity, tint: spec.tint }}
+      />
+    );
   });
 }
 
-const OPEN: Props = { renderCapability: 'capable', surfaceUnder: 'static' };
+/**
+ * TOUT EST OUVERT — y compris l'assertion d'englobement du § 4, qui exige une hauteur de shell
+ * DÉCLARÉE : sans elle, en développement, le plan refuse (`envelope-unverified`). C'était le
+ * seul défaut fail-OPEN du composant ; le voir ici, dans le préambule de chaque montage, est
+ * exactement ce qu'on veut d'une obligation.
+ */
+const OPEN: Props = { renderCapability: 'capable', surfaceUnder: 'static', devShellHeight: 800 };
 
 beforeEach(() => {
   isReduceMotionEnabled.mockResolvedValue(false);
@@ -326,5 +342,54 @@ describe('FRONTIÈRE DE PAQUET — `@bob/ui` ne dépend de rien de nouveau', () 
         /BlurTargetView|blurTarget/,
       );
     }
+  });
+});
+
+describe('§ 4 — L’ASSERTION D’ENGLOBEMENT EST OBLIGATOIRE, donc fail-CLOSED', () => {
+  /**
+   * LE SEUL DÉFAUT FAIL-OPEN QU'AVAIT LE COMPOSANT, et il portait sur une OBLIGATION du socle :
+   * « Assertion de développement OBLIGATOIRE, `__DEV__` uniquement : `height <= hauteur mesurée
+   * du shell` ». L'implémentation ne l'exécutait que si l'appelant avait fourni la mesure —
+   * autrement dit : jamais, pour qui l'oubliait. Une assertion facultative n'est pas une
+   * assertion, et c'est précisément l'écran qui l'oublie qui en avait besoin.
+   *
+   * Elle vaut désormais REFUS quand elle n'a pas pu être faite, au même rang fail-closed que
+   * `renderCapability` et `surfaceUnder` : l'ignorance ne s'arbitre pas en faveur du décoratif.
+   */
+  it('sans `devShellHeight`, AUCUN échantillon n’est monté — et le développeur est prévenu', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const renderer = await mount({
+      renderCapability: 'capable',
+      surfaceUnder: 'static',
+      layers: 6,
+      renderBlurLayer: honestPort(),
+    });
+
+    expect(all(renderer).filter((node) => node.type === 'BlurSample')).toHaveLength(0);
+    // …et l'écran reste lisible : le repli n'est jamais un trou.
+    expect(all(renderer).filter((node) => node.type === 'LinearGradient')).toHaveLength(1);
+    expect(warn.mock.calls.map((call) => String(call[0])).join('\n')).toMatch(/devShellHeight/);
+    warn.mockRestore();
+  });
+
+  it('enveloppe PLUS HAUTE que le shell : refus, comme avant', async () => {
+    const renderer = await mount({ ...OPEN, devShellHeight: HEIGHT - 1, layers: 6, renderBlurLayer: honestPort() });
+    expect(all(renderer).filter((node) => node.type === 'BlurSample')).toHaveLength(0);
+  });
+
+  it('enveloppe ÉGALE au shell : c’est `<=`, donc ça passe', async () => {
+    const renderer = await mount({ ...OPEN, devShellHeight: HEIGHT, layers: 3, renderBlurLayer: honestPort() });
+    expect(all(renderer).filter((node) => node.type === 'BlurSample')).toHaveLength(3);
+  });
+
+  it('le port n’est même pas APPELÉ quand l’assertion n’a pas pu être faite', async () => {
+    const seen: BlurLayerSpec[] = [];
+    await mount({
+      renderCapability: 'capable',
+      surfaceUnder: 'static',
+      layers: 4,
+      renderBlurLayer: honestPort((spec) => seen.push(spec)),
+    });
+    expect(seen, 'un port a été appelé alors que l’englobement n’est pas vérifié').toEqual([]);
   });
 });
