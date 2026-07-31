@@ -1,6 +1,6 @@
 # SPEC — Agent Missions Jarvis M2-A : ligne de devis durable, catalogue réel et parité voix ↔ toucher
 
-**Statut global : specified**
+**Statut global : implemented ; non certified**
 
 **Train M2-A-0 : implemented dans `4c844111`, flag public OFF ; non certified**
 
@@ -8,7 +8,7 @@
 
 **Train M2-A-2 : implemented, flag public OFF ; non certified**
 
-**Train M2-A-3 : specified, implémentation en cours ; flag public OFF**
+**Train M2-A-3 : implemented dans `1a2e5eaa`, flag public OFF ; non certified**
 
 **Date : 30 juillet 2026**
 
@@ -1187,7 +1187,7 @@ converti en succès ni masqué par un retry global.
 | M2-A-0 | schéma work items + RLS + contrat core + parité catalogue SQL | `implemented` | `implemented` |
 | M2-A-1 | frame V2, staging initial, recherche 0/1/N, continuation et choix API | `implemented` | `implemented` |
 | M2-A-2 | questions persistées, TVA, proposition, primitive partagée et confirmation | `implemented` | `implemented` |
-| M2-A-3 | projection mobile, parité voix/tap, reprise et certification device/staging | `specified` | `certified` |
+| M2-A-3 | projection mobile, parité voix/tap, reprise et certification device/staging | `implemented` dans `1a2e5eaa` | `certified` |
 
 Chaque PR est fusionnée et sa CI verte avant d'ouvrir la suivante. Aucun sous-train n'est présenté
 comme une fonctionnalité finie ; le flag reste OFF jusqu'à M2-A-3.
@@ -1473,38 +1473,38 @@ M2-A-1 est `implemented` uniquement si, flag M2-A toujours OFF :
 
 ### 17.1 Gate spécifique du train M2-A-3
 
-- [ ] `M2A3-01` : OpenAI WebRTC demande exactement le protocole 2 ; absence/refus de capability
+- [x] `M2A3-01` : OpenAI WebRTC demande exactement le protocole 2 ; absence/refus de capability
       échoue fermé sans tentative V1 et sans requête Mistral ;
-- [ ] `M2A3-02` : le GET V1 conserve son wire exact et le GET V2 exige mission + présentation
+- [x] `M2A3-02` : le GET V1 conserve son wire exact et le GET V2 exige mission + présentation
       cohérentes ; aucun ID autoritaire n'entre dans le LLM, tandis que les choix réellement
       présentés lui sont accessibles sous alias opaques avec libellé/catégorie/unité/prix
       nécessaires à une désambiguïsation naturelle ;
-- [ ] `M2A3-03` : `requiredFact`, scope et champ du patch forment une matrice fermée ; « oui »,
+- [x] `M2A3-03` : `requiredFact`, scope et champ du patch forment une matrice fermée ; « oui »,
       « modifie » et « annule » utilisent la décision/proposition fraîche, ou la tête
       `awaiting_line_details` fraîche lorsqu'aucune décision n'existe, et ne tombent jamais dans le
       cerveau legacy ;
-- [ ] `M2A3-04` : coupure après commit utilisateur et avant continuation, puis nouvel ACK : tête
+- [x] `M2A3-04` : coupure après commit utilisateur et avant continuation, puis nouvel ACK : tête
       convergée, une ligne au plus, aucun événement métier dupliqué et GET resté read-only ;
-- [ ] `M2A3-05` : kill/relaunch dans `awaiting_lines`, `awaiting_catalogue_choice`,
+- [x] `M2A3-05` : kill/relaunch dans `awaiting_lines`, `awaiting_catalogue_choice`,
       `awaiting_line_details` et `awaiting_line_confirmation` restitue les mêmes IDs/révisions sans
       parole automatique ;
-- [ ] `M2A3-06` : politiques catalogue 0, 1 exact, 1 fuzzy, 2..5 et ≥6 ; voix et toucher exposent
+- [x] `M2A3-06` : politiques catalogue 0, 1 exact, 1 fuzzy, 2..5 et ≥6 ; voix et toucher exposent
       le même ordre, les mêmes choix scellés et la même indisponibilité. Pour 1..5 choix, la voix
       prononce depuis la projection autoritaire chaque ordinal, libellé, prix et unité avant
       l'option ligne libre ; aucun texte LLM ne peut nommer ou réordonner ces choix ;
-- [ ] `M2A3-07` : patch tactile/vocal rejoué conserve son `commandId`; autre valeur ou autre scope
+- [x] `M2A3-07` : patch tactile/vocal rejoué conserve son `commandId`; autre valeur ou autre scope
       échoue par fingerprint sans nouvelle révision ;
-- [ ] `M2A3-08` : confirmer, modifier et annuler consomment les mêmes choice/proposal/diff/work
+- [x] `M2A3-08` : confirmer, modifier et annuler consomment les mêmes choice/proposal/diff/work
       fences ; le mobile affiche le même diff autoritaire avant/après que la voix, sans le
       recalculer ; deux confirmations concurrentes produisent exactement une ligne et une seule
       interaction tactile peut partir à la fois ; annuler depuis les détails consomme la même tête
       par voix ou toucher, conserve le brouillon byte-identique et ne peut jamais devenir un
       abandon de mission ;
-- [ ] `M2A3-09` : après confirmation ou annulation, le brouillon frais et la tête suivante sont
+- [x] `M2A3-09` : après confirmation ou annulation, le brouillon frais et la tête suivante sont
       hydratés, Bob reste ouvert et accepte une autre ligne ;
-- [ ] `M2A3-10` : mission propriétaire du slot = zéro writer legacy, zéro affordance regex, une
+- [x] `M2A3-10` : mission propriétaire du slot = zéro writer legacy, zéro affordance regex, une
       sheet et un chrome Bob ; le wizard sans mission reste fonctionnel ;
-- [ ] `M2A3-11` : suites core/AI/client/API/mobile, PostgreSQL réel, typecheck, lint, builds et
+- [x] `M2A3-11` : suites core/AI/client/API/mobile, PostgreSQL réel, typecheck, lint, builds et
       reviews adversariales sont verts depuis un checkout propre ;
 - [ ] `M2A3-12` : Supabase staging exact-SHA sous déployeur/runtime non-superuser restitue la preuve
       non-PII complète, flags publics OFF ;
@@ -1520,17 +1520,36 @@ M2-A-1 est `implemented` uniquement si, flag M2-A toujours OFF :
       Mission V2 ne sont jamais bloqués par ce gate. Sans confirmation, le bootstrap V2 reste fermé.
       L'eval opt-in appelle exactement l'adapter et le modèle du runtime, compte une seule
       complétion sans retry ni second cerveau et produit une preuve exact-SHA non-PII ;
-- [ ] `M2A3-15` : un tour n'est jamais envoyé séquentiellement à deux cerveaux. Le planner unique
+- [x] `M2A3-15` : un tour n'est jamais envoyé séquentiellement à deux cerveaux. Le planner unique
       choisit le `mission kind` ou le geste global ; aucun `unrelated → askBob` ne double la latence
       et aucun fallback regex ne conserve une autorité d'écriture.
-- [ ] `M2A3-16` : la capacité du brouillon est calculée depuis l'unique
+- [x] `M2A3-16` : la capacité du brouillon est calculée depuis l'unique
       `MAX_BILLING_LINES` avec `lignes confirmées + file verrouillée + nouvelles lignes`. La
       centième ligne est admise, la cent-unième est refusée avant tout insert, et voix comme toucher
       annoncent honnêtement la limite sans retry infini, ligne pendante ni donnée fabriquée.
-- [ ] `M2A3-17` : chaque CTA décrit exactement son effet réel — fermer ne prétend jamais relancer
+- [x] `M2A3-17` : chaque CTA décrit exactement son effet réel — fermer ne prétend jamais relancer
       Bob. Les choix exclusifs publient `radiogroup`/`radio` et leur état coché, les conteneurs de
       reprise ne masquent pas les rôles `header`/`alert`, et les libellés voix/toucher restent
       utilisables sans dépendre de la couleur ni du regard.
+
+### 17.2 Preuve d'implémentation locale M2-A-3 — `1a2e5eaa`
+
+Le statut `implemented` repose sur les preuves reproductibles suivantes, rejouées le 31 juillet
+2026 depuis le checkout propre du commit :
+
+- `pnpm lint` : 9 tâches sur 9 ;
+- `pnpm typecheck` : 17 tâches sur 17 ;
+- `pnpm test` : 15 tâches sur 15, dont core 3 051 tests, AI 896, API 2 819 et mobile 1 599 ;
+- `pnpm exec turbo run build --force` : 10 tâches sur 10, artefacts core/AI/client/API sans
+  fixture ni double de production ;
+- `sh apps/api/scripts/certify-agent-missions-local.sh` : migrations
+  expand/validate/cutover, writers N-1 à chaque étape, ACL/RLS non-superuser et 56 tests
+  transactionnels PostgreSQL réels ;
+- revues adversariales indépendantes correctness, architecture/parité et UX : zéro P0/P1 ouvert.
+
+`M2A3-12`, `M2A3-13` et `M2A3-14` restent volontairement non cochés : la certification Supabase
+staging exact-SHA, les essais iPhone/Android physiques et l'eval du modèle réellement déployé
+restent dus. Le flag public demeure OFF et le train ne peut donc pas être qualifié `certified`.
 
 ## 18. Definition of Done
 
