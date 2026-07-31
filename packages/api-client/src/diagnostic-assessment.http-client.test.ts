@@ -91,7 +91,13 @@ describe('HttpBobClient — diagnostic persistant', () => {
       answers: { platform: 'no', accountant: 'no' },
     })).resolves.toEqual({
       ok: false,
-      error: { kind: 'conflict', entity: 'diagnostic_assessment', reason: 'source_changed' },
+      error: {
+        kind: 'conflict',
+        entity: 'diagnostic_assessment',
+        reason: 'source_changed',
+        code: 'BOB-API-409',
+        correlationId: expect.stringMatching(/^[0-9a-f-]{8,64}$/),
+      },
     });
   });
 });

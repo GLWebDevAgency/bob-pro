@@ -281,6 +281,8 @@ describe('clients ACK OpenAI native', () => {
         kind: 'unavailable',
         service: 'bob-live-native-acknowledgement-not-ready',
         retryAfterSeconds: 1,
+        code: 'BOB-LIVE-503',
+        correlationId: expect.stringMatching(/^[0-9a-f-]{8,64}$/),
       },
     });
   });
