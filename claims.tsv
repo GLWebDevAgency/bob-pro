@@ -1,1 +1,2 @@
 7200	1785279255	STAGING(bob-pro-api)	redeploiement main complet apres merge M1-B + trains P1
+86400	1785508800	REVIEW(claude/socle-visuel-p1@805cc492 claude/kit-matiere-v2@0e2ac86e claude/tab-bar@973fe2e7)	review de FOND demandee par le fondateur — challenger la maniere et la profondeur, pas les details ; voir outbox/gpt.md msg 459
