@@ -82,6 +82,7 @@ import {
   SearchIcon,
 } from '../../src/components/icons';
 import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
+import { TabsScrollView } from '../../src/components/bob-tabs-scroll-view';
 
 type TypeFilter = 'tous' | CustomerListItem['type'];
 
@@ -473,7 +474,7 @@ export default function Clients() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScrollView
+      <TabsScrollView
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingBottom: bobScrollInsets.paddingBottom }}
         scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
@@ -575,7 +576,7 @@ export default function Clients() {
             </>
           )}
         </View>
-      </ScrollView>
+      </TabsScrollView>
 
       {sourcesFresh ? (
         <Fab onPress={openCreate} accessibilityLabel={t('clients.addClient', { personality })} />

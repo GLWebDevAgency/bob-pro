@@ -98,6 +98,7 @@ import { useFirstTimeTip } from '../../src/data/tips';
 import { useFiscalProfileFlow } from '../../src/fiscal/use-fiscal-profile-flow';
 import { useOwnerPayGuidance } from '../../src/fiscal/use-owner-pay-guidance';
 import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
+import { TabsScrollView } from '../../src/components/bob-tabs-scroll-view';
 import { BankBalanceSheet } from '../../src/components/BankBalanceSheet';
 import { RetenueSuiviCard } from '../../src/components/RetenueSuiviCard';
 import { hasBlockingAuthoritativeDataError } from '../../src/data/authoritative-query-state';
@@ -870,7 +871,7 @@ export default function Argent() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScrollView
+      <TabsScrollView
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingBottom: bobScrollInsets.paddingBottom }}
         scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
@@ -1686,7 +1687,7 @@ export default function Argent() {
             </Card>
           </Pressable>
         </View>
-      </ScrollView>
+      </TabsScrollView>
 
       <Fab onPress={() => router.push('/devis/new')} accessibilityLabel="Nouveau devis" />
 

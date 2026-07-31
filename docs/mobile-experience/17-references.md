@@ -8,6 +8,26 @@
 > par le fondateur, ni le kit « matière Bob » déjà livré n'étaient cités dans les 5 603 lignes de ce
 > dossier. Les tables existantes (Apple, Material, Expo/RN, Reanimated, accessibilité, voix) ne sont
 > pas réécrites ; deux lignes reçoivent un caveat daté.
+>
+> **Amendements 2026-07-30**
+>
+> - **A18/A23/A26 · l'étage 1 dit ce que le kit fait, et ce qu'il ne fait pas** — trois lignes
+>   précisées (`Surface`, `Mouvement réduit`) et deux ajoutées (`Boutons et press`, `Toast`). Une
+>   autorité qui ne nomme que les garanties laisse croire que le reste est garanti aussi.
+> - **A27 · épinglage de la source externe** — § Épinglage de la source externe (nouveau). La
+>   référence de comportement était citée par sa **branche**.
+> - **A25 · versions réellement intégrées** — § Politique de version, tableau nouveau.
+> - **A20 · documentation `expo-blur` pinée sur SDK 57** — ligne `BlurView` de la table Expo/RN ;
+>   `versions/latest` proscrit.
+> - **A29 · limitations officielles `expo-blur`** — même ligne : englobement dans un
+>   `BlurTargetView` unique, et non-rafraîchissement au-dessus d'un contenu dynamique.
+>
+> **(ajouté A30 · 2026-07-30) Amendements portés dans le corps** — leur marqueur daté est au
+> point d'application, pas dans cet encadré : `A13`. Le
+> [journal des amendements](README.md#journal-des-amendements) fait foi ; cette énumération
+> n'est admissible que parce que le contrôle `C12` de `scripts/check-mobile-experience-docs.mjs`
+> la tient à jour — une énumération que rien ne vérifie devient fausse au premier amendement
+> suivant.
 
 ## Autorités normatives
 
@@ -29,9 +49,11 @@ intention de design : c'est du code exécutable avec ses tests.
 | Tokens de surface | `packages/tokens/src/index.ts` (l. 214-257) | `surfaceTint` : 2 apparences × 6 tons × `{flat, raised, border, ink, inkMuted}`, opacités **pré-composées en hex**. Le commentaire du bloc **est** la doctrine : « surfaces TEINTÉES OPAQUES (jamais la transparence iOS) ». |
 | Tokens de motion | `packages/tokens/src/index.ts` (l. 184-212) | `motion` (historique : `fast` 200, `base` 220, `content` 360, `ambient` 1500) et `motionSemantic` (additif : `feedbackIn` 80, `feedbackOut` 160, `exitFast` 140, `enterFast` 180, `enter` 240, `replace` 280, `spring` `{damping 26, stiffness 300, mass 1}`). |
 | Contrastes | `packages/tokens/src/index.test.ts` | `ink`/`inkMuted` certifiés AA sur `flat` **et** `raised`, pour les 12 specs. |
-| Surface | `packages/ui/src/components/bob-surface.tsx` + `.logic.ts` + `.test.ts` | `tone` × `emphasis` (`flat`/`raised`/`floating`), bordure 1 pt `border` ou 2 pt `ink` en Increase Contrast, `shadowNative.e2` en `floating`. Aucune `BlurView`, aucun `rgba`, aucune capability runtime. |
+| Surface | `packages/ui/src/components/bob-surface.tsx` + `.logic.ts` + `.test.ts` | `tone` × `emphasis` (`flat`/`raised`/`floating`), bordure 1 pt `border` ou 2 pt `ink` en Increase Contrast, `shadowNative.e2` en `floating`. Aucune `BlurView`, aucun `rgba`, aucune capability runtime. **(précisé A23 · 2026-07-30)** Le composant pose fond, bordure et ombre — **pas** la couleur du texte : `ink`/`inkMuted` sont calculés mais **non exposés** aux `children`, et `highContrast` est une prop par instance, ni lue du système ni héritée. Voir [UX-ADR-004 § Ce que `BobSurface` ne fait PAS](adr/UX-ADR-004-adaptive-appearance.md#ce-que-bobsurface-ne-fait-pas--ink-et-highcontrast-ne-se-propagent-pas). |
+| Boutons et press | `packages/ui/src/components/button.tsx` + `button.logic.ts` + `pressable-scale.logic.ts` | **(ajouté A26 · 2026-07-30)** `Button` : échelle **0,94 instantanée** (fonction de style du `Pressable`, ni durée ni ressort), `BUTTON_MIN_HEIGHT = 48` posé en `minHeight` **et** `minWidth` (taille `regular`), `hitSlop: 6` en taille `compact`, radius borné 11–15, **ni `success` ni `error`**. `PressableScale` : **0,98** + opacité **0,9**, **90 ms** in / **150 ms** out, cible ≥ 44 pt. |
+| Toast | `packages/ui/src/components/toast.tsx` | **(ajouté A26 · 2026-07-30)** `Animated` RN (`useNativeDriver`), entrée **200 ms** (`translateY` 16 → 0 + opacité), sortie **180 ms**, auto-dismiss **2 400 ms**, `bottom: 122`, `pointerEvents="none"` (**aucune touche, donc aucun Undo possible dedans**), `accessibilityRole="alert"` + `accessibilityLiveRegion="polite"`. Les 200/180 ms **ne sont aucun token**. |
 | Présence et remplacement | `packages/ui/src/components/motion-presence.tsx` + `.logic.ts` | `useRowPresence`, `PresenceRow` (enter 240 + `translateY` 6 → 0, exit 140), `MorphReplace` (replace 280 en 2 × 140, échelle 0,96 → 1, interruptible). Transform/opacity uniquement. |
-| Mouvement réduit | `packages/ui/src/hooks/use-reduce-motion.ts` | Implémentation **unique**. Règle produit inscrite dans le fichier : ambient **coupé**, transitions d'UI à **durée 0**. |
+| Mouvement réduit | `packages/ui/src/hooks/use-reduce-motion.ts` | Implémentation **unique**. Règle produit inscrite dans le fichier : ambient **coupé**, transitions d'UI à **durée 0**. **(précisé A18 · 2026-07-30)** La lecture est **asynchrone** et l'état initial du hook est `false` : au **premier rendu**, le hook affirme « pas de réduction » avant de savoir. C'est un fail-OPEN, signalé comme défaut de code et **non corrigé par ce lot** ; la règle produit qui s'applique en attendant est le repli fail-CLOSED de [08 § Préférences d'accessibilité et premier rendu](08-accessibility-adaptive-design.md#préférences-daccessibilité-et-premier-rendu). |
 | Chrome de référence | `packages/ui/src/components/bottom-tab-bar.tsx` + `.logic.ts` + `.test.ts` | Pilule `colors.surface` opaque, `radius.cardXl`, `controls.cardBorder`, `shadowNative.e2` ; rôles `navigation.active` / `navigation.assistantActive` / `navigation.inactive` ; `accessibilityRole` `tablist`/`tab` + `accessibilityState.selected` **déjà posés** ; mode flottant = retombée `patterns.bottomTabBar.fade`. |
 | Consommateurs livrés | `apps/mobile/app/equipements/[chantierId].tsx`, `apps/mobile/app/equipement/[id].tsx` | Preuve d'usage réel : `BobSurface` (tones `warning`/`neutral`/`marine`), `useRowPresence` + `PresenceRow`, `MorphReplace`. |
 | Plan qui a livré le kit | [`beta-fly-services-p1-conception-ecrans.md`](../superpowers/plans/beta-fly-services-p1-conception-ecrans.md) §1 | Spécifie `surfaceTint`, `BobSurface`, `ProgressiveBlurBob` (§1.3), `motionSemantic`, et le cadre « 100 % additif ». |
@@ -59,6 +81,27 @@ kit, LE CODE FAIT FOI.**
 sont une copie **octet pour octet** de `expo-glass-tabs` (`diff` = 0 sur les quatre). Il n'y a donc
 qu'**une** référence de comportement ; le clone n'en est que la démonstration. Ne pas les traiter
 comme deux sources indépendantes.
+
+#### Épinglage de la source externe
+
+> Ajouté A27 · 2026-07-30. Une autorité de comportement citée par une **branche mobile** (« la tab
+> bar de `davidmokos/expo-glass-tabs` ») n'est pas une autorité : la branche bouge, et les seuils,
+> ressorts et décomptes de lignes que [04](04-navigation-scroll-surfaces.md) recopie deviennent
+> invérifiables. La référence est donc épinglée sur un artefact **immuable**.
+
+| Ancre | Valeur | Nature |
+| --- | --- | --- |
+| Paquet npm | `expo-glass-tabs@0.1.1` | Immuable — publié le 2026-07-22T21:53:19Z. |
+| `dist.shasum` | `881cdcaede9f76f4d6f9084c6718ec003a0327b5` | Vérifiable hors ligne. |
+| `dist.integrity` | `sha512-DVtfA+wTXz63LNAgGXXuAPEtCFwciELLTI8J1kq16ER7IcAx+dPZdMwfBpOY9iVkwinPdSz60dSe8QNQGWbBZg==` | Vérifiable hors ligne. |
+| `gitHead` de la publication | `f6119a19104885ddb4cbca3b1405e037149aaba7` | Commit exact correspondant au tarball. |
+| Licence / auteur | MIT — David Mokos | Compatible avec une reprise de comportement. |
+| Empreinte de lecture | `glass-tab-bar.tsx` 438 l., `fading-tab-slot.tsx` 93 l., `minimize-context.tsx` 88 l., `progressive-blur.tsx` 43 l. | Contrôle de cohérence : si ces décomptes changent, la citation ne porte plus sur la même source. |
+
+Toute valeur de [04 § Comportement normatif de la tab bar](04-navigation-scroll-surfaces.md#comportement-normatif-de-la-tab-bar)
+attribuée à « la référence » se lit dans **cet** artefact et pas ailleurs. Épingler n'est pas
+adopter : le paquet n'est **pas** une dépendance de Bob et ne le devient pas
+([UX-ADR-002 § Amendement A3](adr/UX-ADR-002-navigation-surfaces.md)).
 
 **Ce que la référence NE fait PAS.** Son silence n'est pas une norme. Aucun builder ne doit prendre
 ces absences pour des décisions :
@@ -156,9 +199,9 @@ application générique Material.
 | [Native Tabs](https://docs.expo.dev/router/advanced/native-tabs/) | Tab bar système, matériaux récents et comportements natifs. | API évolutive ; prototype comparatif obligatoire. |
 | [Zoom transition](https://docs.expo.dev/router/advanced/zoom-transition/) | Carte → détail sur iOS compatible. | iOS/versionné, alpha ; jamais sans fallback. |
 | [Stack toolbar](https://docs.expo.dev/router/advanced/stack-toolbar/) | Menus et actions de header natifs. | Support par plateforme à vérifier. |
-| [Expo Haptics](https://docs.expo.dev/versions/latest/sdk/haptics/) | Sélection, impact et notifications sémantiques. | Disponibilité et réglages système. |
-| [GlassEffect](https://docs.expo.dev/versions/latest/sdk/glass-effect/) | **(amendé A4 · 2026-07-29)** Aucun. **Ne sera pas adopté** : hors doctrine « matière Bob ». | Conservé dans cette bibliographie pour tracer la décision de non-adoption, pas comme candidat. |
-| [BlurView](https://docs.expo.dev/versions/latest/sdk/blur-view/) | **(amendé A4 · 2026-07-29)** Uniquement derrière le port `renderBlurLayer` de `ProgressiveBlurBob`, en retombée de bord sur fond photographique. | Coût GPU et limites Android selon API ; jamais importé par `packages/ui` ; le défaut produit reste sans flou. |
+| [Expo Haptics — SDK 57 (pinée)](https://docs.expo.dev/versions/v57.0.0/sdk/haptics/) | Sélection, impact et notifications sémantiques. | **(pinée A20 · 2026-07-30)** Disponibilité et réglages système. Non déclaré dans le dépôt ; l'ajout dépend d'`UX-ADR-006` **Accepted** et de la certification acoustique. |
+| [GlassEffect — SDK 57 (pinée)](https://docs.expo.dev/versions/v57.0.0/sdk/glass-effect/) | **(amendé A4 · 2026-07-29)** Aucun. **Ne sera pas adopté** : hors doctrine « matière Bob ». | Conservé dans cette bibliographie pour tracer la décision de non-adoption, pas comme candidat. |
+| [BlurView — SDK 57 (pinée)](https://docs.expo.dev/versions/v57.0.0/sdk/blur-view/) | **(amendé A4 · 2026-07-29 ; pinée A20 · 2026-07-30)** Uniquement derrière le port `renderBlurLayer` de `ProgressiveBlurBob`, en retombée de bord sur fond photographique. Contrat de props exécutable : [04 § Contrat exécutable du port `renderBlurLayer`](04-navigation-scroll-surfaces.md#contrat-exécutable-du-port-renderblurlayer--expo-blur-expo-sdk-57). | Consultée le 2026-07-30. `…/versions/latest/…` est **proscrit** dans ce dossier : il change de contenu sans changer d'URL. Android **< 31** = aucun flou ; `blurMethod` par défaut `'none'` rend une vue **semi-transparente**, hors doctrine ; `experimentalBlurMethod` dépréciée. **(complété A29 · 2026-07-30)** Deux limitations officielles de plus, toutes deux structurantes : les `BlurView` doivent **tenir dans les bornes d'un seul** `BlurTargetView`, et le flou **ne se met pas à jour** quand la `BlurView` est rendue **avant** un contenu dynamique (`FlatList` et assimilés) — voir [04 § Couture du port](04-navigation-scroll-surfaces.md#couture-du-port--qui-rend-quoi-de-part-et-dautre-de-la-frontière-de-paquet). Jamais importé par `packages/ui`. |
 | [React Native Performance](https://reactnative.dev/docs/performance.html) | Budget frame et tests en release. | Ne jamais profiler uniquement en dev. |
 | [AccessibilityInfo](https://reactnative.dev/docs/accessibilityinfo) | Reduce Motion, Reduce Transparency et préférence de crossfade. | Matrice de support plateforme. |
 
@@ -192,9 +235,33 @@ application générique Material.
 
 ## Politique de version
 
+### Versions réellement intégrées
+
+> Ajouté A25 · 2026-07-30. Une seule ligne citable, pour que les gates cessent de recopier une
+> version périmée. Source : `apps/mobile/package.json`.
+
+| Brique | Version au 2026-07-30 | Ce qu'elle remplace |
+| --- | --- | --- |
+| Expo SDK | **57.0.8** | ~~56~~ |
+| React Native | **0.86.0** | ~~0.85~~ |
+| React | **19.2.3** | ~~19.2~~ |
+| Expo Router | **57.0.8** | ~~56~~ |
+| Reanimated / Worklets | **4.5.0** / **0.10.0** — déclarés, importés nulle part | *(inchangé, A7)* |
+| Gesture Handler | **^2.32.0** — déclaré et utilisé | *(inchangé, A7)* |
+| `expo-haptics`, `expo-blur`, `expo-glass-effect` | **absents de tous les `package.json`** | *(inchangé)* |
+
+Toute gate, preuve minimale d'ADR ou matrice de compatibilité part de **ces** valeurs. Les
+documents qui portaient « Expo 56 / RN 0.85 » ont été corrigés le 2026-07-30 :
+[00 § Périmètre inspecté](00-audit-baseline.md#périmètre-inspecté),
+[09 en-tête](09-technical-architecture.md), [UX-ADR-001](adr/UX-ADR-001-motion-runtime.md) § Contexte
+et § Preuves minimales, [UX-ADR-006](adr/UX-ADR-006-haptic-feedback.md) § Preuves minimales.
+
+### Rituel
+
 Avant l'ouverture de chaque phase :
 
-1. vérifier la version Expo/RN réellement intégrée ;
+1. vérifier la version Expo/RN réellement intégrée **et mettre à jour le tableau ci-dessus dans le
+   même changement** ;
 2. relire les pages officielles utilisées par l'ADR concerné ;
 3. noter tout changement de statut alpha/beta/stable ;
 4. exécuter un spike sur les versions minimales et maximales supportées ;

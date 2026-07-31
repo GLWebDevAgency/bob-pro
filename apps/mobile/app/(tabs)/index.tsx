@@ -32,7 +32,6 @@ import {
   Alert,
   Pressable,
   RefreshControl,
-  ScrollView,
   Text,
   View,
   type StyleProp,
@@ -91,6 +90,7 @@ import { CollectInvoiceButton } from '../../src/components/CollectInvoiceButton'
 import { ShareQuoteLinkButton } from '../../src/components/ShareQuoteLinkButton';
 import { TODAY_QUICK_ACTIONS } from '../../src/components/today-quick-actions';
 import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
+import { TabsScrollView } from '../../src/components/bob-tabs-scroll-view';
 import { LatestValueDigestCard } from '../../src/engagement/ValueDigestCard';
 import { LatestTrialReportCard } from '../../src/monetization/TrialReportCard';
 import {
@@ -1107,7 +1107,7 @@ export default function Aujourdhui() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScrollView
+      <TabsScrollView
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingBottom: bobScrollInsets.paddingBottom }}
         scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
@@ -1361,7 +1361,7 @@ export default function Aujourdhui() {
             {t('today.footer', { personality })}
           </Text>
         </View>
-      </ScrollView>
+      </TabsScrollView>
 
       <Toast
         message={toast ?? ''}

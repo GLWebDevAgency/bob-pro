@@ -10,6 +10,13 @@
 > A1/A2. **Aucun constat n'est modifié dans sa description** : la baseline reste la photographie du
 > commit `2515ddf3` du 2026-07-22. Le kit « matière Bob » livré depuis est postérieur à cette
 > baseline et vit dans [17 § Autorités normatives](17-references.md#autorités-normatives).
+>
+> **(ajouté A30 · 2026-07-30) Amendements portés dans le corps** — leur marqueur daté est au
+> point d'application, pas dans cet encadré : `A7`, `A25`. Le
+> [journal des amendements](README.md#journal-des-amendements) fait foi ; cette énumération
+> n'est admissible que parce que le contrôle `C12` de `scripts/check-mobile-experience-docs.mjs`
+> la tient à jour — une énumération que rien ne vérifie devient fausse au premier amendement
+> suivant.
 
 ## Résumé exécutif
 
@@ -47,7 +54,12 @@ de certification ni de promesse marketing.
 - clés et variantes de texte dans `packages/i18n` ;
 - captures de handoff et de production disponibles ;
 - architecture Bob Live, reducer de session, overlay global et composants vocaux ;
-- configuration Expo SDK 56, React Native 0.85 et Expo Router.
+- configuration Expo SDK 56, React Native 0.85 et Expo Router. **(actualisé A25 · 2026-07-30 : ce
+  constat reste exact **au snapshot `2515ddf3`** et n'est pas réécrit ; la configuration réellement
+  intégrée est aujourd'hui **Expo 57.0.8 / RN 0.86.0 / React 19.2.3 / Expo Router 57.0.8**
+  — `apps/mobile/package.json`. Comme pour `B10`/`A7`, la baseline garde son millésime, mais aucune
+  gate ne doit plus certifier une compatibilité « Expo 56 » : voir
+  [17 § Versions réellement intégrées](17-references.md#versions-réellement-intégrées).)**
 
 ## Faits structurants observés
 

@@ -2,7 +2,11 @@
 
 > Statut : **Proposed**
 > Dernière vérification du code : commit `2515ddf3`
-> SDK de référence : Expo 56, React Native 0.85, React 19.2, Expo Router 56
+> SDK de référence : **(corrigé A25 · 2026-07-30)** **Expo 57.0.8, React Native 0.86.0,
+> React 19.2.3, Expo Router 57.0.8** — lu dans `apps/mobile/package.json` le 2026-07-30.
+> ~~Expo 56, React Native 0.85, React 19.2, Expo Router 56~~ : exact au snapshot `2515ddf3`,
+> périmé depuis. Le mobile a été porté sur le SDK 57 ; une gate qui exige une compatibilité
+> « Expo 56 » certifierait une version que le produit n'exécute plus.
 > IDs liés : G01–G22, V01–V14
 >
 > **Amendement A1 — 2026-07-29 · doctrine « matière Bob »**
@@ -14,6 +18,26 @@
 > réécrit ; les passages supersédés restent cités.
 > **Ce qui ne change pas.** Frontières d'architecture, projections pures, politique motion,
 > observabilité, garde d'imports, migration et critères d'acceptation.
+>
+> **Amendement A25 — 2026-07-30 · SDK de référence** — en-tête. Source : `apps/mobile/package.json`
+> (`expo ~57.0.8`, `react-native 0.86.0`, `react 19.2.3`, `expo-router ^57.0.8`).
+>
+> **Amendement A20 — 2026-07-30 · contrat `expo-blur`** — ligne `Expo Blur` du tableau de
+> dépendances. Le port existait, son contrat de props n'était écrit nulle part.
+>
+> **Amendement A29 — 2026-07-30 · couture du port** — même ligne. Le contrat de props
+> existait, la frontière de paquet restait indevinable : qui monte le `BlurTargetView`, à quel
+> niveau de layout, et comment sa `ref` l'atteint sans que `packages/ui` importe `expo-blur`.
+>
+> **Amendement A18 — 2026-07-30 · préférences fail-CLOSED** — § Politique motion. `MotionMode` ne
+> savait pas dire « je ne sais pas encore ».
+>
+> **(ajouté A30 · 2026-07-30) Amendements portés dans le corps** — leur marqueur daté est au
+> point d'application, pas dans cet encadré : `A2`, `A7`. Le
+> [journal des amendements](README.md#journal-des-amendements) fait foi ; cette énumération
+> n'est admissible que parce que le contrôle `C12` de `scripts/check-mobile-experience-docs.mjs`
+> la tient à jour — une énumération que rien ne vérifie devient fausse au premier amendement
+> suivant.
 
 ## But
 
@@ -29,7 +53,7 @@ navigation dans le domaine et sans donner à la présentation une autorité mét
 | Reanimated | **(corrigé A7 · 2026-07-29)** **Déclaré directement** dans `apps/mobile` depuis `251271dc` (`react-native-reanimated` `4.5.0` + `react-native-worklets` `0.10.0`, prescrits par SDK 57), mais **importé par aucun fichier** de `apps/mobile` ni de `packages/ui/src`. Déclarer n'est pas adopter : le runtime reste à mettre en service. *Rédaction 2026-07-23, exacte au snapshot `2515ddf3`, supersédée par le fait : « présent transitivement dans le lock, pas dépendance directe mobile ».* | `UX-ADR-001`. |
 | Gesture Handler | Déclaré et utilisé. **(précisé A7 · 2026-07-29 : `^2.32.0` ; `GestureHandlerRootView` à la racine et deux `Swipeable` de contenu — aucun usage dans le chrome ni dans `packages/ui/src`.)** | Réutiliser pour gestures autorisées. |
 | Expo Haptics | Non déclaré directement. | Ajouter seulement après `UX-ADR-006` Accepted et certification acoustique. |
-| Expo Blur | Non déclaré directement. | **(amendé A1 · 2026-07-29)** Optionnel et borné : uniquement derrière le port `renderBlurLayer` de `ProgressiveBlurBob`, jamais importé par `packages/ui`. Le défaut produit reste sans flou. |
+| Expo Blur | Non déclaré directement. | **(amendé A1/A2 · 2026-07-29 ; contrat A20 · 2026-07-30)** Optionnel et borné : uniquement derrière le port `renderBlurLayer` de `ProgressiveBlurBob`, jamais importé par `packages/ui`. Le défaut produit reste sans flou. Si `D08` l'active, le contrat de props est **exécutable et unique** — `BlurTargetView` + `blurTarget` + `blurMethod="dimezisBlurViewSdk31Plus"`, Android **< 31 = rang N0 sans flou**, `experimentalBlurMethod` interdite : voir [04 § Contrat exécutable du port `renderBlurLayer`](04-navigation-scroll-surfaces.md#contrat-exécutable-du-port-renderblurlayer--expo-blur-expo-sdk-57). **(complété A29 · 2026-07-30)** La **couture** est écrite avec le contrat : type du port, propriétaire du `BlurTargetView` (`apps/mobile`, au shell d'écran), `ref` capturée par closure — donc jamais typée dans `@bob/ui` —, englobement garanti par construction, et interdiction au-dessus d'une liste virtualisée : [04 § Couture du port](04-navigation-scroll-surfaces.md#couture-du-port--qui-rend-quoi-de-part-et-dautre-de-la-frontière-de-paquet). |
 | Expo Glass (`expo-glass-effect`) | Non déclaré directement. | **(amendé A1 · 2026-07-29)** **Ne sera pas adopté.** Hors doctrine « matière Bob » : le verre système impose la teinte de l'OS, pas la nôtre. Contrôle statique d'import à ajouter. |
 | Skia | Non déclaré mobile directement. | Spike uniquement si Bob/chart le justifie. |
 | FlashList | Déclaré. | Conserver pour longues listes et profiler transitions. |
@@ -172,10 +196,19 @@ Contraintes :
 ```ts
 type MotionMode = 'full' | 'crossfade_only' | 'off';
 
+/**
+ * (amendé A18 · 2026-07-30) Une préférence système a TROIS états : on ne la connaît pas
+ * au premier rendu, elle se lit de façon asynchrone. `unknown` n'est pas un détail
+ * d'implémentation : c'est l'état par défaut, et il se replie du côté SÛR.
+ */
+type PreferenceState = 'unknown' | 'on' | 'off';
+
 interface ExperiencePreferences {
-  motionMode: MotionMode;
-  reduceTransparency: boolean;
-  increaseContrast: boolean;
+  /** `unknown` → politique 'off' (durée 0), jamais 'full'. */
+  motionMode: MotionMode | 'unknown';
+  reduceTransparency: PreferenceState;
+  increaseContrast: PreferenceState;
+  screenReader: PreferenceState;
   colorScheme: 'light' | 'dark';
 }
 
@@ -188,6 +221,14 @@ interface MotionPolicy {
 
 Le provider observe les préférences système et fournit une politique. Les composants ne lisent pas
 directement plusieurs APIs avec des règles divergentes.
+
+**(ajouté A18 · 2026-07-30)** Il les résout **une seule fois**, au démarrage, avant le premier frame
+d'interface utile, et les mémorise : tout composant monté ensuite reçoit une valeur **synchrone**.
+Tant qu'une valeur est `unknown`, la politique renvoie la variante **réduite** — durée 0, aucun flou,
+aucun détecteur de geste qui consomme les touches d'exploration. Règle complète et preuve exigée :
+[08 § Préférences d'accessibilité et premier rendu](08-accessibility-adaptive-design.md#préférences-daccessibilité-et-premier-rendu).
+C'est aussi la raison pour laquelle un composant animé n'appelle pas `AccessibilityInfo` lui-même :
+chaque lecture locale rouvre une fenêtre d'ignorance, et il y en a autant que de composants.
 
 ## Runtime motion
 

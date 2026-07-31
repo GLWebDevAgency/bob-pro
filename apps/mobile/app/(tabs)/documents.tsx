@@ -20,7 +20,7 @@
  */
 import { useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { KeyboardAvoidingView, Linking, Pressable, RefreshControl, ScrollView, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Linking, Pressable, RefreshControl, Text, TextInput, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Feather } from '@expo/vector-icons';
@@ -73,6 +73,7 @@ import { useChantiers, useCustomers, useExpenses, useExportFec, useInvoices } fr
 import { useCreateDocumentFolder, useDocumentFolders, useDocuments } from '../../src/data/documents';
 import { usePublishAgentContext, type AgentContext } from '../../src/agent';
 import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
+import { TabsScrollView } from '../../src/components/bob-tabs-scroll-view';
 import { hasBlockingAuthoritativeDataError } from '../../src/data/authoritative-query-state';
 import {
   ChartIcon,
@@ -820,7 +821,7 @@ export default function Documents() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScrollView
+      <TabsScrollView
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingBottom: bobScrollInsets.paddingBottom }}
         scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
@@ -1512,7 +1513,7 @@ export default function Documents() {
             ) : null}
           </>
         ) : null}
-      </ScrollView>
+      </TabsScrollView>
 
       <Sheet visible={rootFolderEditorOpen} onClose={closeRootFolderEditor}>
         <KeyboardAvoidingView {...(process.env.EXPO_OS === 'ios' ? { behavior: 'padding' as const } : {})}>

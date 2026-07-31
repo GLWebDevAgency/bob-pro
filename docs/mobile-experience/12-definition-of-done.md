@@ -7,6 +7,13 @@
 > profilé) et une case de matière est **ajoutée** à la DoD composant. **Aucune case n'est
 > supprimée ni assouplie** : la preuve exigée devient plus facile à produire parce que la matière
 > est plus simple, pas parce que l'exigence baisse.
+>
+> **(ajouté A30 · 2026-07-30) Amendements portés dans le corps** — leur marqueur daté est au
+> point d'application, pas dans cet encadré : `A17`, `A18`, `A23`. Le
+> [journal des amendements](README.md#journal-des-amendements) fait foi ; cette énumération
+> n'est admissible que parce que le contrôle `C12` de `scripts/check-mobile-experience-docs.mjs`
+> la tient à jour — une énumération que rien ne vérifie devient fausse au premier amendement
+> suivant.
 
 ## Règle
 
@@ -85,6 +92,14 @@ nature du lot. Une équipe ne choisit pas librement les sections à appliquer.
       `BobSurface` ; zéro `rgba` translucide, zéro import `expo-glass-effect`, zéro dépendance à
       une capability de matière. Un composant qui n'aurait d'aspect correct qu'avec une matière
       système n'est pas Done.
+- [ ] **(ajouté A23 · 2026-07-30)** **Encre conforme** : chaque texte posé sur une surface teintée
+      utilise `ink`/`inkMuted` du ton, ou son contraste sur ce fond est **mesuré** et ≥ AA.
+      `BobSurface` ne propage pas l'encre : la case ne se coche pas au composant, elle se coche au
+      point d'usage.
+- [ ] **(ajouté A17 · 2026-07-30)** **Cible mesurée à l'état le plus compact** du composant, et
+      jamais adossée à une vue `pointerEvents="none"`.
+- [ ] **(ajouté A18 · 2026-07-30)** **Préférence inconnue** : le composant rend la variante réduite
+      tant que la préférence n'est pas résolue, et ne rejoue rien ensuite.
 - [ ] Nominal, press, focus, selected, disabled, loading, success et error.
 - [ ] Entrée et sortie si l'une existe.
 - [ ] Interruption/unmount sans fuite.
@@ -161,7 +176,11 @@ nature du lot. Une équipe ne choisit pas librement les sections à appliquer.
 
 ## DoD accessibilité
 
-- [ ] Cibles 44 pt/48 dp selon plateforme et contrôles.
+- [ ] Cibles 44 pt/48 dp selon plateforme et contrôles. **(précisé A28 · 2026-07-30)** La cible est
+      **mesurée** sur l'élément qui reçoit la touche, jamais lue dans un style, jamais adossée à une
+      vue `pointerEvents="none"` ni à un `hitSlop` qui déborde son parent — un tel `hitSlop` n'est
+      jamais dispatché, ni sur Android ni sur iOS
+      ([08 § Cibles tactiles](08-accessibility-adaptive-design.md#cibles-tactiles)).
 - [ ] Contraste texte/composants certifié.
 - [ ] Information non dépendante de la couleur.
 - [ ] Dynamic Type et Bold Text.

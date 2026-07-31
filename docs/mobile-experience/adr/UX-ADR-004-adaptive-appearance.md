@@ -1,5 +1,15 @@
 # UX-ADR-004 — Apparence adaptative et matières
 
+> **Amendement A23 — 2026-07-30 · `ink` et `highContrast` ne se propagent pas**
+> **Source.** Lecture directe de `packages/ui/src/components/bob-surface.tsx` et
+> `bob-surface.logic.ts`.
+> **Portée.** § Ancrage sur le code (ligne « Composant de surface » + sous-section nouvelle) et
+> deux critères de vérification. La doctrine de matière, l'algorithme de surface et les rangs sont
+> **inchangés** : ce qui change est la frontière exacte de ce que le composant garantit.
+> **Pourquoi.** Le dossier décrivait une garantie AA « portée par la surface » ; elle est portée
+> par un **couple** texte/fond, et le composant ne pose pas le texte. Un consommateur livré le
+> démontre — sous AA.
+>
 > **Amendement A1 — 2026-07-29 · doctrine « matière Bob »**
 > **Source.** Directive du fondateur redite le 2026-07-29 : « ce n'est pas forcément du verre
 > liquide qu'on veut… en gardant NOS couleurs. **Je NE VEUX PAS une UI transparente à la iOS.** »
@@ -13,6 +23,13 @@
 > **Légitimité.** Cet ADR est `Proposed` ; la règle « ne jamais réécrire silencieusement un ADR »
 > ([README](../README.md) § Maintenance) vise les ADR `Accepted`. L'amendement en place est donc
 > autorisé, daté et sourcé ; il ne change ni le statut, ni les décideurs attendus, ni les gates.
+>
+> **(ajouté A30 · 2026-07-30) Amendements portés dans le corps** — leur marqueur daté est au
+> point d'application, pas dans cet encadré : `A9`, `A13`. Le
+> [journal des amendements](../README.md#journal-des-amendements) fait foi ; cette énumération
+> n'est admissible que parce que le contrôle `C12` de `scripts/check-mobile-experience-docs.mjs`
+> la tient à jour — une énumération que rien ne vérifie devient fausse au premier amendement
+> suivant.
 
 ## Statut
 
@@ -154,11 +171,55 @@ La doctrine matière n'est pas à écrire : elle est **livrée, testée et déj�
 | --- | --- | --- |
 | Tokens `surfaceTint` | `packages/tokens/src/index.ts` (l. 214-257) | 2 apparences × 6 tons × `{flat, raised, border, ink, inkMuted}`, hex pré-composés. |
 | Contrastes AA | `packages/tokens/src/index.test.ts` | `ink`/`inkMuted` certifiés sur `flat` ET `raised`. |
-| Composant de surface | `packages/ui/src/components/bob-surface.tsx` (+ `.logic.ts`, `.test.ts`) | `tone` × `emphasis` (`flat`/`raised`/`floating`), bordure renforcée en Increase Contrast, aucune `BlurView`, aucun `rgba`. |
+| Composant de surface | `packages/ui/src/components/bob-surface.tsx` (+ `.logic.ts`, `.test.ts`) | `tone` × `emphasis` (`flat`/`raised`/`floating`), bordure renforcée en Increase Contrast, aucune `BlurView`, aucun `rgba`. **(précisé A23 · 2026-07-30)** Le composant pose **le fond, la bordure et l'ombre**. Il ne pose **pas** la couleur du texte. |
 | Chrome de référence | `packages/ui/src/components/bottom-tab-bar.tsx` | Pilule `colors.surface` opaque + `controls.cardBorder` + `shadowNative.e2`. |
 | Consommateurs livrés | `apps/mobile/app/equipements/[chantierId].tsx`, `apps/mobile/app/equipement/[id].tsx` | En-têtes de fichier : « BobSurface (surfaces teintées OPAQUES — jamais la transparence iOS) ». |
 
 **En cas de divergence entre un document de ce dossier et le code du kit, le CODE fait foi.**
+
+### Ce que `BobSurface` ne fait PAS — `ink` et `highContrast` ne se propagent pas
+
+> Ajouté A23 · 2026-07-30. Source : lecture directe de
+> `packages/ui/src/components/bob-surface.tsx` et `bob-surface.logic.ts`. Le dossier décrivait une
+> propagation qui n'existe pas ; la règle de vérité s'applique — c'est la **description** qui cède.
+
+Deux faits, vérifiables en trente lignes de code :
+
+1. **`ink` / `inkMuted` ne descendent pas aux enfants.** `bobSurfaceColors()` **calcule** bien
+   `ink` et `inkMuted` — les encres certifiées AA **sur ce fond précis** — mais `BobSurface` ne
+   consomme que `backgroundColor`, `borderColor`, `borderWidth` et `elevated`. Il n'expose ni
+   contexte React, ni render-prop, ni style hérité : `children` est rendu tel quel. **Un `Text`
+   placé dans un `BobSurface` ne reçoit donc aucune couleur du composant.** La certification AA de
+   `packages/tokens/src/index.test.ts` porte sur le **couple** `(ink, flat|raised)` ; elle ne se
+   transporte pas à un texte qui n'utilise pas `ink`.
+2. **`highContrast` est une prop par instance, pas une préférence lue.** Elle vaut `false` par
+   défaut, n'est branchée sur aucune API système, et n'est pas héritée par un `BobSurface`
+   imbriqué. Increase Contrast n'est donc **automatique nulle part** : chaque appelant doit passer
+   la prop, sur chaque surface.
+
+**Cas de preuve — réel, livré, et sous AA.** `apps/mobile/app/equipements/[chantierId].tsx` l. 274
+rend `<BobSurface tone="warning" emphasis="raised">` — fond `surfaceTint.light.warning.raised`
+`#F6E4C6` — et y place un sous-texte `font('sub', 500)` (13,5 pt, **texte normal**) coloré en
+`colors.slate500` `#5B6B7B`, au lieu de l'encre certifiée du ton :
+
+| Texte rendu | Fond réel | Contraste | Verdict AA (4,5:1) |
+| --- | --- | ---: | --- |
+| `colors.slate500` `#5B6B7B` (**ce que le code rend**) | `#F6E4C6` | **4,39:1** | **échoue** |
+| `surfaceTint.light.warning.inkMuted` `#8A5A12` (encre certifiée du ton) | `#F6E4C6` | 4,74:1 | passe |
+| `colors.ink800` `#0F2235` (titre de la même carte) | `#F6E4C6` | 12,94:1 | passe |
+
+C'est le cas de preuve à inscrire au registre : il montre que la garantie AA **ne survit pas** à la
+non-propagation, sur du code déjà livré et déjà cité par cet ADR comme « consommateur livré ». Il
+n'est pas corrigé par le présent amendement — c'est un correctif de **code**, hors de ce lot, et il
+est signalé comme tel.
+
+**Ce qui reste donc vrai, et ce qu'il faut prouver :**
+
+- vrai : les **tokens** `ink`/`inkMuted` sont certifiés AA sur `flat` **et** `raised` ;
+- vrai : `BobSurface` garantit un fond **opaque** et une bordure renforçable ;
+- **à prouver à chaque usage** : que le texte posé dans la surface utilise bien l'encre du ton, ou
+  qu'il atteint AA sur ce fond par une autre voie **mesurée**. Aucun test du dépôt ne le vérifie
+  aujourd'hui ([11 § Tests statiques](../11-test-strategy.md#tests-statiques)).
 
 ## Conséquences
 
@@ -182,8 +243,13 @@ Négatives : double palette à concevoir, QA importante, matières variables par
 - [ ] ~~Aucune carte métier dépend du verre.~~ **(amendé A1)** Aucune surface, métier ou chrome,
       n'importe `expo-glass-effect` ni ne dépend d'une capability de matière ; contrôle statique
       d'import (voir [11 — Tests](../11-test-strategy.md)).
-- [ ] **(ajouté A1)** Toute surface porteuse d'information est issue de `surfaceTint`/`BobSurface`
-      et son couple `ink`/`inkMuted` reste certifié AA sur `flat` ET `raised`.
+- [ ] **(ajouté A1 ; précisé A23 · 2026-07-30)** Toute surface porteuse d'information est issue de
+      `surfaceTint`/`BobSurface` **et le texte qu'elle contient utilise l'encre du ton** — `ink` ou
+      `inkMuted` —, ou atteint AA sur ce fond par un couple **mesuré**. `BobSurface` ne propage pas
+      l'encre : la case se prouve au point d'usage, pas au composant.
+- [ ] **(ajouté A23 · 2026-07-30)** Chaque surface qui doit répondre à Increase Contrast reçoit
+      explicitement `highContrast` : la prop n'est ni lue du système, ni héritée d'un
+      `BobSurface` parent.
 - [ ] GPU et batterie mesurés sur la seule matière restante autorisant un échantillonnage : la
       retombée `ProgressiveBlurBob` en mode flouté (budget dans
       [10 — Performance](../10-performance-observability.md)).
