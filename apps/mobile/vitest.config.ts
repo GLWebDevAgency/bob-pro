@@ -19,6 +19,22 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: [
+      /**
+       * `app/` — TOUS LES POINTS DE MONTAGE d'expo-router, et ils étaient hors de toute suite.
+       *
+       * La liste ci-dessous n'énumérait que des chemins de `src/` : rien ne regardait `app/`,
+       * donc rien ne pouvait y rougir. Une revue par mutation l'a chiffré — treize mutations
+       * appliquées au seul `app/(tabs)/_layout.tsx` ont toutes SURVÉCU, dont l'INVERSION du flag
+       * `mobile_tabs_experiment_v1`. Ce n'est pas le défaut d'un lot, c'est celui du dépôt :
+       * cette ligne protège tout futur travail de navigation.
+       *
+       * Un test posé sous `app/` deviendrait une ROUTE — `expo-router/_ctx.ios.js` prend TOUT
+       * fichier `.ts/.tsx/.js/.jsx` du dossier, et Metro tenterait alors de résoudre `vitest`
+       * dans le bundle de l'application. Les tests d'`app/` vivent donc dans des dossiers
+       * `__tests__/`, que le `resolver.blockList` d'Expo écarte déjà ;
+       * `src/lib/expo-router-bundle-guard.test.ts` le VÉRIFIE au lieu de le supposer.
+       */
+      'app/**/*.test.ts?(x)',
       'src/realtime/**/*.test.ts?(x)',
       'src/agent/**/*.test.ts?(x)',
       'src/audio/**/*.test.ts',
