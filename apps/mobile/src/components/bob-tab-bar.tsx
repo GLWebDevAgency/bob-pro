@@ -550,6 +550,20 @@ export function BobTabBar({
           borderWidth: TAB_BAR_BORDER_WIDTH,
           borderColor: palette.border,
           borderCurve: 'continuous' as const,
+          /*
+           * PREMIER des deux `overflow: 'hidden'` du fichier (le second est sur la boîte
+           * visuelle d'un onglet, plus bas). Il garantit la SILHOUETTE : rien de ce qui est
+           * peint dedans ne peut dépasser de l'arrondi de la pilule.
+           *
+           * SA PRÉMISSE, ET ELLE EST VÉRIFIABLE : aujourd'hui, rien ne l'atteint. Le highlight
+           * est le seul enfant positionné en ABSOLU, donc le seul qui pourrait sortir : il part
+           * du retrait de rangée à gauche (4 pt) et son bord droit vaut
+           * `4 + 5 × largeurOnglet = largeurPilule − 6`, pour une paroi intérieure à
+           * `largeurPilule − 2` — il s'arrête donc EXACTEMENT 4 pt avant elle, à tout instant du
+           * repli et jusqu'au dernier onglet. En hauteur, il est CENTRÉ dans la boîte
+           * intérieure. Un test lit ces nombres dans l'arbre rendu et les confronte à une table
+           * calculée à la main : le jour où l'un d'eux bouge, la prémisse tombe avec lui.
+           */
           overflow: 'hidden' as const,
         },
         barStyle,
@@ -560,8 +574,9 @@ export function BobTabBar({
              est une contrainte de contraste (§ 2, A23), pas un goût.
 
              DEUX NŒUDS : le VOYAGE (transform seul, une frame de scrub ne touche que lui) et
-             la BOÎTE (géométrie, pilotée par le seul repli). Le parent n'a pas d'`overflow`,
-             donc il ne coupe rien : il ne fait que déplacer. */}
+             la BOÎTE (géométrie, pilotée par le seul repli). Le nœud de voyage ne déclare
+             AUCUN `overflow` : il ne coupe rien, il ne fait que déplacer. Celui qui coupe est
+             la PILULE au-dessus — et sa prémisse est écrite là où il est déclaré. */}
       <Animated.View
         pointerEvents="none"
         testID={testID === undefined ? undefined : `${testID}-highlight-travel`}
@@ -755,12 +770,23 @@ function TabItem({
         pressableStyle,
       ]}
     >
-      {/* `overflow: 'hidden'` — assumé, et borné. AU REPOS ÉTENDU la boîte mesure EXACTEMENT le
-          contenu (les deux hauteurs sortent de la sonde, § B4) : elle ne coupe donc rien, à
-          aucune taille de texte, et un test le vérifie à 100 % et à 200 %. Elle ne coupe que
-          PENDANT le repli — où le label est déjà en train de disparaître (opacité 1 → 0 sur
-          `progress ∈ [0 ; 0,4]`) — et au repli complet, où il n'y a plus que le glyphe. Sans ce
-          `hidden`, un label invisible mais toujours dans le flux déborderait de la pilule. */}
+      {/* SECOND `overflow: 'hidden'` du fichier — assumé, et borné par DEUX PRÉMISSES, toutes
+          deux vérifiées par un test qui les compare à des nombres calculés à la main :
+
+          1. EN HAUTEUR, AU REPOS ÉTENDU, la boîte vaut `max(50 pt, contenu mesuré)` : jamais
+             MOINS que son contenu, donc rien n'est coupé. À la taille standard c'est le
+             PLANCHER qui gagne — contenu 23 + 3 + ligne ≈ 38 pt pour une boîte de 50 — et à
+             ~200 % sur deux lignes c'est la MESURE (23 + 3 + 2 × ligne). Écrire « la boîte
+             mesure EXACTEMENT le contenu » serait faux du premier régime : elle est plus
+             GRANDE, et c'est justement ce qui la rend inoffensive.
+          2. EN LARGEUR, un label plus large qu'un onglet ne déborde pas : le PALIER le RETIRE
+             avant (§ Dynamic Type), et un test pose cette frontière au point près.
+
+          Elle coupe PENDANT le repli, et c'est le seul moment : le visuel descend vers 35 pt
+          alors que le label s'efface (opacité 1 → 0 sur `progress ∈ [0 ; 0,4]`). À ~200 % sur
+          deux lignes, ce rognage commence dès les premières frames — le texte y est déjà en
+          train de disparaître, et c'est le prix d'une barre qui rétrécit. Sans ce `hidden`, un
+          label invisible mais toujours dans le flux déborderait de la pilule. */}
       <Animated.View
         style={[
           {

@@ -401,7 +401,19 @@ export function shouldRetargetMinimize(currentTarget: number, next: 0 | 1): bool
 /** Seuils du pan : au-delà de 6 pt horizontaux le pan gagne ; au-delà de 14 pt verticaux il échoue. */
 export const SCRUB_ACTIVE_OFFSET_X = 6;
 export const SCRUB_FAIL_OFFSET_Y = 14;
-/** Seuils du tap : la tolérance par défaut (~2 pt) fait échouer les taps de vrais doigts. */
+/**
+ * SEUILS DU TAP, et il faut dire exactement ce qu'ils font — une rédaction précédente écrivait
+ * « la tolérance par défaut (~2 pt) fait échouer les taps de vrais doigts », ce que le paquet
+ * installé CONTREDIT : sans `maxDist`, `react-native-gesture-handler` SAUTE le contrôle de
+ * distance (iOS `RNTapHandler.m` : `NAN` + `TEST_MAX_IF_NOT_NAN` ; Android
+ * `TapGestureHandler.kt` : `MAX_VALUE_IGNORE` ; web : `MIN_SAFE_INTEGER`). Il n'y a donc AUCUNE
+ * tolérance par défaut — il n'y a aucune borne du tout.
+ *
+ * Ces deux valeurs sont donc des BORNES AJOUTÉES, et c'est ce qui départage les deux gestes de
+ * `Gesture.Race` : au-delà de 16 pt de glissement, le doigt scrube et le tap doit échouer pour
+ * laisser le pan finir ; au-delà de 400 ms — le défaut du paquet est 500 — c'est un appui long.
+ * Sans elles, un long glissement relâché sur la barre serait ENCORE reçu comme un tap.
+ */
 export const SCRUB_TAP_MAX_DISTANCE = 16;
 export const SCRUB_TAP_MAX_DURATION = 400;
 

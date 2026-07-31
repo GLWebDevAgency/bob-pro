@@ -4,14 +4,20 @@
  * ─── POURQUOI CE FICHIER EXISTE ─────────────────────────────────────────────────────────
  * `useMinimizeOnScroll` était livré, testé, exporté… et appelé par AUCUN écran. Un comportement
  * qui n'est monté nulle part n'est pas livré : le socle écrit que « livrer cinq comportements sur
- * six ne satisfait pas `G11` ». Cette couture le monte réellement, sur les cinq écrans d'onglet.
+ * six ne satisfait pas `G11` ». Cette couture le monte réellement, sur QUATRE des cinq écrans
+ * d'onglet — `index`, `clients`, `argent`, `documents`. Le cinquième, `assistant`, ne l'est pas,
+ * et la raison est écrite dans `bob-tab-bar-minimize.tsx` : son fil de chat se recale tout seul
+ * en bas à chaque message, et chacun de ces recalages replierait la barre sans que personne ait
+ * bougé le doigt.
  *
  * ─── DEUX RESPONSABILITÉS, ET AUCUNE DE PLUS ────────────────────────────────────────────
  *  1. REPLI AU SCROLL — le worklet de `useMinimizeOnScroll` est attaché à la vue défilante ;
  *  2. RETAP SUR L'ONGLET ACTIF → RETOUR EN HAUT. C'est l'un des points du tableau « Ce que la
  *     référence ne fait PAS » (elle laisse `router.navigate` en no-op sur la route courante) et
  *     l'une des § Exigences communes. La vue défilante FOCUSÉE s'enregistre ; le layout
- *     d'onglets, qui seul sait qu'on a re-tapé l'onglet courant, appelle `scrollToTop()`.
+ *     d'onglets, qui seul sait qu'on a re-tapé l'onglet courant, appelle `scrollToTop()`. Sur un
+ *     écran qui n'emploie pas cette couture — `assistant` — personne ne s'enregistre, et le
+ *     retap ne fait rien : le registre reste vide, il ne remonte pas l'écran d'à côté.
  *
  * ─── LE FLAG DÉCIDE DU TYPE DE VUE, ET CE N'EST PAS UN DÉTAIL ───────────────────────────
  * Flag OFF → un `ScrollView` NU, avec les mêmes props à une près — la `ref`, dont la couture a

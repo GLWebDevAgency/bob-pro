@@ -23,7 +23,12 @@
  *    qui manquait : `BobTabSlotFade` existait, testé, et n'était monté par personne — donc jamais
  *    rendu, flag allumé ou non ;
  *  · le RETOUR EN HAUT au retap de l'onglet actif, l'un des points où le socle exige que Bob ne
- *    régresse pas vers la référence (§ Ce que la référence ne fait PAS).
+ *    régresse pas vers la référence (§ Ce que la référence ne fait PAS) — SOUS DEUX CONDITIONS,
+ *    et il faut les dire plutôt que d'annoncer un comportement universel : il faut que le flag
+ *    soit allumé (hors flag, `TabScrollTopProvider` n'est pas monté et `useTabScrollTop` rend une
+ *    fonction inerte) ET que l'écran focusé défile dans une `TabsScrollView`, ce qui est le cas
+ *    de QUATRE écrans sur cinq. Sur `assistant`, comme hors flag, le retap ne fait RIEN — c'est
+ *    le no-op de la référence, laissé en place là et seulement là.
  * Hors flag, l'arbre reste rigoureusement celui d'avant : aucun fournisseur, aucun enveloppeur.
  */
 import { Tabs, useIsFocused } from 'expo-router';
@@ -79,9 +84,11 @@ interface TabBarSlotProps {
  * RETAP SUR L'ONGLET ACTIF → RETOUR EN HAUT. La référence laisse ce cas mort : `router.navigate`
  * sur la route courante est un no-op, et rien ne se passe. Le socle l'exige des deux côtés —
  * § Exigences communes (« retap sur l'onglet actif : retour en haut ») et le tableau « Ce que la
- * référence ne fait PAS ». On remonte la vue défilante FOCUSÉE, et on ne navigue pas : naviguer
- * vers là où on est déjà réinitialiserait la pile de l'onglet, ce que le socle interdit
- * explicitement (« il ne modifie pas un formulaire en cours »).
+ * référence ne fait PAS ». On demande le retour en haut de la vue défilante FOCUSÉE — quand elle
+ * s'est enregistrée, voir la réserve en tête de fichier — et on ne navigue PAS : naviguer vers là
+ * où on est déjà réinitialiserait la pile de l'onglet, ce que le socle interdit explicitement
+ * (« il ne modifie pas un formulaire en cours »). Cette seconde moitié, elle, ne connaît aucune
+ * condition : le `return` est inconditionnel dès que la route re-tapée est la route courante.
  */
 function useTabSelect({ state, navigation }: TabBarSlotProps): (key: string) => void {
   const scrollToTop = useTabScrollTop();
