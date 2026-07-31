@@ -221,10 +221,24 @@ describe('LES CINQ COUPURES — le repli opaque unique, sans exception', () => {
     const tinted = progressiveBlurPlan(nominal({ layers: 3, transparency: 'reduced' }));
     expect(blurred.mode).toBe('blurred');
     expect(tinted.mode).toBe('tinted');
-    // Le voile — celui qui porte notre identité — est identique : seuls les échantillons partent.
-    expect(edgeVeilGradient('canvas', 'light', 'bottom')).toEqual(
-      edgeVeilGradient('canvas', 'light', 'bottom'),
-    );
+    /*
+     * Le voile — celui qui porte notre identité — ne dépend d'AUCUN plan : c'est ce qui le rend
+     * identique dans les deux modes. On l'épingle donc à des LITTÉRAUX recopiés à la main depuis
+     * les tokens, plus jamais à lui-même :
+     *   stops     = surfaceVeil.light.canvas.stops — rgba(239,242,247, 0 puis .92), puis #EFF2F7 ;
+     *   solid     = surfaceVeil.light.canvas.solid — #EFF2F7 ;
+     *   locations = patterns.edgeFalloff.veilLocations — [0 ; 0,32 ; 0,6] ;
+     *   axe `bottom` = libre → ancré : x figé à 0,5, y de 0 (haut) à 1 (bas).
+     * (La rédaction précédente comparait `edgeVeilGradient(…)` À ELLE-MÊME — le même appel des
+     * deux côtés d'un `toEqual`, une assertion qui ne pouvait échouer sous aucune mutation.)
+     */
+    expect(edgeVeilGradient('canvas', 'light', 'bottom')).toEqual({
+      colors: ['rgba(239,242,247,0)', 'rgba(239,242,247,.92)', '#EFF2F7'],
+      locations: [0, 0.32, 0.6],
+      start: { x: 0.5, y: 0 },
+      end: { x: 0.5, y: 1 },
+      solid: '#EFF2F7',
+    });
     expect(tinted.material).toEqual(blurred.material);
   });
 });

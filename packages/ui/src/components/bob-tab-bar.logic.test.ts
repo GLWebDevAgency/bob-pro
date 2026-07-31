@@ -293,6 +293,26 @@ describe('cible tactile EN LARGEUR — la moitié du critère qui n’était ni 
     expect(tabBarGeometry(1, metrics('android', { windowWidth: 300 })).itemWidth).toBe(48);
   });
 
+  it('AU SEUIL EXACT, le drapeau dit VRAI — l’égalité fait partie du contrat, pas de la marge', () => {
+    /*
+     * 254 pt (iOS, cinq onglets) est la fenêtre minimale ELLE-MÊME : 24 + 2 + 8 + 5×44 = 254.
+     * Le retrait affordable y vaut 0, et au repli complet l'onglet vaut EXACTEMENT la cible :
+     * (254 − 24 − 0 − 2 − 8) / 5 = 220 / 5 = 44 — la cible est TENUE. Un `>` strict à la place
+     * du `≥` ferait mentir le drapeau au seul point où l'égalité se produit.
+     */
+    const bounds = tabBarGeometryBounds(metrics('ios', { windowWidth: 254 }));
+    expect(bounds.touchWidthHeld, 'le drapeau n’existe pas dans les bornes : rien à observer')
+      .toBeDefined();
+    expect(bounds.touchWidthHeld).toBe(true);
+    expect(tabBarGeometry(1, metrics('ios', { windowWidth: 254 })).itemWidth).toBe(44);
+    expect(tabBarGeometry(1, metrics('ios', { windowWidth: 254 })).touchWidthHeld).toBe(true);
+    // Android : 24 + 2 + 8 + 5×48 = 274 ; (274 − 24 − 0 − 2 − 8) / 5 = 240 / 5 = 48.
+    expect(tabBarGeometryBounds(metrics('android', { windowWidth: 274 })).touchWidthHeld).toBe(true);
+    expect(tabBarGeometry(1, metrics('android', { windowWidth: 274 })).itemWidth).toBe(48);
+    // Un dixième de point EN DEÇÀ, il tombe : l'égalité est une frontière, pas une zone.
+    expect(tabBarGeometryBounds(metrics('ios', { windowWidth: 253.9 })).touchWidthHeld).toBe(false);
+  });
+
   it('la tolérance est trop FINE pour masquer un manque réel — un millième de point le fait tomber', () => {
     // 273,995 dp : sous le seuil de 274, retrait déjà nul.
     // (273,995 − 24 − 2 − 8) / 5 = 239,995 / 5 = 47,999 — il manque UN MILLIÈME de point.
@@ -672,6 +692,21 @@ describe('6 · teinte pilotée par le highlight — l’EFFET, celui qu’un bac
 
   it('est symétrique — la lumière voyage dans les deux sens', () => {
     expect(highlightProximity(1.75, 2)).toBe(highlightProximity(2.25, 2));
+  });
+
+  it('rend 0 — jamais NaN — quand une entrée n’est pas finie', () => {
+    /*
+     * La position du highlight traverse un pont natif depuis une valeur partagée pilotée par un
+     * ressort : `NaN` et `±Infinity` sont des entrées possibles, pas des vues de l'esprit. Sans
+     * la garde, `1 − min(|NaN − 2| ; 1)` vaut `NaN` — et ce NaN part tel quel dans
+     * `interpolateColor`, qui peint alors n'importe quoi. 0 = « loin du highlight » : éteint.
+     */
+    const observed = highlightProximity(Number.NaN, 2);
+    expect(observed, 'rien n’a été calculé : le test n’observe rien').toBeDefined();
+    expect(observed).toBe(0);
+    expect(highlightProximity(Number.POSITIVE_INFINITY, 2)).toBe(0);
+    expect(highlightProximity(Number.NEGATIVE_INFINITY, 2)).toBe(0);
+    expect(highlightProximity(1.5, Number.NaN)).toBe(0);
   });
 
   it('N’EST PAS un booléen de focus : à mi-course, DEUX onglets sont partiellement allumés', () => {
