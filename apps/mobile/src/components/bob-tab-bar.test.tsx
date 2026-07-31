@@ -7,6 +7,15 @@
  *    course, et pas seulement aux deux extrémités, où un `max` mal placé passerait inaperçu.
  *    C'est un échantillonnage, pas une preuve exhaustive ; il s'obtient en EXÉCUTANT les
  *    worklets, pas en les relisant, et c'est ce qui interdit aux deux écritures de diverger ;
+ *
+ *    ⚠ CE QUE CETTE COMPARAISON-LÀ NE PROUVE PAS, ET IL FAUT LE DIRE AVANT DE LA LIRE : elle
+ *    confronte le rendu à LA FONCTION QUI L'A PRODUIT. Elle établit la NON-DIVERGENCE de deux
+ *    écritures de la même formule, jamais la justesse de la formule. Si `tabBarGeometry()`
+ *    était fausse, ces tests-là resteraient verts. Les valeurs que le socle CHIFFRE sont donc
+ *    posées ailleurs, en LITTÉRAUX calculés à la main, calcul écrit en commentaire : bloc
+ *    « 1bis » (largeurs, retraits, table d'acceptation 60/46/50), bloc « Dynamic Type »
+ *    (50/58/60 et leur témoin), bloc « overflow » (les deux prémisses), bloc « palette » (les
+ *    six hex et leur contraste). Ce sont ces trois blocs-là qui tuent une formule fausse ;
  *  · l'ORDRE DE PEINTURE, par la déclaration seule ;
  *  · le fail-CLOSED au PREMIER rendu : aucun détecteur de geste monté tant que le lecteur
  *    d'écran est inconnu ;
@@ -58,6 +67,19 @@ type Handler = (...args: never[]) => unknown;
 const hoisted = vi.hoisted(() => ({
   shared: [] as { initial: unknown; box: { value: unknown } }[],
   gestures: {} as Record<string, Record<string, Handler>>,
+  /**
+   * ARGUMENTS des quatre SEUILS de geste. La rédaction précédente les déclarait en
+   * `passthrough` : les valeurs étaient JETÉES, et aucun test ne pouvait dire si le pan gagnait
+   * à 6 pt ou à 60, ni si le tap était borné à 16 pt de glissement — ou pas borné du tout, ce
+   * qui est le défaut du paquet (voir l'en-tête du bloc « 3bis »).
+   */
+  gestureConfig: {} as Record<string, Record<string, unknown[]>>,
+  /**
+   * La SUITE des réglages appelés, dans l'ordre, un élément par appel. Sans elle, « une seule
+   * fois chacun » serait indémontrable : un second `.maxDistance(20)` écraserait simplement le
+   * premier dans `gestureConfig`, et personne ne verrait jamais qu'il a eu lieu.
+   */
+  gestureCalls: {} as Record<string, string[]>,
   /** Cible ET configuration : un ressort se prouve par ses PARAMÈTRES, pas par son existence. */
   springs: [] as { target: number; config: unknown }[],
   /** Combien de fois le doublon de `GestureDetector` a été RENDU. Zéro est une information. */
@@ -196,16 +218,27 @@ vi.mock('react-native-gesture-handler', async () => {
   const build = (kind: string): Record<string, unknown> => {
     const handlers: Record<string, Handler> = {};
     hoisted.gestures[kind] = handlers;
+    const config: Record<string, unknown[]> = {};
+    hoisted.gestureConfig[kind] = config;
+    const calls: string[] = [];
+    hoisted.gestureCalls[kind] = calls;
     const record = (name: string) => (fn: Handler) => {
       handlers[name] = fn;
       return builder;
     };
-    const passthrough = () => builder;
+    /** Les seuils sont GARDÉS, pas jetés : c'est la seule façon de les verrouiller. */
+    const keep =
+      (name: string) =>
+      (...args: unknown[]) => {
+        config[name] = args;
+        calls.push(name);
+        return builder;
+      };
     const builder: Record<string, unknown> = {
-      activeOffsetX: passthrough,
-      failOffsetY: passthrough,
-      maxDistance: passthrough,
-      maxDuration: passthrough,
+      activeOffsetX: keep('activeOffsetX'),
+      failOffsetY: keep('failOffsetY'),
+      maxDistance: keep('maxDistance'),
+      maxDuration: keep('maxDuration'),
       onStart: record('onStart'),
       onUpdate: record('onUpdate'),
       onFinalize: record('onFinalize'),
@@ -328,6 +361,71 @@ function styleOf(node: Node | undefined): Record<string, unknown> {
 }
 
 /**
+ * LE CONTENEUR DE CHROME : le seul nœud qui porte À LA FOIS la marge latérale de safe area et
+ * la marge basse. La pilule, elle, porte un `marginHorizontal` ANIMÉ — deux grandeurs, deux
+ * nœuds, et les confondre ferait lire le retrait du repli à la place de la marge d'écran.
+ */
+function chromeContainer(renderer: ReactTestRenderer): Node | undefined {
+  return onlyOne(renderer, 'conteneur de chrome', (style) => {
+    return 'marginHorizontal' in style && 'marginBottom' in style;
+  });
+}
+
+/** La RANGÉE d'onglets : le seul nœud en ligne dont le rythme vertical s'anime. */
+function tabRow(renderer: ReactTestRenderer): Node | undefined {
+  return onlyOne(renderer, 'rangée d’onglets', (style) => {
+    return style['flexDirection'] === 'row' && 'paddingVertical' in style;
+  });
+}
+
+/**
+ * Désigne un nœud par son STYLE, et EXIGE qu'il soit unique. Un `find` rendrait le premier
+ * venu : le jour où deux nœuds répondent au même signalement, le test lirait le mauvais en
+ * silence et resterait vert. « Le seul nœud qui… » est ici une assertion, pas un commentaire.
+ */
+function onlyOne(
+  renderer: ReactTestRenderer,
+  what: string,
+  matches: (style: Record<string, unknown>) => boolean,
+): Node | undefined {
+  const found = nodes(renderer).filter((node) => matches(styleOf(node)));
+  expect(found, `${what} : nœud non unique`).toHaveLength(1);
+  return found[0];
+}
+
+/** La BOÎTE VISUELLE d'un onglet : premier enfant du `Pressable`, hauteur animée explicitement. */
+function visualBox(renderer: ReactTestRenderer, key: string): Node | undefined {
+  return byTestID(renderer, `bar-tab-${key}`)?.children?.[0];
+}
+
+function visualHeight(renderer: ReactTestRenderer, key: string): unknown {
+  return styleOf(visualBox(renderer, key))['height'];
+}
+
+/**
+ * ─── CONTRASTE WCAG 2.x, RÉÉCRIT ICI — ET C'EST DÉLIBÉRÉ ────────────────────────────────────
+ *
+ * `@bob/ui` exporte `contrastRatio`. L'importer ici ferait vérifier la teinte peinte PAR la
+ * fonction que le paquet a écrite pour la justifier : une seconde lecture du même calcul, pas
+ * une seconde opinion. Le dépôt tient déjà quatre implémentations pour cette raison exacte
+ * (`bob-tab-bar.logic.ts`, « ROUE DÉCLARÉE n° 1 ») ; celle-ci est la cinquième, et la seule qui
+ * parte des couleurs RÉELLEMENT présentes dans l'arbre rendu.
+ */
+function wcagContrast(foreground: string, background: string): number {
+  const luminance = (hex: string): number => {
+    const n = Number.parseInt(hex.slice(1), 16);
+    const channel = (shift: number): number => {
+      const s = ((n >> shift) & 255) / 255;
+      return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+    };
+    return 0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0);
+  };
+  const a = luminance(foreground);
+  const b = luminance(background);
+  return a >= b ? (a + 0.05) / (b + 0.05) : (b + 0.05) / (a + 0.05);
+}
+
+/**
  * Retire commentaires de bloc et de ligne — les contrôles statiques portent sur le CODE.
  *
  * ─── LA TAUTOLOGIE QUI GUETTE TOUS LES CONTRÔLES STATIQUES ─────────────────────────────────
@@ -355,12 +453,20 @@ function strippedSource(file: string): string {
   return stripped;
 }
 
+/**
+ * Les glyphes REPORTENT la couleur qu'on leur passe. Sans cela, la teinte des icônes — moitié
+ * du comportement 6 — ne serait observable nulle part dans l'arbre rendu, et « la barre peint
+ * la palette » resterait une phrase.
+ */
+const glyph = (name: string) => (state: { readonly color: string; readonly size: number }) =>
+  createElement('Glyph', { name, color: state.color, size: state.size });
+
 const ITEMS = [
-  { key: 'index', label: "Aujourd'hui", icon: () => createElement('Glyph', { name: 'sunrise' }) },
-  { key: 'clients', label: 'Clients', icon: () => createElement('Glyph', { name: 'people' }) },
-  { key: 'argent', label: 'Argent', icon: () => createElement('Glyph', { name: 'wallet' }) },
-  { key: 'documents', label: 'Documents', icon: () => createElement('Glyph', { name: 'folder' }) },
-  { key: 'assistant', label: 'Assistant', icon: () => createElement('Glyph', { name: 'spark' }) },
+  { key: 'index', label: "Aujourd'hui", icon: glyph('sunrise') },
+  { key: 'clients', label: 'Clients', icon: glyph('people') },
+  { key: 'argent', label: 'Argent', icon: glyph('wallet') },
+  { key: 'documents', label: 'Documents', icon: glyph('folder') },
+  { key: 'assistant', label: 'Assistant', icon: glyph('spark') },
 ];
 
 const METRICS: TabBarMetrics = { platform: 'ios', windowWidth: WINDOW_WIDTH, tabCount: TAB_COUNT };
@@ -447,6 +553,8 @@ async function mount(options: MountOptions = {}): Promise<Harness> {
 
 beforeEach(() => {
   hoisted.gestures = {};
+  hoisted.gestureConfig = {};
+  hoisted.gestureCalls = {};
   hoisted.fontScale.value = 1;
   hoisted.windowWidth.value = WINDOW_WIDTH;
   hoisted.platform.value = 'ios';
@@ -541,14 +649,10 @@ describe('1 · minimize-on-scroll — les worklets rendent EXACTEMENT la géomé
 
   it('le rythme EXTÉRIEUR s’anime de 4 à 0 — c’est lui qui bouge, jamais la cible', async () => {
     const harness = await mount();
-    const row = () =>
-      nodes(harness.renderer).find(
-        (node) => styleOf(node)['flexDirection'] === 'row' && 'paddingVertical' in styleOf(node),
-      );
-    expect(styleOf(row())['paddingVertical']).toBe(4);
+    expect(styleOf(tabRow(harness.renderer))['paddingVertical']).toBe(4);
     harness.setProgress(1);
     await harness.refresh();
-    expect(styleOf(row())['paddingVertical']).toBe(0);
+    expect(styleOf(tabRow(harness.renderer))['paddingVertical']).toBe(0);
   });
 });
 
@@ -560,48 +664,167 @@ describe('1 · minimize-on-scroll — les worklets rendent EXACTEMENT la géomé
  * `(fenêtre − 102) / 5`, et le retrait latéral animé de 34 pt par côté la faisait tomber sous
  * la cible dès 320 pt.
  *
- * ─── COMMENT LA PREUVE SE PARTAGE, ET POURQUOI ────────────────────────────────────────────
- * Le balayage DENSE — 101 points de la course × 8 largeurs réelles × 2 OS — vit dans le test de
- * LOGIQUE PURE (`bob-tab-bar.logic.test.ts`), où il coûte quelques millisecondes. Le monter ici
- * demanderait 1 616 rendus complets et rendrait la suite instable par expiration de délai : un
- * test lent devient un test qu'on désactive. Ce fichier-ci prouve l'autre maillon, celui que la
- * logique ne peut pas prouver : que le COMPOSANT calcule la même largeur que la fonction
- * normative, sur les largeurs les plus serrées et aux trois points où le clamp mord.
+ * ─── L'ATTENDU EST UN LITTÉRAL, ET C'EST TOUTE LA DIFFÉRENCE ──────────────────────────────
+ * La rédaction précédente comparait le rendu à `tabBarGeometry(p, …)` — LA FONCTION QUI PRODUIT
+ * cette valeur dans le composant. Elle comparait A à A : si la fonction normative était fausse,
+ * le test restait vert en ne prouvant que sa propre cohérence. Tous les nombres attendus
+ * ci-dessous sont posés AU CRAYON depuis le socle, avec leur calcul en commentaire, et aucune
+ * fonction de la barre n'intervient dans leur construction.
  *
- * LA LARGEUR LUE EST CELLE DU HIGHLIGHT, et c'est légitime : le `Pressable` est `flex: 1` dans
- * une rangée de largeur `contentWidth`, donc sa largeur mesurée vaut `contentWidth / 5` — la
- * même expression, au même instant, que celle que le worklet du highlight écrit. Aucune autre
- * largeur d'onglet n'existe dans l'arbre rendu : `flex: 1` ne pose pas de `width`.
+ * ─── CE QUE CE TEST LIT, ET CE QU'IL N'A PAS LE DROIT DE PRÉTENDRE ────────────────────────
+ * `react-test-renderer` ne fait AUCUN layout : la largeur MESURÉE d'un `Pressable` `flex: 1`
+ * n'existe nulle part dans l'arbre, et aucun test de ce fichier ne peut la lire. (La rédaction
+ * précédente lisait la largeur du HIGHLIGHT en l'appelant « la largeur de la cible » : c'était
+ * un raccourci, et il n'était pas dit.) Ce qui est lu ici, ce sont les CINQ grandeurs déclarées
+ * qui déterminent cette largeur, chacune vérifiée contre un littéral :
+ *   1. la marge de safe area portée par le conteneur ...................... 12 pt
+ *   2. le retrait latéral ANIMÉ rendu sur la pilule ....................... table ci-dessous
+ *   3. l'épaisseur de bordure de la pilule ................................. 1 pt
+ *   4. le retrait intérieur de la rangée ................................... 4 pt
+ *   5. `flex: 1` sur les cinq onglets, et AUCUNE `width` — donc part égale
+ * plus la largeur du bloc de HIGHLIGHT, calculée par un worklet SÉPARÉ et large d'un onglet :
+ * deux écritures indépendantes qui doivent tomber sur le même littéral.
+ *
+ * Le balayage DENSE — 101 points de la course × 8 largeurs réelles × 2 OS — reste dans le test
+ * de LOGIQUE PURE, où il coûte quelques millisecondes ; ici il demanderait 1 616 rendus
+ * complets, et un test lent devient un test qu'on désactive.
  */
 describe('1bis · la LARGEUR de la cible, plancherée sur les écrans réels les plus étroits', () => {
-  /** Les trois largeurs où le clamp MORD : couverture de pliable, petit téléphone, Android médian. */
-  const TIGHT_WIDTHS = [280, 320, 360];
+  /**
+   * ─── LA TABLE, CALCULÉE À LA MAIN DEPUIS LE SOCLE ─────────────────────────────────────────
+   *
+   *   fenêtreMinimale = 2×12 (marge) + 2×1 (bordure) + 2×4 (rangée) + 5 × CIBLE
+   *   retraitMax      = min(34, max((fenêtre − fenêtreMinimale) / 2, 0))
+   *   retrait(p)      = retraitMax × p
+   *   largeurPilule   = fenêtre − 2×12 − 2×retrait(p)
+   *   largeurOnglet   = (largeurPilule − 2×1 − 2×4) / 5
+   *   hauteurCible(p) = max(CIBLE, 50 + (35 − 50) × p)
+   *
+   * Les trois fenêtres sont les écrans réels les plus serrés : couverture de pliable (~280),
+   * petit téléphone (320), Android médian (360).
+   */
+  interface WidthRow {
+    readonly window: number;
+    /** Retrait latéral rendu à p = 0 / 0,5 / 1. */
+    readonly inset: readonly [number, number, number];
+    /** Largeur d'un onglet à p = 0 / 0,5 / 1. */
+    readonly itemWidth: readonly [number, number, number];
+    /** Hauteur du `Pressable` à p = 0 / 0,5 / 1. */
+    readonly targetHeight: readonly [number, number, number];
+  }
+
+  /**
+   * LA TABLE D'ACCEPTATION DU SOCLE, en hauteur, posée à la main — elle ne dépend pas de la
+   * fenêtre : `pilule mesurée = max(CIBLE, visuel) + 2 × rythme + 2 × bordure`, avec le rythme
+   * qui va de 4 à 0. iOS : 60 étendu, 46 replié (« 44/46 »). Android : 60 étendu, 50 replié
+   * (« 48/50 »). La boîte INTÉRIEURE étendue vaut 58 dans les deux cas, et l'écart entre le
+   * bord de la pilule et celui de la cible vaut 5 pt étendu, 1 pt replié.
+   */
+  const PILL_HEIGHT: Record<TabBarPlatform, readonly [number, number, number]> = {
+    ios: [60, 50, 46], //     50 + 8 + 2  |  44 + 4 + 2  |  44 + 0 + 2
+    android: [60, 54, 50], // 50 + 8 + 2  |  48 + 4 + 2  |  48 + 0 + 2
+  };
+  /** Écart pilule ↔ cible, de chaque côté : `rythme + bordure`, à p = 0 / 0,5 / 1. */
+  const PILL_GAP: readonly [number, number, number] = [5, 3, 1];
+
+  const TABLE: Record<TabBarPlatform, readonly WidthRow[]> = {
+    // CIBLE = 44 pt → fenêtreMinimale = 24 + 2 + 8 + 5×44 = 254 pt.
+    ios: [
+      // 280 : retraitMax = (280 − 254)/2 = 13.
+      // p=0   → pilule 280−24 = 256 ; onglet (256−10)/5 = 49,2 ; cible max(44, 50)   = 50
+      // p=0,5 → pilule 280−24−13 = 243 ; onglet 233/5 = 46,6   ; cible max(44, 42,5) = 44
+      // p=1   → pilule 280−24−26 = 230 ; onglet 220/5 = 44     ; cible max(44, 35)   = 44
+      { window: 280, inset: [0, 6.5, 13], itemWidth: [49.2, 46.6, 44], targetHeight: [50, 44, 44] },
+      // 320 : retraitMax = (320 − 254)/2 = 33 — le socle en demandait 34, il CÈDE d'un point.
+      // p=0   → pilule 296 ; onglet 286/5 = 57,2
+      // p=0,5 → pilule 320−24−33 = 263 ; onglet 253/5 = 50,6
+      // p=1   → pilule 320−24−66 = 230 ; onglet 220/5 = 44 — la cible tenue au point près
+      { window: 320, inset: [0, 16.5, 33], itemWidth: [57.2, 50.6, 44], targetHeight: [50, 44, 44] },
+      // 360 : (360 − 254)/2 = 53 > 34 → le clamp NE MORD PAS, retrait = 34 pt du socle.
+      // p=1   → pilule 360−24−68 = 268 ; onglet 258/5 = 51,6
+      { window: 360, inset: [0, 17, 34], itemWidth: [65.2, 58.4, 51.6], targetHeight: [50, 44, 44] },
+    ],
+    // CIBLE = 48 dp → fenêtreMinimale = 24 + 2 + 8 + 5×48 = 274 dp.
+    android: [
+      // 280 : retraitMax = (280 − 274)/2 = 3. La barre ne se replie presque plus : c'est le troc.
+      // p=1   → pilule 280−24−6 = 250 ; onglet 240/5 = 48     ; cible max(48, 35) = 48
+      { window: 280, inset: [0, 1.5, 3], itemWidth: [49.2, 48.6, 48], targetHeight: [50, 48, 48] },
+      // 320 : retraitMax = (320 − 274)/2 = 23.
+      // p=1   → pilule 320−24−46 = 250 ; onglet 240/5 = 48
+      { window: 320, inset: [0, 11.5, 23], itemWidth: [57.2, 52.6, 48], targetHeight: [50, 48, 48] },
+      // 360 : (360 − 274)/2 = 43 > 34 → clamp inerte, retrait = 34.
+      { window: 360, inset: [0, 17, 34], itemWidth: [65.2, 58.4, 51.6], targetHeight: [50, 48, 48] },
+    ],
+  };
+
+  /** Les deux planchers, écrits à la main : 44 pt est une valeur iOS, 48 dp une valeur Android. */
+  const FLOOR: Record<TabBarPlatform, number> = { ios: 44, android: 48 };
 
   for (const platform of ['ios', 'android'] as TabBarPlatform[]) {
     it(`sur ${platform}, le RENDU tient la cible dans les DEUX dimensions sur les écrans serrés`, async () => {
       hoisted.platform.value = platform;
-      const floor = touchTargetFloor(platform);
-      for (const width of TIGHT_WIDTHS) {
-        hoisted.windowWidth.value = width;
+      const floor = FLOOR[platform];
+      // Le plancher écrit à la main est bien celui que le paquet expose — si les deux divergent,
+      // c'est la table ci-dessus qu'il faut recalculer, pas l'assertion qu'il faut assouplir.
+      expect(touchTargetFloor(platform)).toBe(floor);
+
+      for (const row of TABLE[platform]) {
+        hoisted.windowWidth.value = row.window;
         const harness = await mount();
-        for (const p of [0, 0.5, 1]) {
+        for (const [at, p] of [0, 0.5, 1].entries()) {
           harness.setProgress(p);
           await harness.refresh();
-          const where = `${platform} ${width}pt @ ${p}`;
-          const expected = tabBarGeometry(p, { platform, windowWidth: width, tabCount: TAB_COUNT });
-          const rendered = styleOf(byTestID(harness.renderer, 'bar-highlight'))['width'] as number;
-          // Le composant calcule EXACTEMENT la largeur normative…
-          expect(rendered, where).toBeCloseTo(expected.itemWidth, 10);
-          // … et cette largeur tient la cible.
-          expect(rendered, where).toBeGreaterThanOrEqual(floor - 1e-9);
-          expect(expected.touchWidthHeld, where).toBe(true);
-          // La HAUTEUR reste plancherée en même temps : les deux moitiés du critère, ensemble.
+          const where = `${platform} ${row.window}pt @ ${p}`;
+
+          // 1 · LA CHAÎNE QUI DÉTERMINE LA LARGEUR, lue nombre par nombre dans l'arbre rendu.
+          const container = styleOf(chromeContainer(harness.renderer));
+          expect(container['marginHorizontal'], `${where} marge`).toBe(12);
+          const pill = styleOf(byTestID(harness.renderer, 'bar-pill'));
+          expect(pill['borderWidth'], `${where} bordure`).toBe(1);
+          expect(pill['marginHorizontal'] as number, `${where} retrait`).toBeCloseTo(
+            row.inset[at] as number,
+            10,
+          );
+          expect(styleOf(tabRow(harness.renderer))['paddingHorizontal'], `${where} rangée`).toBe(4);
+          // La TABLE D'ACCEPTATION en hauteur, au passage : 60 étendu partout, 46 replié sur
+          // iOS, 50 sur Android — et l'écart de 5 pt / 1 pt entre la pilule et la cible.
+          expect(pill['height'] as number, `${where} pilule`).toBeCloseTo(
+            PILL_HEIGHT[platform][at] as number,
+            10,
+          );
+          expect(
+            ((pill['height'] as number) - (row.targetHeight[at] as number)) / 2,
+            `${where} écart`,
+          ).toBeCloseTo(PILL_GAP[at] as number, 10);
+
+          // 2 · LES CINQ ONGLETS SE PARTAGENT ÉGALEMENT ce qui reste : `flex: 1`, aucune `width`.
+          //     C'est ce qui autorise la division ci-dessous — sans elle, elle ne voudrait rien
+          //     dire, et c'est exactement ce que le raccourci précédent taisait.
           for (const item of ITEMS) {
             const pressable = styleOf(byTestID(harness.renderer, `bar-tab-${item.key}`));
-            expect(pressable['height'] as number, `${where} ${item.key}`).toBeGreaterThanOrEqual(
+            expect(pressable['flex'], `${where} ${item.key} flex`).toBe(1);
+            expect(pressable['width'], `${where} ${item.key} width`).toBeUndefined();
+            // La HAUTEUR : l'autre moitié du critère d'acceptation, au même instant.
+            expect(pressable['height'] as number, `${where} ${item.key} h`).toBeCloseTo(
+              row.targetHeight[at] as number,
+              10,
+            );
+            expect(pressable['height'] as number, `${where} ${item.key} h≥`).toBeGreaterThanOrEqual(
               floor,
             );
           }
+
+          // 3 · LA LARGEUR D'UN ONGLET. Le littéral de la table, et le même nombre reconstruit
+          //     depuis les grandeurs LUES ci-dessus : `(fenêtre − 2×marge − 2×retrait − 2×bordure
+          //     − 2×rangée) / 5`. Les deux doivent tomber ensemble.
+          const fromRead = (row.window - 2 * 12 - 2 * (pill['marginHorizontal'] as number) - 2 - 8) / 5;
+          expect(fromRead, `${where} reconstruction`).toBeCloseTo(row.itemWidth[at] as number, 10);
+          // Le bloc de highlight est large d'UN onglet, et il sort d'un worklet SÉPARÉ.
+          const highlight = styleOf(byTestID(harness.renderer, 'bar-highlight'))['width'] as number;
+          expect(highlight, `${where} highlight`).toBeCloseTo(row.itemWidth[at] as number, 10);
+          // Et cette largeur tient la cible — le point de tout l'exercice.
+          expect(row.itemWidth[at] as number, `${where} table ≥ cible`).toBeGreaterThanOrEqual(floor);
+          expect(highlight, `${where} rendu ≥ cible`).toBeGreaterThanOrEqual(floor - 1e-9);
         }
       }
     });
@@ -629,22 +852,33 @@ describe('1bis · la LARGEUR de la cible, plancherée sur les écrans réels les
   });
 
   it('le mapping du doigt lit le retrait EFFECTIF, pas la constante du socle', async () => {
-    // Sur un écran étroit, un mapping qui garderait 34 pt serait décalé exactement là où la
-    // barre est la plus serrée — le pire endroit possible.
+    /*
+     * Sur un écran étroit, un mapping qui garderait les 34 pt du socle serait décalé exactement
+     * là où la barre est la plus serrée — le pire endroit possible.
+     *
+     * TOUT EST LITTÉRAL. Fenêtre 320, iOS, repli complet : retrait 33 (calcul de la table
+     * ci-dessus), pilule 230, onglet 44, et le contenu commence à 1 (bordure) + 4 (rangée) = 5.
+     * Un doigt au CENTRE de l'onglet `n` est donc à `5 + 44 × (n + 0,5)`, et l'index attendu est
+     * `n` — un entier posé à la main. La rédaction précédente construisait l'attendu avec
+     * `tabIndexAtX(…, tabBarGeometry(…))` : elle bougeait avec le code, et le mutant qui
+     * débranche le clamp du retrait la laissait VERTE.
+     */
     hoisted.windowWidth.value = 320;
     const harness = await mount();
     harness.setProgress(1);
     await harness.refresh();
-    const geometry = tabBarGeometry(1, { platform: 'ios', windowWidth: 320, tabCount: TAB_COUNT });
+    expect(styleOf(byTestID(harness.renderer, 'bar-pill'))['marginHorizontal']).toBeCloseTo(33, 10);
     const onUpdate = hoisted.gestures['pan']?.['onUpdate'] as (event: { x: number }) => void;
-    const contentLeft = TAB_BAR_BORDER_WIDTH + TAB_BAR_ROW_PAD_H;
-    for (const factor of [0.5, 2.5, 4.5]) {
-      onUpdate({ x: contentLeft + geometry.itemWidth * factor });
-      expect(harness.slideIndex.value as number).toBeCloseTo(
-        tabIndexAtX(contentLeft + geometry.itemWidth * factor, geometry, TAB_COUNT),
+    for (const index of [0, 2, 4]) {
+      onUpdate({ x: 5 + 44 * (index + 0.5) });
+      expect(harness.slideIndex.value as number, `centre de l’onglet ${index}`).toBeCloseTo(
+        index,
         10,
       );
     }
+    // Et la FRONTIÈRE entre deux onglets tombe pile au demi : `5 + 44 × 3` = 137 → 2,5.
+    onUpdate({ x: 5 + 44 * 3 });
+    expect(harness.slideIndex.value as number).toBeCloseTo(2.5, 10);
   });
 
   it('DÉCLARE la limite résiduelle au lieu de la subir', () => {
@@ -719,6 +953,241 @@ describe('2 · highlight glissant — un seul bloc, transform-only, suivi live d
         10,
       );
     }
+  });
+});
+
+/**
+ * ─── LES DEUX `overflow: 'hidden'` — DES CISEAUX, ET CE QUI LES REND INOFFENSIFS ────────────
+ *
+ * Le fichier en écrit DEUX : sur la PILULE (pour que le highlight ne déborde pas de l'arrondi) et
+ * sur la BOÎTE VISUELLE d'un onglet (pour qu'un label déjà transparent ne dépasse pas de la
+ * pilule pendant le repli). Dans l'ARBRE RENDU ils font six nœuds, la boîte visuelle étant
+ * rendue cinq fois — deux déclarations, six paires de ciseaux. Aucun test ne les posait, ni les
+ * prémisses qui font qu'ils ne coupent rien — et un jour ils couperont quelque chose.
+ *
+ * Une prémisse VÉRIFIABLE, c'est une inégalité sur des nombres lus dans l'arbre rendu, comparés
+ * à des littéraux calculés à la main. Il en faut trois, une par ciseau et par dimension :
+ *  · LA PILULE — le bloc de highlight, jusqu'au DERNIER onglet et à tout instant du repli, reste
+ *    dans sa boîte intérieure, et il y reste avec une marge CONSTANTE de 4 pt ;
+ *  · LA BOÎTE VISUELLE, en HAUTEUR — elle vaut toujours au moins son contenu au repos ; c'est le
+ *    test « la boîte visuelle NE ROGNE RIEN au repos », plus bas, qui le pose sur les deux
+ *    régimes (plancher et mesure) ;
+ *  · LA BOÎTE VISUELLE, en LARGEUR — un label plus large qu'un onglet est RETIRÉ par le palier
+ *    avant d'avoir pu déborder, et la frontière est posée au point près.
+ */
+describe('overflow: hidden — deux ciseaux déclarés, et les prémisses qui les désarment', () => {
+  it('les DEUX déclarations sont là, et la barre ne peint pas un ciseau de plus', async () => {
+    const harness = await mount();
+    expect(styleOf(byTestID(harness.renderer, 'bar-pill'))['overflow']).toBe('hidden');
+    expect(styleOf(visualBox(harness.renderer, 'argent'))['overflow']).toBe('hidden');
+    /*
+     * ET LA BARRE N'EN DÉCLARE AUCUN AUTRE : cinq boîtes visuelles + la pilule = six. Un
+     * septième couperait quelque chose sans que personne l'ait décidé.
+     *
+     * La RETOMBÉE en porte un de plus — elle clippe ses propres bandes de dégradé. Celui-là
+     * appartient à `ProgressiveBlurBob`, le composant du kit de matière que la barre CONSOMME
+     * sans le réécrire : il se prouve chez lui. On l'écarte nommément plutôt que de gonfler le
+     * compte attendu, ce qui reviendrait à épingler ici les entrailles d'un autre composant.
+     */
+    const hiddenIn = (root: Node | undefined): readonly Node[] =>
+      flatten(root ?? null).filter((node) => styleOf(node)['overflow'] === 'hidden');
+    // UN SEUL instantané d'arbre : `toJSON()` reconstruit des objets NEUFS à chaque appel, et
+    // comparer par identité deux relevés différents ne rapprocherait rien du tout.
+    const tree = nodes(harness.renderer);
+    expect(hiddenIn(tree.find((node) => node.props['testID'] === 'bar-pill'))).toHaveLength(
+      TAB_COUNT + 1,
+    );
+    const fromFalloff = new Set(
+      hiddenIn(tree.find((node) => node.props['testID'] === 'bar-falloff')),
+    );
+    const own = tree.filter(
+      (node) => styleOf(node)['overflow'] === 'hidden' && !fromFalloff.has(node),
+    );
+    expect(own).toHaveLength(TAB_COUNT + 1);
+  });
+
+  /**
+   * PRÉMISSE HORIZONTALE, calculée à la main pour une fenêtre de 390 pt et cinq onglets :
+   *
+   *   dedans(p)     = largeurPilule(p) − 2×1     ← un absolu `left: 0` part DANS la bordure
+   *   voyage(4)     = 4 + largeurOnglet × 4      ← le dernier onglet, le seul qui frôle le bord
+   *   bordDroit     = voyage(4) + largeurOnglet = 4 + 5 × largeurOnglet = largeurPilule − 6
+   *   dedans − bordDroit = 4 pt, À TOUT `p`      ← exactement le retrait de rangée de droite
+   *
+   * Ce 4 pt CONSTANT est la prémisse : ce n'est pas « ça passe de justesse », c'est « il reste
+   * toujours la même marge, et elle vaut le retrait intérieur qu'on a posé ».
+   *
+   * LA SEULE HYPOTHÈSE DE CE CALCUL est l'origine d'un enfant positionné en absolu : la
+   * padding-box, bordure exclue, comme en CSS. Si c'était la border-box, la paroi serait
+   * `largeurPilule` et la marge vaudrait 6 pt au lieu de 4 — le highlight resterait dedans dans
+   * les deux lectures, seul le chiffre changerait. La prémisse ne dépend donc pas du pari.
+   */
+  it('PRÉMISSE · la pilule ne coupe jamais le highlight, et la marge est constante', async () => {
+    const ROWS = [
+      // p=0   : retrait 0  → pilule 366 ; dedans 364 ; onglet (366−10)/5 = 71,2 ; voyage 288,8
+      //         visuel 50   ; boîte intérieure 50 + 2×4 = 58 ; marginTop (58 − 50)/2 = 4
+      { p: 0, inset: 0, item: 71.2, travel: 288.8, inside: 364, visual: 50, inner: 58, top: 4 },
+      // p=0,5 : retrait 17 → pilule 332 ; dedans 330 ; onglet 322/5 = 64,4 ; voyage 261,6
+      //         visuel 42,5 ; boîte intérieure max(44 ; 42,5) + 2×2 = 48 ; marginTop 2,75
+      { p: 0.5, inset: 17, item: 64.4, travel: 261.6, inside: 330, visual: 42.5, inner: 48, top: 2.75 },
+      // p=1   : retrait 34 → pilule 298 ; dedans 296 ; onglet 288/5 = 57,6 ; voyage 234,4
+      //         visuel 35   ; boîte intérieure 44 + 0 = 44 ; marginTop (44 − 35)/2 = 4,5
+      { p: 1, inset: 34, item: 57.6, travel: 234.4, inside: 296, visual: 35, inner: 44, top: 4.5 },
+    ];
+    const harness = await mount();
+    for (const row of ROWS) {
+      // Le DERNIER onglet : celui dont le highlight touche le bord droit de la pilule.
+      harness.slideIndex.value = TAB_COUNT - 1;
+      harness.setProgress(row.p);
+      await harness.refresh();
+      const where = `p=${row.p}`;
+
+      const inset = styleOf(byTestID(harness.renderer, 'bar-pill'))['marginHorizontal'] as number;
+      expect(inset, `${where} retrait`).toBeCloseTo(row.inset, 10);
+      // `dedans` reconstruit depuis la fenêtre et le retrait lus, puis confronté au littéral.
+      const inside = WINDOW_WIDTH - 2 * 12 - 2 * inset - 2 * 1;
+      expect(inside, `${where} dedans`).toBeCloseTo(row.inside, 10);
+
+      const travel = (styleOf(byTestID(harness.renderer, 'bar-highlight-travel'))['transform'] as {
+        translateX: number;
+      }[])[0]?.translateX as number;
+      const width = styleOf(byTestID(harness.renderer, 'bar-highlight'))['width'] as number;
+      expect(travel, `${where} voyage`).toBeCloseTo(row.travel, 10);
+      expect(width, `${where} largeur`).toBeCloseTo(row.item, 10);
+      // LA PRÉMISSE : le bord droit du highlight tombe 4 pt avant la paroi, à tout instant.
+      expect(inside - (travel + width), `${where} marge droite`).toBeCloseTo(4, 10);
+      expect(travel + width, `${where} dedans ?`).toBeLessThanOrEqual(inside);
+      // À gauche, le highlight part du retrait de rangée : il ne mord pas non plus la bordure.
+      expect(styleOf(byTestID(harness.renderer, 'bar-highlight-travel'))['left'], where).toBe(0);
+
+      // ET LA MÊME CHOSE EN HAUTEUR : la boîte intérieure de la pilule contient le highlight,
+      // avec la même marge des deux côtés (il est CENTRÉ).
+      const boxed = styleOf(byTestID(harness.renderer, 'bar-highlight'));
+      const measured = styleOf(byTestID(harness.renderer, 'bar-pill'))['height'] as number;
+      expect(measured - 2 * 1, `${where} boîte intérieure`).toBeCloseTo(row.inner, 10);
+      expect(boxed['height'] as number, `${where} visuel`).toBeCloseTo(row.visual, 10);
+      expect(boxed['marginTop'] as number, `${where} haut`).toBeCloseTo(row.top, 10);
+      expect(boxed['marginTop'] as number, `${where} haut ≥ 0`).toBeGreaterThanOrEqual(0);
+      expect(
+        (boxed['marginTop'] as number) + (boxed['height'] as number),
+        `${where} bas`,
+      ).toBeLessThanOrEqual(row.inner);
+    }
+  });
+
+  /**
+   * TROISIÈME PRÉMISSE — la boîte visuelle, en LARGEUR. Elle est `overflow: 'hidden'` : un
+   * label plus large qu'elle serait COUPÉ NET — un « Docume » sans ellipse, la pire des
+   * troncatures. Ce n'est pas le `hidden` qui l'interdit, c'est le PALIER : au-delà de la
+   * largeur d'un onglet — `(390 − 2×12 − 2×1 − 2×4) / 5 = 71,2 pt` au repos — un mot qui ne se
+   * coupe pas fait passer TOUTE la barre en icônes.
+   */
+  it('PRÉMISSE · un label plus large qu’un onglet est RETIRÉ, jamais laissé déborder', async () => {
+    // 71 ≤ 71,2 : le mot tient, le label reste (sur deux lignes, sa largeur totale le demande).
+    const fits = await mount();
+    await feedProbesSplit(fits, { width: 100, height: 12 }, { width: 71, height: 12 });
+    expect(nodes(fits.renderer).filter((node) => node.type === 'Animated.Text')).toHaveLength(
+      TAB_COUNT,
+    );
+    // 72 > 71,2 : un point de trop, et le label disparaît AVANT d'avoir pu être coupé.
+    const over = await mount();
+    await feedProbesSplit(over, { width: 100, height: 12 }, { width: 72, height: 12 });
+    expect(nodes(over.renderer).filter((node) => node.type === 'Animated.Text')).toHaveLength(0);
+  });
+});
+
+/**
+ * ─── LA BARRE PEINT-ELLE LA PALETTE ? LE MAILLON QUI MANQUAIT ───────────────────────────────
+ *
+ * La preuve AA du lot porte sur `tabTintPalette()` et sur l'échantillonnage de sa course
+ * (`sampleTintCourse`), tous deux dans la logique pure. Rien ne disait que le COMPOSANT envoie
+ * ces couleurs-là au moteur de rendu : il aurait pu peindre n'importe quel gris et la preuve
+ * serait restée verte. Ce bloc lit les couleurs RÉELLEMENT présentes dans l'arbre et les
+ * confronte, une par une, aux hex du socle — écrits ici À LA MAIN, jamais lus depuis la
+ * fonction qu'ils sont censés vérifier.
+ *
+ * CE QUE CE BLOC NE DIT PAS : rien de l'apparence SOMBRE. `ThemeProvider` rend `appearance:
+ * 'light'` EN DUR tant qu'`UX-ADR-004` n'a pas activé le dark ; la branche sombre de
+ * `tabTintPalette` n'est donc atteignable par aucun rendu, et c'est la logique pure qui la
+ * couvre.
+ */
+describe('la barre PEINT la palette — et ces couleurs-là sont celles que la preuve AA vise', () => {
+  const PILL = '#FFFFFF'; //      surfaceTint.light.neutral.flat
+  const HIGHLIGHT = '#EAEEF3'; // surfaceTint.light.neutral.raised
+  const BORDER = '#E0E6EE'; //    surfaceTint.light.neutral.border
+  const ACTIVE = '#0C2340'; //    navigation.active        (ink900)
+  const ASSISTANT = '#4338CA'; // navigation.assistantActive (semantic.ai — la règle Bob)
+  const INACTIVE = '#5B6B7B'; //  navigation.inactive      (slate500)
+
+  /** Couleur du label d'un onglet, telle qu'elle est dans l'arbre rendu. */
+  function labelColor(harness: Harness, key: string): unknown {
+    const tab = byTestID(harness.renderer, `bar-tab-${key}`);
+    return styleOf(flatten(tab ?? null).find((node) => node.type === 'Animated.Text'))['color'];
+  }
+
+  /** Les DEUX glyphes d'un onglet, dans l'ordre de déclaration : l'inactif, puis l'actif. */
+  function glyphColors(harness: Harness, key: string): unknown[] {
+    const tab = byTestID(harness.renderer, `bar-tab-${key}`);
+    return flatten(tab ?? null)
+      .filter((node) => node.type === 'Glyph')
+      .map((node) => node.props['color']);
+  }
+
+  it('peint les trois SURFACES de la pilule avec les tons livrés', async () => {
+    const harness = await mount();
+    const pill = styleOf(byTestID(harness.renderer, 'bar-pill'));
+    expect(pill['backgroundColor']).toBe(PILL);
+    expect(pill['borderColor']).toBe(BORDER);
+    expect(pill['borderWidth']).toBe(1);
+    // La capsule est un APLAT OPAQUE, jamais un voile : ni `opacity`, ni couleur transparente.
+    const highlight = styleOf(byTestID(harness.renderer, 'bar-highlight'));
+    expect(highlight['backgroundColor']).toBe(HIGHLIGHT);
+    expect(highlight['opacity']).toBeUndefined();
+  });
+
+  it('peint les trois ENCRES là où le socle les met — dont l’indigo de l’Assistant', async () => {
+    const harness = await mount({ activeKey: 'index' });
+    harness.slideIndex.value = 0;
+    await harness.refresh();
+    // Onglet sous le highlight : encre active. Onglets éloignés : encre inactive.
+    expect(labelColor(harness, 'index')).toBe(ACTIVE);
+    expect(labelColor(harness, 'argent')).toBe(INACTIVE);
+    // Les deux glyphes : le calque du dessous est l'inactif, celui du dessus l'actif.
+    expect(glyphColors(harness, 'argent')).toEqual([INACTIVE, ACTIVE]);
+    // L'ASSISTANT ne prend pas l'encre commune, et c'est une règle Bob absente de la référence.
+    expect(glyphColors(harness, 'assistant')).toEqual([INACTIVE, ASSISTANT]);
+    harness.slideIndex.value = TAB_COUNT - 1;
+    await harness.refresh();
+    expect(labelColor(harness, 'assistant')).toBe(ASSISTANT);
+  });
+
+  it('les couleurs PEINTES tiennent AA sur les DEUX fonds qu’elles rencontrent', async () => {
+    const harness = await mount({ activeKey: 'index' });
+    harness.slideIndex.value = 0;
+    await harness.refresh();
+    // Tout est lu dans l'arbre : le texte, la pilule, ET la capsule qui passe SOUS le texte.
+    const pill = styleOf(byTestID(harness.renderer, 'bar-pill'))['backgroundColor'] as string;
+    const highlight = styleOf(byTestID(harness.renderer, 'bar-highlight'))[
+      'backgroundColor'
+    ] as string;
+    const inks = [
+      labelColor(harness, 'index') as string,
+      labelColor(harness, 'argent') as string,
+      glyphColors(harness, 'assistant')[1] as string,
+    ];
+    for (const ink of inks) {
+      for (const background of [pill, highlight]) {
+        expect(
+          wcagContrast(ink, background),
+          `${ink} sur ${background}`,
+        ).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+    // Le fond de highlight est le POINT DUR : `marine.raised` (#E2E9F2), qu'une rédaction
+    // antérieure du socle donnait en exemple, ferait tomber l'encre inactive à 4,48:1. Le témoin
+    // dit que ce test SAIT le voir — sans lui, un seuil mal placé passerait inaperçu.
+    expect(wcagContrast(INACTIVE, '#E2E9F2')).toBeLessThan(4.5);
+    expect(wcagContrast(INACTIVE, highlight)).toBeGreaterThanOrEqual(4.5);
   });
 });
 
@@ -958,6 +1427,58 @@ describe('3 · scrub — le worklet de geste, exécuté', () => {
     ) => void;
     onEnd({ x: 100 }, false);
     expect(harness.selected).toEqual([]);
+  });
+});
+
+/**
+ * ─── 3bis · LES QUATRE SEUILS — CE QUI DÉPARTAGE LE TAP DU SCRUB ────────────────────────────
+ *
+ * Aucun test ne les posait : le doublon de `react-native-gesture-handler` déclarait les quatre
+ * réglages en `passthrough`, donc JETAIT leurs arguments. Un composant qui aurait oublié les
+ * quatre appels passait toute la suite sans qu'une seule assertion bouge.
+ *
+ * CE QU'ILS CHANGENT — LU DANS LE PAQUET INSTALLÉ, PAS SUPPOSÉ :
+ *  · `activeOffsetX ±6` et `failOffsetY ±14` rendent le pan DIRECTIONNEL. Sans eux, le pan
+ *    s'active au slop du système, quelle que soit la direction (`PanGestureHandler.kt` :
+ *    `minDist = vc.scaledTouchSlop`) : un défilement d'écran commencé sur la pilule serait capté
+ *    par le scrub au lieu de rester au `ScrollView`.
+ *  · `maxDistance 16` AJOUTE une borne qui n'existe pas par défaut. Sans `maxDist`, le contrôle
+ *    de distance est purement SAUTÉ — iOS `RNTapHandler.m` (`NAN` + `TEST_MAX_IF_NOT_NAN`),
+ *    Android `TapGestureHandler.kt` (`MAX_VALUE_IGNORE`), web (`MIN_SAFE_INTEGER`) — et un long
+ *    glissement finissant sur la barre passerait pour un tap. Avec la borne il échoue, et le pan
+ *    prend la main : c'est ce qui départage les deux gestes de la course.
+ *  · `maxDuration 400` RESSERRE le défaut de 500 ms (iOS `defaultMaxDuration = 0.5`, Android
+ *    `DEFAULT_MAX_DURATION_MS = 500`) : au-delà, c'est un appui long, plus un tap.
+ *
+ * Les quatre nombres sont écrits À LA MAIN. Les comparer aux constantes importées reviendrait à
+ * demander au composant s'il est d'accord avec lui-même.
+ */
+describe('3bis · les quatre SEUILS de geste, réellement posés sur le détecteur', () => {
+  it('le PAN gagne à ±6 pt horizontaux et ÉCHOUE à ±14 pt verticaux', async () => {
+    await mount();
+    // Symétriques : un gaucher scrube vers la gauche aussi souvent qu'un droitier vers la droite.
+    expect(hoisted.gestureConfig['pan']?.['activeOffsetX']).toEqual([[-6, 6]]);
+    // 14 pt vertical → le pan ÉCHOUE et c'est le scroll de l'écran qui garde le geste.
+    expect(hoisted.gestureConfig['pan']?.['failOffsetY']).toEqual([[-14, 14]]);
+  });
+
+  it('le TAP est BORNÉ à 16 pt de glissement et 400 ms — sans quoi un scrub finirait en tap', async () => {
+    await mount();
+    expect(hoisted.gestureConfig['tap']?.['maxDistance']).toEqual([16]);
+    expect(hoisted.gestureConfig['tap']?.['maxDuration']).toEqual([400]);
+  });
+
+  it('les quatre réglages sont posés sur le BON geste, et une seule fois chacun', async () => {
+    await mount();
+    /*
+     * On lit la SUITE des appels, pas l'état final : deux appels au même réglage laisseraient
+     * le même état et se verraient ici. L'ORDRE n'a aucune importance fonctionnelle — il est
+     * figé avec le reste parce que c'est ce qui rend « une seule fois chacun » observable en une
+     * assertion. Un `maxDistance` posé sur le pan, ou un `activeOffsetX` sur le tap, ne réglerait
+     * rien du tout : chaque réglage n'existe que sur son geste.
+     */
+    expect(hoisted.gestureCalls['pan']).toEqual(['activeOffsetX', 'failOffsetY']);
+    expect(hoisted.gestureCalls['tap']).toEqual(['maxDistance', 'maxDuration']);
   });
 });
 
@@ -1236,14 +1757,38 @@ describe('Dynamic Type — la pilule GRANDIT avec le texte, elle ne le coupe pas
 
   it('à 100 %, la barre vaut exactement les chiffres du socle : 50 / 58 / 60', async () => {
     const harness = await mount();
-    // Labels courts : une seule ligne. Contenu = 23 + 3 + 12 = 38 → sous le plancher de 50.
+    /*
+     * Labels courts, une seule ligne. Contenu MESURÉ = 23 (glyphe) + 3 (rythme intérieur) + 12
+     * (ligne) = 38 pt, SOUS le plancher de 50 : c'est donc le plancher qui gagne, et les trois
+     * chiffres du socle sont ceux-là — visuel 50, boîte intérieure 50 + 2×4 = 58, rectangle
+     * mesuré 58 + 2×1 = 60.
+     */
     await feedProbes(harness, { width: 30, height: LINE_AT_100 });
     harness.setProgress(0);
     await harness.refresh();
-    const visual = styleOf(byTestID(harness.renderer, 'bar-tab-argent')?.children?.[0]);
-    expect(visual['height']).toBe(50);
+    expect(visualHeight(harness.renderer, 'argent')).toBe(50);
     expect(styleOf(byTestID(harness.renderer, 'bar-tab-argent'))['height']).toBe(50);
-    expect(styleOf(byTestID(harness.renderer, 'bar-pill'))['height']).toBe(60);
+    const measured = styleOf(byTestID(harness.renderer, 'bar-pill'))['height'] as number;
+    expect(measured).toBe(60);
+    // Le 58 du titre est la boîte INTÉRIEURE : le rectangle mesuré moins les deux bordures.
+    expect(measured - 2 * 1).toBe(58);
+
+    /*
+     * ─── TÉMOIN — SANS LUI, CE TEST NE PROUVE RIEN DE B4 ────────────────────────────────────
+     * 50 / 58 / 60 sont des PLANCHERS. Une barre entièrement SOURDE à la mesure les rendrait à
+     * l'identique : le mutant qui retire `expandedContentHeight` / `minimizedContentHeight` du
+     * `metrics` laissait donc les trois assertions ci-dessus VERTES. On refait ici la même
+     * passe avec UNE SEULE chose de changée — la hauteur rendue par la sonde — et on exige un
+     * AUTRE nombre : contenu 23 + 3 + 40 = 66 pt, qui dépasse le plancher et doit passer devant ;
+     * pilule 66 + 2×4 + 2×1 = 76 pt.
+     */
+    const witness = await mount();
+    await feedProbes(witness, { width: 30, height: 40 });
+    witness.setProgress(0);
+    await witness.refresh();
+    expect(visualHeight(witness.renderer, 'argent')).toBe(66);
+    expect(styleOf(byTestID(witness.renderer, 'bar-tab-argent'))['height']).toBe(66);
+    expect(styleOf(byTestID(witness.renderer, 'bar-pill'))['height']).toBe(76);
   });
 
   it('à ~200 % sur DEUX lignes, la pilule grandit — 58 pt était un plancher', async () => {
@@ -1251,9 +1796,10 @@ describe('Dynamic Type — la pilule GRANDIT avec le texte, elle ne le coupe pas
     hoisted.fontScale.value = 2;
     await harness.refresh();
     /*
-     * Largeur naturelle 100 pt pour une largeur d'item de ~57,6 : ne tient pas sur une ligne.
-     * Le mot le plus long tient (40 pt), donc rang DEUX LIGNES — et « la pilule grandit
-     * d'autant ». Hauteur de ligne 24 pt : contenu = 23 + 3 + 2×24 = 74 pt.
+     * Largeur d'onglet au repos, calculée à la main : (390 − 2×12 − 2×1 − 2×4) / 5 = 71,2 pt.
+     * Largeur naturelle du label 100 pt → il ne tient pas sur UNE ligne. Le mot le plus long
+     * tient (40 ≤ 71,2), et 100 ≤ 2 × 71,2 : rang DEUX LIGNES, « la pilule grandit d'autant ».
+     * Hauteur de ligne 24 pt → contenu = 23 + 3 + 2×24 = 74 pt, pilule 74 + 2×4 + 2×1 = 84 pt.
      */
     await feedProbesSplit(
       harness,
@@ -1263,13 +1809,10 @@ describe('Dynamic Type — la pilule GRANDIT avec le texte, elle ne le coupe pas
     harness.setProgress(0);
     await harness.refresh();
 
-    const expectedVisual = 23 + 3 + 2 * LINE_AT_200;
-    const visual = styleOf(byTestID(harness.renderer, 'bar-tab-argent')?.children?.[0]);
-    expect(visual['height']).toBe(expectedVisual);
+    expect(visualHeight(harness.renderer, 'argent')).toBe(74);
     // Le `Pressable` suit le contenu — le plancher de 44 est LARGEMENT dépassé, et c'est le but.
-    expect(styleOf(byTestID(harness.renderer, 'bar-tab-argent'))['height']).toBe(expectedVisual);
-    // La pilule aussi : `contenu + 2 × rythme(4) + 2 × bordure(1)`.
-    expect(styleOf(byTestID(harness.renderer, 'bar-pill'))['height']).toBe(expectedVisual + 10);
+    expect(styleOf(byTestID(harness.renderer, 'bar-tab-argent'))['height']).toBe(74);
+    expect(styleOf(byTestID(harness.renderer, 'bar-pill'))['height']).toBe(84);
     // Et elle est bien PLUS HAUTE que les 60 pt de la taille standard : le plafond a sauté.
     expect(styleOf(byTestID(harness.renderer, 'bar-pill'))['height'] as number).toBeGreaterThan(60);
     // Le label est toujours là, sur deux lignes, sans rétrécissement automatique.
@@ -1278,32 +1821,73 @@ describe('Dynamic Type — la pilule GRANDIT avec le texte, elle ne le coupe pas
     expect(label?.props['adjustsFontSizeToFit']).toBeUndefined();
   });
 
-  it('la boîte visuelle NE ROGNE RIEN au repos : elle mesure exactement le contenu', async () => {
-    for (const line of [LINE_AT_100, LINE_AT_200]) {
-      const harness = await mount();
-      await feedProbes(harness, { width: 30, height: line });
-      harness.setProgress(0);
-      await harness.refresh();
-      const visual = styleOf(byTestID(harness.renderer, 'bar-tab-argent')?.children?.[0])[
-        'height'
-      ] as number;
-      // Hauteur requise par le contenu réel : glyphe + rythme + UNE ligne (labels courts).
-      const required = 23 + 3 + line;
-      expect(visual).toBeGreaterThanOrEqual(required);
-    }
+  /**
+   * DEUXIÈME PRÉMISSE du bloc « overflow » ci-dessus : la BOÎTE VISUELLE en HAUTEUR — celle qui
+   * rend ses ciseaux inoffensifs. La rédaction précédente écrivait `visuel ≥ 23 + 3 + ligne` :
+   * à 24 pt de ligne, le contenu vaut EXACTEMENT 50, c'est-à-dire le plancher, et l'assertion
+   * était satisfaite par une barre sourde à toute mesure. Ici les deux RÉGIMES sont séparés et
+   * chacun est comparé à un littéral, égalité comprise.
+   */
+  it('la boîte visuelle NE ROGNE RIEN au repos — les deux régimes, à l’égalité près', async () => {
+    // RÉGIME 1 · LE PLANCHER GAGNE. Ligne 12 pt → contenu 23 + 3 + 12 = 38 pt ; la boîte vaut
+    // 50 pt, soit 12 pt de MARGE au-dessus du contenu : les ciseaux ne rencontrent rien.
+    const standard = await mount();
+    await feedProbes(standard, { width: 30, height: LINE_AT_100 });
+    standard.setProgress(0);
+    await standard.refresh();
+    expect(visualHeight(standard.renderer, 'argent')).toBe(50);
+    expect(visualHeight(standard.renderer, 'argent') as number).toBeGreaterThan(
+      23 + 3 + LINE_AT_100,
+    );
+
+    // RÉGIME 2 · LA MESURE GAGNE. Ligne 30 pt → contenu 23 + 3 + 30 = 56 pt, AU-DESSUS du
+    // plancher : la boîte doit valoir 56 EXACTEMENT — 50 couperait 6 pt de texte, davantage
+    // mentirait sur ce qu'elle mesure. C'est ce régime, et lui seul, qui prouve que la mesure
+    // est branchée : sans lui, une barre qui rendrait toujours 50 passerait.
+    const large = await mount();
+    await feedProbes(large, { width: 30, height: 30 });
+    large.setProgress(0);
+    await large.refresh();
+    expect(visualHeight(large.renderer, 'argent')).toBe(56);
+    expect(styleOf(byTestID(large.renderer, 'bar-tab-argent'))['height']).toBe(56);
+    expect(styleOf(byTestID(large.renderer, 'bar-pill'))['height']).toBe(66);
   });
 
   it('à ~200 %, le PALIER passe en icônes seules quand un MOT ne tient plus', async () => {
     const harness = await mount();
     hoisted.fontScale.value = 2;
     await harness.refresh();
-    // Le mot le plus long dépasse la largeur d'item : deux lignes ne sauveraient rien, un mot
-    // ne se coupe pas. Rang trois : le label est RETIRÉ, jamais tronqué.
-    await feedProbes(harness, { width: 200, height: LINE_AT_200 });
-    expect(nodes(harness.renderer).filter((node) => node.type === 'Animated.Text')).toHaveLength(0);
-    // Et la barre retombe alors sur ses planchers : plus de label, plus de croissance.
+    /*
+     * TÉMOIN D'ABORD. À la MÊME échelle, un label qui tient sur deux lignes fait GRANDIR la
+     * barre : contenu 23 + 3 + 2×24 = 74, pilule 84. Sans ce premier temps, le second (« la
+     * pilule vaut 60 ») serait vrai même si la mesure n'était jamais branchée — 60 est le
+     * PLANCHER, et c'est exactement pour cela que le mutant survivait ici.
+     */
+    await feedProbesSplit(
+      harness,
+      { width: 100, height: LINE_AT_200 },
+      { width: 40, height: LINE_AT_200 },
+    );
     harness.setProgress(0);
     await harness.refresh();
+    expect(styleOf(byTestID(harness.renderer, 'bar-pill'))['height']).toBe(84);
+
+    /*
+     * PUIS le mot le plus long dépasse la largeur d'onglet — 200 pt contre 71,2. Deux lignes ne
+     * sauveraient rien : un mot ne se coupe pas. Rang trois, le label est RETIRÉ, jamais tronqué.
+     * (La taille système monte encore d'un cran : le composant JETTE alors ses mesures et
+     * remonte la sonde. C'est ce qui permet ici de re-mesurer une barre déjà mesurée.)
+     */
+    hoisted.fontScale.value = 3;
+    await harness.refresh();
+    await feedProbes(harness, { width: 200, height: 36 });
+    expect(nodes(harness.renderer).filter((node) => node.type === 'Animated.Text')).toHaveLength(0);
+    harness.setProgress(0);
+    await harness.refresh();
+    // Plus de label : le contenu retombe au seul glyphe (23 pt) et les PLANCHERS reprennent la
+    // main — visuel 50, pilule 60. La barre REDESCEND donc de 84 à 60, ce qu'une barre sourde à
+    // la mesure ne pourrait pas faire : elle n'aurait jamais quitté 60.
+    expect(visualHeight(harness.renderer, 'argent')).toBe(50);
     expect(styleOf(byTestID(harness.renderer, 'bar-pill'))['height']).toBe(60);
   });
 
