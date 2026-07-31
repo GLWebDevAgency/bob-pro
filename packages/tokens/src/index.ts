@@ -505,14 +505,21 @@ export const patterns = {
     veilLocations: [0, 0.32, 0.6],
     /**
      * LAVIS DE COUCHE — part MAXIMALE de NOTRE teinte que le kit compose PAR-DESSUS
-     * l'échantillon de flou, DANS chaque bande. C'est la doctrine « surfaces teintées par NOS
-     * tokens » rendue structurelle : un port de flou peut peindre ce qu'il veut, la dernière
-     * couleur composée dans sa bande reste la nôtre, et il n'a aucun moyen de la réduire.
-     * Le lavis est une RAMPE (0 → cette valeur, du bord libre vers le bord ancré), jamais un
-     * aplat : un aplat poserait une couture visible là où le voile vaut encore 0. 0,3 est le
-     * compromis du socle — la teinte s'impose dès la première marche tout en laissant 70 % du
-     * flou lisible, et elle s'épaissit avec le recouvrement (1 − 0,7^k), exactement au rythme
-     * où l'intensité monte de 5 à 5 × N.
+     * l'échantillon de flou, DANS chaque bande. Le lavis est une RAMPE (0 → cette valeur, du
+     * bord libre vers le bord ancré), jamais un aplat : un aplat poserait une couture visible
+     * là où le voile vaut encore 0. 0,3 est le compromis du socle — la teinte s'épaissit avec
+     * le recouvrement (1 − 0,7^k), exactement au rythme où l'intensité monte de 5 à 5 × N.
+     *
+     * CE QUE CE TOKEN NE FAIT PAS. Première rédaction : « la dernière couleur composée dans sa
+     * bande reste la nôtre, et il n'a aucun moyen de la réduire ». FAUX, et mesuré : parce que
+     * la rampe part de ZÉRO, la part du port vaut 1,0000 à la profondeur 0 et 0,5071 encore à
+     * 0,16 (canvas / light, N = 10). Notre part ne devient majoritaire qu'après la première
+     * marche, atteint 0,9347 au stop médian et 1 dès 0,60.
+     *
+     * Ce qui rend la doctrine STRUCTURELLE est dans le composant, pas dans ce nombre :
+     * `@bob/ui` vérifie que l'élément rendu par le port porte `intensity`, `tint` et `style`
+     * tels qu'il les a remis, et ferme la pile sinon. Ce token, lui, garantit la CONFORMITÉ :
+     * ce qu'un port honnête peut montrer de sa propre matière, et où.
      */
     layerWash: 0.3,
   },

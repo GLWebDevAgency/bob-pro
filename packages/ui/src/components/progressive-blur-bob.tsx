@@ -25,28 +25,64 @@
  * ─── UN PORT QUI JETTE N'EMPORTE PAS L'ÉCRAN ──────────────────────────────────────────────
  * Le port vient de l'APPLICATION : c'est du code que `packages/ui` ne contrôle pas. S'il lève,
  * React démonte l'arbre et l'écran entier disparaît. Un effet DÉCORATIF ne doit JAMAIS faire
- * tomber un écran où l'artisan encaisse une facture. Il y a DEUX chemins distincts, et un seul
- * mécanisme ne les couvre pas tous les deux :
+ * tomber un écran où l'artisan encaisse une facture.
+ *
+ * Ce fichier a d'abord énuméré DEUX chemins. Il y en a TROIS, et le troisième a été démontré
+ * par une revue adversariale : l'arbre valait `null` après une simple bascule d'accessibilité.
+ * Un commentaire qui énumère faux est un piège pour le prochain, alors les voici, nommés :
  *
  *   (a) LA FABRIQUE JETTE — l'appel à `renderBlurLayer` lève pendant la construction.
  *       Un `try`/`catch` autour de l'APPEL l'attrape (`BlurLayerSlot`).
  *   (b) L'ÉLÉMENT RENDU JETTE — la fabrique rend un élément VALIDE qui lève pendant SON rendu
- *       ou dans un effet. Un `try`/`catch` de l'appelant n'attrape RIEN de cela : il faut une
- *       FRONTIÈRE D'ERREUR (`BlurStackBoundary`, `getDerivedStateFromError` +
+ *       ou dans un effet de MONTAGE. Un `try`/`catch` de l'appelant n'attrape RIEN de cela :
+ *       il faut une FRONTIÈRE D'ERREUR (`BlurStackBoundary`, `getDerivedStateFromError` +
  *       `componentDidCatch`).
+ *   (c) LE NETTOYAGE JETTE AU DÉMONTAGE DE LA PILE — l'élément du port lève dans le CLEANUP de
+ *       son effet, pendant que la pile disparaît. Le déclencheur n'a rien d'exotique : c'est la
+ *       transition NORMALE N → 0 (Reduce Transparency, verrou après manquement, `layers` → 0).
+ *       Une frontière rendue CONDITIONNELLEMENT ne le couvre pas, pour une raison STRUCTURELLE :
+ *       elle est démontée EN MÊME TEMPS que ses enfants, et une frontière supprimée ne peut pas
+ *       attraper l'erreur de ses propres enfants supprimés. React ne trouve alors AUCUNE
+ *       frontière et détruit la racine. `BlurStackBoundary` est donc montée INCONDITIONNELLEMENT
+ *       et rend `null` quand il n'y a rien à porter : elle SURVIT au démontage de la pile.
  *
- * Dans les deux cas l'écran survit et l'utilisateur voit la surface teintée opaque, lisible.
+ * LA LIMITE, déclarée plutôt que tue : si c'est la RETOMBÉE ELLE-MÊME qui est démontée (l'écran
+ * quitte), aucune frontière interne ne peut aider — par construction elle part avec. C'est le
+ * rôle d'une frontière d'ÉCRAN, côté application ; un test le démontre et vaut recommandation.
+ *
+ * Dans les trois cas l'écran survit et l'utilisateur voit la surface teintée opaque, lisible.
  * La dégradation est DÉFINITIVE pour la vie du composant : un port qui a manqué n'est plus
  * rappelé — sinon on remplacerait un écran mort par une boucle d'erreurs, et un port
  * INTERMITTENT ferait clignoter l'écran. Enfin l'échec n'est pas silencieux pour le
  * développeur : avertissement NOMMÉ, en développement seulement, à message STATIQUE — aucune
  * donnée n'y est interpolée.
+ *
+ * ─── ET LE CODE D'APPLICATION QUE LE KIT A LUI-MÊME AJOUTÉ ────────────────────────────────
+ * `onPlan` est une prop AJOUTÉE par le kit (diagnostic). Elle porte donc, elle aussi, du code
+ * d'application — et elle était appelée dans un effet PASSIF sans protection : en React 19 une
+ * erreur non rattrapée dans un effet passif DÉMONTE LA RACINE ENTIÈRE. La discipline appliquée
+ * au port n'avait pas été appliquée à la prop posée à côté. Elle l'est : `try`/`catch`, un
+ * avertissement `__DEV__` statique, et la télémétrie qui casse ne casse qu'elle-même.
+ *
+ * ─── TOUT OU RIEN : TENU AVANT LE COMMIT, PAS APRÈS ───────────────────────────────────────
+ * La règle interdit la pile PARTIELLE — des bandes servies, d'autres manquantes. Elle était
+ * appliquée depuis un EFFET, donc après coup : la pile partielle était commitée, puis retirée.
+ * Mesuré sur ce dépôt, un observateur voyait 5 échantillons sur 6. Passer l'annonce dans un
+ * effet de MISE EN PAGE ne suffit pas : un effet court toujours après le commit.
+ *
+ * Une bande qui constate le mélange ABANDONNE donc PENDANT SON RENDU (`BlurStackAbort`). React
+ * déroule le sous-arbre jusqu'à `BlurStackBoundary` avant tout commit : la pile partielle n'est
+ * jamais construite côté hôte. Reste le cas où TOUTES les bandes manquent — celui-là est annoncé
+ * par effet, et c'est légitime : l'arbre commité ne porte alors aucun échantillon, il est déjà,
+ * pixel pour pixel, celui du repli, puisque le voile teinté est rendu dans les deux modes.
  */
 import {
   Component,
+  Fragment,
   isValidElement,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -66,6 +102,7 @@ import {
   progressiveBlurPlan,
   progressiveBlurWarnings,
   resolveBlurMaterial,
+  type BlurEnvelopeAssertion,
   type BlurPortFailure,
   type BlurRenderCapability,
   type BlurSurfaceUnder,
@@ -101,6 +138,12 @@ export interface ProgressiveBlurBobViewProps extends ProgressiveBlurBobProps {
    * La seule façon de casser l'invariant d'englobement est de donner à l'enveloppe une hauteur
    * supérieure à celle du shell : dans ce cas le composant sert le repli opaque et journalise
    * l'écart. AUCUNE mesure n'est faite en production — l'invariant y est structurel.
+   *
+   * OBLIGATOIRE EN DÉVELOPPEMENT dès qu'on demande du flou, et c'est le socle qui l'écrit :
+   * « Assertion de développement OBLIGATOIRE ». L'omettre laissait l'assertion ne jamais
+   * s'exécuter — le seul défaut fail-OPEN du composant, sur une OBLIGATION du contrat. Absente,
+   * elle vaut désormais REFUS (`envelope-unverified`), comme `renderCapability` et
+   * `surfaceUnder`. En production rien n'est mesuré et rien n'est refusé de ce chef.
    */
   readonly devShellHeight?: number;
   /**
@@ -118,12 +161,112 @@ function isDevelopment(): boolean {
 }
 
 /** Ce qu'une bande a obtenu du port, pour CE rendu. */
-type SlotOutcome = 'element' | 'null' | 'threw' | 'invalid';
+type SlotOutcome = 'element' | 'null' | 'threw' | 'invalid' | 'tampered';
+
+/** Le manquement que chaque issue non nominale fait constater. */
+const SLOT_FAILURES: Readonly<Record<Exclude<SlotOutcome, 'element'>, BlurPortFailure>> =
+  Object.freeze({
+    null: 'partial-stack',
+    threw: 'factory-threw',
+    invalid: 'invalid-element',
+    tampered: 'material-tampered',
+  });
+
+/**
+ * REGISTRE D'UNE PASSE DE RENDU — une case par bande, remplie DANS L'ORDRE où React rend les
+ * bandes. C'est ce qui permet à la bande `i` de savoir ce que les bandes `0..i-1` ont obtenu,
+ * PENDANT le rendu, donc avant tout commit.
+ */
+type StackLedger = (SlotOutcome | undefined)[];
+
+/**
+ * La pile est-elle MIXTE, c'est-à-dire à la fois pourvue et manquante ? C'est exactement la
+ * violation du TOUT OU RIEN, et c'est la SEULE configuration qui serait visible : quand TOUTES
+ * les bandes manquent, l'arbre commité ne porte aucun échantillon — il est alors, pixel pour
+ * pixel, celui du repli, puisque le voile teinté est rendu dans les deux modes.
+ */
+function ledgerIsMixed(ledger: StackLedger): boolean {
+  let served = false;
+  let missing = false;
+  for (const outcome of ledger) {
+    if (outcome === undefined) continue;
+    if (outcome === 'element') served = true;
+    else missing = true;
+  }
+  return served && missing;
+}
+
+/** Le manquement à constater pour une pile mixte : le PREMIER défaut rencontré le nomme. */
+function ledgerFailure(ledger: StackLedger): BlurPortFailure {
+  for (const outcome of ledger) {
+    if (outcome === undefined || outcome === 'element') continue;
+    // `null` mêlé à des éléments est la violation TOUT OU RIEN elle-même, à tout index.
+    return SLOT_FAILURES[outcome];
+  }
+  return 'partial-stack';
+}
+
+/**
+ * ABANDON DE PILE, levé PENDANT LE RENDU d'une bande et attrapé par `BlurStackBoundary`.
+ *
+ * C'est le seul mécanisme qui tienne le TOUT OU RIEN à la PREMIÈRE frame. Annoncer le
+ * manquement depuis un effet — même de mise en page — arrive toujours APRÈS le commit : la pile
+ * partielle est alors dans l'arbre, et il faut un second commit pour l'en retirer. Mesuré sur
+ * ce dépôt, un observateur d'effet passif voyait 5 échantillons sur 6.
+ *
+ * Une erreur levée pendant le RENDU, elle, remonte à la frontière AVANT tout commit : React
+ * déroule le sous-arbre, rend la frontière à `null`, et l'arbre partiel n'existe jamais.
+ */
+class BlurStackAbort extends Error {
+  readonly failure: BlurPortFailure;
+  constructor(failure: BlurPortFailure) {
+    // Message STATIQUE : aucune donnée du port ni de l'application n'y est interpolée.
+    super('ProgressiveBlurBob: pile de flou abandonnée avant commit (tout ou rien).');
+    this.name = 'BlurStackAbort';
+    this.failure = failure;
+  }
+}
 
 interface BlurLayerSlotProps {
   readonly spec: BlurLayerSpec;
   readonly render: RenderBlurLayer;
-  readonly onOutcome: (index: number, outcome: SlotOutcome) => void;
+  readonly ledger: StackLedger;
+  /** Appelé UNIQUEMENT pour une issue non nominale — jamais pour `element`. */
+  readonly onOutcome: (index: number, outcome: Exclude<SlotOutcome, 'element'>) => void;
+}
+
+/**
+ * LA BARRIÈRE DE MATIÈRE — ajout du kit, et la seule chose qui rende la doctrine de teinte
+ * STRUCTURELLE plutôt que simplement CONFORME.
+ *
+ * Le lavis et le voile teintent ce que le port a peint, mais la rampe du lavis vaut 0 au bord
+ * libre : à la profondeur 0 le matériau du port est SEUL (table mesurée dans
+ * `bobTintShareAt`). Composer par-dessus ne peut donc pas suffire — il faut refuser en amont
+ * l'élément qui ne porte pas la matière remise.
+ *
+ * TROIS ÉGALITÉS ET UNE ABSENCE, et rien de plus :
+ *  · `intensity` et `tint` — le kit les a RÉSOLUS depuis ses tokens ; les réécrire, c'est
+ *    proposer une autre matière, ce que le contrat n'autorise nulle part ;
+ *  · `style` par IDENTITÉ, pas par valeur : le contrat dit « à appliquer TEL QUEL, sans
+ *    recalcul ». L'objet est gelé ; exiger la même RÉFÉRENCE ferme aussi la recopie modifiée ;
+ *  · AUCUN enfant — « rend une couche, et rien d'autre : ni voile, ni dégradé, ni conteneur ».
+ *    C'est aussi ce qui interdit à un élément par ailleurs conforme de porter du TEXTE dans une
+ *    zone que le contrat déclare sans texte ni information.
+ *
+ * CE QUE CETTE BARRIÈRE NE PEUT PAS FAIRE, dit ici pour que personne ne s'y trompe : elle
+ * contrôle les CHAMPS du contrat, pas les pixels. Un port peut toujours rendre un composant à
+ * lui qui reçoit correctement `intensity`, `tint` et `style` et peint autre chose à l'intérieur.
+ * Celui-là reste borné par le CLIP de sa bande, par le lavis et par le voile — c'est-à-dire par
+ * la garantie de conformité, chiffrée et plancherée par `bobTintShareAt`.
+ */
+function honorsMaterial(element: ReactElement, spec: BlurLayerSpec): boolean {
+  const props = element.props as Record<string, unknown>;
+  return (
+    props['intensity'] === spec.intensity &&
+    props['tint'] === spec.tint &&
+    props['style'] === spec.style &&
+    props['children'] === undefined
+  );
 }
 
 /**
@@ -143,36 +286,77 @@ interface BlurLayerSlotProps {
  * Les hooks du kit sont déclarés AVANT l'appel, à position fixe : quoi que fasse le port, le
  * préfixe de la liste de hooks de cette instance ne bouge pas.
  */
-function BlurLayerSlot({ spec, render, onOutcome }: BlurLayerSlotProps): ReactElement | null {
+function BlurLayerSlot({ spec, render, ledger, onOutcome }: BlurLayerSlotProps): ReactElement | null {
   const outcome = useRef<SlotOutcome>('element');
   const announced = useRef<SlotOutcome | null>(null);
-  useEffect(() => {
+  /**
+   * ANNONCE DU CAS INVISIBLE, dans un effet de MISE EN PAGE — le cas VISIBLE, lui, n'atteint
+   * jamais un commit (voir l'abandon de pile plus bas).
+   *
+   * Ce qui reste à annoncer après coup, ce sont les piles ENTIÈREMENT manquantes : toutes les
+   * bandes ont rendu `null`, ou toutes ont levé. L'arbre commité ne porte alors AUCUN
+   * échantillon — il est déjà, pixel pour pixel, celui du repli, puisque le voile teinté est
+   * rendu dans les deux modes. Le verrou qui suit ne change donc rien à ce que l'œil voit ; il
+   * ne fait qu'empêcher de rappeler un port qui a manqué.
+   *
+   * Effet de MISE EN PAGE et non passif : il court dans la phase de commit, donc au plus tôt.
+   * Son coût est nul — il ne lit aucune géométrie, il compare deux références.
+   */
+  useLayoutEffect(() => {
     const current = outcome.current;
     if (announced.current === current) return;
     announced.current = current;
     if (current !== 'element') onOutcome(spec.index, current);
   });
 
-  // (a) LA FABRIQUE JETTE — attrapé ici, à l'appel. La bande rend alors `null`, ce qui est
-  //     visuellement IDENTIQUE au repli : le voile teinté, lui, est rendu par le parent dans
-  //     les deux modes. Il n'y a donc pas même une frame de différence à l'écran.
+  const served = callPort(render, spec);
+  outcome.current = served.outcome;
+
+  /*
+   * TOUT OU RIEN, TENU AVANT LE COMMIT. On inscrit l'issue de CETTE bande, puis on regarde la
+   * passe entière : si elle est MIXTE — des bandes servies ET des bandes manquantes —, on
+   * ABANDONNE ici, PENDANT le rendu. React déroule alors le sous-arbre jusqu'à
+   * `BlurStackBoundary` sans jamais commiter la pile partielle. Aucune frame, aucune révision
+   * intermédiaire, aucun observateur : elle n'a pas existé.
+   *
+   * Le registre est rempli DANS L'ORDRE des bandes, donc la bande qui découvre le mélange est
+   * toujours la première à pouvoir le voir. Et il n'y a rien à réparer pour les bandes déjà
+   * rendues : leur rendu est jeté avec le reste du sous-arbre.
+   */
+  ledger[spec.index] = served.outcome;
+  if (ledgerIsMixed(ledger)) throw new BlurStackAbort(ledgerFailure(ledger));
+
+  return served.element;
+}
+
+/**
+ * (a) LA FABRIQUE JETTE — attrapé ICI, à l'appel, et converti en issue plutôt qu'en chute. La
+ * bande rend alors `null`, ce qui est visuellement IDENTIQUE au repli : le voile teinté, lui,
+ * est rendu par le parent dans les deux modes.
+ *
+ * Le `try` couvre AUSSI les vérifications : lire `element.props` sur un objet fourni par
+ * l'application peut lever (accesseur hostile), et cela doit FERMER, pas tomber.
+ */
+function callPort(
+  render: RenderBlurLayer,
+  spec: BlurLayerSpec,
+): { readonly outcome: SlotOutcome; readonly element: ReactElement | null } {
   try {
     const element: unknown = render(spec);
-    if (element === null || element === undefined) {
-      outcome.current = 'null';
-      return null;
-    }
+    if (element === null || element === undefined) return { outcome: 'null', element: null };
     // Le typage ne protège que le code typé. Une chaîne rendue ici deviendrait du TEXTE dans
     // une zone que le contrat déclare sans texte ni information : on refuse, et on ferme.
-    if (!isValidElement(element)) {
-      outcome.current = 'invalid';
-      return null;
-    }
-    outcome.current = 'element';
-    return element as ReactElement;
+    if (!isValidElement(element)) return { outcome: 'invalid', element: null };
+    // `isValidElement()` rend TRUE pour un Fragment — et un Fragment porte n'importe quoi,
+    // `<>{'texte'}</>` compris. Il traversait le garde et React peignait le texte. Un Fragment
+    // n'est pas une couche : c'est un passe-plat, refusé au même rang que la chaîne nue.
+    if (element.type === Fragment) return { outcome: 'invalid', element: null };
+    // La matière rendue doit être celle qu'on a remise — sinon le port impose la sienne là où
+    // le lavis ne le couvre pas encore (bord libre). Voir `honorsMaterial`.
+    if (!honorsMaterial(element, spec)) return { outcome: 'tampered', element: null };
+    return { outcome: 'element', element };
   } catch {
-    outcome.current = 'threw';
-    return null;
+    return { outcome: 'threw', element: null };
   }
 }
 
@@ -182,14 +366,21 @@ interface BlurStackBoundaryProps {
 }
 
 /**
- * (b) L'ÉLÉMENT RENDU JETTE — frontière d'erreur autour de TOUTE la pile. Un `try`/`catch` de
- * l'appelant n'attrape pas ce qu'un élément lève pendant SON propre rendu, ni ce qu'il lève
- * dans un effet : seule une frontière le fait.
+ * (b) ET (c) — frontière d'erreur autour de TOUTE la pile. Un `try`/`catch` de l'appelant
+ * n'attrape pas ce qu'un élément lève pendant SON propre rendu, ni dans un effet, ni dans le
+ * NETTOYAGE d'un effet : seule une frontière le fait.
  *
  * Elle enveloppe la pile ENTIÈRE et non chaque bande : la règle TOUT OU RIEN veut qu'une pile
  * dont une couche a manqué disparaisse en entier, jamais partiellement. Quand elle attrape,
  * React démonte le sous-arbre, la frontière rend `null`, le voile du parent reste — l'écran
  * survit et affiche la surface teintée opaque lisible.
+ *
+ * ELLE EST MONTÉE INCONDITIONNELLEMENT, et c'est le correctif du chemin (c). Rendue
+ * `plan.mode === 'blurred' ? <BlurStackBoundary/> : null`, elle disparaissait AU MOMENT MÊME où
+ * la pile disparaissait : une frontière supprimée ne peut pas attraper l'erreur de ses propres
+ * enfants supprimés, React ne trouvait plus aucune frontière et détruisait la racine. Montée
+ * toujours, elle SURVIT à ses enfants et attrape leur nettoyage. Le coût est d'une fibre, en
+ * mode teinté comme en mode flouté ; l'écran, lui, n'est plus jouable.
  */
 class BlurStackBoundary extends Component<BlurStackBoundaryProps, { failed: boolean }> {
   override state: { failed: boolean } = { failed: false };
@@ -198,10 +389,11 @@ class BlurStackBoundary extends Component<BlurStackBoundaryProps, { failed: bool
     return { failed: true };
   }
 
-  override componentDidCatch(): void {
+  override componentDidCatch(error: unknown): void {
     // Le parent LATCHE : ce montage ne rappellera plus le port. React a déjà journalisé
     // l'erreur et sa pile de composants en développement — on n'en recopie rien.
-    this.props.onFailure('element-threw');
+    // Un ABANDON DE PILE porte son propre rang : c'est le kit qui l'a levé, pas le port.
+    this.props.onFailure(error instanceof BlurStackAbort ? error.failure : 'element-threw');
   }
 
   override render(): ReactNode {
@@ -210,9 +402,22 @@ class BlurStackBoundary extends Component<BlurStackBoundaryProps, { failed: bool
 }
 
 /**
+ * Avertissement du manquement de `onPlan`. STATIQUE et NOMMÉ, comme ceux du port : aucune
+ * donnée n'y est interpolée, ni de l'application ni de l'erreur reçue.
+ */
+const ON_PLAN_THREW_WARNING =
+  'ProgressiveBlurBob : le rappel onPlan a LEVÉ. Il est ignoré pour ce changement de plan — un diagnostic décoratif ne fait pas tomber un écran. Corrigez le rappel : le kit ne le retentera pas dans ce cycle.';
+
+/**
  * Rend le plan ATTEIGNABLE : rappel pour l'appelant, avertissements pour le développeur.
  * L'émission se fait dans un EFFET — jamais pendant le rendu — et seulement quand la SIGNATURE
  * du plan change, sinon un changement de thème rejouerait le diagnostic pour rien.
+ *
+ * `onPlan` EST DU CODE D'APPLICATION, exactement comme le port — et c'est une prop AJOUTÉE par
+ * le kit, donc c'est le kit qui a introduit ce risque. Appelée nue dans un effet passif, une
+ * erreur y DÉMONTE LA RACINE ENTIÈRE en React 19 : l'écran disparaît parce que la télémétrie
+ * est cassée. Même patron que le port, donc : `try`/`catch`, et au plus un avertissement
+ * `__DEV__` statique. Le plan suivant sera bien émis — on n'ampute que l'émission fautive.
  */
 function usePlanDiagnostics(
   plan: ProgressiveBlurPlan,
@@ -229,12 +434,25 @@ function usePlanDiagnostics(
     plan.material.tone,
     plan.material.appearance,
   ].join('|');
+  /*
+   * Le plan et le rappel les plus récents, publiés dans un EFFET et jamais pendant le rendu.
+   * Écrire une ref pendant le rendu retiendrait un plan issu d'une passe que React peut très
+   * bien abandonner. Cet effet-ci est déclaré AVANT l'émission : dans un même commit, React
+   * exécute les effets dans l'ordre de déclaration, donc l'émission lit toujours à jour.
+   */
   const latest = useRef({ plan, onPlan });
-  latest.current = { plan, onPlan };
+  useEffect(() => {
+    latest.current = { plan, onPlan };
+  });
 
   useEffect(() => {
     const current = latest.current;
-    current.onPlan?.(current.plan);
+    try {
+      current.onPlan?.(current.plan);
+    } catch {
+      // On ne recopie NI l'erreur NI le plan : message statique, aucune donnée interpolée.
+      if (isDevelopment()) console.warn(ON_PLAN_THREW_WARNING);
+    }
     if (!isDevelopment()) return;
     for (const warning of progressiveBlurWarnings(current.plan)) console.warn(warning);
   }, [signature]);
@@ -282,22 +500,33 @@ export function ProgressiveBlurBob({
     // Le premier manquement gagne : l'état ne change plus, donc React ne re-rend pas en boucle.
     setPortFailure((current) => current ?? failure);
   }, []);
+  /**
+   * Issue d'une bande dans une pile ENTIÈREMENT manquante — le seul cas qui parvienne encore
+   * ici, puisqu'une pile mixte est abandonnée AVANT le commit. `null` partout est la bascule
+   * NORMALE du contrat (« le port n'a rien à monter ») : elle ne s'annonce pas comme une faute.
+   */
   const handleOutcome = useCallback(
-    (index: number, outcome: SlotOutcome) => {
-      if (outcome === 'threw') return latchFailure('factory-threw');
-      if (outcome === 'invalid') return latchFailure('invalid-element');
-      // TOUT OU RIEN : `null` à l'index 0 est la bascule du contrat ; `null` à un autre index
-      // signe une pile PARTIELLE, que le contrat interdit — les deux ferment le flou.
-      return latchFailure(index === 0 ? 'null-at-zero' : 'partial-stack');
+    (_index: number, outcome: Exclude<SlotOutcome, 'element'>) => {
+      latchFailure(outcome === 'null' ? 'null-at-zero' : SLOT_FAILURES[outcome]);
     },
     [latchFailure],
   );
 
   const material = useMemo(() => resolveBlurMaterial(tone, appearance), [tone, appearance]);
   const port = useMemo(() => resolveBlurPort(renderBlurLayer), [renderBlurLayer]);
-  // Assertion d'englobement : mesurée en DÉVELOPPEMENT seulement, jamais en production.
-  const envelopeOverflow =
-    isDevelopment() && devShellHeight !== undefined && height > devShellHeight;
+  /**
+   * ASSERTION D'ENGLOBEMENT (§ 4), tri-état et fail-CLOSED. En PRODUCTION aucune mesure n'est
+   * faite — le socle l'écrit, l'invariant y est structurel : on transmet `within`. En
+   * DÉVELOPPEMENT, une hauteur de shell non déclarée n'est pas « pas de problème », c'est
+   * « assertion impossible » : elle vaut refus, et le développeur reçoit un avertissement nommé.
+   */
+  const envelope: BlurEnvelopeAssertion = !isDevelopment()
+    ? 'within'
+    : devShellHeight === undefined
+      ? 'unverified'
+      : height > devShellHeight
+        ? 'overflow'
+        : 'within';
 
   const plan = progressiveBlurPlan({
     layers,
@@ -309,7 +538,7 @@ export function ProgressiveBlurBob({
     material,
     capability: renderCapability,
     surfaceUnder,
-    envelopeOverflow,
+    envelope,
   });
   usePlanDiagnostics(plan, onPlan);
   usePortFailureWarning(portFailure);
@@ -318,6 +547,12 @@ export function ProgressiveBlurBob({
   const wash = edgeWashGradient(material, anchor);
   const fill = { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 } as const;
   const renderLayer = port.render;
+  /*
+   * REGISTRE DE LA PASSE — neuf à chaque rendu du parent, donc jamais pollué par la passe
+   * précédente, et jamais un état : ce n'est pas une mémoire, c'est le brouillon d'un rendu.
+   * C'est lui qui permet à une bande de constater le TOUT OU RIEN AVANT le commit.
+   */
+  const ledger: StackLedger = [];
 
   return (
     <View
@@ -338,34 +573,41 @@ export function ProgressiveBlurBob({
       ]}
     >
       {/* 1 — LES BANDES, d'abord : elles passeront SOUS le voile. Ni `zIndex`, ni `elevation`,
-             ni token d'ombre nulle part ici — l'ordre de déclaration est le seul arbitre. */}
-      {plan.mode === 'blurred' && renderLayer !== undefined ? (
-        <BlurStackBoundary onFailure={latchFailure}>
-          {plan.layers.map((spec) => (
-            <View
-              key={spec.index}
-              pointerEvents="none"
-              // CLIP — le port ne peut pas peindre un pixel hors de sa bande. La bande a
-              // EXACTEMENT le rectangle de `spec.style` : le clip est géométriquement neutre
-              // pour un port conforme, et une prison pour un port hostile.
-              style={{
-                ...blurLayerStyle(spec.anchor, spec.heightPercent, height),
-                overflow: 'hidden',
-              }}
-            >
-              <BlurLayerSlot spec={spec} render={renderLayer} onOutcome={handleOutcome} />
-              {/* LE LAVIS — notre teinte PAR-DESSUS l'échantillon, dans la bande, en dernier. */}
-              <LinearGradient
+             ni token d'ombre nulle part ici — l'ordre de déclaration est le seul arbitre.
+             La FRONTIÈRE, elle, est montée dans les DEUX modes : c'est ce qui lui permet de
+             survivre au démontage de la pile et d'attraper un nettoyage qui jette (chemin c). */}
+      <BlurStackBoundary onFailure={latchFailure}>
+        {plan.mode === 'blurred' && renderLayer !== undefined
+          ? plan.layers.map((spec) => (
+              <View
+                key={spec.index}
                 pointerEvents="none"
-                colors={[...wash.colors] as [string, string, ...string[]]}
-                start={wash.start}
-                end={wash.end}
-                style={{ ...fill, opacity: wash.opacity }}
-              />
-            </View>
-          ))}
-        </BlurStackBoundary>
-      ) : null}
+                // CLIP — le port ne peut pas peindre un pixel hors de sa bande. La bande a
+                // EXACTEMENT le rectangle de `spec.style` : le clip est géométriquement neutre
+                // pour un port conforme, et une prison pour un port hostile.
+                style={{
+                  ...blurLayerStyle(spec.anchor, spec.heightPercent, height),
+                  overflow: 'hidden',
+                }}
+              >
+                <BlurLayerSlot
+                  spec={spec}
+                  render={renderLayer}
+                  ledger={ledger}
+                  onOutcome={handleOutcome}
+                />
+                {/* LE LAVIS — notre teinte PAR-DESSUS l'échantillon, dans la bande, en dernier. */}
+                <LinearGradient
+                  pointerEvents="none"
+                  colors={[...wash.colors] as [string, string, ...string[]]}
+                  start={wash.start}
+                  end={wash.end}
+                  style={{ ...fill, opacity: wash.opacity }}
+                />
+              </View>
+            ))
+          : null}
+      </BlurStackBoundary>
 
       {/* 2 — LE VOILE TEINTÉ BOB, déclaré EN DERNIER donc peint AU-DESSUS. Rendu dans les DEUX
              modes : c'est ce qui fait que le repli montre la même géométrie, la même courbe et
