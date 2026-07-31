@@ -35,7 +35,7 @@ import { Button, Badge } from './ui';
 import { useConfirm } from './ConfirmSheet';
 import { useErrorSheet, type ErrorSheetHandle } from './ErrorSheet';
 import { useBobClient } from '../data/client';
-import { companyCanIssue } from '../data/company-completeness';
+import { companyCanIssue, companyIssueBlocker } from '../data/company-completeness';
 import {
   companyIncompleteGateSpec,
   paymentTermsMissingGateSpec,
@@ -602,7 +602,10 @@ export const QuoteActions = forwardRef<
           onPress={() =>
             void (async () => {
               if (!companyComplete) {
-                setGate(companyIncompleteGateSpec('quote', personality));
+                // Le gate NOMME le champ manquant quand il le connaît (companyIssueBlocker) —
+                // fini le « complète ta fiche » générique qui a fait re-vérifier au fondateur
+                // des champs déjà remplis (FLY SERVICES 30/07).
+                setGate(companyIncompleteGateSpec(companyIssueBlocker(companyMe.data), personality));
                 return;
               }
               const ok = await confirm({
@@ -1331,7 +1334,8 @@ export function InvoiceActions({
             onPress={() =>
               void (async () => {
                 if (!companyComplete) {
-                  setGate(companyIncompleteGateSpec('invoice', personality));
+                  // Même correctif que côté devis : le champ fautif est nommé (FLY SERVICES).
+                  setGate(companyIncompleteGateSpec(companyIssueBlocker(companyMe.data), personality));
                   return;
                 }
                 if (billingSettings.isError || billingSettings.data === undefined) {

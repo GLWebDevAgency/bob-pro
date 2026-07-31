@@ -945,18 +945,37 @@ describe('i18n — modale menu profil (design_handoff_bob_pro/Bob Pro.dc.html §
 });
 
 describe('i18n — gate entreprise complète (DocumentActions.tsx, émission devis/facture)', () => {
-  it('titre + corps déclinés devis/facture ×3 humeurs, CTA/annulation', () => {
+  it('titre + CTA/annulation + repli générique', () => {
     expect(t('gate.companyIncompleteTitle', { personality: 'pro' })).toBe(
       'Complétez votre fiche entreprise',
     );
-    expect(t('gate.companyIncompleteBodyQuote')).toBe(
-      'Pour envoyer un devis officiel, renseigne d’abord ton entreprise (RM/RCS et adresse).',
-    );
-    expect(t('gate.companyIncompleteBodyInvoice', { personality: 'direct' })).toBe(
-      'RM/RCS et adresse requis avant l’émission.',
+    expect(t('gate.companyIncompleteBody', { personality: 'direct' })).toBe(
+      'Fiche entreprise incomplète. Réglages → Identité.',
     );
     expect(t('gate.companyIncompleteCta')).toBe('Compléter');
     expect(t('gate.companyIncompleteCancel', { personality: 'pro' })).toBe('Plus tard');
+  });
+
+  it('le corps NOMME le champ manquant et cite sa source légale, ×3 humeurs (bug FLY SERVICES)', () => {
+    // Le générique « complète ta fiche » a fait chercher au fondateur un champ déjà rempli :
+    // chaque exigence d'assertCanIssue a désormais SON corps — nom du champ + loi + où aller.
+    const attendus = [
+      ['gate.companyIncompleteBodyRcsOrRm', 'RCS', 'R123-237'],
+      ['gate.companyIncompleteBodyAddress', 'adresse', 'L441-9'],
+      ['gate.companyIncompleteBodyCapitalSocial', 'capital social', 'R123-238'],
+      ['gate.companyIncompleteBodyTvaIntracom', 'TVA', '242 nonies A'],
+    ] as const;
+    for (const [key, champ, source] of attendus) {
+      for (const personality of ['pote', 'pro', 'direct'] as const) {
+        const body = t(key, { personality });
+        expect(body.toLowerCase()).toContain(champ.toLowerCase());
+        expect(body).toContain(source);
+        expect(body).toContain('Réglages');
+      }
+    }
+    expect(t('gate.companyIncompleteBodyCapitalSocial')).toBe(
+      'Il manque ton capital social — c’est obligatoire sur les factures d’une société (art. R123-238 du code de commerce). Prends le montant de tes statuts : deux minutes dans Réglages → Identité.',
+    );
   });
 });
 
