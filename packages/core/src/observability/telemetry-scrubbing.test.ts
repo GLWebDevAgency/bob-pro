@@ -265,4 +265,57 @@ describe('scrubTelemetryBreadcrumb / telemetryTagsFrom', () => {
       }),
     ).toEqual({ correlationId: 'c-7', kind: 'dependency' });
   });
+
+  // SPEC_SYSTEME_ERREUR §5.3 : un échec `dependency` remonte en tags EXACTEMENT ces sept champs.
+  // Avant ce correctif, `code`/`method`/`path`/`status` étaient écartés EN SILENCE par la liste
+  // blanche — la spec promettait ce que le code jetait. Ces deux tests verrouillent l'alignement.
+  it('promeut les sept étiquettes techniques du contrat §5.3 (alignement spec↔code)', () => {
+    expect(
+      telemetryTagsFrom({
+        code: 'BOB-SIRET-502',
+        kind: 'dependency',
+        port: 'recherche-entreprises',
+        correlationId: '98f73810-aaaa-4bbb-8ccc-ddddeeeeffff',
+        method: 'GET',
+        path: '/company/lookup',
+        status: 502,
+      }),
+    ).toEqual({
+      code: 'BOB-SIRET-502',
+      kind: 'dependency',
+      port: 'recherche-entreprises',
+      correlationId: '98f73810-aaaa-4bbb-8ccc-ddddeeeeffff',
+      method: 'GET',
+      path: '/company/lookup',
+      status: '502',
+    });
+  });
+
+  it('étanchéité : un e-mail/SIRET/IBAN injecté dans CHAQUE champ technique ressort masqué', () => {
+    // Preuve d'étanchéité : même si un appelant fourrait de la PII dans un champ « technique »,
+    // la valeur ressort masquée — le champ SURVIT (diagnostic), le secret NON.
+    const tags = telemetryTagsFrom({
+      code: `BOB-SIRET-404 ${EMAIL}`,
+      kind: `dependency ${SIRET}`,
+      port: `annuaire ${IBAN}`,
+      correlationId: `corr ${PHONE}`,
+      method: `GET ${CARD}`,
+      path: `/company/${SIRET}`,
+      status: 502,
+    });
+    // Les sept champs survivent (spec §5.3)…
+    expect(Object.keys(tags).sort()).toEqual(
+      ['code', 'correlationId', 'kind', 'method', 'path', 'port', 'status'].sort(),
+    );
+    // … mais AUCUNE valeur ne transporte le PII en clair, ni le moindre fragment.
+    expectNoLeak(tags);
+    expect(tags.code).toBe('BOB-SIRET-404 [email]');
+    expect(tags.kind).toBe('dependency [siren]');
+    expect(tags.port).toBe('annuaire [iban]');
+    expect(tags.correlationId).toBe('corr [tel]');
+    expect(tags.method).toBe('GET [carte]');
+    // Un id concret glissé dans le chemin ressort en TEMPLATE masqué, jamais l'id.
+    expect(tags.path).toBe('/company/[siren]');
+    expect(tags.status).toBe('502');
+  });
 });

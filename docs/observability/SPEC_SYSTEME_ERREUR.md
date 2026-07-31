@@ -195,7 +195,13 @@ BOB-<CONTEXTE>-<STATUT>     ex. BOB-SIRET-404, BOB-ADM-503, BOB-API-502
   partagé — ne pas réécrire. Complété par : canal DORMANT en build dev (`__DEV__`) et premier
   SITE D'APPEL réel de `captureCrash` : les échecs API `kind === 'dependency'` remontent en tags
   (code, kind, port, correlationId, méthode, chemin expurgé, statut) — cohérent avec P6
-  (`unavailable` et les 4xx n'alertent jamais).
+  (`unavailable` et les 4xx n'alertent jamais). Ces sept clés sont portées par la liste blanche
+  PARTAGÉE `ALLOWED_TAG_KEYS` (`@bob/core` telemetry-scrubbing) : le contrat d'écriture et la
+  politique de sortie sont le MÊME registre, pas deux listes qui dérivent en silence. Le `chemin`
+  est le TEMPLATE de route (`redactPathForDiagnostics` — query supprimée, id/num/token remplacés),
+  jamais un id concret ; défense en profondeur, `safeText` re-masque tout motif PII résiduel.
+  Étanchéité prouvée par test : un id/e-mail/SIRET injecté dans chacun de ces champs en ressort
+  masqué, jamais transmis.
 
 ## 6. Les deux faces à l'écran — `ErrorNotice` (`packages/ui`)
 

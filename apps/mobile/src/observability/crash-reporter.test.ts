@@ -182,6 +182,39 @@ describe('Minimisation — preuve qu’aucune donnée client ne sort', () => {
     });
   });
 
+  it('un échec dependency remonte les SEPT étiquettes de la spec §5.3 jusqu’au SDK, chemin en template', async () => {
+    // Le vrai bout de chaîne on-device : `reportApiFailure` compose ce contexte pour un
+    // `dependency` (cf. api-failure-reporter) → `captureCrash` → `telemetryTagsFrom` → SDK.
+    // La spec §5.3 promet exactement ces sept tags ; ils doivent atteindre `captureException`.
+    const sdk = sdkDouble();
+    await initCrashReporter(resolveCrashReporterConfig(EU_DSN), async () => sdk);
+    const error = new Error('api_failure BOB-SIRET-502');
+
+    captureCrash(error, {
+      code: 'BOB-SIRET-502',
+      kind: 'dependency',
+      port: 'recherche-entreprises',
+      correlationId: 'corr-dep-1234',
+      method: 'GET',
+      // Chemin déjà expurgé par `redactPathForDiagnostics` en amont : le TEMPLATE, pas un id.
+      path: '/company/lookup',
+      status: 502,
+    });
+
+    const hint = sdk.captureException.mock.calls[0]?.[1] as {
+      captureContext: { tags: Record<string, string> };
+    };
+    expect(hint.captureContext.tags).toEqual({
+      code: 'BOB-SIRET-502',
+      kind: 'dependency',
+      port: 'recherche-entreprises',
+      correlationId: 'corr-dep-1234',
+      method: 'GET',
+      path: '/company/lookup',
+      status: '502',
+    });
+  });
+
   it('les options par défaut retirent les intégrations HTTP et console', () => {
     const options = buildCrashReporterOptions({ dsn: EU_DSN, environment: 'production' });
     const filter = options.integrations as (d: readonly { name: string }[]) => { name: string }[];
