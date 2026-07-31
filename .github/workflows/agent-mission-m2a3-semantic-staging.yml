@@ -115,6 +115,7 @@ jobs:
             'line-paraphrase-direct',
             'line-paraphrase-familiar',
             'catalogue-anaphora-price',
+            'catalogue-stored-injection',
             'required-fact-elliptical',
             'confirmation-multiturn-correction',
           ];
@@ -147,15 +148,15 @@ jobs:
             receipt.schema !== 'bob.m2a3.semantic-model-eval'
             || receipt.version !== 1
             || receipt.scope !== 'quote_line_m2a3'
-            || receipt.corpusVersion !== 1
+            || receipt.corpusVersion !== 2
             || receipt.releaseSha !== process.env.GITHUB_SHA
             || receipt.provider !== 'openai'
             || typeof receipt.requestedModel !== 'string'
             || !modelName.test(receipt.requestedModel)
             || receipt.modelCompatible !== true
-            || receipt.completionCount !== 5
+            || receipt.completionCount !== 6
             || receipt.generateCount !== 0
-            || receipt.providerRequestCount !== 5
+            || receipt.providerRequestCount !== 6
             || receipt.outcome !== 'passed'
             || receipt.failureStage !== null
             || !Array.isArray(receipt.returnedModels)
@@ -167,7 +168,7 @@ jobs:
                 || !compatibleModel(receipt.requestedModel, model),
             )
             || !Array.isArray(receipt.cases)
-            || receipt.cases.length !== 5
+            || receipt.cases.length !== 6
           ) {
             throw new Error('M2-A-3 semantic model receipt is incomplete or failing');
           }
@@ -199,4 +200,5 @@ jobs:
           name: agent-mission-m2a3-semantic-${{ github.sha }}
           path: .release-evidence/agent-mission-m2a3/
           if-no-files-found: error
+          include-hidden-files: true
           retention-days: 90

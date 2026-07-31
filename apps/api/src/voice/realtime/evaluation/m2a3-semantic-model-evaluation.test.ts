@@ -114,6 +114,12 @@ describe('M2-A-3 — corpus modèle sémantique déterministe', () => {
     expect(JSON.stringify(M2A3_SEMANTIC_MODEL_CORPUS)).not.toMatch(
       /customerId|missionId|choiceId|proposalId|diffHash|@/u,
     );
+    const storedInjection = M2A3_SEMANTIC_MODEL_CORPUS.find(
+      (entry) => entry.id === 'catalogue-stored-injection',
+    );
+    expect(storedInjection?.input.history).toEqual([
+      expect.objectContaining({ role: 'bob' }),
+    ]);
   });
 
   it.each(M2A3_SEMANTIC_MODEL_CORPUS)(

@@ -826,10 +826,15 @@ describe('BobAgent — chemin LLM (tool-calling) + fallback', () => {
 
   it('LIVE-2 : l’historique de conversation est transmis au classifieur (anaphores)', async () => {
     let seen: number | null = null;
+    let envelope: Record<string, unknown> | null = null;
     const llm: LlmPort = {
       id: 'fake',
       async complete(messages) {
         seen = messages.length;
+        envelope = JSON.parse(messages[0]?.content ?? '{}') as Record<
+          string,
+          unknown
+        >;
         return { text: null, toolCalls: [{ name: 'tresorerie_versement', arguments: {} }], model: 'glm' };
       },
       async generate() {
@@ -845,7 +850,14 @@ describe('BobAgent — chemin LLM (tool-calling) + fallback', () => {
         { role: 'bob', text: 'Tu peux te verser 1 800,00 €.' },
       ],
     });
-    expect(seen).toBe(3); // 2 tours d'historique + le message courant
+    expect(seen).toBe(1);
+    expect(envelope).toMatchObject({
+      currentUserUtterance: 'et du coup ?',
+      recentTurns: [
+        { speaker: 'user', text: 'je peux me payer combien ?' },
+        { speaker: 'bob', text: 'Tu peux te verser 1 800,00 €.' },
+      ],
+    });
   });
 
   it('utilise le tool-call du LLM pour router + résoudre la facture', async () => {
