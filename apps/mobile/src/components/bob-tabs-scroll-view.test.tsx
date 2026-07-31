@@ -141,42 +141,92 @@ describe('retap sur l’onglet actif — retour en haut, ce que la référence n
     return createElement(TabSceneFocus, { focused }, createElement(TabsScrollView, { testID }));
   }
 
-  it('remonte la vue FOCUSÉE, et seulement elle', async () => {
-    const calls: Record<string, { y: number }[]> = { focused: [], blurred: [] };
+  /** Les cinq destinations réelles, dans l'ordre où le navigateur les monte. */
+  const TABS = ['index', 'clients', 'argent', 'documents', 'assistant'] as const;
+
+  /**
+   * LE PIÈGE D'ORDRE, ET POURQUOI CE TEST EST ÉCRIT AINSI.
+   *
+   * Le registre n'a qu'UNE case : le DERNIER qui s'enregistre gagne. La rédaction précédente
+   * montait deux écrans, `blurred` PUIS `focused` — c'est-à-dire le bon en dernier. La garde
+   * `!focused` retirée, les deux s'enregistraient, le focusé écrasait l'autre… et la bonne vue
+   * remontait quand même. Le test restait VERT alors que la garde n'existait plus.
+   *
+   * Ici l'écran focusé est monté au MILIEU des cinq : deux écrans flous s'enregistrent APRÈS
+   * lui. Sans la garde, c'est `assistant` — le dernier monté — qui remonterait, et l'utilisateur
+   * verrait l'écran d'à côté sauter en haut pendant que le sien ne bouge pas.
+   */
+  async function mountFive(focusedTab: string): Promise<{
+    calls: Record<string, { y: number }[]>;
+    scrollToTop: () => void;
+    focus: (next: string) => Promise<void>;
+  }> {
+    const calls: Record<string, { y: number }[]> = Object.fromEntries(
+      TABS.map((name) => [name, [] as { y: number }[]]),
+    );
     let scrollToTop: (() => void) | undefined;
     function Probe(): null {
       scrollToTop = useTabScrollTop();
       return null;
     }
+    const tree = (current: string): ReturnType<typeof createElement> =>
+      createElement(
+        TabScrollTopProvider,
+        null,
+        createElement(Probe),
+        // CINQ écrans montés EN MÊME TEMPS : c'est l'arbre réel d'un navigateur d'onglets.
+        ...TABS.map((name) =>
+          createElement(Screen, { key: name, focused: name === current, testID: name }),
+        ),
+      );
+    let renderer: ReactTestRenderer | undefined;
     /*
      * `react-test-renderer` rend `null` pour les `ref` d'hôtes tant qu'aucun `createNodeMock`
      * n'est fourni : sans lui, la vue s'enregistrerait avec `null` et le test serait vert pour
      * la mauvaise raison. Le mock rend la seule méthode que la couture appelle.
      */
     await act(async () => {
-      create(
-        createElement(
-          TabScrollTopProvider,
-          null,
-          createElement(Probe),
-          // Deux écrans MONTÉS en même temps : c'est le cas réel d'un navigateur d'onglets, et
-          // c'est celui où un registre sans focus remonterait le mauvais écran.
-          createElement(Screen, { focused: false, testID: 'blurred' }),
-          createElement(Screen, { focused: true, testID: 'focused' }),
-        ),
-        {
-          createNodeMock: (element) => {
-            const id = String((element.props as { testID?: string }).testID);
-            return { scrollTo: (options: { y: number }) => calls[id]?.push(options) };
-          },
+      renderer = create(tree(focusedTab), {
+        createNodeMock: (element) => {
+          const id = String((element.props as { testID?: string }).testID);
+          return { scrollTo: (options: { y: number }) => calls[id]?.push(options) };
         },
-      );
+      });
     });
+    return {
+      calls,
+      scrollToTop: () => scrollToTop?.(),
+      focus: async (next: string) => {
+        await act(async () => {
+          (renderer as ReactTestRenderer).update(tree(next));
+        });
+      },
+    };
+  }
+
+  it('remonte la vue FOCUSÉE, et seulement elle', async () => {
+    // `argent` est le TROISIÈME des cinq : deux écrans flous se montent après lui.
+    const app = await mountFive('argent');
     await act(async () => {
-      scrollToTop?.();
+      app.scrollToTop();
     });
-    expect(calls['focused']).toEqual([{ y: 0, animated: true }]);
-    expect(calls['blurred']).toEqual([]);
+    expect(app.calls['argent']).toEqual([{ y: 0, animated: true }]);
+    for (const name of TABS.filter((tab) => tab !== 'argent')) {
+      expect(app.calls[name], `${name} ne doit pas bouger`).toEqual([]);
+    }
+  });
+
+  it('SUIT le focus quand il change — l’ancien écran rend la main, le nouveau la prend', async () => {
+    const app = await mountFive('argent');
+    await app.focus('clients');
+    await act(async () => {
+      app.scrollToTop();
+    });
+    // Ce que ce second test attrape et que le premier ne peut pas : un enregistrement qui ne se
+    // REFAIT pas quand le focus bouge (garde correcte, mais `focused` absent des dépendances de
+    // l'effet) laisserait `argent` inscrit pour toujours.
+    expect(app.calls['clients']).toEqual([{ y: 0, animated: true }]);
+    expect(app.calls['argent']).toEqual([]);
   });
 
   it('ne jette pas hors provider — un écran rendu seul reste utilisable', async () => {
