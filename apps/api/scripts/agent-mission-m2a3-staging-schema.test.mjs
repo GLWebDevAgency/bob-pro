@@ -341,6 +341,23 @@ test('chaque phase exige le préfixe exact, le suffixe M2-A-3 exact et son check
     () => assertM2A3PhasePreflight(inventoryAt(2), local, 'expand'),
     /future phase attempt/u,
   );
+  for (const { phase } of M2A3_STAGING_PHASES) {
+    const terminalPreflight = assertM2A3PhasePreflight(
+      inventoryAt(3),
+      local,
+      phase,
+    );
+    assert.equal(terminalPreflight.operation, 'recertify');
+    assert.equal(terminalPreflight.stateBefore, 'S3');
+    assert.equal(terminalPreflight.pendingCount, 0);
+    const terminalPostflight = assertM2A3PhasePostflight(
+      inventoryAt(3),
+      local,
+      phase,
+    );
+    assert.equal(terminalPostflight.stateAfter, 'S3');
+    assert.equal(terminalPostflight.pendingCount, 0);
+  }
   assert.throws(
     () => assertM2A3PhasePreflight(
       inventoryAt(0),
@@ -1687,6 +1704,7 @@ function writeEvidencePair({
   observedMinute,
   rolledBackCount = 0,
   stateFingerprints = null,
+  finalizedTrain = false,
 }) {
   const definition = M2A3_STAGING_PHASES[index];
   const config = parseM2A3StagingEnvironment(
@@ -1697,14 +1715,28 @@ function writeEvidencePair({
       GITHUB_RUN_ATTEMPT: String(runAttempt),
     }),
   );
-  const beforeState = operation === 'apply' ? `S${index}` : definition.state;
-  const afterState = definition.state;
-  const appliedBefore = operation === 'apply' ? index + 1 : index + 2;
-  const pendingBefore = operation === 'apply'
-    ? M2A3_STAGING_PHASES.length - index
-    : M2A3_STAGING_PHASES.length - index - 1;
+  const beforeState = finalizedTrain
+    ? 'S3'
+    : operation === 'apply'
+      ? `S${index}`
+      : definition.state;
+  const afterState = finalizedTrain ? 'S3' : definition.state;
+  const appliedBefore = finalizedTrain
+    ? M2A3_STAGING_PHASES.length + 1
+    : operation === 'apply'
+      ? index + 1
+      : index + 2;
+  const pendingBefore = finalizedTrain
+    ? 0
+    : operation === 'apply'
+      ? M2A3_STAGING_PHASES.length - index
+      : M2A3_STAGING_PHASES.length - index - 1;
   const historyBefore = createHash('sha256')
-    .update(`history:${index}:${operation}:before`)
+    .update(
+      finalizedTrain
+        ? 'history:finalized-recertification'
+        : `history:${index}:${operation}:before`,
+    )
     .digest('hex');
   const historyAfter = operation === 'apply'
     ? createHash('sha256')
@@ -1791,6 +1823,11 @@ test('le manifest final exige les trois reçus exacts dans le bon ordre digest',
       { expectedMigrationChecksums: PHASE_CHECKSUMS },
     );
     assert.equal(result.manifest.outcome, 'passed');
+    assert.equal(result.manifest.version, 2);
+    assert.equal(
+      result.manifest.certificationMode,
+      'transition-train',
+    );
     assert.equal(result.manifest.phases.length, 3);
     assert.equal(
       result.manifest.finalReceiptDigest,
@@ -1852,6 +1889,10 @@ test('le manifest accepte une reprise post-apply avec recertifications ordonnée
       { expectedMigrationChecksums: PHASE_CHECKSUMS },
     );
     assert.equal(result.manifest.outcome, 'passed');
+    assert.equal(
+      result.manifest.certificationMode,
+      'transition-train',
+    );
     assert.deepEqual(
       result.manifest.phases.map(
         ({ phase, githubRunAttempt }) => [phase, githubRunAttempt],
@@ -1878,6 +1919,258 @@ test('le manifest accepte une reprise post-apply avec recertifications ordonnée
         { expectedMigrationChecksums: PHASE_CHECKSUMS },
       ),
       /preflight phase receipt is incomplete|chronology regressed/u,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('un train S3 déjà finalisé est recertifié au nouveau SHA sans mutation', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'bob-m2a3-finalized-'));
+  const results = [];
+  let previousReceiptDigest = null;
+  const historicalExpandRollback = migrationRow(
+    M2A3_STAGING_PHASES[0].migration,
+    PHASE_CHECKSUMS.get(M2A3_STAGING_PHASES[0].migration),
+    {
+      attempt: -1,
+      finished: false,
+      rolledBack: true,
+      appliedSteps: 0,
+    },
+  );
+  const terminalInventory = [
+    historicalExpandRollback,
+    ...inventoryAt(3),
+  ];
+  try {
+    for (let index = 0; index < M2A3_STAGING_PHASES.length; index += 1) {
+      const definition = M2A3_STAGING_PHASES[index];
+      let inventoryRead = 0;
+      const result = await runM2A3StagingPhase(
+        definition.phase,
+        environment(definition.phase, {
+          BOB_M2A3_PREVIOUS_RECEIPT_DIGEST:
+            previousReceiptDigest ?? 'none',
+        }),
+        {
+          evidenceDirectory: directory,
+          certifyDatabase() {},
+          deriveExpectedSchemaFingerprints: expectedSchemaFingerprints,
+          async readLocalMigrationChecksums() {
+            return localMigrations();
+          },
+          readMigrationInventory() {
+            inventoryRead += 1;
+            return terminalInventory;
+          },
+          readSchemaState() {
+            return schemaState('S3');
+          },
+          foreignAuthorityHash() {
+            return AUTHORITY_HASH;
+          },
+          certifyAcl() {},
+          certifyWriterMatrix(_config, stateName) {
+            return writerMatrix(stateName);
+          },
+          fingerprintWriterOutcome() {
+            return 'disabled-fence';
+          },
+          applyMigration() {
+            assert.fail('finalized recertification must not run Prisma');
+          },
+          resolveMigration() {
+            assert.fail('finalized recertification must not resolve Prisma');
+          },
+        },
+      );
+      assert.equal(inventoryRead, 2);
+      assert.equal(result.evidence.operation, 'recertify');
+      assert.equal(result.evidence.state, 'S3');
+      assert.equal(result.evidence.pendingMigrationCount, 0);
+      results.push(result);
+      previousReceiptDigest = result.digest;
+    }
+    assert.equal(results[0].evidence.recoverySource, 'terminal-history');
+    assert.equal(results[0].evidence.recoveryAction, 'rolled_back');
+    assert.equal(results[1].evidence.recoverySource, null);
+    assert.equal(results[2].evidence.recoverySource, null);
+
+    const finalized = finalizeM2A3StagingEvidence(
+      directory,
+      environment('expand'),
+      { expectedMigrationChecksums: PHASE_CHECKSUMS },
+    );
+    assert.equal(finalized.manifest.version, 2);
+    assert.equal(
+      finalized.manifest.certificationMode,
+      'finalized-recertification',
+    );
+    assert.deepEqual(
+      finalized.manifest.phases.map(
+        ({ phase, state, operation }) => [phase, state, operation],
+      ),
+      [
+        ['expand', 'S3', 'recertify'],
+        ['validate', 'S3', 'recertify'],
+        ['cutover', 'S3', 'recertify'],
+      ],
+    );
+    assert.equal(
+      finalized.manifest.finalReceiptDigest,
+      previousReceiptDigest,
+    );
+    assert.deepEqual(
+      results.map(({ evidence }) => evidence.migrationHistoryDigest),
+      Array(3).fill(results[0].evidence.migrationHistoryDigest),
+    );
+
+    const validatePath = join(
+      directory,
+      `staging-schema-${RELEASE_SHA}-validate-certified.json`,
+    );
+    const tampered = JSON.parse(readFileSync(validatePath, 'utf8'));
+    tampered.migrationHistoryDigest = '0'.repeat(64);
+    writeFileSync(validatePath, `${JSON.stringify(tampered, null, 2)}\n`);
+    assert.throws(
+      () => finalizeM2A3StagingEvidence(
+        directory,
+        environment('expand'),
+        { expectedMigrationChecksums: PHASE_CHECKSUMS },
+      ),
+      /exact transition pair|changed between phases/u,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('le manifest refuse de mélanger recertification finale et train de transitions', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'bob-m2a3-mixed-mode-'));
+  let previousReceiptDigest = null;
+  try {
+    previousReceiptDigest = writeEvidencePair({
+      directory,
+      index: 0,
+      operation: 'recertify',
+      previousReceiptDigest,
+      runAttempt: 1,
+      observedMinute: 0,
+      finalizedTrain: true,
+    });
+    previousReceiptDigest = writeEvidencePair({
+      directory,
+      index: 1,
+      operation: 'recertify',
+      previousReceiptDigest,
+      runAttempt: 1,
+      observedMinute: 1,
+    });
+    writeEvidencePair({
+      directory,
+      index: 2,
+      operation: 'recertify',
+      previousReceiptDigest,
+      runAttempt: 1,
+      observedMinute: 2,
+    });
+    assert.throws(
+      () => finalizeM2A3StagingEvidence(
+        directory,
+        environment('expand'),
+        { expectedMigrationChecksums: PHASE_CHECKSUMS },
+      ),
+      /finalized recertification is not uniform/u,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('la recertification terminale refuse tout historique incomplet ou mutable', async () => {
+  const local = localMigrations();
+  assert.throws(
+    () => assertM2A3PhasePreflight(inventoryAt(2), local, 'expand'),
+    /future phase attempt/u,
+  );
+  const unresolvedCutover = migrationRow(
+    M2A3_STAGING_PHASES[2].migration,
+    PHASE_CHECKSUMS.get(M2A3_STAGING_PHASES[2].migration),
+    {
+      attempt: 4,
+      finished: false,
+      rolledBack: false,
+      appliedSteps: 0,
+    },
+  );
+  assert.throws(
+    () => assertM2A3PhasePreflight(
+      [...inventoryAt(3), unresolvedCutover],
+      local,
+      'expand',
+    ),
+    /unresolved migration/u,
+  );
+  const wrongChecksumInventory = inventoryAt(3).map((row) =>
+    row.name === M2A3_STAGING_PHASES[2].migration
+      ? Object.freeze({ ...row, checksum: '8'.repeat(64) })
+      : row);
+  assert.throws(
+    () => assertM2A3PhasePreflight(
+      wrongChecksumInventory,
+      local,
+      'expand',
+    ),
+    /attempt is not exact/u,
+  );
+
+  const directory = mkdtempSync(join(tmpdir(), 'bob-m2a3-mutated-'));
+  let inventoryRead = 0;
+  try {
+    await assert.rejects(
+      () => runM2A3StagingPhase(
+        'expand',
+        environment(),
+        {
+          evidenceDirectory: directory,
+          certifyDatabase() {},
+          deriveExpectedSchemaFingerprints: expectedSchemaFingerprints,
+          async readLocalMigrationChecksums() {
+            return local;
+          },
+          readMigrationInventory() {
+            inventoryRead += 1;
+            return inventoryRead === 1
+              ? inventoryAt(3)
+              : [
+                  ...inventoryAt(3),
+                  migrationRow(
+                    '20260731130000_unexpected_append',
+                    '9'.repeat(64),
+                    { attempt: 4 },
+                  ),
+                ];
+          },
+          readSchemaState() {
+            return schemaState('S3');
+          },
+          foreignAuthorityHash() {
+            return AUTHORITY_HASH;
+          },
+          certifyAcl() {},
+          certifyWriterMatrix(_config, stateName) {
+            return writerMatrix(stateName);
+          },
+          fingerprintWriterOutcome() {
+            return 'disabled-fence';
+          },
+          applyMigration() {
+            assert.fail('finalized recertification must not run Prisma');
+          },
+        },
+      ),
+      /recertification changed Prisma history/u,
     );
   } finally {
     rmSync(directory, { recursive: true, force: true });

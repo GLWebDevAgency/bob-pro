@@ -561,6 +561,14 @@ function exactTargetRows(inventory, local) {
   });
 }
 
+function hasActiveHeadForEveryM2A3Phase(inventory) {
+  return M2A3_STAGING_PHASES.every(({ migration }) =>
+    inventory.some(
+      ({ name, finished, rolledBack }) =>
+        name === migration && finished && !rolledBack,
+    ));
+}
+
 function compareMigrationRows(left, right) {
   const timeOrder =
     BigInt(left.startedAtMicros) < BigInt(right.startedAtMicros)
@@ -729,13 +737,19 @@ export function assertM2A3PhasePreflight(
   local,
   phase,
 ) {
-  assertM2A3MigrationLineage(inventory, phase);
   assertNoUnresolvedMigration(inventory);
   const targetIndex = M2A3_STAGING_PHASES.findIndex(
     (candidate) => candidate.phase === phase,
   );
   if (targetIndex < 0) fail('phase must be expand, validate or cutover');
+  const terminalLineageCandidate =
+    hasActiveHeadForEveryM2A3Phase(inventory);
+  assertM2A3MigrationLineage(
+    inventory,
+    terminalLineageCandidate ? 'cutover' : phase,
+  );
   const targetRows = exactTargetRows(inventory, local);
+  const finalizedTrain = targetRows.every((row) => row !== null);
   const { active, pending } = assertLocalChecksumPrefix(inventory, local);
   const appliedTargetCount = targetRows.filter(Boolean).length;
   for (let index = 0; index < targetRows.length; index += 1) {
@@ -744,7 +758,8 @@ export function assertM2A3PhasePreflight(
     }
   }
   let operation;
-  if (appliedTargetCount === targetIndex) operation = 'apply';
+  if (finalizedTrain) operation = 'recertify';
+  else if (appliedTargetCount === targetIndex) operation = 'apply';
   else if (appliedTargetCount === targetIndex + 1) operation = 'recertify';
   else fail('phase cannot certify a past or future schema state');
   const expectedPending = M2A3_STAGING_PHASES
@@ -760,7 +775,7 @@ export function assertM2A3PhasePreflight(
     pendingCount: pending.length,
     ...history,
     targetChecksum: local.get(M2A3_STAGING_PHASES[targetIndex].migration),
-    stateBefore: `S${appliedTargetCount}`,
+    stateBefore: finalizedTrain ? 'S3' : `S${appliedTargetCount}`,
   });
 }
 
@@ -769,15 +784,23 @@ export function assertM2A3PhasePostflight(
   local,
   phase,
 ) {
-  assertM2A3MigrationLineage(inventory, phase);
   assertNoUnresolvedMigration(inventory);
   const targetIndex = M2A3_STAGING_PHASES.findIndex(
     (candidate) => candidate.phase === phase,
   );
   if (targetIndex < 0) fail('phase must be expand, validate or cutover');
+  const terminalLineageCandidate =
+    hasActiveHeadForEveryM2A3Phase(inventory);
+  assertM2A3MigrationLineage(
+    inventory,
+    terminalLineageCandidate ? 'cutover' : phase,
+  );
   const targetRows = exactTargetRows(inventory, local);
+  const finalizedTrain = targetRows.every((row) => row !== null);
   const { active, pending } = assertLocalChecksumPrefix(inventory, local);
-  const expectedApplied = targetIndex + 1;
+  const expectedApplied = finalizedTrain
+    ? M2A3_STAGING_PHASES.length
+    : targetIndex + 1;
   if (
     targetRows.filter(Boolean).length !== expectedApplied
     || targetRows.some(
@@ -798,7 +821,7 @@ export function assertM2A3PhasePostflight(
     pendingCount: pending.length,
     ...history,
     targetChecksum: local.get(M2A3_STAGING_PHASES[targetIndex].migration),
-    stateAfter: `S${expectedApplied}`,
+    stateAfter: finalizedTrain ? 'S3' : `S${expectedApplied}`,
   });
 }
 
@@ -893,7 +916,11 @@ function detectCompletedM2A3MigrationRecovery(
   );
   if (targetIndex < 0) fail('phase must be expand, validate or cutover');
   const target = M2A3_STAGING_PHASES[targetIndex];
-  assertM2A3MigrationLineage(inventory, phase);
+  assertM2A3MigrationLineage(
+    inventory,
+    hasActiveHeadForEveryM2A3Phase(inventory) ? 'cutover' : phase,
+  );
+  exactTargetRows(inventory, local);
   const attempts = inventory
     .filter(
       ({ name, checksum }) =>
@@ -2354,6 +2381,7 @@ export function finalizeM2A3StagingEvidence(
   let authorityHash = null;
   let schemaOwner = null;
   let releaseFlagsOwner = null;
+  let certificationMode = null;
   const certifiedDigests = [];
   const phases = [];
   const expectedMigrationChecksums =
@@ -2466,6 +2494,24 @@ export function finalizeM2A3StagingEvidence(
     }
     const before = preflight.evidence;
     const after = certified.evidence;
+    const finalizedPhaseRecertification =
+      before.operation === 'recertify'
+      && after.operation === 'recertify'
+      && before.state === 'S3'
+      && after.state === 'S3'
+      && before.pendingMigrationCount === 0
+      && after.pendingMigrationCount === 0;
+    if (index === 0) {
+      certificationMode = finalizedPhaseRecertification
+        ? 'finalized-recertification'
+        : 'transition-train';
+    }
+    if (
+      certificationMode === 'finalized-recertification'
+      && !finalizedPhaseRecertification
+    ) {
+      fail('finalized recertification is not uniform across phases');
+    }
     if (before.recoveryAction !== null) {
       const intentBytes = (dependencies.readFileSync ?? readFileSync)(join(
         directory,
@@ -2518,9 +2564,19 @@ export function finalizeM2A3StagingEvidence(
         fail('recovery intent is not chained to its phase receipts');
       }
     }
-    const expectedBeforeState = after.operation === 'apply'
-      ? `S${index}`
+    const finalizedRecertification =
+      certificationMode === 'finalized-recertification';
+    const expectedBeforeState = finalizedRecertification
+      ? 'S3'
+      : after.operation === 'apply'
+        ? `S${index}`
+        : definition.state;
+    const expectedAfterState = finalizedRecertification
+      ? 'S3'
       : definition.state;
+    const expectedPendingMigrationCount = finalizedRecertification
+      ? 0
+      : M2A3_STAGING_PHASES.length - index - 1;
     if (
       before.operation !== after.operation
       || before.recoveryAction !== after.recoveryAction
@@ -2543,7 +2599,7 @@ export function finalizeM2A3StagingEvidence(
         && before.operation !== 'recertify'
       )
       || before.state !== expectedBeforeState
-      || after.state !== definition.state
+      || after.state !== expectedAfterState
       || before.previousReceiptDigest !== previousDigest
       || after.previousReceiptDigest !== previousDigest
       || before.preflightReceiptDigest !== null
@@ -2559,8 +2615,7 @@ export function finalizeM2A3StagingEvidence(
       || before.githubRunAttempt !== after.githubRunAttempt
       || Date.parse(after.observedAt) < Date.parse(before.observedAt)
       || before.migrationRolledBackCount !== after.migrationRolledBackCount
-      || after.pendingMigrationCount !==
-        M2A3_STAGING_PHASES.length - index - 1
+      || after.pendingMigrationCount !== expectedPendingMigrationCount
       || (
         after.operation === 'apply'
         && (
@@ -2630,7 +2685,33 @@ export function finalizeM2A3StagingEvidence(
       fail('schema evidence chronology regressed between phases');
     }
     if (
-      after.operation === 'recertify'
+      finalizedRecertification
+      && previousCertified !== null
+      && (
+        before.appliedMigrationCount
+          !== previousCertified.appliedMigrationCount
+        || before.pendingMigrationCount
+          !== previousCertified.pendingMigrationCount
+        || before.migrationHistoryDigest
+          !== previousCertified.migrationHistoryDigest
+        || before.migrationRolledBackCount
+          !== previousCertified.migrationRolledBackCount
+        || before.canonicalConstraintDefinitionHash
+          !== previousCertified.canonicalConstraintDefinitionHash
+        || before.canonicalConstraintExpressionHash
+          !== previousCertified.canonicalConstraintExpressionHash
+        || before.expandedConstraintDefinitionHash
+          !== previousCertified.expandedConstraintDefinitionHash
+        || before.expandedConstraintExpressionHash
+          !== previousCertified.expandedConstraintExpressionHash
+        || before.state !== previousCertified.state
+      )
+    ) {
+      fail('finalized recertification changed between phases');
+    }
+    if (
+      !finalizedRecertification
+      && after.operation === 'recertify'
       && previousCertified !== null
       && (
         (
@@ -2716,7 +2797,8 @@ export function finalizeM2A3StagingEvidence(
     certifiedDigests.push(certified.digest);
     phases.push(Object.freeze({
       phase: definition.phase,
-      state: definition.state,
+      state: after.state,
+      operation: after.operation,
       recoveryAction: after.recoveryAction,
       githubRunAttempt: after.githubRunAttempt,
       preflightReceiptDigest: preflight.digest,
@@ -2727,7 +2809,8 @@ export function finalizeM2A3StagingEvidence(
   }
   const manifest = Object.freeze({
     schema: 'bob.agent-mission.m2a3.staging-schema-manifest',
-    version: 1,
+    version: 2,
+    certificationMode,
     releaseSha: expectedSha,
     githubRunId: runId,
     outcome: 'passed',

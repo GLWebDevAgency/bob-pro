@@ -1511,6 +1511,20 @@ CHECK sémantique divergent, une autre migration pending, un `migrate resolve` h
 reprise exact ci-dessous, `db push`, une mutation de variable, un `railway up` ou un appel au
 rituel global de release échoue fermé.
 
+**Recertification d'un train déjà finalisé.** Un nouveau SHA qui ne modifie pas ces migrations
+doit pouvoir relier son code exact au schéma staging déjà en `S3`, sans prétendre rejouer les états
+historiques `S1` et `S2`. Ce chemin n'est autorisé que si les trois migrations locales exactes ont
+chacune une tête active terminale, dans l'ordre, avec leurs checksums committés, sans tentative non
+résolue ni migration étrangère pending. Les trois jobs relisent alors le même état final `S3`,
+chacun sous l'identité de sa migration, et opèrent tous en `recertify` : aucune commande Prisma de
+mutation n'est appelée. Le manifest v2 porte explicitement
+`certificationMode=finalized-recertification`; les nombres appliqué/pending, le digest de
+l'historique, les empreintes CHECK, l'autorité, les ACL et les flags OFF doivent rester identiques
+sur les six reçus. Un préfixe seulement partiel, une tentative future sans train entièrement
+terminal, une chronologie descendante, un retry postérieur à sa tête, un checksum divergent ou la
+moindre mutation entre deux lectures échoue fermé. Le mode historique normal reste
+`transition-train` et conserve les preuves contiguës `S0→S1→S2→S3`.
+
 Les empreintes `S0..S3` ne sont jamais des constantes recopiées ni une simple reconnaissance de
 forme. Avant toute mutation, l'opérateur extrait les clauses CHECK exactes des migrations M2-A-2
 et M2-A-3 commitées, les compile dans une table `pg_temp` sur **le même PostgreSQL cible**, puis
@@ -1568,9 +1582,12 @@ teardown.
 
 Tout `migrate resolve` manuel ou générique reste interdit ; une incohérence hors de ces deux états
 se corrige par un nouveau train roll-forward revu. Ne pas lancer **Re-run all jobs** ni un nouveau
-dispatch après que validate/cutover a avancé : `expand` refuserait volontairement un état futur.
-Les noms d'artefacts incluent phase et `run_attempt`, et le manifest final télécharge les trois
-noms exacts avant de chaîner intents et reçus preflight/certified.
+dispatch lorsque le train est seulement en `S1` ou `S2` : `expand` refuse volontairement ce préfixe
+futur incomplet et seule la reprise des jobs du run courant est admise. Un nouveau dispatch devient
+licite uniquement lorsque le train est exactement terminal en `S3` et prend alors le chemin
+`finalized-recertification` intégralement non mutant décrit plus haut. Les noms d'artefacts incluent
+phase et `run_attempt`, et le manifest final télécharge les trois noms exacts avant de chaîner
+intents et reçus preflight/certified.
 
 - [x] `M2A3-01` : OpenAI WebRTC demande exactement le protocole 2 ; absence/refus de capability
       échoue fermé sans tentative V1 et sans requête Mistral ;
@@ -1606,7 +1623,9 @@ noms exacts avant de chaîner intents et reçus preflight/certified.
 - [x] `M2A3-11` : suites core/AI/client/API/mobile, PostgreSQL réel, typecheck, lint, builds et
       reviews adversariales sont verts depuis un checkout propre ;
 - [ ] `M2A3-12` : Supabase staging exact-SHA sous déployeur/runtime non-superuser restitue la preuve
-      non-PII complète, flags publics OFF ;
+      non-PII complète, flags publics OFF ; après un premier train `S0→S3`, un SHA successeur aux
+      migrations byte-identiques obtient un manifest `finalized-recertification` sans commande
+      Prisma mutante ni changement d'inventaire ;
 - [ ] `M2A3-13` : sur iPhone et Android physiques, parler pendant Bob coupe localement le son avant
       le réseau et capture le nouveau tour ; tant que cette preuve manque, M2-A reste non certified.
 - [ ] `M2A3-14` : le planner reçoit le contexte écran, la mission, le fuseau confirmé, l'historique
