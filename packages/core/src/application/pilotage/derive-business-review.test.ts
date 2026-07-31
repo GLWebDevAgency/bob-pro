@@ -463,6 +463,29 @@ describe('deriveBusinessReview — jour métier des encaissements (bascule de mo
     expect(review.currentMonth.collectedTtcCents).toBe(84_000);
   });
 
+  it("DISCRIMINE l'hiver de l'été : encaissé le 31/12 22:30 UTC = 23:30 Paris (CET +1) → encore 2026-12", () => {
+    const review = deriveBusinessReview(
+      baseInput({
+        today: '2027-01-01',
+        // 2026-12-31T22:30Z = 2026-12-31 23:30 à Paris (hiver, CET UTC+1) : le mois métier n'a
+        // PAS basculé. Le test hiver ci-dessus (23:30Z) ne distingue pas UTC+1 d'UTC+2 (les deux
+        // donnent le 1er janvier) : un calcul DST-naïf à offset d'été figé (+2 h toute l'année)
+        // y survivrait en produisant 2027-01-01 00:30. Ici il fabriquerait un point 2027-01 à
+        // 61 000 c — ce littéral est le témoin qui le tue.
+        payments: [{ amountCents: 61_000, receivedAt: '2026-12-31T22:30:00.000Z' }],
+      }),
+    );
+    // Série dense : décembre mouvementé (61 000 c) + mois courant 2027-01 à zéro explicite.
+    expect(review.series).toEqual([
+      { month: '2026-12', invoicedHtCents: 0, collectedTtcCents: 61_000 },
+      { month: '2027-01', invoicedHtCents: 0, collectedTtcCents: 0 },
+    ]);
+    // Rien dans le mois courant ; isopérimètre du précédent : cutoff = min(atDay 1, 31) = 1,
+    // le paiement est au jour 31 > 1 → 0 aussi (il vit dans la série, pas dans ce bloc).
+    expect(review.currentMonth.collectedTtcCents).toBe(0);
+    expect(review.currentMonth.previousCollectedTtcCents).toBe(0);
+  });
+
   it('non-régression : une DateOnly pure reste telle quelle (aucune projection de fuseau)', () => {
     const review = deriveBusinessReview(
       baseInput({
