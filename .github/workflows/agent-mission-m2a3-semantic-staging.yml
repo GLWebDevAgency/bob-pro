@@ -5,7 +5,17 @@ permissions:
 
 on:
   workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact 40-character staging certification SHA
+        required: true
+        type: string
   workflow_call:
+    inputs:
+      expected_sha:
+        description: Exact 40-character staging certification SHA
+        required: true
+        type: string
 
 concurrency:
   group: railway-api-staging
@@ -27,9 +37,12 @@ jobs:
           persist-credentials: false
       - name: Validate the immutable staging target before installing dependencies
         env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$EXPECTED_SHA" = "$GITHUB_SHA"
           node <<'NODE'
           const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
           const required = [
@@ -37,6 +50,7 @@ jobs:
             'RAILWAY_ENVIRONMENT_ID',
             'RAILWAY_API_SERVICE_ID',
             'RAILWAY_TOKEN',
+            'EXPECTED_SHA',
           ];
           for (const name of required) {
             const value = process.env[name];
@@ -59,8 +73,11 @@ jobs:
               throw new Error(`${name} must be a UUID`);
             }
           }
-          if (!/^[a-f0-9]{40}$/.test(process.env.GITHUB_SHA ?? '')) {
-            throw new Error('GITHUB_SHA must be exact');
+          if (
+            !/^[a-f0-9]{40}$/.test(process.env.EXPECTED_SHA ?? '')
+            || process.env.EXPECTED_SHA !== process.env.GITHUB_SHA
+          ) {
+            throw new Error('expected_sha must match GITHUB_SHA exactly');
           }
           NODE
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
@@ -89,6 +106,7 @@ jobs:
             --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
             env \
+              BOB_LIVE_PROVIDER=openai \
               RUN_BOB_LIVE_M2A3_MODEL_EVAL=true \
               BOB_LIVE_M2A3_EVAL_RELEASE_SHA="$GITHUB_SHA" \
               BOB_LIVE_M2A3_EVAL_EVIDENCE_PATH="$GITHUB_WORKSPACE/.release-evidence/agent-mission-m2a3/semantic-model.json" \

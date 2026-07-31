@@ -1473,6 +1473,105 @@ M2-A-1 est `implemented` uniquement si, flag M2-A toujours OFF :
 
 ### 17.1 Gate spécifique du train M2-A-3
 
+**Protocole Supabase staging exact-SHA.** `M2A3-12` est certifié par un workflow manuel
+`AgentMission M2-A-3 Supabase Staging Schema`, routé avant merge par le purpose
+`m2a3-staging-schema` de `Railway API Release`. Il est distinct de toute release et de tout
+déploiement Railway. Son input
+`expected_sha` doit être identique à `github.sha` et au checkout avant la première opération.
+Le gate réépingle le projet, le cluster, l'OID, la base, le déployeur Supabase non-superuser
+`BYPASSRLS` et le rôle runtime non-superuser `NOBYPASSRLS`, puis exige que le suffixe pending soit
+strictement les trois migrations M2-A-3.
+
+Les migrations sont appliquées par `prisma migrate deploy`, une seule à la fois, depuis une vue
+Prisma temporaire sans symlink contenant tous les historiques et uniquement le suffixe jusqu'à
+l'étape courante. La machine à états est fermée :
+
+| État | Historique Prisma M2-A-3 | Schéma attendu |
+|---|---|---|
+| `S0` | aucun | ancien CHECK canonique validé |
+| `S1` | expand | ancien CHECK validé + nouveau CHECK `NOT VALID` |
+| `S2` | expand + validate | les deux CHECK validés |
+| `S3` | expand + validate + cutover | nouveau CHECK canonique, ancien absent |
+
+La lignée Prisma est elle aussi une machine fermée : aucune tentative d'une phase future n'est
+admise, les phases restent monotones dans `started_at`, chaque tentative d'une phase dépendante
+est strictement postérieure au record actif de sa phase prérequise, et une phase possède au plus
+une tête active ou non résolue, strictement postérieure à ses retries `rolled_back`. Dans chaque
+phase ayant des retries, le maximum `started_at` des lignes `rolled_back` est unique : deux maxima
+ex æquo rendent le rattachement causal d'un ACK impossible et invalident toute phase dépendante,
+même si une tête active plus récente existe.
+
+Chaque job applique ou recertifie exactement son état, écrit immédiatement un reçu non-PII et
+chaîne son digest au suivant. Le reçu sépare le hash de la définition PostgreSQL du CHECK — qui
+change légitimement entre `NOT VALID` et validé — du hash sémantique stable de son expression
+`pg_get_expr`. Une recertification `S2` doit donc dériver du CHECK étendu prouvé en `S1`, et une
+recertification `S3` doit prouver que ce même CHECK étendu a été promu en canonique. Un état hors
+ordre, une régression de tentative/chronologie, une migration Prisma incomplète, un checksum ou
+CHECK sémantique divergent, une autre migration pending, un `migrate resolve` hors du planner de
+reprise exact ci-dessous, `db push`, une mutation de variable, un `railway up` ou un appel au
+rituel global de release échoue fermé.
+
+Les empreintes `S0..S3` ne sont jamais des constantes recopiées ni une simple reconnaissance de
+forme. Avant toute mutation, l'opérateur extrait les clauses CHECK exactes des migrations M2-A-2
+et M2-A-3 commitées, les compile dans une table `pg_temp` sur **le même PostgreSQL cible**, puis
+relit leur représentation canonique via `pg_get_expr`. Il compare alors type de contrainte,
+`NO INHERIT`, validation, hash de définition et hash d'expression de chaque CHECK live à cet
+oracle dérivé. Un CHECK de même nom mais de sémantique différente échoue donc avant tout
+`migrate resolve` ou `migrate deploy`.
+
+Après chaque état, la preuve relit les définitions CHECK réelles, FORCE RLS, propriétaires, ACL et
+fermeture Data API, puis vérifie que les flags M2-A sont exactement OFF sans subject activé. Le
+staging peut aussi fermer le writer par le keyring fingerprint. Dans ce cas, le reçu porte
+explicitement `runtimeWriterOutcome=disabled-fence` : il est interdit d'annoncer un insert réel
+accepté. La matrice `sealed/null_pair/mixed_id_null/mixed_null_hash` est alors rejouée sous le vrai
+rôle runtime dans une table temporaire construite depuis les CHECK live et détruite par rollback.
+Ce gate ne crée aucune clé, n'ouvre aucun flag, ne déploie aucun binaire et ne touche jamais la
+production ; le rollback d'un schéma additif déjà commité est exclusivement roll-forward.
+
+**Reprise opérateur.** Utiliser uniquement **Re-run failed jobs** sur le même run. Si la migration
+est déjà terminale, la phase recertifie sans la réappliquer. Si Prisma porte exactement une
+tentative non résolue sur la migration cible, le gate compare le checksum et l'identité de la
+tentative. Cette tentative doit être la dernière tentative cible selon `started_at` : toute sœur
+postérieure ou ex æquo rend la causalité ambiguë et échoue fermé. Le gate prouve ensuite le schéma
+réel : `S(n)` autorise uniquement
+`migrate resolve --rolled-back` avant réapplication ; `S(n+1)` autorise uniquement
+`migrate resolve --applied` avant recertification. Toute autre forme, migration ou état échoue
+fermé.
+
+L'inventaire relu immédiatement après `resolve` devient la base append-only de l'opération. Une
+réapplication doit préserver byte-for-byte toutes ses lignes et ajouter exactement une tentative
+cible terminale `applied_steps_count=1`, strictement postérieure à tout le préfixe. Une
+recertification doit laisser l'inventaire strictement identique. Toute substitution, suppression,
+seconde ligne ou transformation `rolled_back ↔ applied` échoue avant le reçu certifié.
+
+Avant tout `migrate resolve`, l'opérateur écrit en mode `0600`, puis `fsync` fichier + répertoire,
+un intent v3 non-PII. Son digest logique lie SHA, pin base, phase, migration/checksum, action,
+tentative, préfixe immuable de l'historique et oracle sémantique ; son bloc de provenance porte
+run, attempt, instant et hashes live sans modifier cette identité logique. Si le processus tombe
+après `migrate resolve` mais avant le reçu, la lignée terminale Prisma doit permettre de
+reconstruire **le même** intent logique : les retries historiques `rolled_back` restent dans le
+préfixe immuable, la dernière tentative antérieure au record actif éventuel est la tentative
+récupérée, toute chronologie ou cardinalité ambiguë échoue fermé, et aucun second `resolve` n'est
+exécuté. Les reçus
+preflight puis certified v3 chaînent cet intent logique et leurs digests d'historique ; le manifest
+final relit l'intent, recalcule son digest et vérifie toute la chaîne.
+
+Un diagnostic Prisma reste borné à sa classe (`P3009`, `P3018`, lock/statement timeout, SQL), sans
+SQL, URL ni donnée tenant. Ce comportement est certifié avec Prisma 6.19.3 sur PostgreSQL réel,
+sous un propriétaire de base `NOSUPERUSER/NOCREATEROLE/NOBYPASSRLS`, par deux interruptions
+réelles : échec transactionnel avant `COMMIT`, puis coupure du processus Prisma après `COMMIT`
+visible et avant son ACK. Le premier cas impose `--rolled-back` puis un retry au même checksum ;
+le second impose `--applied`, puis prouve qu'un nouveau deploy est un no-op et que l'effet n'a pas
+été rejoué. Aucun `DROP`, `UPDATE _prisma_migrations` ni superuser ne peut fabriquer l'incident ou
+la résolution ; le superuser de harnais ne sert qu'au bootstrap, à l'injection de la coupure et au
+teardown.
+
+Tout `migrate resolve` manuel ou générique reste interdit ; une incohérence hors de ces deux états
+se corrige par un nouveau train roll-forward revu. Ne pas lancer **Re-run all jobs** ni un nouveau
+dispatch après que validate/cutover a avancé : `expand` refuserait volontairement un état futur.
+Les noms d'artefacts incluent phase et `run_attempt`, et le manifest final télécharge les trois
+noms exacts avant de chaîner intents et reçus preflight/certified.
+
 - [x] `M2A3-01` : OpenAI WebRTC demande exactement le protocole 2 ; absence/refus de capability
       échoue fermé sans tentative V1 et sans requête Mistral ;
 - [x] `M2A3-02` : le GET V1 conserve son wire exact et le GET V2 exige mission + présentation
@@ -1519,7 +1618,15 @@ M2-A-1 est `implemented` uniquement si, flag M2-A toujours OFF :
       qu'après qu'une négociation autoritaire a choisi Mission V2 ; V1 et les transports sans
       Mission V2 ne sont jamais bloqués par ce gate. Sans confirmation, le bootstrap V2 reste fermé.
       L'eval opt-in appelle exactement l'adapter et le modèle du runtime, compte une seule
-      complétion sans retry ni second cerveau et produit une preuve exact-SHA non-PII ;
+      complétion sans retry ni second cerveau et produit une preuve exact-SHA non-PII. Le
+      workflow exige le même `expected_sha` que le gate schéma et prouve
+      `checkout=github.sha=expected_sha` avant toute installation. Le
+      one-shot surcharge `BOB_LIVE_PROVIDER=openai` dans son seul processus, sans modifier la
+      configuration Railway canonique de staging qui reste `mistral`. Le
+      fournisseur ne reçoit qu'une enveloppe JSON de rôle `user` : seul
+      `currentUserUtterance` porte la demande actuelle ; `recentTurns`, `uiContext` et les labels
+      sont redigés et restent des données non fiables, y compris lorsqu'une parole Bob mémorisée
+      reprend un label catalogue hostile ;
 - [x] `M2A3-15` : un tour n'est jamais envoyé séquentiellement à deux cerveaux. Le planner unique
       choisit le `mission kind` ou le geste global ; aucun `unrelated → askBob` ne double la latence
       et aucun fallback regex ne conserve une autorité d'écriture.

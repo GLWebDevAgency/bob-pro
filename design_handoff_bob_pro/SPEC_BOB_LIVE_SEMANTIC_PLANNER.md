@@ -373,20 +373,22 @@ unique.
 ### Preuve M2-A-3 sur le modèle réellement déployé
 
 Les tests avec `LlmPort` fabriqué prouvent le parseur et les fences, mais pas la compréhension. Le
-train M2-A-3 ajoute donc un corpus français V1 et une suite réseau opt-in qui :
+train M2-A-3 ajoute donc un corpus français V2 et une suite réseau opt-in qui :
 
 - appelle exclusivement `buildLlmForProvider('openai')` puis `planRealtimeSemanticTurn` ;
 - exige le provider, le modèle planner, la clé, l'URL officielle et le SHA exact ; une activation
   partielle échoue au lieu de sauter la suite ;
 - couvre au minimum une formulation directe, une formulation familière, une anaphore de choix,
-  une réponse elliptique à un fait requis et une correction multi-tours ;
+  une réponse elliptique à un fait requis, une correction multi-tours et une injection stockée
+  dans une parole Bob traitée comme donnée non fiable ;
 - vérifie une seule opération, zéro fait inventé, un seul `complete`, zéro `generate`, zéro retry,
   zéro fallback legacy et zéro deuxième planner ;
 - écrit seulement un rapport non-PII : version du corpus, SHA, provider/modèle, résultat et latence
   de chaque identifiant de cas. Aucun transcript, prompt, argument d'outil ou donnée tenant n'entre
   dans l'artefact ;
-- s'exécute sur le SHA de certification staging et non sur chaque PR. La PR exécute en permanence
-  le corpus et le scoreur déterministes.
+- exige le même `expected_sha` que le gate schéma, prouve
+  `checkout=github.sha=expected_sha`, puis s'exécute sur ce SHA de certification staging et non sur
+  chaque PR. La PR exécute en permanence le corpus et le scoreur déterministes.
 
 Une nouvelle tournure française observée en échec rejoint ce corpus versionné. Elle n'ajoute jamais
 une regex métier dans le chemin de production.

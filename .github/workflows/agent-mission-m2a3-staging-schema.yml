@@ -1,0 +1,439 @@
+name: AgentMission M2-A-3 Supabase Staging Schema
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact 40-character commit SHA to certify
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      expected_sha:
+        description: Exact 40-character commit SHA to certify
+        required: true
+        type: string
+    outputs:
+      manifest_digest:
+        description: SHA-256 of the exact-SHA staging schema manifest
+        value: ${{ jobs.finalize.outputs.manifest_digest }}
+
+concurrency:
+  group: railway-api-staging
+  cancel-in-progress: false
+
+jobs:
+  expand:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: staging
+    outputs:
+      receipt_digest: ${{ steps.certify.outputs.receipt_digest }}
+      artifact_name: ${{ steps.metadata.outputs.artifact_name }}
+    env:
+      RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+      RAILWAY_ENVIRONMENT_ID: ${{ vars.RAILWAY_ENVIRONMENT_ID }}
+      RAILWAY_API_SERVICE_ID: ${{ vars.RAILWAY_API_SERVICE_ID }}
+      BOB_M1B_STAGING_SUPABASE_PROJECT_REF: ${{ vars.BOB_M1B_STAGING_SUPABASE_PROJECT_REF }}
+      BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER: ${{ vars.BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER }}
+      BOB_M1B_STAGING_DATABASE_OID: ${{ vars.BOB_M1B_STAGING_DATABASE_OID }}
+      BOB_M1B_STAGING_DATABASE_NAME: ${{ vars.BOB_M1B_STAGING_DATABASE_NAME }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate exact SHA and immutable staging target before installation
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$EXPECTED_SHA" = "$GITHUB_SHA"
+          node <<'NODE'
+          const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+          const required = [
+            'RAILWAY_PROJECT_ID',
+            'RAILWAY_ENVIRONMENT_ID',
+            'RAILWAY_API_SERVICE_ID',
+            'BOB_M1B_STAGING_SUPABASE_PROJECT_REF',
+            'BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER',
+            'BOB_M1B_STAGING_DATABASE_OID',
+            'BOB_M1B_STAGING_DATABASE_NAME',
+            'RAILWAY_TOKEN',
+            'EXPECTED_SHA',
+          ];
+          for (const name of required) {
+            const value = process.env[name];
+            if (
+              typeof value !== 'string'
+              || value.length < 1
+              || value.length > 16_384
+              || value !== value.trim()
+              || /[\u0000-\u001f\u007f]/u.test(value)
+            ) {
+              throw new Error(`${name} is required by staging`);
+            }
+          }
+          for (const name of [
+            'RAILWAY_PROJECT_ID',
+            'RAILWAY_ENVIRONMENT_ID',
+            'RAILWAY_API_SERVICE_ID',
+          ]) {
+            if (!uuid.test(process.env[name] ?? '')) {
+              throw new Error(`${name} must be a UUID`);
+            }
+          }
+          if (!/^[a-f0-9]{40}$/.test(process.env.EXPECTED_SHA ?? '')) {
+            throw new Error('expected_sha must be exact');
+          }
+          NODE
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - name: Install the deterministic schema operator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+          pnpm install --frozen-lockfile
+          sh apps/api/scripts/install-railway-cli.sh
+      - name: Prove the schema operator and workflow guardrails
+        run: |
+          node --test \
+            apps/api/scripts/agent-mission-m2a3-staging-schema.test.mjs \
+            apps/api/scripts/agent-mission-m2a3-staging-schema-workflow.test.mjs
+      - name: Define immutable evidence identity
+        id: metadata
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          echo "artifact_name=agent-mission-m2a3-schema-${EXPECTED_SHA}-expand-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+      - name: Apply or recertify expand only
+        id: certify
+        timeout-minutes: 12
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          set -euo pipefail
+          receipt="$(
+            railway run --project "$RAILWAY_PROJECT_ID" \
+              --service "$RAILWAY_API_SERVICE_ID" \
+              --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+              env CABINET_RELEASE_ENV=staging \
+                BOB_M2A3_EXPECTED_SHA="$EXPECTED_SHA" \
+                BOB_M2A3_PREVIOUS_RECEIPT_DIGEST=none \
+                BOB_M1B_STAGING_SUPABASE_PROJECT_REF="$BOB_M1B_STAGING_SUPABASE_PROJECT_REF" \
+                BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER="$BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER" \
+                BOB_M1B_STAGING_DATABASE_OID="$BOB_M1B_STAGING_DATABASE_OID" \
+                BOB_M1B_STAGING_DATABASE_NAME="$BOB_M1B_STAGING_DATABASE_NAME" \
+                GITHUB_SHA="$EXPECTED_SHA" \
+                GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+                GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+                node apps/api/scripts/agent-mission-m2a3-staging-schema.mjs phase expand
+          )"
+          RECEIPT="$receipt" node <<'NODE' >> "$GITHUB_OUTPUT"
+          const prefix = 'agent-mission-m2a3-staging-schema:ok:expand:';
+          const receipt = process.env.RECEIPT ?? '';
+          const digest = receipt.startsWith(prefix)
+            ? receipt.slice(prefix.length)
+            : '';
+          if (!/^[a-f0-9]{64}$/.test(digest)) {
+            throw new Error('Invalid expand receipt');
+          }
+          process.stdout.write(`receipt_digest=${digest}\n`);
+          NODE
+      - name: Preserve expand evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.metadata.outputs.artifact_name }}
+          path: .release-evidence/agent-mission-m2a3-schema/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 90
+
+  validate:
+    needs: expand
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: staging
+    outputs:
+      receipt_digest: ${{ steps.certify.outputs.receipt_digest }}
+      artifact_name: ${{ steps.metadata.outputs.artifact_name }}
+    env:
+      RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+      RAILWAY_ENVIRONMENT_ID: ${{ vars.RAILWAY_ENVIRONMENT_ID }}
+      RAILWAY_API_SERVICE_ID: ${{ vars.RAILWAY_API_SERVICE_ID }}
+      BOB_M1B_STAGING_SUPABASE_PROJECT_REF: ${{ vars.BOB_M1B_STAGING_SUPABASE_PROJECT_REF }}
+      BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER: ${{ vars.BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER }}
+      BOB_M1B_STAGING_DATABASE_OID: ${{ vars.BOB_M1B_STAGING_DATABASE_OID }}
+      BOB_M1B_STAGING_DATABASE_NAME: ${{ vars.BOB_M1B_STAGING_DATABASE_NAME }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate exact SHA before installation
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$EXPECTED_SHA" = "$GITHUB_SHA"
+          [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{40}$ ]]
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - name: Install the deterministic schema operator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+          pnpm install --frozen-lockfile
+          sh apps/api/scripts/install-railway-cli.sh
+      - name: Define immutable evidence identity
+        id: metadata
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          echo "artifact_name=agent-mission-m2a3-schema-${EXPECTED_SHA}-validate-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+      - name: Apply or recertify validate only
+        id: certify
+        timeout-minutes: 12
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          PREVIOUS_RECEIPT_DIGEST: ${{ needs.expand.outputs.receipt_digest }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$PREVIOUS_RECEIPT_DIGEST" =~ ^[a-f0-9]{64}$ ]]
+          receipt="$(
+            railway run --project "$RAILWAY_PROJECT_ID" \
+              --service "$RAILWAY_API_SERVICE_ID" \
+              --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+              env CABINET_RELEASE_ENV=staging \
+                BOB_M2A3_EXPECTED_SHA="$EXPECTED_SHA" \
+                BOB_M2A3_PREVIOUS_RECEIPT_DIGEST="$PREVIOUS_RECEIPT_DIGEST" \
+                BOB_M1B_STAGING_SUPABASE_PROJECT_REF="$BOB_M1B_STAGING_SUPABASE_PROJECT_REF" \
+                BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER="$BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER" \
+                BOB_M1B_STAGING_DATABASE_OID="$BOB_M1B_STAGING_DATABASE_OID" \
+                BOB_M1B_STAGING_DATABASE_NAME="$BOB_M1B_STAGING_DATABASE_NAME" \
+                GITHUB_SHA="$EXPECTED_SHA" \
+                GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+                GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+                node apps/api/scripts/agent-mission-m2a3-staging-schema.mjs phase validate
+          )"
+          RECEIPT="$receipt" node <<'NODE' >> "$GITHUB_OUTPUT"
+          const prefix = 'agent-mission-m2a3-staging-schema:ok:validate:';
+          const receipt = process.env.RECEIPT ?? '';
+          const digest = receipt.startsWith(prefix)
+            ? receipt.slice(prefix.length)
+            : '';
+          if (!/^[a-f0-9]{64}$/.test(digest)) {
+            throw new Error('Invalid validate receipt');
+          }
+          process.stdout.write(`receipt_digest=${digest}\n`);
+          NODE
+      - name: Preserve validate evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.metadata.outputs.artifact_name }}
+          path: .release-evidence/agent-mission-m2a3-schema/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 90
+
+  cutover:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: staging
+    outputs:
+      receipt_digest: ${{ steps.certify.outputs.receipt_digest }}
+      artifact_name: ${{ steps.metadata.outputs.artifact_name }}
+    env:
+      RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+      RAILWAY_ENVIRONMENT_ID: ${{ vars.RAILWAY_ENVIRONMENT_ID }}
+      RAILWAY_API_SERVICE_ID: ${{ vars.RAILWAY_API_SERVICE_ID }}
+      BOB_M1B_STAGING_SUPABASE_PROJECT_REF: ${{ vars.BOB_M1B_STAGING_SUPABASE_PROJECT_REF }}
+      BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER: ${{ vars.BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER }}
+      BOB_M1B_STAGING_DATABASE_OID: ${{ vars.BOB_M1B_STAGING_DATABASE_OID }}
+      BOB_M1B_STAGING_DATABASE_NAME: ${{ vars.BOB_M1B_STAGING_DATABASE_NAME }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate exact SHA before installation
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$EXPECTED_SHA" = "$GITHUB_SHA"
+          [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{40}$ ]]
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - name: Install the deterministic schema operator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+          pnpm install --frozen-lockfile
+          sh apps/api/scripts/install-railway-cli.sh
+      - name: Define immutable evidence identity
+        id: metadata
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          echo "artifact_name=agent-mission-m2a3-schema-${EXPECTED_SHA}-cutover-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+      - name: Apply or recertify cutover only
+        id: certify
+        timeout-minutes: 12
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          PREVIOUS_RECEIPT_DIGEST: ${{ needs.validate.outputs.receipt_digest }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$PREVIOUS_RECEIPT_DIGEST" =~ ^[a-f0-9]{64}$ ]]
+          receipt="$(
+            railway run --project "$RAILWAY_PROJECT_ID" \
+              --service "$RAILWAY_API_SERVICE_ID" \
+              --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+              env CABINET_RELEASE_ENV=staging \
+                BOB_M2A3_EXPECTED_SHA="$EXPECTED_SHA" \
+                BOB_M2A3_PREVIOUS_RECEIPT_DIGEST="$PREVIOUS_RECEIPT_DIGEST" \
+                BOB_M1B_STAGING_SUPABASE_PROJECT_REF="$BOB_M1B_STAGING_SUPABASE_PROJECT_REF" \
+                BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER="$BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER" \
+                BOB_M1B_STAGING_DATABASE_OID="$BOB_M1B_STAGING_DATABASE_OID" \
+                BOB_M1B_STAGING_DATABASE_NAME="$BOB_M1B_STAGING_DATABASE_NAME" \
+                GITHUB_SHA="$EXPECTED_SHA" \
+                GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+                GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+                node apps/api/scripts/agent-mission-m2a3-staging-schema.mjs phase cutover
+          )"
+          RECEIPT="$receipt" node <<'NODE' >> "$GITHUB_OUTPUT"
+          const prefix = 'agent-mission-m2a3-staging-schema:ok:cutover:';
+          const receipt = process.env.RECEIPT ?? '';
+          const digest = receipt.startsWith(prefix)
+            ? receipt.slice(prefix.length)
+            : '';
+          if (!/^[a-f0-9]{64}$/.test(digest)) {
+            throw new Error('Invalid cutover receipt');
+          }
+          process.stdout.write(`receipt_digest=${digest}\n`);
+          NODE
+      - name: Preserve cutover evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.metadata.outputs.artifact_name }}
+          path: .release-evidence/agent-mission-m2a3-schema/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 90
+
+  finalize:
+    needs:
+      - expand
+      - validate
+      - cutover
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    environment: staging
+    outputs:
+      manifest_digest: ${{ steps.manifest.outputs.manifest_digest }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate exact SHA before evidence download
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$EXPECTED_SHA" = "$GITHUB_SHA"
+          [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{40}$ ]]
+      - name: Validate exact artifact names before evidence download
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          EXPAND_ARTIFACT_NAME: ${{ needs.expand.outputs.artifact_name }}
+          VALIDATE_ARTIFACT_NAME: ${{ needs.validate.outputs.artifact_name }}
+          CUTOVER_ARTIFACT_NAME: ${{ needs.cutover.outputs.artifact_name }}
+        run: |
+          node <<'NODE'
+          const expectedSha = process.env.EXPECTED_SHA ?? '';
+          const artifacts = [
+            ['expand', process.env.EXPAND_ARTIFACT_NAME ?? ''],
+            ['validate', process.env.VALIDATE_ARTIFACT_NAME ?? ''],
+            ['cutover', process.env.CUTOVER_ARTIFACT_NAME ?? ''],
+          ];
+          for (const [phase, artifact] of artifacts) {
+            const prefix = `agent-mission-m2a3-schema-${expectedSha}-${phase}-`;
+            const attempt = artifact.startsWith(prefix)
+              ? artifact.slice(prefix.length)
+              : '';
+            if (!/^[1-9][0-9]*$/.test(attempt)) {
+              throw new Error(`Invalid ${phase} artifact name`);
+            }
+          }
+          NODE
+      - name: Download exact expand evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.expand.outputs.artifact_name }}
+          path: .release-evidence/agent-mission-m2a3-schema/
+      - name: Download exact validate evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.validate.outputs.artifact_name }}
+          path: .release-evidence/agent-mission-m2a3-schema/
+      - name: Download exact cutover evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.cutover.outputs.artifact_name }}
+          path: .release-evidence/agent-mission-m2a3-schema/
+      - name: Require one contiguous exact-SHA manifest
+        id: manifest
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          env BOB_M2A3_EXPECTED_SHA="$EXPECTED_SHA" \
+            GITHUB_SHA="$EXPECTED_SHA" \
+            GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+            node apps/api/scripts/agent-mission-m2a3-staging-schema.mjs \
+              finalize .release-evidence/agent-mission-m2a3-schema
+          manifest=".release-evidence/agent-mission-m2a3-schema/staging-schema-${EXPECTED_SHA}-manifest.json"
+          test -f "$manifest"
+          digest="$(shasum -a 256 "$manifest" | awk '{print $1}')"
+          test "${#digest}" -eq 64
+          echo "manifest_digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Preserve the final exact-SHA manifest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: agent-mission-m2a3-schema-${{ inputs.expected_sha }}-manifest-${{ github.run_attempt }}
+          path: .release-evidence/agent-mission-m2a3-schema/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 90

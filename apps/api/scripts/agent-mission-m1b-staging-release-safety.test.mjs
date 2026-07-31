@@ -67,6 +67,7 @@ test('le workflow Railway déjà présent sur main sert seulement de trampoline 
   assert.match(railwayReleaseWorkflow, /- m1b-staging-certification/u);
   assert.match(railwayReleaseWorkflow, /- m1b-staging-recovery/u);
   assert.match(railwayReleaseWorkflow, /- m2a3-semantic-certification/u);
+  assert.match(railwayReleaseWorkflow, /- m2a3-staging-schema/u);
   assert.match(railwayReleaseWorkflow, /- k2-staging-schema/u);
   assert.match(
     railwayReleaseWorkflow,
@@ -80,7 +81,7 @@ test('le workflow Railway déjà présent sur main sert seulement de trampoline 
   );
   assert.match(
     railwayReleaseWorkflow,
-    /validate-purpose:[\s\S]*?release\|m1b-staging-certification\|m1b-staging-recovery\|m2a3-semantic-certification\|k2-staging-schema\)[\s\S]*?Unsupported Railway release purpose/u,
+    /validate-purpose:[\s\S]*?release\|m1b-staging-certification\|m1b-staging-recovery\|m2a3-semantic-certification\|m2a3-staging-schema\|k2-staging-schema\)[\s\S]*?Unsupported Railway release purpose/u,
   );
   assert.match(
     railwayReleaseWorkflow,
@@ -92,17 +93,35 @@ test('le workflow Railway déjà présent sur main sert seulement de trampoline 
   );
   assert.match(
     railwayReleaseWorkflow,
-    /certify-agent-mission-m2a3-semantic:[\s\S]*?uses: \.\/\.github\/workflows\/agent-mission-m2a3-semantic-staging\.yml[\s\S]*?secrets: inherit/u,
+    /route-m2a3-semantic-certification:[\s\S]*?test "\$EXPECTED_SHA" = "\$GITHUB_SHA"/u,
+  );
+  assert.match(
+    railwayReleaseWorkflow,
+    /certify-agent-mission-m2a3-semantic:[\s\S]*?uses: \.\/\.github\/workflows\/agent-mission-m2a3-semantic-staging\.yml[\s\S]*?expected_sha: \$\{\{ inputs\.expected_sha \}\}[\s\S]*?secrets: inherit/u,
+  );
+  assert.match(
+    railwayReleaseWorkflow,
+    /route-m2a3-staging-schema:[\s\S]*?test "\$EXPECTED_SHA" = "\$GITHUB_SHA"/u,
+  );
+  assert.match(
+    railwayReleaseWorkflow,
+    /certify-agent-mission-m2a3-staging-schema:[\s\S]*?uses: \.\/\.github\/workflows\/agent-mission-m2a3-staging-schema\.yml[\s\S]*?expected_sha: \$\{\{ inputs\.expected_sha \}\}[\s\S]*?secrets: inherit/u,
   );
 });
 
 test('le certificat M2-A-3 est manuel, exact-SHA, staging et sans clé OpenAI GitHub', () => {
-  assert.match(m2a3SemanticWorkflow, /^on:\n  workflow_dispatch:\n  workflow_call:/mu);
+  assert.match(
+    m2a3SemanticWorkflow,
+    /^on:\n  workflow_dispatch:[\s\S]*?expected_sha:[\s\S]*?required: true[\s\S]*?workflow_call:[\s\S]*?expected_sha:[\s\S]*?required: true/mu,
+  );
   assert.doesNotMatch(m2a3SemanticWorkflow, /^\s+(?:push|pull_request|schedule):/mu);
   assert.equal(occurrences(m2a3SemanticWorkflow, /^\s+environment: staging$/gmu), 1);
   assert.match(m2a3SemanticWorkflow, /group: railway-api-staging/u);
   assert.match(m2a3SemanticWorkflow, /cancel-in-progress: false/u);
-  assert.match(m2a3SemanticWorkflow, /test "\$\(git rev-parse HEAD\)" = "\$GITHUB_SHA"/u);
+  assert.match(
+    m2a3SemanticWorkflow,
+    /test "\$\(git rev-parse HEAD\)" = "\$EXPECTED_SHA"[\s\S]*?test "\$EXPECTED_SHA" = "\$GITHUB_SHA"/u,
+  );
   assert.match(m2a3SemanticWorkflow, /pnpm install --frozen-lockfile/u);
   assert.match(
     m2a3SemanticWorkflow,
@@ -114,7 +133,13 @@ test('le certificat M2-A-3 est manuel, exact-SHA, staging et sans clé OpenAI Gi
   );
   assert.doesNotMatch(m2a3SemanticWorkflow, /secrets\.OPENAI_API_KEY/u);
   assert.doesNotMatch(m2a3SemanticWorkflow, /railway\s+link/u);
-  assert.match(m2a3SemanticWorkflow, /receipt\.providerRequestCount !== 5/u);
+  assert.match(m2a3SemanticWorkflow, /receipt\.corpusVersion !== 2/u);
+  assert.match(m2a3SemanticWorkflow, /receipt\.providerRequestCount !== 6/u);
+  assert.match(m2a3SemanticWorkflow, /'catalogue-stored-injection'/u);
+  assert.match(
+    m2a3SemanticWorkflow,
+    /railway run[\s\S]*?env[\s\S]*?BOB_LIVE_PROVIDER=openai[\s\S]*?RUN_BOB_LIVE_M2A3_MODEL_EVAL=true/u,
+  );
   assert.match(m2a3SemanticWorkflow, /receipt\.generateCount !== 0/u);
   assert.match(m2a3SemanticWorkflow, /entry\.status !== 'mission_frame'/u);
   assert.match(m2a3SemanticWorkflow, /if-no-files-found: error/u);
