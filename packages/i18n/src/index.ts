@@ -8901,9 +8901,10 @@ const legacyFr = {
     direct: 'Aperçu seulement pour l’instant. PDF à venir.',
   },
 
-  // ── Identité sur les factures — n° RCS/RM et adresse du siège ÉDITABLES (PATCH /company/legal) :
-  // ce sont les 2 exigences de Company.assertCanIssue(), sans écran pour les saisir le gate
-  // « entreprise incomplète » était un cul-de-sac (aucune facture émissible). ─────────────────
+  // ── Identité sur les factures — les QUATRE exigences de Company.assertCanIssue() ÉDITABLES
+  // (PATCH /company/legal) : n° RCS/RM, adresse complète, capital social (société) et n° de TVA
+  // intracommunautaire. Sans écran pour les saisir, le gate « entreprise incomplète » était un
+  // cul-de-sac (aucune facture émissible) — RCS/adresse le 20/07, capital le 30/07. ───────────
   'reglages.sectionIdentity': {
     pote: 'Identité sur les factures',
     pro: 'Identité sur les factures',
@@ -8916,13 +8917,27 @@ const legacyFr = {
   },
   'reglages.identitySiret': { pote: 'SIRET', pro: 'SIRET', direct: 'SIRET' },
   'reglages.identityRm': { pote: 'N° RM / RCS', pro: 'N° RM / RCS', direct: 'RM / RCS' },
+  /** Ligne visible pour les SOCIÉTÉS uniquement (Company.isSociete()) — une EI n'a pas de
+   *  capital ; montant affiché en euros français (« 10 000 € »), formatCapitalSocialEuros. */
+  'reglages.identityCapital': {
+    pote: 'Capital social',
+    pro: 'Capital social',
+    direct: 'Capital social',
+  },
+  /** « À compléter » seulement hors franchise (assertCanIssue) — en franchise : « — ». */
+  'reglages.identityTva': {
+    pote: 'N° TVA intracommunautaire',
+    pro: 'N° TVA intracommunautaire',
+    direct: 'TVA intracom',
+  },
   'reglages.identityAddress': { pote: 'Adresse', pro: 'Adresse', direct: 'Adresse' },
   // Raison sociale et SIRET restent non éditables (identité posée à l'inscription, elle
-  // engage les pièces déjà émises) — mais le n° RCS/RM et l'adresse, eux, se corrigent ici.
+  // engage les pièces déjà émises) — le n° RCS/RM, le capital, la TVA et l'adresse, eux,
+  // se corrigent ici (feuille d'identité légale).
   'reglages.identityNotEditableNote': {
-    pote: 'Ta raison sociale et ton SIRET viennent de ton inscription — écris-nous pour les corriger. Le n° RCS/RM et l’adresse, tu peux les modifier toi-même juste au-dessus.',
-    pro: 'La raison sociale et le SIRET proviennent de votre inscription — contactez-nous pour les corriger. Le n° RCS/RM et l’adresse sont modifiables ci-dessus.',
-    direct: 'Raison sociale et SIRET : nous écrire. N° RCS/RM et adresse : modifiables au-dessus.',
+    pote: 'Ta raison sociale et ton SIRET viennent de ton inscription — écris-nous pour les corriger. Le reste (n° RCS/RM, capital, TVA, adresse), tu peux le modifier toi-même juste au-dessus.',
+    pro: 'La raison sociale et le SIRET proviennent de votre inscription — contactez-nous pour les corriger. Le n° RCS/RM, le capital social, le n° de TVA et l’adresse sont modifiables ci-dessus.',
+    direct: 'Raison sociale et SIRET : nous écrire. Le reste : modifiable au-dessus.',
   },
   'reglages.identityEmpty': { pote: 'À compléter', pro: 'À compléter', direct: 'À compléter' },
   /** Bandeau d'alerte affiché quand l'émission est RÉELLEMENT bloquée (assertCanIssue KO). */
@@ -8932,9 +8947,9 @@ const legacyFr = {
     direct: 'Info manquante pour facturer',
   },
   'reglages.identityBlockingBody': {
-    pote: 'Il me faut ton n° d’immatriculation, ton adresse et, si tu factures la TVA, le numéro qui t’a été attribué. Deux minutes et c’est réglé.',
-    pro: 'Le numéro d’immatriculation, l’adresse complète et, hors franchise, le numéro de TVA attribué sont requis avant émission.',
-    direct: 'Immatriculation + adresse + TVA au réel requis.',
+    pote: 'Il me faut ton n° d’immatriculation, ton adresse complète, ton capital social si tu es en société et, si tu factures la TVA, le numéro qui t’a été attribué. Deux minutes et c’est réglé.',
+    pro: 'Le numéro d’immatriculation, l’adresse complète, le capital social pour une société et, hors franchise, le numéro de TVA attribué sont requis avant émission.',
+    direct: 'Immatriculation + adresse + capital (société) + TVA au réel requis.',
   },
   'reglages.identityFixCta': {
     pote: 'Compléter maintenant',
@@ -8988,6 +9003,28 @@ const legacyFr = {
     pro: 'Ce numéro ne correspond pas à votre SIREN ou sa clé est invalide.',
     direct: 'N° TVA incohérent avec le SIREN.',
   },
+  // Capital social — champ affiché aux SOCIÉTÉS uniquement (Company.isSociete(), art. R123-238) :
+  // le montant vient des STATUTS, jamais de l'annuaire (qui ne le fournit pas) ni d'une déduction.
+  'reglages.legalSheetCapitalLabel': {
+    pote: 'Capital social',
+    pro: 'Capital social',
+    direct: 'Capital social',
+  },
+  'reglages.legalSheetCapitalPlaceholder': {
+    pote: '10 000',
+    pro: '10 000',
+    direct: '10 000',
+  },
+  'reglages.legalSheetCapitalHint': {
+    pote: 'Le montant de tes statuts, en euros — la loi l’imprime sur les factures d’une société (art. R123-238).',
+    pro: 'Le montant figurant dans vos statuts, en euros — mention obligatoire sur les factures d’une société (art. R123-238).',
+    direct: 'Montant des statuts, en euros. Obligatoire sur les factures (art. R123-238).',
+  },
+  'reglages.legalSheetCapitalInvalid': {
+    pote: 'Il me faut ton capital en euros — celui de tes statuts. Zéro ou négatif, ça n’existe pas pour une société.',
+    pro: 'Un montant en euros strictement positif est requis — celui de vos statuts (deux décimales maximum).',
+    direct: 'Capital invalide : euros > 0, 2 décimales max.',
+  },
   'reglages.legalSheetAddressLabel': {
     pote: 'Adresse du siège',
     pro: 'Adresse du siège',
@@ -9006,6 +9043,13 @@ const legacyFr = {
   },
   'reglages.legalSheetZipLabel': { pote: 'Code postal', pro: 'Code postal', direct: 'CP' },
   'reglages.legalSheetZipPlaceholder': { pote: '75019', pro: '75019', direct: '75019' },
+  // Exigé depuis le durcissement d'assertCanIssue (adresse complète = rue + CP + ville) : sans
+  // ce message, un CP vide s'enregistrait et l'émission restait bloquée sans erreur visible.
+  'reglages.legalSheetZipInvalid': {
+    pote: 'Il me faut le code postal de ton siège.',
+    pro: 'Le code postal du siège est requis.',
+    direct: 'Code postal requis.',
+  },
   'reglages.legalSheetCityLabel': { pote: 'Ville', pro: 'Ville', direct: 'Ville' },
   'reglages.legalSheetCityPlaceholder': { pote: 'Paris', pro: 'Paris', direct: 'Paris' },
   'reglages.legalSheetCityInvalid': {
@@ -9265,20 +9309,40 @@ const legacyFr = {
   },
 
   // ── Gate « entreprise complète » (DocumentActions.tsx — émission devis/facture) ─────────────
+  // Le corps NOMME le champ manquant (une clé PAR exigence d'assertCanIssue, carte
+  // COMPANY_GATE_BODY_KEY) : le générique « complète ta fiche » a fait re-vérifier au fondateur
+  // FLY SERVICES des champs déjà remplis, sans jamais dire que le capital social manquait.
+  // Doctrine pédagogie légale : la loi en simple + pourquoi + où aller — source citée.
   'gate.companyIncompleteTitle': {
     pote: 'Complète ta fiche entreprise',
     pro: 'Complétez votre fiche entreprise',
     direct: 'Fiche entreprise incomplète',
   },
-  'gate.companyIncompleteBodyQuote': {
-    pote: 'Pour envoyer un devis officiel, renseigne d’abord ton entreprise (RM/RCS et adresse).',
-    pro: 'Pour envoyer un devis officiel, veuillez d’abord renseigner votre entreprise (RM/RCS et adresse).',
-    direct: 'RM/RCS et adresse requis avant l’envoi.',
+  /** Repli quand le champ fautif n'est pas nommable (fiche pas chargée / Company.of KO). */
+  'gate.companyIncompleteBody': {
+    pote: 'Il manque une info sur ta fiche entreprise pour émettre une pièce officielle. Deux minutes dans Réglages → Identité et c’est réglé.',
+    pro: 'Une information de votre fiche entreprise manque pour émettre. Complétez-la dans Réglages → Identité.',
+    direct: 'Fiche entreprise incomplète. Réglages → Identité.',
   },
-  'gate.companyIncompleteBodyInvoice': {
-    pote: 'Pour émettre une facture, renseigne d’abord ton entreprise (RM/RCS et adresse).',
-    pro: 'Pour émettre une facture, veuillez d’abord renseigner votre entreprise (RM/RCS et adresse).',
-    direct: 'RM/RCS et adresse requis avant l’émission.',
+  'gate.companyIncompleteBodyRcsOrRm': {
+    pote: 'Il manque ton n° d’immatriculation (RCS ou RM) — obligatoire sur les devis et factures (art. R123-237 du code de commerce). Deux minutes dans Réglages → Identité et c’est réglé.',
+    pro: 'Votre n° d’immatriculation (RCS ou RM) manque — mention obligatoire sur les factures (art. R123-237 du code de commerce). Renseignez-le dans Réglages → Identité.',
+    direct: 'N° RCS/RM manquant — obligatoire (art. R123-237 c. com.). Réglages → Identité.',
+  },
+  'gate.companyIncompleteBodyAddress': {
+    pote: 'Il manque l’adresse complète de ton siège (rue, code postal, ville) — elle doit figurer sur tes devis et factures (art. L441-9 du code de commerce). Deux minutes dans Réglages → Identité et c’est réglé.',
+    pro: 'L’adresse complète de votre siège (rue, code postal, ville) manque — mention obligatoire sur les factures (art. L441-9 du code de commerce). Complétez-la dans Réglages → Identité.',
+    direct: 'Adresse du siège incomplète (rue, CP, ville) — obligatoire (art. L441-9 c. com.). Réglages → Identité.',
+  },
+  'gate.companyIncompleteBodyCapitalSocial': {
+    pote: 'Il manque ton capital social — c’est obligatoire sur les factures d’une société (art. R123-238 du code de commerce). Prends le montant de tes statuts : deux minutes dans Réglages → Identité.',
+    pro: 'Votre capital social manque — mention obligatoire sur les factures d’une société (art. R123-238 du code de commerce). Indiquez le montant de vos statuts dans Réglages → Identité.',
+    direct: 'Capital social manquant — obligatoire pour une société (art. R123-238 c. com.). Réglages → Identité.',
+  },
+  'gate.companyIncompleteBodyTvaIntracom': {
+    pote: 'Il manque ton n° de TVA intracommunautaire — obligatoire dès que tu factures la TVA (art. 242 nonies A du CGI). Recopie celui de ton mémento fiscal dans Réglages → Identité.',
+    pro: 'Votre n° de TVA intracommunautaire manque — mention obligatoire dès que vous facturez la TVA (art. 242 nonies A du CGI). Recopiez celui de votre mémento fiscal dans Réglages → Identité.',
+    direct: 'N° TVA intracom manquant — obligatoire avec TVA (art. 242 nonies A CGI). Réglages → Identité.',
   },
   'gate.companyIncompleteCta': { pote: 'Compléter', pro: 'Compléter', direct: 'Compléter' },
   'gate.companyIncompleteCancel': { pote: 'Plus tard', pro: 'Plus tard', direct: 'Plus tard' },

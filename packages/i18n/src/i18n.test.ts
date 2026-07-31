@@ -945,18 +945,37 @@ describe('i18n — modale menu profil (design_handoff_bob_pro/Bob Pro.dc.html §
 });
 
 describe('i18n — gate entreprise complète (DocumentActions.tsx, émission devis/facture)', () => {
-  it('titre + corps déclinés devis/facture ×3 humeurs, CTA/annulation', () => {
+  it('titre + CTA/annulation + repli générique', () => {
     expect(t('gate.companyIncompleteTitle', { personality: 'pro' })).toBe(
       'Complétez votre fiche entreprise',
     );
-    expect(t('gate.companyIncompleteBodyQuote')).toBe(
-      'Pour envoyer un devis officiel, renseigne d’abord ton entreprise (RM/RCS et adresse).',
-    );
-    expect(t('gate.companyIncompleteBodyInvoice', { personality: 'direct' })).toBe(
-      'RM/RCS et adresse requis avant l’émission.',
+    expect(t('gate.companyIncompleteBody', { personality: 'direct' })).toBe(
+      'Fiche entreprise incomplète. Réglages → Identité.',
     );
     expect(t('gate.companyIncompleteCta')).toBe('Compléter');
     expect(t('gate.companyIncompleteCancel', { personality: 'pro' })).toBe('Plus tard');
+  });
+
+  it('le corps NOMME le champ manquant et cite sa source légale, ×3 humeurs (bug FLY SERVICES)', () => {
+    // Le générique « complète ta fiche » a fait chercher au fondateur un champ déjà rempli :
+    // chaque exigence d'assertCanIssue a désormais SON corps — nom du champ + loi + où aller.
+    const attendus = [
+      ['gate.companyIncompleteBodyRcsOrRm', 'RCS', 'R123-237'],
+      ['gate.companyIncompleteBodyAddress', 'adresse', 'L441-9'],
+      ['gate.companyIncompleteBodyCapitalSocial', 'capital social', 'R123-238'],
+      ['gate.companyIncompleteBodyTvaIntracom', 'TVA', '242 nonies A'],
+    ] as const;
+    for (const [key, champ, source] of attendus) {
+      for (const personality of ['pote', 'pro', 'direct'] as const) {
+        const body = t(key, { personality });
+        expect(body.toLowerCase()).toContain(champ.toLowerCase());
+        expect(body).toContain(source);
+        expect(body).toContain('Réglages');
+      }
+    }
+    expect(t('gate.companyIncompleteBodyCapitalSocial')).toBe(
+      'Il manque ton capital social — c’est obligatoire sur les factures d’une société (art. R123-238 du code de commerce). Prends le montant de tes statuts : deux minutes dans Réglages → Identité.',
+    );
   });
 });
 
@@ -967,21 +986,26 @@ describe('i18n — Réglages facturation, fusion proto (retours device fondateur
     expect(t('catalogue.back', { personality: 'pro' })).toBe('Facturation');
   });
 
-  it('aperçu en direct + identité (RCS/RM et adresse ÉDITABLES, raison sociale/SIRET non)', () => {
+  it('aperçu en direct + identité (RCS/RM, capital, TVA et adresse ÉDITABLES, raison sociale/SIRET non)', () => {
     expect(t('reglages.previewLive')).toBe('Aperçu en direct');
     expect(t('reglages.sectionIdentity', { personality: 'direct' })).toBe('Identité');
     expect(t('reglages.identityRm')).toBe('N° RM / RCS');
+    // Lignes ajoutées avec le correctif FLY SERVICES : le capital (sociétés) et la TVA doivent
+    // être VISIBLES dans §Identité — leur invisibilité était la moitié du cul-de-sac.
+    expect(t('reglages.identityCapital')).toBe('Capital social');
+    expect(t('reglages.identityTva', { personality: 'direct' })).toBe('TVA intracom');
     // La note ne peut plus dire « non modifiable » de TOUT le bloc : depuis le correctif du
-    // cul-de-sac d'émission, le n° RCS/RM et l'adresse s'éditent ici (les deux exigences
-    // d'assertCanIssue). Seuls raison sociale et SIRET restent verrouillés.
+    // cul-de-sac d'émission, les QUATRE exigences d'assertCanIssue s'éditent ici. Seuls
+    // raison sociale et SIRET restent verrouillés.
     for (const personality of ['pote', 'pro', 'direct'] as const) {
       const note = t('reglages.identityNotEditableNote', { personality });
       expect(note).toContain('SIRET');
-      expect(note).toContain('RCS/RM');
     }
     expect(t('reglages.identityNotEditableNote', { personality: 'pro' })).toBe(
-      'La raison sociale et le SIRET proviennent de votre inscription — contactez-nous pour les corriger. Le n° RCS/RM et l’adresse sont modifiables ci-dessus.',
+      'La raison sociale et le SIRET proviennent de votre inscription — contactez-nous pour les corriger. Le n° RCS/RM, le capital social, le n° de TVA et l’adresse sont modifiables ci-dessus.',
     );
+    // Le bandeau de blocage nomme désormais AUSSI le capital — il listait tout sauf lui.
+    expect(t('reglages.identityBlockingBody', { personality: 'pro' })).toContain('capital social');
   });
 
   it('logo — ajout/suppression ×3, permission refusée, note PDF à venir', () => {
@@ -1002,6 +1026,19 @@ describe('i18n — Réglages facturation, fusion proto (retours device fondateur
       'Cet IBAN ne semble pas valide — vérifiez la saisie.',
     );
     expect(t('reglages.ibanSheetSave')).toBe('Enregistrer');
+  });
+
+  it('feuille identité légale — capital social (sociétés, art. R123-238) et code postal exigé', () => {
+    expect(t('reglages.legalSheetCapitalLabel')).toBe('Capital social');
+    for (const personality of ['pote', 'pro', 'direct'] as const) {
+      // La pédagogie légale cite sa source au point de décision (doctrine LegalHint).
+      expect(t('reglages.legalSheetCapitalHint', { personality })).toContain('R123-238');
+      expect(t('reglages.legalSheetCapitalInvalid', { personality }).length).toBeGreaterThan(0);
+      expect(t('reglages.legalSheetZipInvalid', { personality }).length).toBeGreaterThan(0);
+    }
+    expect(t('reglages.legalSheetZipInvalid', { personality: 'pro' })).toBe(
+      'Le code postal du siège est requis.',
+    );
   });
 
   it('assurance — adaptatif BTP (décennale) vs hors bâtiment (RC Pro)', () => {
