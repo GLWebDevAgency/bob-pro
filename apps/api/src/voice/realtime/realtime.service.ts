@@ -911,6 +911,16 @@ export class RealtimeVoiceService {
     if (!principal?.userId || !principal.companyId) {
       return this.finishError('identity_missing', startedAt, appForbidden('Session utilisateur et espace de travail requis.'));
     }
+    if (
+      parsed.value.agentMissionNegotiation.requested === 'v2'
+      && principal.confirmedTimeZone === undefined
+    ) {
+      return this.finishError(
+        'time_zone_confirmation_required',
+        startedAt,
+        appForbidden('Confirmez votre fuseau horaire avant de démarrer Bob Live.'),
+      );
+    }
     if (!this.settings.safetySecret || !this.settings.apiKey) {
       return this.finishError('misconfigured', startedAt, {
         kind: 'dependency',
@@ -1132,6 +1142,9 @@ export class RealtimeVoiceService {
               companyId: principal.companyId!,
               transcript,
               history,
+              ...(principal.confirmedTimeZone === undefined
+                ? {}
+                : { confirmedTimeZone: principal.confirmedTimeZone }),
               ...(stored.snapshot?.context === undefined ? {} : { context: stored.snapshot.context }),
               ...(agentMissionAuthority === undefined
                 ? {}

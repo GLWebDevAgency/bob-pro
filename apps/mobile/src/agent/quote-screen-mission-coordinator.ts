@@ -2,7 +2,11 @@ import {
   sha256Hex,
   type AgentMissionViewV1,
   type CustomerMissionChoiceView,
+  type QuoteAgentMissionPresentationV1,
 } from '@bob/core';
+import type {
+  RealtimeAgentMissionProtocolVersion,
+} from '@bob/api-client';
 import type {
   QuoteDraftAuthoritativeReference,
 } from '../quote-draft/quote-draft-remote-store';
@@ -26,13 +30,29 @@ export type QuoteScreenMissionBindingState =
       readonly phase:
         | 'hydrating'
         | 'acknowledging'
-        | 'refreshing'
         | 'waiting_recovery';
     }
   | {
+      readonly phase: 'refreshing';
+      /**
+       * Fence métier stable à travers les publications React Query loading→data. Le budget de
+       * convergence ne dépend jamais de l'objet transitoire de query.
+       */
+      readonly convergenceKey: string;
+    }
+  | {
       readonly phase: 'ready';
+      readonly protocolVersion: 1;
       readonly mission: AgentMissionViewV1;
       readonly customerChoices: readonly CustomerMissionChoiceView[];
+      readonly presentation: null;
+    }
+  | {
+      readonly phase: 'ready';
+      readonly protocolVersion: 2;
+      readonly mission: AgentMissionViewV1;
+      readonly customerChoices: readonly CustomerMissionChoiceView[];
+      readonly presentation: QuoteAgentMissionPresentationV1;
     }
   | {
       /**
@@ -74,6 +94,7 @@ export type QuoteScreenMissionBindingState =
 
 export interface QuoteScreenMissionObservation {
   readonly runtimeGeneration: number;
+  readonly protocolVersion: RealtimeAgentMissionProtocolVersion | null;
   readonly realtimeSessionId: string | null;
   readonly confirmedContext: AgentMissionConfirmedContext | null;
   readonly screenInstanceId: string;
@@ -102,6 +123,8 @@ export interface QuoteManualHandoffInput {
   readonly mission: AgentMissionViewV1;
   readonly expectedScreenInstanceId: string;
 }
+
+export type QuoteMissionAbandonInput = QuoteManualHandoffInput;
 
 export type QuoteCustomerSelectionRow<
   T extends { readonly id: string; readonly name: string },
@@ -387,6 +410,69 @@ export class QuoteManualHandoffCoordinator {
   }
 }
 
+/**
+ * Frontière idempotente de l'abandon explicite de Bob.
+ *
+ * Contrairement au handoff M1-C, l'abandon utilisateur est autorisé depuis toute phase active
+ * possédant un brouillon. Le serveur terminalise la mission et libère le slot ; il ne supprime
+ * jamais le brouillon. Un retry ou un double tap réutilise strictement le même commandId.
+ */
+export class QuoteMissionAbandonCoordinator {
+  private readonly flights = new Map<
+    string,
+    ReturnType<AgentMissionRuntimeActions['abandonQuoteCreation']>
+  >();
+  private readonly commands = new Map<string, string>();
+
+  constructor(private readonly createCommandId: () => string) {}
+
+  abandon(
+    input: QuoteMissionAbandonInput,
+    actions: Pick<AgentMissionRuntimeActions, 'abandonQuoteCreation'>,
+  ): ReturnType<AgentMissionRuntimeActions['abandonQuoteCreation']> {
+    const mission = input.mission;
+    const draft = mission.payload.draft;
+    if (
+      mission.kind !== 'quote_creation'
+      || mission.status !== 'active'
+      || !mission.actionable
+      || draft === null
+    ) {
+      return Promise.resolve({ status: 'invalid_response' });
+    }
+    const key = JSON.stringify([
+      mission.id,
+      mission.revision,
+      draft.sessionId,
+      draft.slotRevision,
+      draft.contentRevision,
+      input.expectedScreenInstanceId,
+      'user_cancelled',
+    ]);
+    const inFlight = this.flights.get(key);
+    if (inFlight !== undefined) return inFlight;
+    let commandId = this.commands.get(key);
+    if (commandId === undefined) {
+      commandId = this.createCommandId();
+      if (this.commands.size >= 64) {
+        const oldest = this.commands.keys().next().value;
+        if (typeof oldest === 'string') this.commands.delete(oldest);
+      }
+      this.commands.set(key, commandId);
+    }
+    const flight = actions.abandonQuoteCreation({
+      missionId: mission.id,
+      commandId,
+      expectedMissionRevision: mission.revision,
+      expectedScreenInstanceId: input.expectedScreenInstanceId,
+    }).finally(() => {
+      if (this.flights.get(key) === flight) this.flights.delete(key);
+    });
+    this.flights.set(key, flight);
+    return flight;
+  }
+}
+
 function sameReference(
   left: QuoteDraftAuthoritativeReference | null,
   right: QuoteDraftAuthoritativeReference,
@@ -413,11 +499,13 @@ function bindingMatches(
 function contextMatches(
   observation: QuoteScreenMissionObservation,
 ): observation is QuoteScreenMissionObservation & {
+  readonly protocolVersion: RealtimeAgentMissionProtocolVersion;
   readonly realtimeSessionId: string;
   readonly confirmedContext: AgentMissionConfirmedContext;
 } {
   const context = observation.confirmedContext;
-  return observation.realtimeSessionId !== null
+  return observation.protocolVersion !== null
+    && observation.realtimeSessionId !== null
     && context !== null
     && context.realtimeSessionId === observation.realtimeSessionId
     && context.screen.name === '/devis/new'
@@ -426,9 +514,13 @@ function contextMatches(
 
 function hydrationState(
   result: QuoteDraftMissionHydrationResult,
+  mission: AgentMissionViewV1,
 ): QuoteScreenMissionBindingState {
   if (result.status === 'ready') {
-    return { phase: 'refreshing' };
+    return {
+      phase: 'refreshing',
+      convergenceKey: quoteMissionConvergenceKey(mission),
+    };
   }
   if (result.status === 'busy') return { phase: 'hydrating' };
   if (result.status === 'local_changes') {
@@ -440,7 +532,60 @@ function hydrationState(
   if (result.status === 'unavailable') {
     return { phase: 'error', reason: 'slot_unavailable' };
   }
-  return { phase: 'refreshing' };
+  return {
+    phase: 'refreshing',
+    convergenceKey: quoteMissionConvergenceKey(mission),
+  };
+}
+
+export function quoteMissionConvergenceKey(
+  mission: AgentMissionViewV1,
+): string {
+  const draft = mission.payload.draft;
+  return JSON.stringify([
+    mission.id,
+    mission.revision,
+    mission.phase,
+    draft?.sessionId ?? null,
+    draft?.slotRevision ?? null,
+    draft?.contentRevision ?? null,
+  ]);
+}
+
+function readyState(
+  protocolVersion: RealtimeAgentMissionProtocolVersion,
+  mission: AgentMissionViewV1,
+  customerChoices: readonly CustomerMissionChoiceView[],
+  presentation: QuoteAgentMissionPresentationV1 | null,
+): QuoteScreenMissionBindingState {
+  if (protocolVersion === 1) {
+    return {
+      phase: 'ready',
+      protocolVersion,
+      mission,
+      customerChoices,
+      presentation: null,
+    };
+  }
+  return presentation === null
+    ? { phase: 'error', reason: 'invalid_response' }
+    : {
+        phase: 'ready',
+        protocolVersion,
+        mission,
+        customerChoices,
+        presentation,
+      };
+}
+
+function requiresQueuedLineRedrive(
+  protocolVersion: RealtimeAgentMissionProtocolVersion,
+  mission: AgentMissionViewV1,
+  presentation: QuoteAgentMissionPresentationV1 | null,
+): boolean {
+  return protocolVersion === 2
+    && mission.phase === 'awaiting_lines'
+    && presentation?.pendingLine !== null;
 }
 
 /** Produit un identifiant borné à partir de l'intégralité du rendu, sans suffixe collisionnable. */
@@ -480,6 +625,7 @@ export class QuoteScreenMissionCoordinator {
   ): Promise<QuoteScreenMissionBindingState> {
     const key = JSON.stringify([
       observation.runtimeGeneration,
+      observation.protocolVersion,
       observation.realtimeSessionId,
       observation.confirmedContext?.revision ?? null,
       observation.confirmedContext?.digest ?? null,
@@ -531,6 +677,13 @@ export class QuoteScreenMissionCoordinator {
     }
     const mission = current.value.mission;
     if (mission === null) return { phase: 'manual', reason: 'no_mission' };
+    const presentation = current.value.presentation;
+    if (
+      (observation.protocolVersion === 1 && presentation !== null)
+      || (observation.protocolVersion === 2 && presentation === null)
+    ) {
+      return { phase: 'error', reason: 'invalid_response' };
+    }
     if (
       mission.status !== 'active'
       || !mission.actionable
@@ -545,15 +698,27 @@ export class QuoteScreenMissionCoordinator {
 
     if (!sameReference(observation.authoritativeDraft, expectedDraft)) {
       const hydrated = await ports.hydrateDraft(expectedDraft);
-      return hydrationState(hydrated);
+      return hydrationState(hydrated, mission);
     }
-    if (bindingMatches(mission, observation.confirmedContext)) {
+    if (
+      bindingMatches(mission, observation.confirmedContext)
+      && !requiresQueuedLineRedrive(
+        observation.protocolVersion,
+        mission,
+        presentation,
+      )
+    ) {
       const observedChoices = authoritativeCustomerChoices(
         observation.recovery,
         mission,
       );
       if (observedChoices !== null) {
-        return { phase: 'ready', mission, customerChoices: observedChoices };
+        return readyState(
+          observation.protocolVersion,
+          mission,
+          observedChoices,
+          presentation,
+        );
       }
       // La query React Query a déjà un refetch en vol. En lancer un second l'annulerait, puis
       // chaque publication `loading` relancerait la même boucle. Le rendu frais nous réveillera.
@@ -571,8 +736,16 @@ export class QuoteScreenMissionCoordinator {
       return refreshedChoices === null
         ? refreshedRecovery.phase === 'error'
           ? { phase: 'error', reason: 'mission_unavailable' }
-          : { phase: 'refreshing' }
-        : { phase: 'ready', mission, customerChoices: refreshedChoices };
+          : {
+              phase: 'refreshing',
+              convergenceKey: quoteMissionConvergenceKey(mission),
+            }
+        : readyState(
+            observation.protocolVersion,
+            mission,
+            refreshedChoices,
+            presentation,
+          );
     }
 
     const commandKey = JSON.stringify([
@@ -610,7 +783,10 @@ export class QuoteScreenMissionCoordinator {
     }
     if (acknowledged.status === 'failed') {
       return acknowledged.error.kind === 'conflict'
-        ? { phase: 'refreshing' }
+        ? {
+            phase: 'refreshing',
+            convergenceKey: quoteMissionConvergenceKey(mission),
+          }
         : { phase: 'error', reason: 'mission_unavailable' };
     }
     if (acknowledged.status !== 'completed') {
@@ -627,6 +803,6 @@ export class QuoteScreenMissionCoordinator {
     }
     // Même si la référence n'a pas changé, relire le slot est normatif après la continuation.
     const hydrated = await ports.hydrateDraft(refreshedDraft);
-    return hydrationState(hydrated);
+    return hydrationState(hydrated, acknowledged.value.mission);
   }
 }

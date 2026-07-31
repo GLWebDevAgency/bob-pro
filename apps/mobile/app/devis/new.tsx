@@ -126,8 +126,12 @@ import { useBillingPrefs } from '../../src/data/billing-prefs';
 import {
   consumeWizardHint,
   deriveQuoteCustomerSelectionRows,
+  QuoteAgentMissionSurface,
+  QuoteMissionResumeGate,
   QuoteCustomerDecisionCoordinator,
+  QuoteLineMissionCoordinator,
   quoteScreenInstanceId,
+  useAgentMissionCommandIdRegistry,
   useAgentMissionRuntimeActions,
   useQuoteScreenMissionBinding,
   usePublishAgentContext,
@@ -142,6 +146,7 @@ import {
   quoteWizardCanResumeParkedDraft,
   quoteWizardGlobalBobHidden,
   quoteWizardInteractionEnabled,
+  quoteWizardLineSurfaceMode,
   quoteWizardNavigationLocked,
 } from '../../src/agent/quote-wizard-interaction';
 import { useConfirm } from '../../src/components/ConfirmSheet';
@@ -350,6 +355,10 @@ export default function DevisNew() {
   const [missionResumePending, setMissionResumePending] = useState(false);
   const [missionResumeFailed, setMissionResumeFailed] = useState(false);
   const missionActions = useAgentMissionRuntimeActions();
+  const missionCommandIds = useAgentMissionCommandIdRegistry();
+  const [quoteLineMissionCoordinator] = useState(
+    () => new QuoteLineMissionCoordinator(randomUUID, missionCommandIds),
+  );
   const [customerDecisionCoordinator] = useState(
     () => new QuoteCustomerDecisionCoordinator(randomUUID),
   );
@@ -465,6 +474,29 @@ export default function DevisNew() {
     missionBinding.state.phase === 'ready'
       ? missionBinding.state.customerChoices
       : null;
+  const lineSurfaceMode = quoteWizardLineSurfaceMode({
+    isLineStep: flow.step === 'lignes',
+    missionState: missionBinding.state,
+  });
+  const agentLineMission =
+    lineSurfaceMode === 'agent_v2'
+    && missionBinding.state.phase === 'ready'
+    && missionBinding.state.protocolVersion === 2
+      ? missionBinding.state
+      : null;
+  const legacyLineWriterEnabled =
+    lineSurfaceMode === 'legacy';
+  useEffect(() => {
+    if (legacyLineWriterEnabled) return;
+    // Une acquisition Mission retire immédiatement chaque affordance de l'ancien writer. Fermer
+    // seulement visuellement ne suffit pas : un Modal encore monté conserverait ses callbacks.
+    setCataloguePickerOpen(false);
+    if (!missionOwnsEntry) return;
+    setExitSheetOpen(false);
+    pendingExit.current = null;
+    exitActionInFlight.current = false;
+    setExitActionBusy(false);
+  }, [legacyLineWriterEnabled, missionOwnsEntry]);
   const customerSelectionRows = deriveQuoteCustomerSelectionRows(
     customers.data ?? [],
     missionCustomerDecision,
@@ -1657,6 +1689,7 @@ export default function DevisNew() {
     missionResumePending,
   });
   const needsExitDecision = wizardInteractive
+    && !missionOwnsEntry
     && quoteResult === null
     && (
       hasUnsavedQuoteDraftChanges(quoteDraft.state)
@@ -1666,7 +1699,10 @@ export default function DevisNew() {
   // Une chaîne partiellement exécutée ne se transforme pas en « brouillon local » : quitter
   // ferait perdre les checkpoints et pourrait provoquer un double envoi/signature au retry.
   const generationExitLocked =
-    wizardInteractive && quoteResult === null && flow.step === 'recap';
+    wizardInteractive
+    && !missionOwnsEntry
+    && quoteResult === null
+    && flow.step === 'recap';
 
   useEffect(() => navigation.addListener('beforeRemove', (event) => {
     if (missionTransitionExitLocked) {
@@ -1824,125 +1860,24 @@ export default function DevisNew() {
   }
 
   if (missionBinding.state.phase === 'resume_required') {
-    const expired = missionBinding.state.recovery.mission.status === 'expired';
-    const resuming = missionResumePending;
+    const recovery = missionBinding.state.recovery;
     return (
-      <View
-        style={{
-          flex: 1,
-          backgroundColor: colors.bg,
-          paddingTop: insets.top + 20,
-          paddingBottom: insets.bottom + 20,
-          paddingHorizontal: 18,
-        }}
-      >
-        <View style={{ flexDirection: 'row', justifyContent: 'flex-end' }}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={t('devis.close', { personality })}
-            disabled={resuming}
-            onPress={requestClose}
-            hitSlop={6}
-            style={{
-              width: 44,
-              height: 44,
-              borderRadius: 22,
-              backgroundColor: controls.segmentedTrack,
-              alignItems: 'center',
-              justifyContent: 'center',
-              opacity: resuming ? 0.5 : 1,
-            }}
-          >
-            <CloseIcon color={colors.slate500} size={17} />
-          </Pressable>
-        </View>
-        <ScrollView
-          accessible
-          accessibilityLiveRegion="polite"
-          style={{ flex: 1 }}
-          contentContainerStyle={{
-            flexGrow: 1,
-            justifyContent: 'center',
-            alignItems: 'center',
-            paddingHorizontal: 12,
-            paddingVertical: 20,
-          }}
-        >
-          <View
-            style={{
-              width: 72,
-              height: 72,
-              borderRadius: 36,
-              backgroundColor: semantic.aiBg,
-              alignItems: 'center',
-              justifyContent: 'center',
-              marginBottom: 22,
-            }}
-          >
-            <Ionicons name="sparkles-outline" size={32} color={semantic.ai} />
-          </View>
-          <Text
-            style={[
-              font('screenH1'),
-              { color: colors.ink900, textAlign: 'center', marginBottom: 10 },
-            ]}
-          >
-            {t(
-              expired
-                ? 'devis.mission.resumeExpiredTitle'
-                : 'devis.mission.resumeTitle',
-              { personality },
-            )}
-          </Text>
-          <Text
-            style={[
-              font('body'),
-              {
-                color: colors.ink600,
-                textAlign: 'center',
-                lineHeight: 23,
-                maxWidth: 340,
-              },
-            ]}
-          >
-            {t(
-              expired
-                ? 'devis.mission.resumeExpiredBody'
-                : 'devis.mission.resumeBody',
-              { personality },
-            )}
-          </Text>
-          {missionResumeFailed ? (
-            <Text
-              accessibilityRole="alert"
-              style={[
-                font('sub'),
-                {
-                  color: semantic.danger,
-                  textAlign: 'center',
-                  marginTop: 14,
-                },
-              ]}
-            >
-              {t('live.error', { personality })}
-            </Text>
-          ) : null}
-        </ScrollView>
-        <Button
-          title={t(
-            resuming
-              ? 'devis.mission.resumeLoading'
-              : 'devis.mission.resumeAction',
-            { personality },
-          )}
-          accessibilityLabel={t('devis.mission.resumeAction', { personality })}
-          loading={resuming}
-          disabled={resuming}
-          onPress={() => {
+      <QuoteMissionResumeGate
+        recovery={recovery}
+        pending={missionResumePending}
+        failed={missionResumeFailed}
+        personality={personality}
+        topInset={insets.top}
+        bottomInset={insets.bottom}
+        onClose={requestClose}
+        onLeave={leaveMissionGate}
+        onResume={() => {
             if (missionResumePending) return;
             setMissionResumePending(true);
             setMissionResumeFailed(false);
-            void agentSession.resumeMissionV1().then(
+            void agentSession.resumeMission(
+              recovery.protocolVersion,
+            ).then(
               (resumed) => {
                 if (resumed) return;
                 setMissionResumePending(false);
@@ -1953,10 +1888,8 @@ export default function DevisNew() {
                 setMissionResumeFailed(true);
               },
             );
-          }}
-          variant="aiSolid"
-        />
-      </View>
+        }}
+      />
     );
   }
 
@@ -1998,7 +1931,6 @@ export default function DevisNew() {
           </Pressable>
         </View>
         <ScrollView
-          accessible
           accessibilityLiveRegion="polite"
           style={{ flex: 1 }}
           contentContainerStyle={{
@@ -2284,7 +2216,9 @@ export default function DevisNew() {
             justifyContent: 'space-between',
           }}
         >
-          {stepIndex > 0 && flow.step !== 'recap' ? (
+          {stepIndex > 0
+          && flow.step !== 'recap'
+          && agentLineMission === null ? (
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={t('devis.back', { personality })}
@@ -2722,9 +2656,32 @@ export default function DevisNew() {
           ) : null}
 
           {/* ── Étape 2 — lignes (saisie libre + totaux réels) ── */}
+          {agentLineMission !== null ? (
+            <QuoteAgentMissionSurface
+              state={agentLineMission}
+              expectedScreenInstanceId={missionScreenInstanceId}
+              actions={missionActions}
+              coordinator={quoteLineMissionCoordinator}
+              personality={personality}
+              confirmedLines={draft.lines}
+              onAuthoritativeRefresh={missionBinding.retry}
+              onAbandonMission={async () => {
+                const confirmed = await confirm({
+                  title: t('devis.mission.line.abandonTitle', { personality }),
+                  message: t('devis.mission.line.abandonBody', { personality }),
+                  challenge: { kind: 'tap' },
+                  destructive: true,
+                });
+                if (!confirmed) return 'dismissed';
+                return await missionBinding.abandonMission()
+                  ? 'abandoned'
+                  : 'failed';
+              }}
+            />
+          ) : null}
           {/* Tag CLIENT sur l'étape prestations (spec fondateur) : sélectionné → chip + ✕
               (désélection) ; aucun → scroll horizontal des clients, un tap sélectionne. */}
-          {flow.step === 'lignes' ? (
+          {legacyLineWriterEnabled ? (
             contextCustomer !== null ? (
               <View style={{ flexDirection: 'row', marginBottom: 10 }}>
                 <View
@@ -2790,7 +2747,7 @@ export default function DevisNew() {
               </ScrollView>
             )
           ) : null}
-          {flow.step === 'lignes' && lineProposal !== null ? (
+          {legacyLineWriterEnabled && lineProposal !== null ? (
             <Card radius={16} padding={14} style={{ borderColor: semantic.ai, borderWidth: 1 }}>
               <Text style={[font('label'), { fontSize: 11.5, color: semantic.aiInk }]}>
                 {lineProposal.title.toUpperCase()}
@@ -2830,7 +2787,7 @@ export default function DevisNew() {
               </View>
             </Card>
           ) : null}
-          {flow.step === 'lignes' ? (
+          {legacyLineWriterEnabled ? (
             <>
               <Text style={[font('screenH1'), { fontSize: 24, color: titleColor }]}>
                 {t('devis.linesTitle', { personality })}
@@ -3503,7 +3460,7 @@ export default function DevisNew() {
 
         {/* Garde bloquante (voix de Bob) + CTA d'avancement — chaque Suivant = devisNext */}
         <Sheet
-          visible={exitSheetOpen}
+          visible={!missionOwnsEntry && exitSheetOpen}
           onClose={continueEditing}
           accessibilityLabel={t('devis.draftExit.title', { personality })}
           closeAccessibilityLabel={t('devis.draftExit.close', { personality })}
@@ -3564,7 +3521,7 @@ export default function DevisNew() {
 
         {/* Picker catalogue (parité manuelle du « catalogue d'abord » vocal) */}
         <Modal
-          visible={cataloguePickerOpen}
+          visible={legacyLineWriterEnabled && cataloguePickerOpen}
           animationType={reduceMotion ? 'none' : 'slide'}
           transparent
           onRequestClose={() => setCataloguePickerOpen(false)}
@@ -3616,6 +3573,7 @@ export default function DevisNew() {
                     accessibilityRole="button"
                     accessibilityLabel={p.label}
                     onPress={() => {
+                      if (!legacyLineWriterEnabled) return;
                       applySuggestion(p);
                       setCataloguePickerOpen(false);
                     }}
@@ -3650,52 +3608,7 @@ export default function DevisNew() {
           </View>
         </Modal>
 
-        {/* S2-GUIDÉ : la session vocale reste VISIBLE sur la modale (le bouton Bob global est
-            masqué par les modales natives) — état + dernière réponse, tap = stop. */}
-        {agentSession.active || agentSession.response !== null ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={t('agent.global.stop', { personality })}
-            accessibilityLiveRegion="polite"
-            onPress={agentSession.active ? agentSession.stop : agentSession.dismissResponse}
-            style={{
-              marginHorizontal: 20,
-              marginBottom: 8,
-              paddingHorizontal: 12,
-              paddingVertical: 8,
-              borderRadius: 12,
-              borderWidth: 1,
-              borderColor: controls.cardBorder,
-              backgroundColor: colors.surface,
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 8,
-            }}
-          >
-            <View
-              style={{
-                width: 8,
-                height: 8,
-                borderRadius: 4,
-                backgroundColor: agentSession.phase === 'listening' ? semantic.success : semantic.ai,
-              }}
-            />
-            <Text numberOfLines={2} style={[font('meta'), { color: colors.ink800, flex: 1 }]}>
-              {agentSession.response ??
-                t(
-                  agentSession.phase === 'listening'
-                    ? 'agent.global.listening'
-                    : agentSession.phase === 'thinking'
-                      ? 'agent.global.thinking'
-                      : agentSession.phase === 'speaking'
-                        ? 'agent.global.speaking'
-                        : 'agent.global.idle',
-                  { personality },
-                )}
-            </Text>
-          </Pressable>
-        ) : null}
-        {flow.step !== 'recap' ? (
+        {flow.step !== 'recap' && agentLineMission === null ? (
           <View style={{ paddingHorizontal: 18, paddingTop: 6, paddingBottom: insets.bottom + 16, gap: 10 }}>
             {guardMsg !== null ? (
               <Text

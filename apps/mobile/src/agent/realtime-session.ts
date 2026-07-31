@@ -8,8 +8,13 @@
  */
 import type { AgentContext } from '@bob/ai';
 import type {
+  RealtimeAgentMissionProtocolVersion,
   RealtimeAgentMissionSession,
   RealtimeVoiceConfig,
+} from '@bob/api-client';
+import {
+  REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
+  REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
 } from '@bob/api-client';
 import type {
   LegacyVoiceFallbackPort,
@@ -93,10 +98,17 @@ export interface RealtimeSessionDeps {
    * reconnexion : aucun second GET ne peut faire basculer de provider au milieu d'une session.
    */
   readonly negotiate: () => Promise<RealtimeVoiceConfig | null>;
+  /**
+   * Porte de confirmation temporelle appelée uniquement après qu'une négociation autoritaire
+   * a choisi le protocole Mission V2. V1, OpenAI natif sans Mission et les replis legacy ne
+   * dépendent jamais de cette confirmation.
+   */
+  readonly ensureConfirmedTimeZoneForMissionV2: () => Promise<boolean>;
   readonly updateContext: RealtimeContextUpdateFn;
   /** Fabrique l'orchestrateur ; `onPrimaryCreated` capture chaque transport primaire frais. */
   readonly createOrchestrator: (
     negotiation: RealtimeVoiceConfig,
+    agentMissionProtocolVersion: RealtimeAgentMissionProtocolVersion | null,
     legacyFallback: LegacyVoiceFallbackPort,
     currentFence: () => RealtimePublishedFence | null,
     onPrimaryCreated: (transport: RealtimeTransportLike) => void,
@@ -121,9 +133,13 @@ export type RealtimeStartOutcome =
   | 'realtime'
   | 'unavailable'
   | 'fallback'
+  | 'cancelled'
   | 'failed_closed';
 
-export type RealtimeMissionResumeOutcome = 'resumed' | 'failed_closed';
+export type RealtimeMissionResumeOutcome =
+  | 'resumed'
+  | 'cancelled'
+  | 'failed_closed';
 
 const MISSION_RESUME_READY_TIMEOUT_MS = 15_000;
 const MANUAL_HANDOFF_TURN_TIMEOUT_MS = 5_000;
@@ -174,7 +190,21 @@ export class RealtimeSessionController {
   private agentMissionCapabilityObserved = false;
   private agentMissionSessionTransferred = false;
   private agentMissionRealtimeSessionId: string | null = null;
-  private requireMissionV1ForStart = false;
+  private agentMissionProtocolVersion: RealtimeAgentMissionProtocolVersion | null = null;
+  /**
+   * Premier protocole observé pour cette génération contrôleur. Une reconnexion ne peut jamais
+   * rabaisser V2 vers V1 (ni l'inverse), même après transfert du handle au runtime.
+   */
+  private observedAgentMissionProtocolVersion:
+    RealtimeAgentMissionProtocolVersion | null = null;
+  private requiredMissionProtocolVersion: RealtimeAgentMissionProtocolVersion | null = null;
+  /**
+   * Protocole réellement demandé au transport courant. Il est non nul aussi lors d'un start
+   * frais M2-A : l'absence de capability est alors une rupture de contrat, jamais une permission
+   * de rallumer le cerveau legacy.
+   */
+  private requestedAgentMissionProtocolVersion:
+    RealtimeAgentMissionProtocolVersion | null = null;
   private agentMissionContextConfirmed = false;
   private missionReadyWaiter: {
     readonly promise: Promise<boolean>;
@@ -195,33 +225,73 @@ export class RealtimeSessionController {
   }
 
   async start(): Promise<RealtimeStartOutcome> {
-    return this.startInternal(false);
+    return this.startInternal(null);
   }
 
   /**
-   * Reprise froide Mission V1 : aucune sortie legacy n'est autorisée.
-   *
-   * `resumed` signifie capability transférée, contexte exact confirmé et micro ouvert. Un simple
-   * socket `ready`, une négociation sans capability ou un fallback fournisseur échoue fermé.
+   * Reprise froide N-1/M1-C. Elle reste disponible uniquement pour une mission durable V1
+   * détectée avant transport ; elle ne constitue jamais un fallback d'une négociation V2.
    */
   async resumeMissionV1(): Promise<RealtimeMissionResumeOutcome> {
-    const outcome = await this.startInternal(true);
-    return outcome === 'realtime' ? 'resumed' : 'failed_closed';
+    const outcome = await this.startInternal(REALTIME_AGENT_MISSION_PROTOCOL_VERSION);
+    return outcome === 'realtime'
+      ? 'resumed'
+      : outcome === 'cancelled'
+        ? 'cancelled'
+        : 'failed_closed';
+  }
+
+  /**
+   * Reprise froide Mission M2-A/V2 : aucune sortie legacy n'est autorisée.
+   *
+   * `resumed` signifie capability transférée, contexte exact confirmé et micro ouvert. Un simple
+   * socket `ready`, une capability V1, une négociation sans capability ou un fallback fournisseur
+   * échoue fermé.
+   */
+  async resumeMissionV2(): Promise<RealtimeMissionResumeOutcome> {
+    const outcome = await this.startInternal(REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION);
+    return outcome === 'realtime'
+      ? 'resumed'
+      : outcome === 'cancelled'
+        ? 'cancelled'
+        : 'failed_closed';
   }
 
   private async startInternal(
-    requireMissionV1: boolean,
+    requiredMissionProtocolVersion: RealtimeAgentMissionProtocolVersion | null,
   ): Promise<RealtimeStartOutcome> {
+    const missionRequired = requiredMissionProtocolVersion !== null;
+    if (missionRequired && this.deps.agentMissionRuntime === undefined) {
+      return 'failed_closed';
+    }
+    // Un précédent teardown qui n'a pas pu rendre sa capability ne doit jamais être recouvert
+    // par une nouvelle négociation. On retente une fois, puis on échoue fermé sans ouvrir de
+    // transport : deux propriétaires runtime seraient une corruption de session.
+    if (
+      !this.activeFlag
+      && this.agentMissionSessionTransferred
+      && !this.releaseAgentMissionSession()
+    ) {
+      this.notifyFailedClosed('agent_mission_negotiation_failed');
+      // Une capability encore possédée interdit aussi le start « normal » : retourner
+      // `unavailable` autoriserait AgentSession à démarrer le cerveau legacy en parallèle.
+      return 'failed_closed';
+    }
     if (this.activeFlag) {
-      return !requireMissionV1
-        || (this.agentMissionSessionTransferred && this.agentMissionContextConfirmed)
+      return !missionRequired
+        || (
+          this.agentMissionSessionTransferred
+          && this.agentMissionContextConfirmed
+          && this.agentMissionProtocolVersion === requiredMissionProtocolVersion
+        )
         ? 'realtime'
         : 'failed_closed';
     }
     const gen = ++this.generation;
-    this.requireMissionV1ForStart = requireMissionV1;
+    this.requiredMissionProtocolVersion = requiredMissionProtocolVersion;
+    this.observedAgentMissionProtocolVersion = null;
     this.agentMissionContextConfirmed = false;
-    this.prepareMissionReadyWaiter(requireMissionV1);
+    this.prepareMissionReadyWaiter(missionRequired);
     this.fallbackTaken = false;
     this.failedClosedNotified = false;
     this.pendingTerminalDecision = null;
@@ -235,21 +305,69 @@ export class RealtimeSessionController {
       negotiation = await this.deps.negotiate();
     } catch {
       this.resolveMissionReady(false);
-      return requireMissionV1 ? 'failed_closed' : 'unavailable';
+      return missionRequired ? 'failed_closed' : 'unavailable';
     }
     if (!negotiation?.available) {
       this.resolveMissionReady(false);
-      return requireMissionV1 ? 'failed_closed' : 'unavailable';
+      return missionRequired ? 'failed_closed' : 'unavailable';
     }
+    if (
+      missionRequired
+      && (
+        negotiation.transport !== 'webrtc'
+        || negotiation.speechDelivery !== 'audited-signed-url-v1'
+      )
+    ) {
+      this.resolveMissionReady(false);
+      return 'failed_closed';
+    }
+    const requestedAgentMissionProtocolVersion:
+      RealtimeAgentMissionProtocolVersion | null =
+        negotiation.transport === 'webrtc'
+          && negotiation.speechDelivery === 'audited-signed-url-v1'
+          ? (
+              requiredMissionProtocolVersion
+              ?? REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
+            )
+          : null;
+    if (
+      requestedAgentMissionProtocolVersion
+        === REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
+    ) {
+      let timeZoneConfirmed = false;
+      try {
+        timeZoneConfirmed =
+          await this.deps.ensureConfirmedTimeZoneForMissionV2();
+      } catch {
+        timeZoneConfirmed = false;
+      }
+      if (gen !== this.generation) {
+        this.resolveMissionReady(false);
+        return missionRequired ? 'failed_closed' : 'unavailable';
+      }
+      if (!timeZoneConfirmed) {
+        this.resolveMissionReady(false);
+        return 'cancelled';
+      }
+    }
+    if (
+      requestedAgentMissionProtocolVersion !== null
+      && this.deps.agentMissionRuntime === undefined
+    ) {
+      this.resolveMissionReady(false);
+      return 'failed_closed';
+    }
+    this.requestedAgentMissionProtocolVersion =
+      requestedAgentMissionProtocolVersion;
     if (gen !== this.generation) {
       this.resolveMissionReady(false);
-      return requireMissionV1 ? 'failed_closed' : 'unavailable';
+      return missionRequired ? 'failed_closed' : 'unavailable';
     }
     this.contextPublished = false;
     const fallbackPort: LegacyVoiceFallbackPort = {
       start: async (input) => {
         const missionAuthorityObserved = this.hasObservedMissionAuthority();
-        this.disposeAgentMissionSession();
+        const missionReleased = this.releaseAgentMissionSession();
         // Le primaire est ENTIÈREMENT fermé (garantie orchestrateur). La session temps réel
         // est TERMINÉE : on se scelle (génération invalidée, événements tardifs ignorés,
         // prochain start() propre) SANS stopper l'orchestrateur depuis son propre callback.
@@ -261,9 +379,14 @@ export class RealtimeSessionController {
         this.publisher = null;
         this.controlGate?.close?.();
         this.controlGate = null;
-        if (missionAuthorityObserved) {
+        if (!missionReleased) {
+          this.notifyFailedClosed('agent_mission_negotiation_failed');
+        } else if (
+          missionAuthorityObserved
+          || this.requestedAgentMissionProtocolVersion !== null
+        ) {
           this.notifyFailedClosed(input.reason);
-        } else if (!this.requireMissionV1ForStart) {
+        } else {
           this.hooks.onFallback(input.reason, input.channel);
         }
         return { close: async () => undefined };
@@ -271,6 +394,7 @@ export class RealtimeSessionController {
     };
     this.orchestrator = this.deps.createOrchestrator(
       negotiation,
+      requestedAgentMissionProtocolVersion,
       fallbackPort,
       () => this.publisher?.fence ?? null,
       (transport) => this.adoptPrimary(transport),
@@ -281,23 +405,29 @@ export class RealtimeSessionController {
     this.activeFlag = true;
     const state = await this.orchestrator.start();
     if (this.fallbackTaken) {
-      return requireMissionV1 || this.hasObservedMissionAuthority()
+      return missionRequired
+        || requestedAgentMissionProtocolVersion !== null
+        || this.hasObservedMissionAuthority()
         ? 'failed_closed'
         : 'fallback';
     }
     if (gen !== this.generation) {
       this.resolveMissionReady(false);
-      return requireMissionV1 ? 'failed_closed' : 'unavailable';
+      return missionRequired ? 'failed_closed' : 'unavailable';
     }
     if (state.phase === 'failed' || state.phase === 'stopped' || state.phase === 'legacy') {
       const failedClosed =
-        requireMissionV1
+        missionRequired
+        || requestedAgentMissionProtocolVersion !== null
         || this.hasObservedMissionAuthority()
         || state.lastFailureReason === 'agent_mission_negotiation_failed';
       await this.stop('user');
       return failedClosed ? 'failed_closed' : 'unavailable';
     }
-    if (requireMissionV1 && !await this.waitForMissionReady(gen)) {
+    if (missionRequired && !await this.waitForMissionReady(
+      gen,
+      requiredMissionProtocolVersion,
+    )) {
       if (gen === this.generation) await this.stop('user');
       return 'failed_closed';
     }
@@ -320,21 +450,8 @@ export class RealtimeSessionController {
 
   /** Détruit la capability terminalisée puis ferme le transport, dans cet ordre. */
   async stopAfterManualHandoff(): Promise<void> {
-    const realtimeSessionId = this.agentMissionRealtimeSessionId;
-    let released = true;
-    if (realtimeSessionId !== null && this.agentMissionSessionTransferred) {
-      try {
-        released =
-          this.deps.agentMissionRuntime?.release(realtimeSessionId) === true;
-      } catch {
-        released = false;
-      }
-      if (released) {
-        this.agentMissionSessionTransferred = false;
-        this.agentMissionRealtimeSessionId = null;
-      }
-    }
-    await this.stop('user');
+    this.generation += 1;
+    const released = await this.teardown('user');
     if (!released) throw new Error('agent_mission_release_failed');
   }
 
@@ -413,10 +530,12 @@ export class RealtimeSessionController {
     await this.teardown(reason);
   }
 
-  private async teardown(reason: 'user' | 'background' | 'unmount'): Promise<void> {
+  private async teardown(
+    reason: 'user' | 'background' | 'unmount',
+  ): Promise<boolean> {
     this.resolveMissionReady(false);
     this.resolveAllTurnSettlementWaiters(false);
-    this.disposeAgentMissionSession();
+    const missionReleased = this.releaseAgentMissionSession();
     this.activeFlag = false;
     this.pendingControlAcks.clear();
     this.controlAckOutcomes.clear();
@@ -433,6 +552,10 @@ export class RealtimeSessionController {
     this.orchestrator = null;
     this.lastTransport = null;
     if (orchestrator) await orchestrator.stop(reason);
+    if (!missionReleased) {
+      this.notifyFailedClosed('agent_mission_negotiation_failed');
+    }
+    return missionReleased;
   }
 
   private async handleEvent(event: RealtimeResilienceEvent): Promise<void> {
@@ -600,7 +723,9 @@ export class RealtimeSessionController {
       case 'fallback':
         // L'autorité Mission meurt au premier signal de dégradation, avant le hangup réseau,
         // même si l'orchestrateur attend encore la preuve de fermeture audio.
-        this.disposeAgentMissionSession();
+        if (!this.releaseAgentMissionSession()) {
+          this.notifyFailedClosed('agent_mission_negotiation_failed');
+        }
         return;
       default:
         return;
@@ -637,7 +762,7 @@ export class RealtimeSessionController {
   /** Une reconnexion ne change pas la génération de mission. Elle doit néanmoins rendre
    * immédiatement inertes le publieur, le gate et les décisions du peer remplacé. */
   private adoptPrimary(transport: RealtimeTransportLike): void {
-    this.disposeAgentMissionSession();
+    this.prepareAgentMissionPrimaryReplacement();
     // Chaque primaire FRAIS naît micro fermé : le contexte part TOUJOURS avant la voix.
     transport.setMicrophoneEnabled(false);
     this.primaryGeneration += 1;
@@ -695,15 +820,17 @@ export class RealtimeSessionController {
     reason: RealtimeFallbackReason,
   ): Promise<void> {
     if (!this.isCurrentPrimary(controllerGeneration, primaryGeneration, transport)) return;
-    const missionAuthorityObserved = this.hasObservedMissionAuthority();
+    const missionAuthorityRequired =
+      this.requestedAgentMissionProtocolVersion !== null
+      || this.hasObservedMissionAuthority();
     const stoppedGeneration = this.generation + 1;
     await this.stop('user');
     // Le stop de l'ancien orchestrateur peut finir après le start d'une nouvelle mission.
     if (this.generation === stoppedGeneration && !this.activeFlag) {
       const channel = legacyFallbackChannelFor(reason);
-      if (missionAuthorityObserved) {
+      if (missionAuthorityRequired) {
         this.notifyFailedClosed(reason);
-      } else if (channel !== null && !this.requireMissionV1ForStart) {
+      } else if (channel !== null) {
         this.hooks.onFallback(reason, channel);
       }
     }
@@ -729,9 +856,10 @@ export class RealtimeSessionController {
     if (!this.isCurrentPrimary(controllerGeneration, primaryGeneration, transport)) return false;
     transport.setMicrophoneEnabled(true);
     if (
-      this.requireMissionV1ForStart
+      this.requiredMissionProtocolVersion !== null
       && this.agentMissionSessionTransferred
       && this.agentMissionContextConfirmed
+      && this.agentMissionProtocolVersion === this.requiredMissionProtocolVersion
     ) {
       this.resolveMissionReady(true);
     }
@@ -846,15 +974,53 @@ export class RealtimeSessionController {
     );
   }
 
-  private disposeAgentMissionSession(): void {
+  /**
+   * Prépare un nouveau peer sans créer de trou de propriété : si la capability a déjà été
+   * transférée, le runtime la conserve jusqu'à l'adoption atomique de la capability fraîche.
+   * Toute négociation fraîche refusée terminera ensuite par `releaseAgentMissionSession()`.
+   */
+  private prepareAgentMissionPrimaryReplacement(): void {
     this.invalidateAgentMissionContext();
     const session = this.agentMissionSession;
     this.agentMissionSession = null;
     this.agentMissionSessionClaimed = false;
-    this.agentMissionSessionTransferred = false;
-    this.agentMissionRealtimeSessionId = null;
     this.agentMissionContextConfirmed = false;
     session?.dispose();
+    if (!this.agentMissionSessionTransferred) {
+      this.agentMissionRealtimeSessionId = null;
+      this.agentMissionProtocolVersion = null;
+    }
+  }
+
+  /**
+   * Libération terminale. Une capability transférée appartient exclusivement au runtime :
+   * seul `release()` peut la détruire. En cas de refus, ses coordonnées restent mémorisées pour
+   * interdire tout nouveau start et permettre une nouvelle tentative explicite.
+   */
+  private releaseAgentMissionSession(): boolean {
+    this.invalidateAgentMissionContext();
+    const session = this.agentMissionSession;
+    this.agentMissionSession = null;
+    this.agentMissionSessionClaimed = false;
+    this.agentMissionContextConfirmed = false;
+    session?.dispose();
+
+    const realtimeSessionId = this.agentMissionRealtimeSessionId;
+    if (this.agentMissionSessionTransferred && realtimeSessionId !== null) {
+      let released = false;
+      try {
+        released =
+          this.deps.agentMissionRuntime?.release(realtimeSessionId) === true;
+      } catch {
+        released = false;
+      }
+      if (!released) return false;
+    }
+
+    this.agentMissionSessionTransferred = false;
+    this.agentMissionRealtimeSessionId = null;
+    this.agentMissionProtocolVersion = null;
+    return true;
   }
 
   private claimAgentMissionSession(
@@ -864,16 +1030,32 @@ export class RealtimeSessionController {
     const session = transport.takeAgentMissionSession();
     this.agentMissionSessionClaimed = true;
     if (session === null) {
-      return !this.requireMissionV1ForStart && !this.agentMissionCapabilityObserved;
+      return this.requestedAgentMissionProtocolVersion === null
+        && !this.agentMissionCapabilityObserved;
     }
     this.agentMissionCapabilityObserved = true;
-    if (session.realtimeSessionId !== expectedRealtimeSessionId) {
-      this.agentMissionSession = session;
-      this.agentMissionSessionTransferred = false;
-      this.agentMissionRealtimeSessionId = null;
+    const expectedProtocolVersion =
+      this.requiredMissionProtocolVersion
+      ?? this.requestedAgentMissionProtocolVersion;
+    if (
+      expectedProtocolVersion !== null
+      && session.protocolVersion !== expectedProtocolVersion
+    ) {
+      session.dispose();
       return false;
     }
-    this.agentMissionRealtimeSessionId = session.realtimeSessionId;
+    if (
+      this.observedAgentMissionProtocolVersion !== null
+      && session.protocolVersion !== this.observedAgentMissionProtocolVersion
+    ) {
+      session.dispose();
+      return false;
+    }
+    this.observedAgentMissionProtocolVersion = session.protocolVersion;
+    if (session.realtimeSessionId !== expectedRealtimeSessionId) {
+      session.dispose();
+      return false;
+    }
     let transferred = false;
     try {
       transferred = this.deps.agentMissionRuntime?.adopt(session) === true;
@@ -883,6 +1065,8 @@ export class RealtimeSessionController {
     if (transferred) {
       this.agentMissionSession = null;
       this.agentMissionSessionTransferred = true;
+      this.agentMissionRealtimeSessionId = session.realtimeSessionId;
+      this.agentMissionProtocolVersion = session.protocolVersion;
       this.agentMissionContextConfirmed = false;
       return true;
     }
@@ -891,12 +1075,12 @@ export class RealtimeSessionController {
       // M1-C. Continuer ouvrirait une conversation impossible à reprendre après navigation.
       session.dispose();
       this.agentMissionSession = null;
-      this.agentMissionRealtimeSessionId = null;
-      this.agentMissionSessionTransferred = false;
       return false;
     }
     this.agentMissionSession = session;
     this.agentMissionSessionTransferred = false;
+    this.agentMissionRealtimeSessionId = session.realtimeSessionId;
+    this.agentMissionProtocolVersion = session.protocolVersion;
     return true;
   }
 
@@ -974,8 +1158,15 @@ export class RealtimeSessionController {
     waiter?.resolve(ready);
   }
 
-  private async waitForMissionReady(generation: number): Promise<boolean> {
-    if (this.agentMissionSessionTransferred && this.agentMissionContextConfirmed) {
+  private async waitForMissionReady(
+    generation: number,
+    requiredProtocolVersion: RealtimeAgentMissionProtocolVersion,
+  ): Promise<boolean> {
+    if (
+      this.agentMissionSessionTransferred
+      && this.agentMissionContextConfirmed
+      && this.agentMissionProtocolVersion === requiredProtocolVersion
+    ) {
       this.resolveMissionReady(true);
       return true;
     }
@@ -996,7 +1187,8 @@ export class RealtimeSessionController {
       && generation === this.generation
       && this.activeFlag
       && this.agentMissionSessionTransferred
-      && this.agentMissionContextConfirmed;
+      && this.agentMissionContextConfirmed
+      && this.agentMissionProtocolVersion === requiredProtocolVersion;
   }
 
   private waitForTurnSettlement(turnId: string): Promise<boolean> {

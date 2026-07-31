@@ -1188,7 +1188,7 @@ BEGIN
          ELSE 0
        END
      ) THEN
-    RAISE EXCEPTION 'AgentMission M2-A disabled flag exact version revalidation drift';
+    RAISE EXCEPTION 'AgentMission M2-A flag exact version revalidation drift';
   END IF;
 END;
 $agent_mission_realtime_release_certificate$;

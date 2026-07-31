@@ -70,11 +70,19 @@ export function StatusBadge({ label, variant }: StatusBadgeProps) {
 export interface ChipProps {
   label: string;
   active?: boolean;
+  disabled?: boolean;
   onPress?: () => void;
+  accessibilityRole?: 'button' | 'radio';
 }
 
 /** Chip de filtre — hauteur 34, hitSlop pour un hit-target ≥ 44. */
-export function Chip({ label, active = false, onPress }: ChipProps) {
+export function Chip({
+  label,
+  active = false,
+  disabled = false,
+  onPress,
+  accessibilityRole = 'button',
+}: ChipProps) {
   const { colors, theme, radius } = useTheme();
   const c = chipColors(active, {
     ink: theme.ink,
@@ -85,9 +93,14 @@ export function Chip({ label, active = false, onPress }: ChipProps) {
   return (
     <Pressable
       {...(onPress ? { onPress } : {})}
-      accessibilityRole="button"
+      accessibilityRole={accessibilityRole}
       accessibilityLabel={label}
-      accessibilityState={{ selected: active }}
+      accessibilityState={
+        accessibilityRole === 'radio'
+          ? { checked: active, disabled }
+          : { selected: active, disabled }
+      }
+      disabled={disabled}
       hitSlop={{ top: CHIP_HIT_SLOP, bottom: CHIP_HIT_SLOP }}
       style={({ pressed }) => ({
         height: CHIP_HEIGHT,
@@ -100,7 +113,7 @@ export function Chip({ label, active = false, onPress }: ChipProps) {
         borderWidth: 1,
         borderColor: c.border,
         // Press feedback standard (passe feel 18/07) — même langage que PressableScale.
-        opacity: pressed ? 0.8 : 1,
+        opacity: disabled ? 0.48 : pressed ? 0.8 : 1,
         transform: [{ scale: pressed ? 0.97 : 1 }],
       })}
     >

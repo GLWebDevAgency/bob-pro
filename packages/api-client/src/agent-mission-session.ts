@@ -14,13 +14,9 @@ import type {
   StartQuoteAgentMissionOutput,
 } from '@bob/core';
 
-/**
- * Version demandée par le mobile publié tant que M2-A-3 n'a pas certifié la projection device.
- *
- * Ne pas remplacer cette constante par `2` : le support M2-A est additif et explicite via
- * `REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION`.
- */
+/** Contrat N-1 conservé byte-for-byte pour les clients déjà publiés. */
 export const REALTIME_AGENT_MISSION_PROTOCOL_VERSION = 1 as const;
+/** Contrat M2-A demandé explicitement par le transport GPT/OpenAI M2-A-3. */
 export const REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION = 2 as const;
 export type RealtimeAgentMissionProtocolVersion =
   | typeof REALTIME_AGENT_MISSION_PROTOCOL_VERSION
@@ -164,6 +160,20 @@ export interface RealtimeAgentMissionPatchQuoteLineOutput {
   readonly presentation: QuoteAgentMissionPresentationV1;
 }
 
+export interface RealtimeAgentMissionCancelPendingQuoteLineInput
+extends RealtimeAgentMissionQuoteLineCommandBase {
+  readonly pendingLineId: string;
+  readonly expectedWorkRevision: number;
+}
+
+export interface RealtimeAgentMissionCancelPendingQuoteLineOutput {
+  readonly outcome: 'cancelled' | 'replayed';
+  readonly pendingLineId: string;
+  readonly mission: AgentMissionViewV1;
+  readonly continuation: RealtimeAgentMissionLineContinuation;
+  readonly presentation: QuoteAgentMissionPresentationV1;
+}
+
 export interface RealtimeAgentMissionLineProposalDecisionInput
 extends RealtimeAgentMissionQuoteLineCommandBase {
   readonly decisionId: string;
@@ -207,9 +217,6 @@ interface RealtimeAgentMissionSessionCommon {
   readonly protocolVersion: RealtimeAgentMissionProtocolVersion;
   readonly realtimeSessionId: string;
   readonly disposed: boolean;
-  getCurrentQuoteCreation(
-    signal?: AbortSignal,
-  ): Promise<Result<{ readonly mission: AgentMissionViewV1 | null }, AppError>>;
   startQuoteCreation(
     input: RealtimeAgentMissionStartQuoteInput,
     signal?: AbortSignal,
@@ -233,11 +240,20 @@ interface RealtimeAgentMissionSessionCommon {
 export interface RealtimeAgentMissionSessionV1
 extends RealtimeAgentMissionSessionCommon {
   readonly protocolVersion: typeof REALTIME_AGENT_MISSION_PROTOCOL_VERSION;
+  getCurrentQuoteCreation(
+    signal?: AbortSignal,
+  ): Promise<Result<{ readonly mission: AgentMissionViewV1 | null }, AppError>>;
 }
 
 export interface RealtimeAgentMissionSessionV2
 extends RealtimeAgentMissionSessionCommon {
   readonly protocolVersion: typeof REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION;
+  getCurrentQuoteCreation(
+    signal?: AbortSignal,
+  ): Promise<Result<{
+    readonly mission: AgentMissionViewV1 | null;
+    readonly presentation: QuoteAgentMissionPresentationV1 | null;
+  }, AppError>>;
   acknowledgeQuoteScreen(
     input: RealtimeAgentMissionAcknowledgeQuoteScreenInput,
     signal?: AbortSignal,
@@ -258,6 +274,12 @@ extends RealtimeAgentMissionSessionCommon {
     input: RealtimeAgentMissionPatchQuoteLineInput,
     signal?: AbortSignal,
   ): Promise<Result<RealtimeAgentMissionPatchQuoteLineOutput, AppError>>;
+  cancelPendingQuoteLine(
+    input: RealtimeAgentMissionCancelPendingQuoteLineInput,
+    signal?: AbortSignal,
+  ): Promise<
+    Result<RealtimeAgentMissionCancelPendingQuoteLineOutput, AppError>
+  >;
   decideQuoteLineProposal(
     input: RealtimeAgentMissionLineProposalDecisionInput,
     signal?: AbortSignal,

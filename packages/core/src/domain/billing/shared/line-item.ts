@@ -11,6 +11,34 @@ export type LineCategory = 'labor' | 'supply' | 'travel' | 'disbursement' | 'sub
  */
 export const MAX_BILLING_AMOUNT_CENTS = 1_500_000_000;
 
+/**
+ * Montant HT brut canonique d'une ligne, avec la même politique d'arrondi que Quote, Invoice,
+ * Factur-X et les rendus. `null` signifie que l'entrée ne respecte pas les bornes facturables.
+ */
+export function calculateBillingLineTotalCents(input: {
+  readonly qty: number;
+  readonly unitPriceHT: number;
+}): number | null {
+  if (
+    !Number.isFinite(input.qty)
+    || input.qty <= 0
+    || Math.round(input.qty * 1_000) !== input.qty * 1_000
+    || !Number.isSafeInteger(input.unitPriceHT)
+    || Object.is(input.unitPriceHT, -0)
+    || input.unitPriceHT < 0
+    || input.unitPriceHT > MAX_BILLING_AMOUNT_CENTS
+  ) {
+    return null;
+  }
+  const total = Math.round(input.qty * input.unitPriceHT);
+  return Number.isSafeInteger(total)
+    && !Object.is(total, -0)
+    && total >= 0
+    && total <= MAX_BILLING_AMOUNT_CENTS
+    ? total
+    : null;
+}
+
 /** Tous les caractères de contrôle Unicode sont interdits dans un texte facturable. */
 export function hasBillingControlCharacter(value: string): boolean {
   return /\p{Cc}/u.test(value);

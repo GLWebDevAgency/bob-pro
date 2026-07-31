@@ -9,6 +9,9 @@ import {
   MAX_BILLING_AMOUNT_CENTS,
 } from '../../domain/billing/shared/line-item';
 import {
+  equivalentBillingUnitReferences,
+} from '../../domain/billing/shared/billing-unit-reference';
+import {
   isVatRate,
   type VatRate,
 } from '../../domain/billing/shared/vat-rate';
@@ -752,7 +755,7 @@ function applyQuoteLinePatch(
         requiredFact: null,
         catalogueUnitOverrideConfirmed:
           selectedCatalogue !== null
-          && patch.value !== selectedCatalogue.unit,
+          && !equivalentBillingUnitReferences(patch.value, selectedCatalogue.unit),
         ...resetProposal,
       };
     case 'unit_price':

@@ -22,7 +22,7 @@ Règles non négociables :
 
 1. **Toute modification de ce document — ou d'un défaut de code qu'il fige — exige l'accord explicite Claude + GPT.** Le feature freeze V1 est acté (`PROGRAMME_V1_PUBLICATION.md`) : plus aucun ajout ni changement de valeur sans décision commune.
 2. **Aucune valeur secrète n'apparaît ici.** Les secrets sont désignés par leur **nom** uniquement ; leurs valeurs vivent exclusivement dans les gestionnaires d'environnement (Railway, environnements GitHub, Vercel).
-3. Le **bloc machine-readable** en fin de document (marqueurs `FLAGS_V1_JSON_START` / `FLAGS_V1_JSON_END`) est la **source du test anti-drift** `apps/api/src/flags-matrix-v1.test.ts`. Couverture mécanique réelle : **scope `api`** (défauts résolus par `env.ts` + liste de noms verrouillée en dur — supprimer une entrée du bloc fait aussi échouer la suite), **scope `mobile`** (comparaison aux blocs `env` des profils `preview` ET `production` de `eas.json`) et **`MUSTANG_VERSION`** (comparé à `ci.yml`). Les scopes `web` (Vercel) et les variables de service Railway (`RUN_RLS_CERT`, `RLS_CERT_CLEANUP`) ne sont **pas vérifiables depuis le repo** : contrôle humain (À confirmer #2).
+3. Le **bloc machine-readable** en fin de document (marqueurs `FLAGS_V1_JSON_START` / `FLAGS_V1_JSON_END`) est la **source du test anti-drift** `apps/api/src/flags-matrix-v1.test.ts`. Couverture mécanique réelle : **scope `api`** (baseline de production et défauts résolus par `env.ts` + liste de noms verrouillée en dur — supprimer une entrée du bloc fait aussi échouer la suite), **scope `mobile`** (comparaison aux blocs `env` des profils `preview` ET `production` de `eas.json`) et **`MUSTANG_VERSION`** (comparé à `ci.yml`). L’exception Mission V2 de staging est certifiée par son workflow et son reçu live v3, jamais par une valeur `true` dans cette baseline production. Les scopes `web` (Vercel) et les variables de service Railway (`RUN_RLS_CERT`, `RLS_CERT_CLEANUP`) ne sont **pas vérifiables depuis le repo** : contrôle humain (À confirmer #2).
 
 Légende de la colonne « Valeur V1 figée » :
 
@@ -57,7 +57,7 @@ La voix V1 = **Voxtral tour-par-tour** (STT + TTS via `MISTRAL_API_KEY`), périm
 
 ---
 
-## 2. Bob Live (temps réel full-duplex) & Mistral v2 — tout OFF
+## 2. Bob Live & missions temps réel — production OFF ; staging/preview sous rollout contrôlé
 
 Décision actée : ADR-0001 rollout fermé + **garde liveness `nextServerSequence`** (challenge Claude 20/07, GO_AVEC_CORRECTIFS) — ne **jamais** flipper le replay v2 avant le fix livré par GPT.
 
@@ -77,6 +77,28 @@ Décision actée : ADR-0001 rollout fermé + **garde liveness `nextServerSequenc
 | `BOB_LIVE_AUDIT_PROVIDER` / `BOB_LIVE_LOCAL_AUDIT_BASE_URL` / `_TOKEN` | Railway | `local-whisper` / absents (`env.ts:96-98`) | **défaut / ABSENTS** | Si live ON : `openai` refusé au boot (`env.ts:736-741`), URL loopback only | Sans sidecar = live impossible par construction (voulu) |
 | `BOB_LIVE_MISTRAL_WEBSOCKET_URL` + `MISTRAL_REALTIME_STT_MODEL` / `_BASE_URL` / `_TARGET_DELAY_MS` | Railway | loopback ws / `voxtral-mini-transcribe-realtime-2602` / `wss://api.mistral.ai` / 240 (`env.ts:141-152`) | **défauts** (inertes live OFF) | Host épinglé `api.mistral.ai` en prod live (`env.ts:791-796`) | Host détourné = refusé au boot (fail-closed) |
 | `bob.voiceMode` (préférence AsyncStorage mobile — pas une env) | code mobile (`settings.ts:30-49`) | `native` | **aucune action** — arbitre du live = exclusivement serveur | Garder v2 OFF ne requiert AUCUN rebuild mobile | Aucun (repli sûr) |
+
+### 2.1 Exception bornée — Mission V2 globale en preview staging
+
+Décision fondateur du 31/07/2026, contre-signée Claude et GPT dans
+`DECISION_M2A3_STAGING_PREVIEW_20260731.md`. Le tableau ci-dessous décrit une **cible autorisée** :
+l’état réel n’est ON qu’après vérification d’un reçu
+`bob.agent-mission.m2a3.staging-preview-evidence@3`. Il n’accorde aucun droit à la production et ne
+promet pas le statut `certified`, qui reste conditionné aux preuves sur appareils physiques.
+
+| Flag / contrôle | Staging preview | Production | Garde normative |
+|---|---|---|---|
+| `BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED` | **`true`** comme socle technique requis par Mission V2 ; le flag DB V1 reste OFF | **`false`** | Le couplage runtime est fail-closed ; le master seul ne rend jamais le legacy accessible |
+| `BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED` | **`true`** | **`false`** | `env.ts` et le gate release refusent `true` hors `CABINET_RELEASE_ENV=staging` |
+| `BOB_AGENT_MISSION_HMAC_KEY_VERSION` / `_KEYRING` | **posés**, version et keyring stables, valeurs secrètes non documentées | **ABSENTS** tant que les masters sont OFF | Bloc tout-ou-rien ; la version courante doit exister dans le keyring |
+| DB `bob.agent_missions.quote.v1` | `enabled=false`, `killSwitch=false`, zéro sujet | mêmes valeurs | Le reçu et `release.sh` prouvent que le legacy reste dormant |
+| DB `bob.agent_missions.quote.m2a` | `enabled=true`, `killSwitch=false`, zéro sujet | `enabled=false`, `killSwitch=false`, zéro sujet | Actor exact `system:github:agent-mission-m2a3-staging-preview`, CAS versionné et état relu |
+| `BOB_M2A3_STAGING_PREVIEW_OWNER` / `_RELEASE_SHA` / `_ACTIVATION_RUN` | propriétaire, SHA servi et run d’activation exacts | **ABSENTS** | Toute propriété étrangère ou partielle bloque la mutation et la preuve |
+
+Activation et désactivation passent exclusivement par
+`.github/workflows/agent-mission-m2a3-staging-preview.yml`, après une release staging normale du SHA
+exact sur `main`. En échec ou annulation, le rollback ferme d’abord le flag DB, puis restaure les
+variables et redéploie l’artefact Railway capturé avant toute mutation.
 
 ---
 
@@ -259,7 +281,7 @@ Verrouillage par tests : les défauts quotas/baux sont déjà figés par `apps/a
 
 ## Bloc machine-readable (source du test anti-drift)
 
-Flags **non sensibles** à valeur figée. `enforcement` : `"default"` = la valeur V1 est le défaut du code (le test vérifie le défaut résolu, var non posée) ; `"posed"` = la valeur V1 est posée explicitement dans l'environnement cible (le test vérifie qu'elle est acceptée et résolue telle quelle). Le test `apps/api/src/flags-matrix-v1.test.ts` fait autorité pour `scope: "api"`.
+Flags **non sensibles** à valeur figée. `enforcement` : `"default"` = la valeur V1 est le défaut du code (le test vérifie le défaut résolu, var non posée) ; `"posed"` = la valeur V1 est posée explicitement dans l'environnement cible (le test vérifie qu'elle est acceptée et résolue telle quelle). Le test `apps/api/src/flags-matrix-v1.test.ts` fait autorité pour `scope: "api"`, qui représente ici la baseline de production. L’override Mission V2 de staging est dynamique, exact-SHA et certifié séparément par le reçu v3 décrit au §2.1.
 
 <!-- FLAGS_V1_JSON_START -->
 {
@@ -278,6 +300,8 @@ Flags **non sensibles** à valeur figée. `enforcement` : `"default"` = la valeu
     { "name": "BOB_LIVE_AUDIT_PROVIDER", "v1Value": "local-whisper", "scope": "api", "enforcement": "default" },
     { "name": "BOB_LIVE_GATEWAY_TLS_MODE", "v1Value": "direct", "scope": "api", "enforcement": "default" },
     { "name": "BOB_LIVE_SPEECH_DELIVERY", "v1Value": "audited-signed-url-v1", "scope": "api", "enforcement": "default" },
+    { "name": "BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED", "v1Value": "false", "scope": "api", "enforcement": "default" },
+    { "name": "BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED", "v1Value": "false", "scope": "api", "enforcement": "default" },
     { "name": "MISTRAL_STT_MODEL", "v1Value": "voxtral-mini-latest", "scope": "api", "enforcement": "default" },
     { "name": "MISTRAL_TTS_MODEL", "v1Value": "voxtral-mini-tts-2603", "scope": "api", "enforcement": "default" },
     { "name": "MISTRAL_OCR_MODEL", "v1Value": "mistral-ocr-latest", "scope": "api", "enforcement": "default" },

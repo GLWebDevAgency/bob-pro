@@ -14,6 +14,8 @@ describe('@bob/ai production entrypoint', () => {
     expect(exports['InMemoryJournalStore']).toBeUndefined();
     expect(exports['OCR_GOLDEN_CASES']).toBeUndefined();
     expect(exports['runOcrEval']).toBeUndefined();
+    expect(exports['understandQuoteCreationTurn']).toBeUndefined();
+    expect(exports['understandQuoteCreationTurnV2']).toBeUndefined();
   });
 
   it('isole physiquement la mémoire en processus dans le module testing', () => {
@@ -22,5 +24,26 @@ describe('@bob/ai production entrypoint', () => {
 
     expect(runtime).not.toContain('class InMemoryCompanyMemory');
     expect(testing).toContain('class InMemoryCompanyMemory');
+  });
+
+  it('conserve un seul cerveau LLM pour les missions Realtime', () => {
+    const v1 = readFileSync(
+      resolve(__dirname, './agent/mission-understanding/quote-creation.ts'),
+      'utf8',
+    );
+    const v2 = readFileSync(
+      resolve(__dirname, './agent/mission-understanding/quote-creation-v2.ts'),
+      'utf8',
+    );
+    const planner = readFileSync(
+      resolve(__dirname, './agent/realtime-semantic-planner.ts'),
+      'utf8',
+    );
+
+    expect(v1).not.toContain('.complete(');
+    expect(v2).not.toContain('.complete(');
+    expect(v1).not.toContain('understandQuoteCreationTurn');
+    expect(v2).not.toContain('understandQuoteCreationTurn');
+    expect(planner.match(/\.complete\(/gu)).toHaveLength(1);
   });
 });

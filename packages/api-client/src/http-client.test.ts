@@ -95,6 +95,61 @@ describe('HttpBobClient', () => {
     });
   });
 
+  it('confirmConversationTimeZone : PUT exact et réponse autoritaire décodée', async () => {
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      expect(url).toBe('https://api.bob.test/account/preferences/time-zone');
+      expect(init?.method).toBe('PUT');
+      expect(JSON.parse(String(init?.body))).toEqual({ timeZone: 'Europe/Paris' });
+      return new Response(
+        JSON.stringify({
+          timeZone: 'Europe/Paris',
+          confirmedAt: '2026-07-31T00:00:00.000Z',
+          requiresSessionRefresh: true,
+        }),
+        { headers: { 'content-type': 'application/json' } },
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({
+      baseUrl: 'https://api.bob.test',
+      companyId: 'company-1',
+    });
+
+    await expect(client.confirmConversationTimeZone('Europe/Paris')).resolves.toEqual({
+      ok: true,
+      value: {
+        timeZone: 'Europe/Paris',
+        confirmedAt: '2026-07-31T00:00:00.000Z',
+        requiresSessionRefresh: true,
+      },
+    });
+  });
+
+  it('confirmConversationTimeZone : réponse invalide refusée comme contrat API', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            timeZone: 'Europe/Introuvable',
+            confirmedAt: '2026-07-31',
+            requiresSessionRefresh: true,
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        ),
+      ),
+    );
+    const client = new HttpBobClient({
+      baseUrl: 'https://api.bob.test',
+      companyId: 'company-1',
+    });
+
+    await expect(client.confirmConversationTimeZone('Europe/Paris')).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'dependency', port: 'api-contract' },
+    });
+  });
+
   it('interdit les redirects et refuse une réponse cross-origin avant décodage', async () => {
     const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
       expect(init?.redirect).toBe('error');

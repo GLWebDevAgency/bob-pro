@@ -20,7 +20,6 @@ import {
   type MistralRealtimeIngressIdentityKeyRing,
 } from './realtime-mistral-ingress-ticket';
 import { RealtimeBobAgentTurnAdapter } from './realtime-agent-turn';
-import { REALTIME_MISSION_UNAVAILABLE_SPEECH } from './quote-creation-mission-kind.adapter';
 import { RealtimeMissionKindRegistry } from './realtime-mission-kind';
 import {
   BOB_LIVE_RUNTIME_READINESS,
@@ -31,6 +30,7 @@ import {
   MISTRAL_REALTIME_TERMINATION_AUTHORITY,
   REALTIME_AGENT_TURN,
   REALTIME_MISSION_KIND_REGISTRY,
+  REALTIME_SEMANTIC_PLANNER,
   REALTIME_SIDEBAND,
   REALTIME_SPEECH_SOURCE_POLICY,
   REALTIME_VOICE_SETTINGS,
@@ -734,20 +734,21 @@ describe('RealtimeVoiceModule — composition du cerveau Bob Live', () => {
       ) as Provider[];
       const definition = providers.find(isRealtimeAgentTurnFactoryProvider);
       const registryDefinition = moduleFactory(REALTIME_MISSION_KIND_REGISTRY);
+      const semanticPlanner = {
+        plan: vi.fn(),
+      };
 
       expect(definition).toBeDefined();
       if (definition === undefined) {
         throw new Error('REALTIME_AGENT_TURN provider is unavailable.');
       }
-      expect(registryDefinition.inject).toEqual([
-        REALTIME_VOICE_SETTINGS,
-        AgentMissionService,
-      ]);
+      expect(registryDefinition.inject).toEqual([AgentMissionService]);
       expect(definition?.inject).toEqual([
         PERSISTENCE,
         REALTIME_VOICE_SETTINGS,
         ModuleRef,
         REALTIME_MISSION_KIND_REGISTRY,
+        REALTIME_SEMANTIC_PLANNER,
       ]);
 
       const persistence = {} as Persistence;
@@ -756,6 +757,7 @@ describe('RealtimeVoiceModule — composition du cerveau Bob Live', () => {
           { provide: PERSISTENCE, useValue: persistence },
           { provide: REALTIME_VOICE_SETTINGS, useValue: { provider } },
           { provide: AgentMissionService, useValue: {} },
+          { provide: REALTIME_SEMANTIC_PLANNER, useValue: semanticPlanner },
           registryDefinition,
           definition,
         ],
@@ -774,8 +776,12 @@ describe('RealtimeVoiceModule — composition du cerveau Bob Live', () => {
       expect(
         (adapter as unknown as { readonly quoteMissions: unknown }).quoteMissions,
       ).toBe(quoteKind);
+      expect(
+        (adapter as unknown as { readonly semanticPlanner: unknown }).semanticPlanner,
+      ).toBe(semanticPlanner);
       expect(quoteKind.id).toBe(QUOTE_CREATION_MISSION_KIND_V1);
-      expect(typeof quoteKind.run).toBe('function');
+      expect(typeof quoteKind.prepare).toBe('function');
+      expect(typeof quoteKind.runPlanned).toBe('function');
       await compiled.close();
     },
   );
@@ -784,22 +790,50 @@ describe('RealtimeVoiceModule — composition du cerveau Bob Live', () => {
     ['openai', 'OPENAI_API_KEY'],
     ['mistral', 'MISTRAL_API_KEY'],
   ] as const)(
-    'conserve un registre %s complet et fail-closed sans clé fournisseur',
+    'conserve le registre %s et désactive uniquement le planner sans clé fournisseur',
     async (provider, key) => {
       vi.stubEnv(key, '');
       try {
-        const definition = moduleFactory(REALTIME_MISSION_KIND_REGISTRY);
-        const registry = definition.useFactory(
+        const plannerDefinition = moduleFactory(REALTIME_SEMANTIC_PLANNER);
+        expect(plannerDefinition.useFactory(
           { provider } as RealtimeVoiceSettings,
-          {} as AgentMissionService,
-        ) as RealtimeMissionKindRegistry;
+        )).toBeNull();
 
-        await expect(
-          registry.get(QUOTE_CREATION_MISSION_KIND_V1).run({} as never),
-        ).resolves.toEqual({
-          status: 'failed',
-          canonicalSpeech: REALTIME_MISSION_UNAVAILABLE_SPEECH,
+        const getCurrent = vi.fn(async () => ({
+          ok: true as const,
+          value: { mission: null },
+        }));
+        const definition = moduleFactory(REALTIME_MISSION_KIND_REGISTRY);
+        const registry = definition.useFactory({
+          getCurrent,
+        } as unknown as AgentMissionService) as RealtimeMissionKindRegistry;
+        await expect(registry.get(QUOTE_CREATION_MISSION_KIND_V1).prepare({
+          authority: {
+            owner: { companyId: 'company-1', ownerUserId: 'owner-1' },
+            proof: {
+              protocolVersion: 1,
+              subjectHashCandidates: ['a'.repeat(64)],
+              principalBindingHash: 'b'.repeat(64),
+              capabilityHash: 'c'.repeat(64),
+            },
+            realtimeSessionId: '20000000-0000-4000-8000-000000000001',
+          },
+          turnId: '10000000-0000-4000-8000-000000000001',
+          transcript: 'parle-moi de mon activité',
+          history: [],
+          contextRevision: 1,
+          contextDigest: 'd'.repeat(64),
+          signal: new AbortController().signal,
+        })).resolves.toMatchObject({
+          status: 'prepared',
+          prepared: {
+            semanticContext: {
+              protocolVersion: 1,
+              phase: 'inactive',
+            },
+          },
         });
+        expect(getCurrent).toHaveBeenCalledOnce();
       } finally {
         vi.unstubAllEnvs();
       }
@@ -810,7 +844,7 @@ describe('RealtimeVoiceModule — composition du cerveau Bob Live', () => {
     ['openai', 'OPENAI_API_KEY'],
     ['mistral', 'MISTRAL_API_KEY'],
   ] as const)(
-    'atteint le gateway M1-C réel via le registre %s lorsque la clé est disponible',
+    'compose le planner sémantique %s et effectue une seule complétion fournisseur',
     async (provider, key) => {
       vi.stubEnv(key, 'test-provider-key');
       const fetchProvider = vi.fn(async () => new Response(JSON.stringify({
@@ -820,12 +854,8 @@ describe('RealtimeVoiceModule — composition du cerveau Bob Live', () => {
             content: null,
             tool_calls: [{
               function: {
-                name: 'mettre_a_jour_mission_devis',
-                arguments: JSON.stringify({
-                  action: 'unrelated',
-                  customer_reference: null,
-                  choice_ordinal: null,
-                }),
+                name: 'aide_capacites',
+                arguments: JSON.stringify({}),
               },
             }],
           },
@@ -835,44 +865,45 @@ describe('RealtimeVoiceModule — composition du cerveau Bob Live', () => {
         headers: { 'content-type': 'application/json' },
       }));
       vi.stubGlobal('fetch', fetchProvider);
-      const getCurrent = vi.fn(async () => ({
-        ok: true as const,
-        value: { mission: null },
-      }));
-      const missions = {
-        getCurrent,
-        startFromVoiceTurn: vi.fn(),
-        decideFromVoiceTurn: vi.fn(),
-      } as unknown as AgentMissionService;
 
       try {
-        const definition = moduleFactory(REALTIME_MISSION_KIND_REGISTRY);
-        const registry = definition.useFactory(
+        const definition = moduleFactory(REALTIME_SEMANTIC_PLANNER);
+        const planner = definition.useFactory(
           { provider } as RealtimeVoiceSettings,
-          missions,
-        ) as RealtimeMissionKindRegistry;
+        ) as { plan: (input: unknown) => Promise<unknown> };
 
         await expect(
-          registry.get(QUOTE_CREATION_MISSION_KIND_V1).run({
-            authority: {
-              owner: { companyId: 'company-1', ownerUserId: 'owner-1' },
-              proof: {
-                protocolVersion: 1,
-                subjectHashCandidates: ['a'.repeat(64)],
-                principalBindingHash: 'b'.repeat(64),
-                capabilityHash: 'c'.repeat(64),
-              },
-              realtimeSessionId: '20000000-0000-4000-8000-000000000001',
-            },
-            turnId: '10000000-0000-4000-8000-000000000001',
-            transcript: 'parle-moi de mon activité',
+          planner.plan({
+            transcript: 'Aide-moi',
             history: [],
-            contextRevision: 1,
-            contextDigest: 'd'.repeat(64),
+            screen: null,
+            quoteMission: {
+              missionAlias: null,
+              missionRevision: 0,
+              confirmedLineCount: 0,
+              pendingLineCount: 0,
+              pendingDecisionKind: null,
+              protocolVersion: null,
+              phase: 'unavailable',
+              presentedChoices: [],
+            },
+            hostManifest: {
+              schema: 'bob.realtime-semantic-host-manifest',
+              version: 1,
+              globalToolNames: ['aide_capacites'],
+            },
+            missionCapabilities: [],
+            locale: 'fr-FR',
+            timeZone: null,
+            now: '2026-07-30T12:00:00.000Z',
             signal: new AbortController().signal,
           }),
-        ).resolves.toEqual({ status: 'not_applicable' });
-        expect(getCurrent).toHaveBeenCalledOnce();
+        ).resolves.toMatchObject({
+          status: 'global_plan',
+          plan: {
+            steps: [{ intent: 'aide', reference: null }],
+          },
+        });
         expect(fetchProvider).toHaveBeenCalledOnce();
       } finally {
         vi.unstubAllGlobals();

@@ -10,6 +10,7 @@ import {
   AGENT_MISSION_BOOTSTRAP_RECEIPT_ATTEMPTS,
   AGENT_MISSION_BOOTSTRAP_RECEIPT_REQUEST_TIMEOUT_MS,
   isCustomPrestationId,
+  parseIanaTimeZone,
   parseCustomPrestation,
 } from '@bob/core';
 import type {
@@ -79,6 +80,7 @@ import type {
 } from '@bob/core';
 import type {
   BobClient,
+  ConfirmedConversationTimeZoneView,
   CreateEquipmentClientInput,
   EquipmentHistoryView,
   MaintenanceContractClientView,
@@ -175,6 +177,28 @@ import type {
   CustomerContactView,
   CustomerContactWriteInput,
 } from './client';
+
+function decodeConfirmedConversationTimeZone(
+  value: unknown,
+): ConfirmedConversationTimeZoneView | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  const timeZone = parseIanaTimeZone(candidate.timeZone);
+  if (
+    timeZone === null ||
+    typeof candidate.confirmedAt !== 'string' ||
+    Number.isNaN(new Date(candidate.confirmedAt).getTime()) ||
+    new Date(candidate.confirmedAt).toISOString() !== candidate.confirmedAt ||
+    candidate.requiresSessionRefresh !== true
+  ) {
+    return null;
+  }
+  return {
+    timeZone,
+    confirmedAt: candidate.confirmedAt,
+    requiresSessionRefresh: true,
+  };
+}
 import {
   decodeDocumentAnalysisForDocument,
   decodeDocumentExpenseCreationForContext,
@@ -2461,6 +2485,15 @@ export class HttpBobClient implements BobClient {
   }
   closeAccount(input: { confirmationText: string; reason?: string }) {
     return this.req<{ closedAt: string }>('DELETE', '/account', input);
+  }
+  confirmConversationTimeZone(timeZone: string) {
+    return this.req<ConfirmedConversationTimeZoneView>(
+      'PUT',
+      '/account/preferences/time-zone',
+      { timeZone },
+      undefined,
+      decodeConfirmedConversationTimeZone,
+    );
   }
   invoicePaymentLink(invoiceId: string) {
     return this.req<{ url: string }>('POST', `/invoices/${invoiceId}/payment-link`);

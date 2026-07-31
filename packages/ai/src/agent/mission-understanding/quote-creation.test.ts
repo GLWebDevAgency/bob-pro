@@ -1,21 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
-import type { LlmCompletion, LlmPort } from '../../llm/port';
+import { describe, expect, it } from 'vitest';
 import {
   parseQuoteCreationSemanticToolCall,
-  QUOTE_CREATION_UNDERSTANDING_TOOL,
-  understandQuoteCreationTurn,
 } from './quote-creation';
 
 const TOOL_NAME = 'mettre_a_jour_mission_devis';
-
-function llm(output: LlmCompletion): LlmPort {
-  return {
-    id: 'openai-live-test',
-    complete: vi.fn(async () => output),
-    generate: vi.fn(async () => ({ text: '', model: output.model })),
-    health: vi.fn(async () => ({ healthy: true })),
-  };
-}
 
 function call(arguments_: Record<string, unknown>) {
   return { name: TOOL_NAME, arguments: arguments_ };
@@ -116,94 +104,5 @@ describe('parseQuoteCreationSemanticToolCall', () => {
       presentedCustomerCount: 3,
       model: 'gpt-realtime-2.1',
     })).toBeNull();
-  });
-});
-describe('understandQuoteCreationTurn', () => {
-  it('impose un unique appel d’outil strict et transmet la phase comme donnée', async () => {
-    const fake = llm({
-      text: null,
-      toolCalls: [call({
-        action: 'start_quote_creation',
-        customer_reference: 'Camping les Pins',
-        choice_ordinal: null,
-      })],
-      model: 'gpt-realtime-2.1',
-    });
-
-    const result = await understandQuoteCreationTurn(fake, {
-      transcript: 'Fais-moi un devis pour Camping les Pins',
-      phase: 'inactive',
-      presentedCustomerCount: 0,
-    });
-
-    expect(result).toMatchObject({
-      status: 'understood',
-      frame: {
-        operation: {
-          kind: 'start_quote_creation',
-          customerReference: 'Camping les Pins',
-        },
-      },
-    });
-    expect(fake.complete).toHaveBeenCalledOnce();
-    const [, options] = vi.mocked(fake.complete).mock.calls[0]!;
-    expect(options).toMatchObject({
-      toolChoice: 'required',
-      temperature: 0,
-      maxTokens: 256,
-      tools: [QUOTE_CREATION_UNDERSTANDING_TOOL],
-    });
-  });
-
-  it('refuse le texte libre, plusieurs outils et des arguments hors contrat', async () => {
-    const base = {
-      transcript: 'Crée un devis',
-      phase: 'inactive' as const,
-      presentedCustomerCount: 0,
-    };
-    await expect(understandQuoteCreationTurn(llm({
-      text: 'Bien sûr.',
-      toolCalls: [],
-      model: 'gpt-realtime-2.1',
-    }), base)).resolves.toEqual({
-      status: 'rejected',
-      reason: 'missing_tool_call',
-    });
-    await expect(understandQuoteCreationTurn(llm({
-      text: null,
-      toolCalls: [
-        call({ action: 'start_quote_creation', customer_reference: null, choice_ordinal: null }),
-        call({ action: 'start_quote_creation', customer_reference: null, choice_ordinal: null }),
-      ],
-      model: 'gpt-realtime-2.1',
-    }), base)).resolves.toEqual({
-      status: 'rejected',
-      reason: 'multiple_tool_calls',
-    });
-    await expect(understandQuoteCreationTurn(llm({
-      text: null,
-      toolCalls: [call({})],
-      model: 'gpt-realtime-2.1',
-    }), base)).resolves.toEqual({
-      status: 'rejected',
-      reason: 'invalid_arguments',
-    });
-  });
-
-  it('rejette une phase incohérente avant tout appel fournisseur', async () => {
-    const fake = llm({
-      text: null,
-      toolCalls: [],
-      model: 'gpt-realtime-2.1',
-    });
-    await expect(understandQuoteCreationTurn(fake, {
-      transcript: 'Le deuxième',
-      phase: 'awaiting_customer_choice',
-      presentedCustomerCount: 0,
-    })).resolves.toEqual({
-      status: 'rejected',
-      reason: 'invalid_input',
-    });
-    expect(fake.complete).not.toHaveBeenCalled();
   });
 });

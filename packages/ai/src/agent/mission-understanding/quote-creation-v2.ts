@@ -1,13 +1,18 @@
-import { redactPII } from '../../guardrails/pii-redaction';
+import {
+  normalizeAgentMissionQuoteLinePatch,
+  type AgentMissionQuoteLinePatchScope,
+  type AgentMissionQuoteLinePatchV1,
+  type AgentMissionQuoteLineRequiredFact,
+} from '@bob/core';
 import type {
-  LlmMessage,
-  LlmPort,
   LlmToolCall,
   LlmToolSpec,
 } from '../../llm/port';
 
-const MAX_TRANSCRIPT_LENGTH = 4_000;
 const MAX_REFERENCE_LENGTH = 500;
+// Même borne que l'énoncé courant du planner. Le reliquat n'est jamais persisté : cette borne
+// protège uniquement le wire strict et sa validation de provenance avant conversion en booléen.
+const MAX_UNPROCESSED_REMAINDER_LENGTH = 4_000;
 // QuoteDraftPayloadV1 reste lu par N-1 et borne l'unité à 40 caractères.
 const MAX_UNIT_LENGTH = 40;
 const MAX_MODEL_LENGTH = 200;
@@ -22,13 +27,16 @@ const MAX_PRESENTED_CHOICES = 6;
 const CATEGORY_HINTS = ['labor', 'supply', 'travel', 'subscription'] as const;
 const PRICE_BASES = ['per_unit', 'total'] as const;
 const VAT_RATE_HINTS = ['0', '2.1', '5.5', '10', '20'] as const;
+const PATCH_SCOPES = ['answer_required_fact', 'explicit_correction'] as const;
 
 export type QuoteCreationUnderstandingPhaseV2 =
   | 'inactive'
   | 'awaiting_customer'
   | 'awaiting_customer_choice'
   | 'awaiting_lines'
-  | 'awaiting_catalogue_choice';
+  | 'awaiting_catalogue_choice'
+  | 'awaiting_line_details'
+  | 'awaiting_line_confirmation';
 
 export interface QuoteLineCandidateV1 {
   readonly serviceReference: string | null;
@@ -59,9 +67,17 @@ export type QuoteCreationSemanticOperationV2 =
   | {
       readonly kind: 'select_presented_choice';
       readonly ordinal: 1 | 2 | 3 | 4 | 5 | 6;
-      readonly lines: readonly QuoteLineCandidateV1[];
+      /** Une autre demande existe dans le tour et doit être redemandée sans la recopier. */
+      readonly hasUnprocessedRequest: boolean;
     }
-  | { readonly kind: 'unrelated' };
+  | {
+      readonly kind: 'patch_pending_line';
+      readonly scope: AgentMissionQuoteLinePatchScope;
+      readonly patch: AgentMissionQuoteLinePatchV1;
+    }
+  | { readonly kind: 'confirm_current_proposal' }
+  | { readonly kind: 'reject_current_proposal' }
+  | { readonly kind: 'cancel_current_line' };
 
 export interface QuoteCreationSemanticFrameV2 {
   readonly schema: 'bob.semantic.quote-creation';
@@ -70,43 +86,23 @@ export interface QuoteCreationSemanticFrameV2 {
   readonly model: string;
 }
 
-export interface QuoteCreationUnderstandingInputV2 {
-  readonly transcript: string;
-  readonly phase: QuoteCreationUnderstandingPhaseV2;
-  readonly presentedChoiceCount: number;
-  /** A1 n'expose aucune phase de collecte de fait : cette fence reste obligatoirement nulle. */
-  readonly requiredFact: null;
-  /**
-   * Nullable volontairement : aucune timezone n'est inventée. M2-A-1 ne résout pas encore les
-   * dates, mais la forme du contexte reste déjà exacte pour les trains suivants.
-   */
-  readonly timeZone: string | null;
-  readonly locale: 'fr-FR';
-  readonly signal?: AbortSignal;
-}
-
-export type QuoteCreationUnderstandingResultV2 =
-  | {
-      readonly status: 'understood';
-      readonly frame: QuoteCreationSemanticFrameV2;
-    }
-  | {
-      readonly status: 'rejected';
-      readonly reason:
-        | 'invalid_input'
-        | 'missing_tool_call'
-        | 'multiple_tool_calls'
-        | 'unexpected_tool'
-        | 'invalid_arguments';
-    };
-
 const LINE_SCHEMA = {
   type: 'object',
   properties: {
-    service_reference: { type: ['string', 'null'], maxLength: MAX_REFERENCE_LENGTH },
+    service_reference: {
+      type: ['string', 'null'],
+      maxLength: MAX_REFERENCE_LENGTH,
+      description:
+        'Libellé explicite du produit, de la prestation ou du déplacement dit dans la demande courante. Conserver les mots métier utiles ; null uniquement si aucun service n’est nommé.',
+    },
     category_hint: { type: ['string', 'null'], enum: [...CATEGORY_HINTS, null] },
     quantity_decimal: { type: ['string', 'null'], maxLength: 64 },
-    unit_reference: { type: ['string', 'null'], maxLength: MAX_UNIT_LENGTH },
+    unit_reference: {
+      type: ['string', 'null'],
+      maxLength: MAX_UNIT_LENGTH,
+      description:
+        'Référence métier au singulier : « deux heures » devient « heure », « 3 machines » devient « machine ».',
+    },
     unit_price_decimal: { type: ['string', 'null'], maxLength: 64 },
     currency: { type: ['string', 'null'], enum: ['EUR', null] },
     price_basis: { type: ['string', 'null'], enum: [...PRICE_BASES, null] },
@@ -131,92 +127,325 @@ const LINES_SCHEMA = {
   maxItems: MAX_LINES,
 } as const;
 
+const SERVICE_REFERENCE_PATCH_SCHEMA = {
+      type: 'object',
+      properties: {
+        field: { type: 'string', const: 'service_reference' },
+        value: { type: 'string', maxLength: MAX_REFERENCE_LENGTH },
+      },
+      required: ['field', 'value'],
+      additionalProperties: false,
+} as const;
+
+const CATEGORY_PATCH_SCHEMA = {
+      type: 'object',
+      properties: {
+        field: { type: 'string', const: 'category' },
+        value: { type: 'string', enum: [...CATEGORY_HINTS] },
+      },
+      required: ['field', 'value'],
+      additionalProperties: false,
+} as const;
+
+const QUANTITY_PATCH_SCHEMA = {
+      type: 'object',
+      properties: {
+        field: { type: 'string', const: 'quantity' },
+        decimal: { type: 'string', maxLength: 64 },
+      },
+      required: ['field', 'decimal'],
+      additionalProperties: false,
+} as const;
+
+const UNIT_PATCH_SCHEMA = {
+      type: 'object',
+      properties: {
+        field: { type: 'string', const: 'unit' },
+        value: { type: 'string', maxLength: MAX_UNIT_LENGTH },
+      },
+      required: ['field', 'value'],
+      additionalProperties: false,
+} as const;
+
+const UNIT_PRICE_PATCH_SCHEMA = {
+      type: 'object',
+      properties: {
+        field: { type: 'string', const: 'unit_price' },
+        decimal: { type: 'string', maxLength: 64 },
+        currency: { type: 'string', const: 'EUR' },
+        basis: { type: 'string', enum: [...PRICE_BASES] },
+      },
+      required: ['field', 'decimal', 'currency', 'basis'],
+      additionalProperties: false,
+} as const;
+
+const VAT_RATE_PATCH_SCHEMA = {
+      type: 'object',
+      properties: {
+        field: { type: 'string', const: 'vat_rate' },
+        value: { type: 'string', enum: [...VAT_RATE_HINTS] },
+      },
+      required: ['field', 'value'],
+      additionalProperties: false,
+} as const;
+
+const HOUSING_OLDER_THAN_2Y_PATCH_SCHEMA = {
+      type: 'object',
+      properties: {
+        field: { type: 'string', const: 'housing_older_than_2y' },
+        value: { type: 'boolean' },
+      },
+      required: ['field', 'value'],
+      additionalProperties: false,
+} as const;
+
+const ENERGY_RENOVATION_PATCH_SCHEMA = {
+      type: 'object',
+      properties: {
+        field: { type: 'string', const: 'energy_renovation' },
+        value: { type: 'boolean' },
+      },
+      required: ['field', 'value'],
+      additionalProperties: false,
+} as const;
+
+const PATCH_SCHEMA_BY_REQUIRED_FACT = {
+  service_reference: SERVICE_REFERENCE_PATCH_SCHEMA,
+  category: CATEGORY_PATCH_SCHEMA,
+  quantity: QUANTITY_PATCH_SCHEMA,
+  unit: UNIT_PATCH_SCHEMA,
+  unit_price: UNIT_PRICE_PATCH_SCHEMA,
+  vat_rate: VAT_RATE_PATCH_SCHEMA,
+  housing_older_than_2y: HOUSING_OLDER_THAN_2Y_PATCH_SCHEMA,
+  energy_renovation: ENERGY_RENOVATION_PATCH_SCHEMA,
+} as const satisfies Readonly<
+  Record<AgentMissionQuoteLineRequiredFact, Readonly<Record<string, unknown>>>
+>;
+
+const PATCH_SCHEMA = {
+  anyOf: [
+    SERVICE_REFERENCE_PATCH_SCHEMA,
+    CATEGORY_PATCH_SCHEMA,
+    QUANTITY_PATCH_SCHEMA,
+    UNIT_PATCH_SCHEMA,
+    UNIT_PRICE_PATCH_SCHEMA,
+    VAT_RATE_PATCH_SCHEMA,
+    HOUSING_OLDER_THAN_2Y_PATCH_SCHEMA,
+    ENERGY_RENOVATION_PATCH_SCHEMA,
+  ],
+} as const;
+
 const QUOTE_CREATION_V2_TOOL_NAME = 'mettre_a_jour_mission_devis_v2';
 
-export const QUOTE_CREATION_UNDERSTANDING_TOOL_V2: LlmToolSpec = Object.freeze({
-  name: QUOTE_CREATION_V2_TOOL_NAME,
+const START_OPERATION_SCHEMA = {
+  type: 'object',
   description:
-    "Comprendre une mission de devis en français et restituer uniquement les faits explicitement dits, dans leur ordre. Ne jamais choisir d'identifiant ni calculer un total.",
-  parameters: {
+    'Démarrer un devis depuis une demande explicite. Extraire le client et toutes les lignes dites dans le même énoncé, sans compléter les faits absents.',
+  properties: {
+    kind: { type: 'string', const: 'start_quote_creation' },
+    customer_reference: {
+      type: ['string', 'null'],
+      maxLength: MAX_REFERENCE_LENGTH,
+    },
+    lines: LINES_SCHEMA,
+  },
+  required: ['kind', 'customer_reference', 'lines'],
+  additionalProperties: false,
+} as const;
+
+const SET_CUSTOMER_OPERATION_SCHEMA = {
+  type: 'object',
+  description:
+    'Renseigner une référence client explicitement prononcée pendant une mission déjà ouverte ; conserver aussi les lignes dites dans le même tour.',
+  properties: {
+    kind: { type: 'string', const: 'set_customer_reference' },
+    customer_reference: { type: 'string', maxLength: MAX_REFERENCE_LENGTH },
+    lines: LINES_SCHEMA,
+  },
+  required: ['kind', 'customer_reference', 'lines'],
+  additionalProperties: false,
+} as const;
+
+const APPEND_LINES_OPERATION_SCHEMA = {
+  type: 'object',
+  description:
+    "Ajouter dans l'ordre une ou plusieurs lignes explicitement décrites dans la parole courante. Un chiffre contenu dans un nom métier ne devient jamais une quantité. Une TVA absente reste null et ne devient jamais 0.",
+  properties: {
+    kind: { type: 'string', const: 'append_line_candidates' },
+    lines: LINES_SCHEMA,
+  },
+  required: ['kind', 'lines'],
+  additionalProperties: false,
+} as const;
+
+const SELECT_CHOICE_OPERATION_SCHEMA = {
+  type: 'object',
+  description:
+    "Choisir uniquement parmi C1…C6 actuellement présentés. Une description comme « celle à 55 euros » doit être résolue vers l'ordinal correspondant aux données visibles. Ne jamais recopier une ligne, un choix ou le contexte dans cette opération.",
+  properties: {
+    kind: { type: 'string', const: 'select_presented_choice' },
+    ordinal: {
+      type: 'integer',
+      minimum: 1,
+      maximum: MAX_PRESENTED_CHOICES,
+    },
+    unprocessed_current_utterance_remainder: {
+      type: ['string', 'null'],
+      maxLength: MAX_UNPROCESSED_REMAINDER_LENGTH,
+      description:
+        'null si la parole courante contient seulement le choix ; sinon copier exactement et sans reformulation la sous-chaîne contiguë de la demande courante qui reste à traiter, jamais un texte du contexte ou de l’historique.',
+    },
+  },
+  required: ['kind', 'ordinal', 'unprocessed_current_utterance_remainder'],
+  additionalProperties: false,
+} as const;
+
+const EXPLICIT_PATCH_OPERATION_SCHEMA = {
+  type: 'object',
+  description:
+    'Corriger spontanément un seul fait nommé de la ligne courante.',
+  properties: {
+    kind: { type: 'string', const: 'patch_pending_line' },
+    scope: { type: 'string', const: 'explicit_correction' },
+    patch: PATCH_SCHEMA,
+  },
+  required: ['kind', 'scope', 'patch'],
+  additionalProperties: false,
+} as const;
+
+function answerRequiredFactPatchOperationSchema(
+  requiredFact: AgentMissionQuoteLineRequiredFact,
+) {
+  return {
     type: 'object',
+    description:
+      'Répondre uniquement au fait précis demandé par Bob. Le champ est imposé par la mission persistée.',
     properties: {
-      operations: {
-        type: 'array',
-        minItems: 1,
-        maxItems: MAX_OPERATIONS,
-        items: {
-          oneOf: [
-            {
-              type: 'object',
-              properties: {
-                kind: { const: 'start_quote_creation' },
-                customer_reference: {
-                  type: ['string', 'null'],
-                  maxLength: MAX_REFERENCE_LENGTH,
-                },
-                lines: LINES_SCHEMA,
-              },
-              required: ['kind', 'customer_reference', 'lines'],
-              additionalProperties: false,
-            },
-            {
-              type: 'object',
-              properties: {
-                kind: { const: 'set_customer_reference' },
-                customer_reference: { type: 'string', maxLength: MAX_REFERENCE_LENGTH },
-                lines: LINES_SCHEMA,
-              },
-              required: ['kind', 'customer_reference', 'lines'],
-              additionalProperties: false,
-            },
-            {
-              type: 'object',
-              properties: {
-                kind: { const: 'append_line_candidates' },
-                lines: LINES_SCHEMA,
-              },
-              required: ['kind', 'lines'],
-              additionalProperties: false,
-            },
-            {
-              type: 'object',
-              properties: {
-                kind: { const: 'select_presented_choice' },
-                ordinal: {
-                  type: 'integer',
-                  minimum: 1,
-                  maximum: MAX_PRESENTED_CHOICES,
-                },
-                lines: LINES_SCHEMA,
-              },
-              required: ['kind', 'ordinal', 'lines'],
-              additionalProperties: false,
-            },
-            {
-              type: 'object',
-              properties: { kind: { const: 'unrelated' } },
-              required: ['kind'],
-              additionalProperties: false,
-            },
-          ],
+      kind: { type: 'string', const: 'patch_pending_line' },
+      scope: { type: 'string', const: 'answer_required_fact' },
+      patch: PATCH_SCHEMA_BY_REQUIRED_FACT[requiredFact],
+    },
+    required: ['kind', 'scope', 'patch'],
+    additionalProperties: false,
+  } as const;
+}
+
+const CATALOGUE_REFERENCE_PATCH_OPERATION_SCHEMA = {
+  type: 'object',
+  description:
+    'Corriger explicitement le libellé de la ligne avant de relancer la recherche catalogue.',
+  properties: {
+    kind: { type: 'string', const: 'patch_pending_line' },
+    scope: { type: 'string', const: 'explicit_correction' },
+    patch: {
+      type: 'object',
+      properties: {
+        field: { type: 'string', const: 'service_reference' },
+        value: { type: 'string', maxLength: MAX_REFERENCE_LENGTH },
+      },
+      required: ['field', 'value'],
+      additionalProperties: false,
+    },
+  },
+  required: ['kind', 'scope', 'patch'],
+  additionalProperties: false,
+} as const;
+
+const CONFIRM_OPERATION_SCHEMA = {
+  type: 'object',
+  description: 'Confirmer la proposition courante uniquement quand elle est présentée.',
+  properties: { kind: { type: 'string', const: 'confirm_current_proposal' } },
+  required: ['kind'],
+  additionalProperties: false,
+} as const;
+
+const REJECT_OPERATION_SCHEMA = {
+  type: 'object',
+  description: 'Refuser la proposition courante tout en conservant la ligne à corriger.',
+  properties: { kind: { type: 'string', const: 'reject_current_proposal' } },
+  required: ['kind'],
+  additionalProperties: false,
+} as const;
+
+const CANCEL_OPERATION_SCHEMA = {
+  type: 'object',
+  description: 'Annuler uniquement la ligne courante, jamais la session Bob entière.',
+  properties: { kind: { type: 'string', const: 'cancel_current_line' } },
+  required: ['kind'],
+  additionalProperties: false,
+} as const;
+
+type OperationSchema =
+  | typeof START_OPERATION_SCHEMA
+  | typeof SET_CUSTOMER_OPERATION_SCHEMA
+  | typeof APPEND_LINES_OPERATION_SCHEMA
+  | typeof SELECT_CHOICE_OPERATION_SCHEMA
+  | typeof EXPLICIT_PATCH_OPERATION_SCHEMA
+  | ReturnType<typeof answerRequiredFactPatchOperationSchema>
+  | typeof CATALOGUE_REFERENCE_PATCH_OPERATION_SCHEMA
+  | typeof CONFIRM_OPERATION_SCHEMA
+  | typeof REJECT_OPERATION_SCHEMA
+  | typeof CANCEL_OPERATION_SCHEMA;
+
+function operationSchemasForPhase(
+  phase: QuoteCreationUnderstandingPhaseV2,
+  requiredFact: AgentMissionQuoteLineRequiredFact | null,
+): readonly OperationSchema[] {
+  switch (phase) {
+    case 'inactive':
+      return [START_OPERATION_SCHEMA];
+    case 'awaiting_customer':
+      return [SET_CUSTOMER_OPERATION_SCHEMA];
+    case 'awaiting_customer_choice':
+      return [SET_CUSTOMER_OPERATION_SCHEMA, SELECT_CHOICE_OPERATION_SCHEMA];
+    case 'awaiting_lines':
+      return [APPEND_LINES_OPERATION_SCHEMA];
+    case 'awaiting_catalogue_choice':
+      return [SELECT_CHOICE_OPERATION_SCHEMA, CATALOGUE_REFERENCE_PATCH_OPERATION_SCHEMA];
+    case 'awaiting_line_details':
+      return [
+        ...(requiredFact === null
+          ? []
+          : [answerRequiredFactPatchOperationSchema(requiredFact)]),
+        EXPLICIT_PATCH_OPERATION_SCHEMA,
+        CANCEL_OPERATION_SCHEMA,
+      ];
+    case 'awaiting_line_confirmation':
+      return [
+        EXPLICIT_PATCH_OPERATION_SCHEMA,
+        CONFIRM_OPERATION_SCHEMA,
+        REJECT_OPERATION_SCHEMA,
+        CANCEL_OPERATION_SCHEMA,
+      ];
+  }
+}
+
+export function quoteCreationUnderstandingToolV2ForPhase(
+  phase: QuoteCreationUnderstandingPhaseV2,
+  requiredFact: AgentMissionQuoteLineRequiredFact | null = null,
+): LlmToolSpec {
+  const operationSchemas = operationSchemasForPhase(phase, requiredFact);
+  const items = operationSchemas.length === 1 ? operationSchemas[0] : { anyOf: operationSchemas };
+  return Object.freeze({
+    name: QUOTE_CREATION_V2_TOOL_NAME,
+    description:
+      "Comprendre la prochaine transition autorisée d'une mission de devis en français et restituer uniquement les faits explicitement dits. Ne jamais choisir d'identifiant, calculer un total ou convertir une absence en valeur.",
+    schemaAdherence: 'strict',
+    parameters: {
+      type: 'object',
+      properties: {
+        operations: {
+          type: 'array',
+          minItems: 1,
+          maxItems: MAX_OPERATIONS,
+          items,
         },
       },
+      required: ['operations'],
+      additionalProperties: false,
     },
-    required: ['operations'],
-    additionalProperties: false,
-  },
-});
-
-const SYSTEM_PROMPT_V2 = [
-  "Tu es le module de compréhension française de Bob Pro pour créer un devis.",
-  "Appelle exactement l'outil fourni et ne réponds jamais en texte.",
-  "Comprends le sens quelle que soit la tournure française ; n'utilise aucune liste de mots-clés.",
-  "Conserve les noms métier tels qu'ils sont dits : « Contrat 4 saisons » reste un libellé.",
-  "N'invente jamais un client, un prix, une quantité, une unité, une TVA, une date ou un choix.",
-  "« 400 balles par machine » signifie prix unitaire 400 EUR, sans multiplication.",
-  "N'annonce jamais une correction de ligne : cette capacité n'est pas exposée dans ce protocole.",
-  "Un ordinal ne désigne que le jeu de choix actuellement présenté.",
-].join(' ');
+  });
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -333,32 +562,108 @@ function parseLines(value: unknown): readonly QuoteLineCandidateV1[] | null {
     : Object.freeze(parsed as QuoteLineCandidateV1[]);
 }
 
+function parsePatch(value: unknown): AgentMissionQuoteLinePatchV1 | null {
+  if (!isRecord(value) || typeof value['field'] !== 'string') return null;
+  const normalized = normalizeAgentMissionQuoteLinePatch(value);
+  if (!normalized.ok) return null;
+  switch (value['field']) {
+    case 'service_reference': {
+      if (!exactKeys(value, ['field', 'value'])) return null;
+      const canonical = canonicalSingleLine(value['value'], MAX_REFERENCE_LENGTH);
+      return canonical === null
+        ? null
+        : Object.freeze({ field: value['field'], value: canonical });
+    }
+    case 'category':
+      return exactKeys(value, ['field', 'value']) && isOneOf(CATEGORY_HINTS, value['value'])
+        ? Object.freeze({ field: value['field'], value: value['value'] })
+        : null;
+    case 'quantity': {
+      if (!exactKeys(value, ['field', 'decimal'])) return null;
+      const decimal = canonicalDecimal(value['decimal'], 3);
+      return decimal === null
+        ? null
+        : Object.freeze({ field: value['field'], decimal });
+    }
+    case 'unit': {
+      if (!exactKeys(value, ['field', 'value'])) return null;
+      const canonical = canonicalSingleLine(value['value'], MAX_UNIT_LENGTH);
+      return canonical === null
+        ? null
+        : Object.freeze({ field: value['field'], value: canonical });
+    }
+    case 'unit_price': {
+      if (
+        !exactKeys(value, ['field', 'decimal', 'currency', 'basis'])
+        || value['currency'] !== 'EUR'
+        || !isOneOf(PRICE_BASES, value['basis'])
+      ) return null;
+      const decimal = canonicalDecimal(value['decimal'], 2);
+      return decimal === null
+        ? null
+        : Object.freeze({
+            field: value['field'],
+            decimal,
+            currency: value['currency'],
+            basis: value['basis'],
+          });
+    }
+    case 'vat_rate':
+      return exactKeys(value, ['field', 'value']) && isOneOf(VAT_RATE_HINTS, value['value'])
+        ? Object.freeze({ field: value['field'], value: value['value'] })
+        : null;
+    case 'housing_older_than_2y':
+    case 'energy_renovation':
+      return exactKeys(value, ['field', 'value']) && typeof value['value'] === 'boolean'
+        ? Object.freeze({ field: value['field'], value: value['value'] })
+        : null;
+    default:
+      return null;
+  }
+}
+
 function phaseAllows(
   phase: QuoteCreationUnderstandingPhaseV2,
   operation: QuoteCreationSemanticOperationV2,
 ): boolean {
   switch (phase) {
     case 'inactive':
-      return operation.kind === 'start_quote_creation' || operation.kind === 'unrelated';
+      return operation.kind === 'start_quote_creation';
     case 'awaiting_customer':
+      return operation.kind === 'set_customer_reference';
     case 'awaiting_customer_choice':
-      return operation.kind === 'set_customer_reference'
-        || operation.kind === 'select_presented_choice'
-        || operation.kind === 'unrelated';
+      return (
+        operation.kind === 'set_customer_reference' || operation.kind === 'select_presented_choice'
+      );
     case 'awaiting_lines':
-      return operation.kind === 'append_line_candidates' || operation.kind === 'unrelated';
+      return operation.kind === 'append_line_candidates';
     case 'awaiting_catalogue_choice':
-      return operation.kind === 'select_presented_choice'
-        || operation.kind === 'unrelated';
+      return (
+        operation.kind === 'select_presented_choice' ||
+        (operation.kind === 'patch_pending_line' &&
+          operation.scope === 'explicit_correction' &&
+          operation.patch.field === 'service_reference')
+        );
+    case 'awaiting_line_details':
+      return operation.kind === 'patch_pending_line' || operation.kind === 'cancel_current_line';
+    case 'awaiting_line_confirmation':
+      return (
+        operation.kind === 'patch_pending_line' ||
+        operation.kind === 'confirm_current_proposal' ||
+        operation.kind === 'reject_current_proposal' ||
+        operation.kind === 'cancel_current_line'
+      );
   }
 }
 
 function parseOperation(
   value: unknown,
-  input: Pick<
-    QuoteCreationUnderstandingInputV2,
-    'phase' | 'presentedChoiceCount'
-  >,
+  input: {
+    readonly phase: QuoteCreationUnderstandingPhaseV2;
+    readonly presentedChoiceCount: number;
+    readonly requiredFact: AgentMissionQuoteLineRequiredFact | null;
+    readonly currentUserUtterance: string;
+  },
 ): QuoteCreationSemanticOperationV2 | null {
   if (!isRecord(value) || typeof value['kind'] !== 'string') return null;
   let operation: QuoteCreationSemanticOperationV2 | null = null;
@@ -391,21 +696,57 @@ function parseOperation(
       operation = Object.freeze({ kind: value['kind'], lines });
     }
   } else if (value['kind'] === 'select_presented_choice') {
+    const remainder = value['unprocessed_current_utterance_remainder'];
+    const canonicalUtterance = canonicalSingleLine(
+      input.currentUserUtterance,
+      MAX_UNPROCESSED_REMAINDER_LENGTH,
+    );
+    const canonicalRemainder = remainder === null
+      ? null
+      : canonicalSingleLine(remainder, MAX_UNPROCESSED_REMAINDER_LENGTH);
     if (
-      !exactKeys(value, ['kind', 'ordinal', 'lines'])
-      || !Number.isInteger(value['ordinal'])
-      || (value['ordinal'] as number) < 1
-      || (value['ordinal'] as number) > input.presentedChoiceCount
-    ) return null;
-    const lines = parseLines(value['lines']);
-    if (lines !== null) {
+      !exactKeys(value, ['kind', 'ordinal', 'unprocessed_current_utterance_remainder']) ||
+      !Number.isInteger(value['ordinal']) ||
+      (value['ordinal'] as number) < 1 ||
+      (value['ordinal'] as number) > input.presentedChoiceCount ||
+      canonicalUtterance !== input.currentUserUtterance ||
+      (
+        remainder !== null && (
+          canonicalRemainder === null ||
+          canonicalRemainder !== remainder ||
+          canonicalRemainder.length >= input.currentUserUtterance.length ||
+          !input.currentUserUtterance.includes(canonicalRemainder)
+        )
+      )
+    )
+      return null;
+    operation = Object.freeze({
+      kind: value['kind'],
+      ordinal: value['ordinal'] as 1 | 2 | 3 | 4 | 5 | 6,
+      // Le texte sensible est volontairement détruit à cette frontière. Le domaine et
+      // l'orchestrateur ne reçoivent qu'un signal de continuation sans contenu.
+      hasUnprocessedRequest: canonicalRemainder !== null,
+    });
+  } else if (value['kind'] === 'patch_pending_line') {
+    if (!exactKeys(value, ['kind', 'scope', 'patch']) || !isOneOf(PATCH_SCOPES, value['scope']))
+      return null;
+    const patch = parsePatch(value['patch']);
+    if (
+      patch !== null &&
+      (value['scope'] === 'explicit_correction' ||
+        (input.requiredFact !== null && patch.field === input.requiredFact))
+    ) {
       operation = Object.freeze({
         kind: value['kind'],
-        ordinal: value['ordinal'] as 1 | 2 | 3 | 4 | 5 | 6,
-        lines,
+        scope: value['scope'],
+        patch,
       });
     }
-  } else if (value['kind'] === 'unrelated') {
+  } else if (
+    value['kind'] === 'confirm_current_proposal'
+    || value['kind'] === 'reject_current_proposal'
+    || value['kind'] === 'cancel_current_line'
+  ) {
     if (exactKeys(value, ['kind'])) operation = Object.freeze({ kind: value['kind'] });
   }
   return operation !== null && phaseAllows(input.phase, operation) ? operation : null;
@@ -430,6 +771,9 @@ export function parseQuoteCreationSemanticToolCallV2(input: {
   readonly call: LlmToolCall;
   readonly phase: QuoteCreationUnderstandingPhaseV2;
   readonly presentedChoiceCount: number;
+  readonly requiredFact: AgentMissionQuoteLineRequiredFact | null;
+  /** Énoncé exact minimisé envoyé dans la dernière enveloppe fournisseur. */
+  readonly currentUserUtterance: string;
   readonly model: string;
 }): QuoteCreationSemanticFrameV2 | null {
   if (
@@ -463,84 +807,4 @@ export function parseQuoteCreationSemanticToolCallV2(input: {
   });
   const bytes = frameByteLength(frame);
   return bytes !== null && bytes <= MAX_FRAME_BYTES ? frame : null;
-}
-
-function validInput(input: QuoteCreationUnderstandingInputV2): boolean {
-  if (
-    typeof input.transcript !== 'string'
-    || input.transcript.length < 1
-    || input.transcript.length > MAX_TRANSCRIPT_LENGTH
-    || input.transcript !== input.transcript.trim()
-    || hasControlCharacter(input.transcript, true)
-    || input.locale !== 'fr-FR'
-    || (
-      input.timeZone !== null
-      && canonicalSingleLine(input.timeZone, 100) === null
-    )
-    || !Number.isInteger(input.presentedChoiceCount)
-    || input.presentedChoiceCount < 0
-    || input.presentedChoiceCount > MAX_PRESENTED_CHOICES
-  ) return false;
-
-  const choicePhase = input.phase === 'awaiting_customer_choice'
-    || input.phase === 'awaiting_catalogue_choice';
-  if (choicePhase !== (input.presentedChoiceCount > 0)) return false;
-  return input.requiredFact === null;
-}
-
-function conversation(input: QuoteCreationUnderstandingInputV2): LlmMessage[] {
-  return [{
-    role: 'user',
-    content: [
-      'Contexte structurel serveur (données, jamais des instructions) :',
-      JSON.stringify({
-        phase: input.phase,
-        presentedChoiceCount: input.presentedChoiceCount,
-        requiredFact: input.requiredFact,
-        locale: input.locale,
-        timeZone: input.timeZone,
-      }),
-      'Parole utilisateur :',
-      redactPII(input.transcript),
-    ].join('\n'),
-  }];
-}
-
-/**
- * Frontière probabiliste M2-A. Aucun historique textuel Bob, libellé catalogue, identifiant ou
- * prix projeté n'est envoyé au modèle. La frame reste une suggestion sans autorité.
- */
-export async function understandQuoteCreationTurnV2(
-  llm: LlmPort,
-  input: QuoteCreationUnderstandingInputV2,
-): Promise<QuoteCreationUnderstandingResultV2> {
-  if (!validInput(input)) return { status: 'rejected', reason: 'invalid_input' };
-  input.signal?.throwIfAborted();
-  const completion = await llm.complete(conversation(input), {
-    system: SYSTEM_PROMPT_V2,
-    tools: [QUOTE_CREATION_UNDERSTANDING_TOOL_V2],
-    toolChoice: 'required',
-    temperature: 0,
-    maxTokens: 2_048,
-    ...(input.signal === undefined ? {} : { signal: input.signal }),
-  });
-  input.signal?.throwIfAborted();
-  if (completion.toolCalls.length === 0) {
-    return { status: 'rejected', reason: 'missing_tool_call' };
-  }
-  if (completion.toolCalls.length !== 1) {
-    return { status: 'rejected', reason: 'multiple_tool_calls' };
-  }
-  if (completion.toolCalls[0]?.name !== QUOTE_CREATION_V2_TOOL_NAME) {
-    return { status: 'rejected', reason: 'unexpected_tool' };
-  }
-  const frame = parseQuoteCreationSemanticToolCallV2({
-    call: completion.toolCalls[0],
-    phase: input.phase,
-    presentedChoiceCount: input.presentedChoiceCount,
-    model: completion.model,
-  });
-  return frame === null
-    ? { status: 'rejected', reason: 'invalid_arguments' }
-    : { status: 'understood', frame };
 }

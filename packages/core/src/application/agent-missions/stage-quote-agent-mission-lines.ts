@@ -19,11 +19,13 @@ import { type AgentMissionOwner } from '../ports/agent-mission-repository';
 import { type AgentMissionTransaction } from '../ports/agent-mission-unit-of-work';
 import { type IdGeneratorPort } from '../ports/services';
 import { type AppError, appConflict } from '../result';
+import { MAX_BILLING_LINES } from '../billing/line-input-validation';
 
 export interface StageQuoteAgentMissionLinesInTransactionInput {
   readonly transaction: AgentMissionTransaction;
   readonly owner: AgentMissionOwner;
   readonly mission: AgentMission;
+  readonly confirmedLineCount: number;
   readonly candidates: readonly AgentMissionQuoteLineCandidateV1[];
   readonly origin: AgentMissionQuoteLineWorkOrigin;
   readonly occurredAt: Instant;
@@ -48,11 +50,20 @@ function invalidPersistedQueue(cause: string): Result<never, AppError> {
   });
 }
 
+function invalidPersistedDraft(cause: string): Result<never, AppError> {
+  return err({
+    kind: 'dependency',
+    port: 'quote_draft_slot',
+    cause,
+  });
+}
+
 /**
  * Primitive transactionnelle partagée par start, choix client, append et choix catalogue.
  *
  * L'appelant a déjà vérifié le replay et acquis mission → draft. Cette primitive verrouille
- * ensuite la file, borne le NOMBRE d'items présents à 20 et alloue des ordinals INT4 monotones.
+ * ensuite la file, borne le NOMBRE d'items présents à 20, refuse de dépasser la capacité
+ * autoritaire du brouillon et alloue des ordinals INT4 monotones.
  */
 export async function stageQuoteAgentMissionLinesInTransaction(
   input: StageQuoteAgentMissionLinesInTransactionInput,
@@ -72,6 +83,14 @@ export async function stageQuoteAgentMissionLinesInTransaction(
     || input.candidates.length > AGENT_MISSION_QUOTE_LINE_MAX_WORK_ITEMS
   ) {
     return err(validation('lines', 'Entre une et vingt lignes sont requises.'));
+  }
+  if (
+    !Number.isSafeInteger(input.confirmedLineCount)
+    || Object.is(input.confirmedLineCount, -0)
+    || input.confirmedLineCount < 0
+    || input.confirmedLineCount > MAX_BILLING_LINES
+  ) {
+    return invalidPersistedDraft('invalid_confirmed_line_count');
   }
   for (let index = 0; index < input.candidates.length; index += 1) {
     const normalized = normalizeAgentMissionQuoteLineCandidate(input.candidates[index]);
@@ -98,6 +117,17 @@ export async function stageQuoteAgentMissionLinesInTransaction(
     || new Set(existing.map((item) => item.ordinal)).size !== existing.length
   ) {
     return invalidPersistedQueue('invalid_locked_queue');
+  }
+  if (
+    input.confirmedLineCount
+      + existing.length
+      + input.candidates.length
+    > MAX_BILLING_LINES
+  ) {
+    return err(appConflict(
+      'agent_mission_quote_draft',
+      'line_limit_reached',
+    ));
   }
   if (
     existing.length + input.candidates.length

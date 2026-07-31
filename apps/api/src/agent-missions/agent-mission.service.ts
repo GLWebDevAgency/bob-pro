@@ -3,6 +3,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import {
   AcknowledgeQuoteScreen,
   AdvanceQuoteAgentMission,
+  CancelQuoteAgentMissionPendingLine,
   CancelQuoteAgentMission,
   ContinueQuoteAgentMissionLineQueue,
   ContinueQuoteAgentMissionLineResolution,
@@ -17,7 +18,6 @@ import {
   StartQuoteAgentMission,
   appConflict,
   appUnavailable,
-  deriveAgentMissionSystemCommandId,
   err,
   type AgentMissionFingerprintPort,
   type AgentMissionQuoteLineCandidateV1,
@@ -31,6 +31,7 @@ import {
   type AcknowledgeQuoteScreenOutput,
   type AppError,
   type CancelQuoteAgentMissionOutput,
+  type CancelQuoteAgentMissionPendingLineOutput,
   type ContinueQuoteAgentMissionLineResolutionOutput,
   type ContinueQuoteAgentMissionLineQueueOutput,
   type DecideQuoteAgentMissionCatalogueChoiceOutput,
@@ -40,6 +41,7 @@ import {
   type AgentMissionQuoteLinePatchV1,
   type AgentMissionQuoteLineRequiredFact,
   type QuoteAgentMissionCustomerDecision,
+  type QuoteAgentMissionPlannerResumeV2,
   type QuoteAgentMissionPresentationV1,
   type QuoteAgentMissionResumeViewV2,
   type Result,
@@ -78,6 +80,11 @@ extends AcknowledgeQuoteScreenOutput {
   readonly presentation: QuoteAgentMissionPresentationV1;
 }
 
+export interface GetCurrentQuoteAgentMissionServiceOutputV2 {
+  readonly mission: AgentMissionViewV1 | null;
+  readonly presentation: QuoteAgentMissionPresentationV1 | null;
+}
+
 export type DecideQuoteAgentMissionServiceOutputV2 =
 DecideQuoteAgentMissionOutput & {
   readonly presentation: QuoteAgentMissionPresentationV1;
@@ -108,6 +115,16 @@ export interface PatchQuoteAgentMissionLineServiceOutput {
   readonly outcome: 'patched' | 'replayed';
   readonly pendingLineId: string;
   readonly workRevisionAfter: number;
+  readonly mission: AgentMissionViewV1;
+  readonly continuation: AgentMissionLineContinuationServiceOutput;
+  readonly presentation: QuoteAgentMissionPresentationV1;
+}
+
+export interface CancelQuoteAgentMissionPendingLineServiceOutput
+extends Omit<
+  CancelQuoteAgentMissionPendingLineOutput,
+  'mission' | 'commandReceipt'
+> {
   readonly mission: AgentMissionViewV1;
   readonly continuation: AgentMissionLineContinuationServiceOutput;
   readonly presentation: QuoteAgentMissionPresentationV1;
@@ -317,6 +334,36 @@ export class AgentMissionService {
       .then((result) => result.ok ? { ok: true, value: { mission: result.value } } : result);
   }
 
+  async getCurrentV2(
+    authorization: AgentMissionServiceAuthorization,
+  ): Promise<Result<GetCurrentQuoteAgentMissionServiceOutputV2, AppError>> {
+    if (authorization.proof.protocolVersion !== 2) {
+      return err(appConflict('agent_mission_protocol', 'upgrade_required'));
+    }
+    const current = await this.getCurrent(authorization);
+    if (!current.ok) return current;
+    const mission = current.value.mission;
+    if (mission !== null) {
+      return this.attachCurrentLinePresentation(
+        authorization.owner,
+        Object.freeze({ mission }),
+      );
+    }
+    const resumed = await this.readCurrentResumeV2(authorization.owner);
+    if (!resumed.ok) return resumed;
+    if (resumed.value.mission !== null || resumed.value.presentation !== null) {
+      return err({
+        kind: 'dependency',
+        port: 'agent_mission_command_projection',
+        cause: 'mission_changed_after_read',
+      });
+    }
+    return {
+      ok: true,
+      value: Object.freeze({ mission: null, presentation: null }),
+    };
+  }
+
   async getCurrentResume(): Promise<
     Result<QuoteAgentMissionResumeView, AppError>
   > {
@@ -355,6 +402,36 @@ export class AgentMissionService {
       companyId: principal.companyId,
       ownerUserId: principal.userId,
     });
+  }
+
+  /**
+   * Projection interne du planner Realtime. Elle n'est exposée par aucun controller et ne remplace
+   * jamais la vérification de capability de `getCurrentV2`; l'orchestrateur appelle les deux puis
+   * exige leur cohérence avant de montrer au modèle des alias/libellés sans identifiants.
+   */
+  async getCurrentPlannerResumeV2(
+    authorization: AgentMissionServiceAuthorization,
+  ): Promise<Result<QuoteAgentMissionPlannerResumeV2, AppError>> {
+    if (authorization.proof.protocolVersion !== 2) {
+      return err(appConflict('agent_mission_protocol', 'upgrade_required'));
+    }
+    const unitOfWork = this.persistence.createAgentMissionResumeV2UnitOfWork();
+    if (unitOfWork === null) {
+      return err(appUnavailable('agent_mission_resume_v2_persistence'));
+    }
+    try {
+      return await new GetResumableQuoteAgentMissionV2({
+        unitOfWork,
+      }).executeForPlanner(authorization.owner);
+    } catch (error) {
+      this.logger.error(
+        'Lecture du contexte planner AgentMission V2 impossible.',
+        undefined,
+        'AgentMissionService',
+        classifyAgentMissionResumeV2Failure(error),
+      );
+      return err(appUnavailable('agent_mission_resume_v2_persistence'));
+    }
   }
 
   private async readCurrentResumeV2(
@@ -645,36 +722,26 @@ export class AgentMissionService {
     if (
       input.authorization.proof.protocolVersion === 2
       && mission.status === 'active'
-      && mission.phase === 'awaiting_lines'
+      && (
+        mission.phase === 'awaiting_lines'
+        || mission.phase === 'awaiting_catalogue_choice'
+        || mission.phase === 'awaiting_line_details'
+        || mission.phase === 'awaiting_line_confirmation'
+      )
     ) {
-      const parentCommandId = advanced.value.outcome === 'superseded'
-        ? (
-            mission.revision === acknowledged.value.receipt.missionRevisionAfter
-              ? acknowledged.value.receipt.ackCommandId
-              : null
-          )
-        : deriveAgentMissionSystemCommandId({
-            operation: 'consume_staged_customer_resolution',
-            ...owner,
-            missionId: input.missionId,
-            acknowledgementMissionRevision:
-              acknowledged.value.receipt.missionRevisionAfter,
-          });
-      if (parentCommandId !== null) {
-        const continued = await this.continueLineQueue({
-          authorization: input.authorization,
-          missionId: input.missionId,
-          parentCommandId,
+      const continued = await this.continueLineQueue({
+        authorization: input.authorization,
+        missionId: input.missionId,
+        parentCommandId: acknowledged.value.receipt.ackCommandId,
+      });
+      if (!continued.ok) {
+        this.metrics.agentMissionScreenAcks.inc({
+          outcome: agentMissionScreenAckMetricOutcome(continued),
         });
-        if (!continued.ok) {
-          this.metrics.agentMissionScreenAcks.inc({
-            outcome: agentMissionScreenAckMetricOutcome(continued),
-          });
-          return continued;
-        }
-        mission = continued.value.mission;
-        continuationOutcome = continued.value.continuation.outcome;
+        return continued;
       }
+      mission = continued.value.mission;
+      continuationOutcome = continued.value.continuation.outcome;
     }
 
     const acknowledgedValue = Object.freeze({
@@ -1000,10 +1067,7 @@ export class AgentMissionService {
     readonly pendingLineId: string;
     readonly expectedWorkRevision: number;
     readonly choiceId: string;
-    readonly additionalLines: readonly AgentMissionQuoteLineCandidateV1[];
-  }): Promise<
-  Result<DecideQuoteAgentMissionCatalogueChoiceServiceOutput, AppError>
-  > {
+  }): Promise<Result<DecideQuoteAgentMissionCatalogueChoiceServiceOutput, AppError>> {
     return this.executeCatalogueChoice({
       authorization: input.authorization,
       missionId: input.missionId,
@@ -1017,7 +1081,10 @@ export class AgentMissionService {
       pendingLineId: input.pendingLineId,
       expectedWorkRevision: input.expectedWorkRevision,
       choiceId: input.choiceId,
-      additionalLines: input.additionalLines,
+      // La voix ne peut pas transporter une ligne additionnelle avec un choix ordinal : le modèle
+      // voit la ligne courante et les choix, donc ce canal permettrait une recopie indétectable du
+      // contexte. Le parcours tactile garde son contrat explicite et autoritaire.
+      additionalLines: [],
       origin: {
         actor: 'user_voice',
         correlation: {
@@ -1238,6 +1305,135 @@ export class AgentMissionService {
       outcome: patched.value.outcome,
       pendingLineId: patched.value.pendingLineId,
       workRevisionAfter: patched.value.workRevisionAfter,
+      mission: continued.value.mission,
+      continuation: continued.value.continuation,
+    }));
+  }
+
+  cancelPendingLine(input: {
+    readonly authorization: AgentMissionServiceAuthorization;
+    readonly missionId: string;
+    readonly commandId: string;
+    readonly expectedMissionRevision: number;
+    readonly expectedDraftSessionId: string;
+    readonly expectedDraftSlotRevision: number;
+    readonly expectedDraftContentRevision: number;
+    readonly pendingLineId: string;
+    readonly expectedWorkRevision: number;
+  }): Promise<
+    Result<CancelQuoteAgentMissionPendingLineServiceOutput, AppError>
+  > {
+    return this.executePendingLineCancellation({
+      ...input,
+      origin: { actor: 'user_tap', correlation: null },
+    });
+  }
+
+  cancelPendingLineFromVoiceTurn(input: {
+    readonly authorization: AgentMissionServiceAuthorization;
+    readonly missionId: string;
+    readonly turnId: string;
+    readonly realtimeSessionId: string;
+    readonly contextRevision: number;
+    readonly contextDigest: string;
+    readonly expectedMissionRevision: number;
+    readonly expectedDraftSessionId: string;
+    readonly expectedDraftSlotRevision: number;
+    readonly expectedDraftContentRevision: number;
+    readonly pendingLineId: string;
+    readonly expectedWorkRevision: number;
+  }): Promise<
+    Result<CancelQuoteAgentMissionPendingLineServiceOutput, AppError>
+  > {
+    return this.executePendingLineCancellation({
+      authorization: input.authorization,
+      missionId: input.missionId,
+      commandId: input.turnId,
+      expectedMissionRevision: input.expectedMissionRevision,
+      expectedDraftSessionId: input.expectedDraftSessionId,
+      expectedDraftSlotRevision: input.expectedDraftSlotRevision,
+      expectedDraftContentRevision: input.expectedDraftContentRevision,
+      pendingLineId: input.pendingLineId,
+      expectedWorkRevision: input.expectedWorkRevision,
+      origin: {
+        actor: 'user_voice',
+        correlation: {
+          realtimeSessionId: input.realtimeSessionId,
+          turnId: input.turnId,
+          contextRevision: input.contextRevision,
+          contextDigest: input.contextDigest,
+        },
+      },
+    });
+  }
+
+  private async executePendingLineCancellation(input: {
+    readonly authorization: AgentMissionServiceAuthorization;
+    readonly missionId: string;
+    readonly commandId: string;
+    readonly expectedMissionRevision: number;
+    readonly expectedDraftSessionId: string;
+    readonly expectedDraftSlotRevision: number;
+    readonly expectedDraftContentRevision: number;
+    readonly pendingLineId: string;
+    readonly expectedWorkRevision: number;
+    readonly origin: Parameters<
+      CancelQuoteAgentMissionPendingLine['execute']
+    >[0]['origin'];
+  }): Promise<
+    Result<CancelQuoteAgentMissionPendingLineServiceOutput, AppError>
+  > {
+    const persistedUnitOfWork = this.persistence.createAgentMissionUnitOfWork();
+    if (persistedUnitOfWork === null) {
+      return err(appUnavailable('agent_mission_persistence'));
+    }
+    const unitOfWork = instrumentAgentMissionCapabilityRejections(
+      persistedUnitOfWork,
+      this.metrics,
+      this.logger,
+      'line_cancel',
+    );
+    const owner = input.authorization.owner;
+    const cancelled = await new CancelQuoteAgentMissionPendingLine({
+      unitOfWork,
+      fingerprints: this.fingerprints,
+      ids: { newId: () => randomUUID() },
+    }).execute({
+      ...owner,
+      authority: input.authorization.proof,
+      missionId: input.missionId,
+      commandId: input.commandId,
+      expectedMissionRevision: input.expectedMissionRevision,
+      expectedDraftSessionId: input.expectedDraftSessionId,
+      expectedDraftSlotRevision: input.expectedDraftSlotRevision,
+      expectedDraftContentRevision: input.expectedDraftContentRevision,
+      pendingLineId: input.pendingLineId,
+      expectedWorkRevision: input.expectedWorkRevision,
+      origin: input.origin,
+    });
+    if (!cancelled.ok) return cancelled;
+    const continued = await this.continueLineQueue({
+      authorization: input.authorization,
+      missionId: input.missionId,
+      parentCommandId: input.commandId,
+    });
+    if (!continued.ok) return continued;
+    if (cancelled.value.outcome !== 'replayed') {
+      this.logger.audit('agent_mission.pending_line_cancelled', {
+        ...auditReferences(this.fingerprints, {
+          companyId: owner.companyId,
+          ownerUserId: owner.ownerUserId,
+          missionId: input.missionId,
+        }),
+        actor: input.origin.actor,
+        outcome: cancelled.value.outcome,
+        phase: continued.value.mission.phase,
+        continuationOutcome: continued.value.continuation.outcome,
+      });
+    }
+    return this.attachCurrentLinePresentation(owner, Object.freeze({
+      outcome: cancelled.value.outcome,
+      pendingLineId: cancelled.value.pendingLineId,
       mission: continued.value.mission,
       continuation: continued.value.continuation,
     }));

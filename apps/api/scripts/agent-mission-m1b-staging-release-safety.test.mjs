@@ -10,6 +10,21 @@ const railwayReleaseWorkflow = readFileSync(
   resolve(repositoryRoot, '.github/workflows/railway-api.yml'),
   'utf8',
 );
+const m2a3SemanticWorkflow = readFileSync(
+  resolve(repositoryRoot, '.github/workflows/agent-mission-m2a3-semantic-staging.yml'),
+  'utf8',
+);
+const m2a3SemanticEvidenceValidator = readFileSync(
+  resolve(repositoryRoot, 'apps/api/scripts/validate-agent-mission-m2a3-semantic-evidence.mjs'),
+  'utf8',
+);
+const m2a3SemanticLiveEvaluation = readFileSync(
+  resolve(
+    repositoryRoot,
+    'apps/api/src/voice/realtime/evaluation/m2a3-semantic-model-evaluation.live.test.ts',
+  ),
+  'utf8',
+);
 const reportSource = readFileSync(
   resolve(repositoryRoot, 'apps/api/scripts/agent-mission-m1b-staging-report.mjs'),
   'utf8',
@@ -62,6 +77,10 @@ test('workflow M1-B est uniquement manuel ou réutilisable, staging et sérialis
 test('le workflow Railway déjà présent sur main sert seulement de trampoline pré-merge', () => {
   assert.match(railwayReleaseWorkflow, /- m1b-staging-certification/u);
   assert.match(railwayReleaseWorkflow, /- m1b-staging-recovery/u);
+  assert.match(railwayReleaseWorkflow, /- m2a3-semantic-certification/u);
+  assert.match(railwayReleaseWorkflow, /- m2a3-staging-schema/u);
+  assert.match(railwayReleaseWorkflow, /- m2a3-staging-preview-activate/u);
+  assert.match(railwayReleaseWorkflow, /- m2a3-staging-preview-deactivate/u);
   assert.match(railwayReleaseWorkflow, /- k2-staging-schema/u);
   assert.match(
     railwayReleaseWorkflow,
@@ -75,7 +94,7 @@ test('le workflow Railway déjà présent sur main sert seulement de trampoline 
   );
   assert.match(
     railwayReleaseWorkflow,
-    /validate-purpose:[\s\S]*?release\|m1b-staging-certification\|m1b-staging-recovery\|k2-staging-schema\)[\s\S]*?Unsupported Railway release purpose/u,
+    /validate-purpose:[\s\S]*?release\|m1b-staging-certification\|m1b-staging-recovery\|m2a3-semantic-certification\|m2a3-staging-schema\|m2a3-staging-preview-activate\|m2a3-staging-preview-deactivate\|k2-staging-schema\)[\s\S]*?Unsupported Railway release purpose/u,
   );
   assert.match(
     railwayReleaseWorkflow,
@@ -85,6 +104,100 @@ test('le workflow Railway déjà présent sur main sert seulement de trampoline 
     railwayReleaseWorkflow,
     /mode: \$\{\{ inputs\.purpose == 'm1b-staging-recovery' && 'recovery' \|\| 'certification' \}\}/u,
   );
+  assert.match(
+    railwayReleaseWorkflow,
+    /route-m2a3-semantic-certification:[\s\S]*?test "\$EXPECTED_SHA" = "\$GITHUB_SHA"/u,
+  );
+  assert.match(
+    railwayReleaseWorkflow,
+    /certify-agent-mission-m2a3-semantic:[\s\S]*?uses: \.\/\.github\/workflows\/agent-mission-m2a3-semantic-staging\.yml[\s\S]*?expected_sha: \$\{\{ inputs\.expected_sha \}\}[\s\S]*?secrets: inherit/u,
+  );
+  assert.match(
+    railwayReleaseWorkflow,
+    /route-m2a3-staging-schema:[\s\S]*?test "\$EXPECTED_SHA" = "\$GITHUB_SHA"/u,
+  );
+  assert.match(
+    railwayReleaseWorkflow,
+    /certify-agent-mission-m2a3-staging-schema:[\s\S]*?uses: \.\/\.github\/workflows\/agent-mission-m2a3-staging-schema\.yml[\s\S]*?expected_sha: \$\{\{ inputs\.expected_sha \}\}[\s\S]*?secrets: inherit/u,
+  );
+});
+
+test('le certificat M2-A-3 est manuel, exact-SHA, staging et sans clé OpenAI GitHub', () => {
+  assert.match(
+    m2a3SemanticWorkflow,
+    /^on:\n  workflow_dispatch:[\s\S]*?expected_sha:[\s\S]*?required: true[\s\S]*?workflow_call:[\s\S]*?expected_sha:[\s\S]*?required: true/mu,
+  );
+  assert.doesNotMatch(m2a3SemanticWorkflow, /^\s+(?:push|pull_request|schedule):/mu);
+  assert.equal(occurrences(m2a3SemanticWorkflow, /^\s+environment: staging$/gmu), 1);
+  assert.match(m2a3SemanticWorkflow, /group: railway-api-staging/u);
+  assert.match(m2a3SemanticWorkflow, /cancel-in-progress: false/u);
+  assert.match(
+    m2a3SemanticWorkflow,
+    /test "\$\(git rev-parse HEAD\)" = "\$EXPECTED_SHA"[\s\S]*?test "\$EXPECTED_SHA" = "\$GITHUB_SHA"/u,
+  );
+  assert.match(m2a3SemanticWorkflow, /pnpm install --frozen-lockfile/u);
+  assert.match(
+    m2a3SemanticWorkflow,
+    /RUN_BOB_LIVE_M2A3_MODEL_EVAL=true[\s\S]*?BOB_LIVE_M2A3_EVAL_RELEASE_SHA="\$GITHUB_SHA"/u,
+  );
+  assert.match(
+    m2a3SemanticWorkflow,
+    /railway run --project "\$RAILWAY_PROJECT_ID"[\s\S]*?--service "\$RAILWAY_API_SERVICE_ID"[\s\S]*?--environment "\$RAILWAY_ENVIRONMENT_ID" --no-local/u,
+  );
+  assert.match(
+    m2a3SemanticWorkflow,
+    /BOB_RAILWAY_RETRY_GUARD_PATH="\$GITHUB_WORKSPACE\/\.release-evidence\/agent-mission-m2a3"[\s\S]*?apps\/api\/scripts\/run-m2a3-railway-with-bounded-fetch-retry\.sh[\s\S]*?railway run --project/u,
+  );
+  assert.doesNotMatch(m2a3SemanticWorkflow, /secrets\.OPENAI_API_KEY/u);
+  assert.doesNotMatch(m2a3SemanticWorkflow, /railway\s+link/u);
+  assert.match(m2a3SemanticEvidenceValidator, /receipt\.corpusVersion !== 4/u);
+  assert.match(
+    m2a3SemanticEvidenceValidator,
+    /receipt\.providerRequestCount === CASE_IDS\.length/u,
+  );
+  assert.match(m2a3SemanticEvidenceValidator, /'catalogue-stored-injection'/u);
+  assert.match(
+    m2a3SemanticWorkflow,
+    /railway run[\s\S]*?env[\s\S]*?BOB_LIVE_PROVIDER=openai[\s\S]*?RUN_BOB_LIVE_M2A3_MODEL_EVAL=true/u,
+  );
+  assert.match(m2a3SemanticEvidenceValidator, /receipt\.generateCount === 0/u);
+  assert.match(m2a3SemanticEvidenceValidator, /entry\.status !== 'mission_frame'/u);
+  assert.match(m2a3SemanticWorkflow, /id: live_eval[\s\S]*?continue-on-error: true/u);
+  assert.match(
+    m2a3SemanticWorkflow,
+    /id: transport_guard[\s\S]*?if: \$\{\{ always\(\) \}\}[\s\S]*?validate-m2a3-railway-transport-evidence\.mjs[\s\S]*?>> "\$GITHUB_OUTPUT"/u,
+  );
+  assert.match(
+    m2a3SemanticWorkflow,
+    /Preserve bounded Railway transport evidence[\s\S]*?steps\.transport_guard\.outputs\.present == 'true'[\s\S]*?agent-mission-m2a3-railway-transport-\$\{\{ github\.sha \}\}-\$\{\{ github\.run_attempt \}\}[\s\S]*?path: \.release-evidence\/agent-mission-m2a3\/railway-control-plane-fetch-failure\.json[\s\S]*?if-no-files-found: error/u,
+  );
+  assert.match(m2a3SemanticWorkflow, /id: receipt_guard[\s\S]*?if: \$\{\{ always\(\) \}\}/u);
+  assert.match(
+    m2a3SemanticWorkflow,
+    /Preserve exact-SHA semantic evidence[\s\S]*?if: \$\{\{ always\(\) && steps\.receipt_guard\.outcome == 'success' \}\}/u,
+  );
+  assert.match(
+    m2a3SemanticWorkflow,
+    /LIVE_OUTCOME: \$\{\{ steps\.live_eval\.outcome \}\}[\s\S]*?TRANSPORT_GUARD_OUTCOME: \$\{\{ steps\.transport_guard\.outcome \}\}[\s\S]*?RECEIPT_GUARD_OUTCOME: \$\{\{ steps\.receipt_guard\.outcome \}\}[\s\S]*?test "\$\{LIVE_OUTCOME:-missing\}" = "success"[\s\S]*?test "\$\{TRANSPORT_GUARD_OUTCOME:-missing\}" = "success"[\s\S]*?test "\$\{RECEIPT_GUARD_OUTCOME:-missing\}" = "success"/u,
+  );
+  assert.match(m2a3SemanticWorkflow, /validate-agent-mission-m2a3-semantic-evidence\.mjs/u);
+  assert.match(
+    m2a3SemanticWorkflow,
+    /path: \.release-evidence\/agent-mission-m2a3\/semantic-model\.json/u,
+  );
+  assert.doesNotMatch(m2a3SemanticWorkflow, /path: \.release-evidence\/agent-mission-m2a3\/\s*$/mu);
+  assert.match(m2a3SemanticEvidenceValidator, /returnedModelStatus/u);
+  assert.match(m2a3SemanticEvidenceValidator, /issueCodes/u);
+  assert.match(
+    m2a3SemanticEvidenceValidator,
+    /receipt\.requestedModelSource === 'versioned_default'/u,
+  );
+  assert.match(
+    m2a3SemanticLiveEvaluation,
+    /process\.env\.OPENAI_MODEL !== undefined[\s\S]*?la V1 certifie exclusivement le défaut versionné/u,
+  );
+  assert.match(m2a3SemanticWorkflow, /if-no-files-found: error/u);
+  assert.match(m2a3SemanticWorkflow, /retention-days: 90/u);
 });
 
 test('workflow cible le SHA et les UUID sans relier le checkout ni changer de backend CLI', () => {
@@ -263,9 +376,7 @@ test('activation, override et cleanup sont bornés par ownership et preuve HMAC 
 });
 
 test('le cleanup récupère le résidu borné avant de retirer override et variables', () => {
-  const recovery = workflow.indexOf(
-    'Recover the exact technical residue before disabling M1-B',
-  );
+  const recovery = workflow.indexOf('Recover the exact technical residue before disabling M1-B');
   const removeOverride = workflow.indexOf(
     'Remove only the user override durably owned by this run',
   );

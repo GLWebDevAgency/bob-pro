@@ -263,6 +263,35 @@ function quoteLinePatchBody(value: unknown): {
   };
 }
 
+function quotePendingLineCancellationBody(value: unknown): {
+  readonly commandId: string;
+  readonly expectedMissionRevision: number;
+  readonly expectedDraftSessionId: string;
+  readonly expectedDraftSlotRevision: number;
+  readonly expectedDraftContentRevision: number;
+  readonly pendingLineId: string;
+  readonly expectedWorkRevision: number;
+} {
+  const body = exactBody(value, [
+    'commandId',
+    'expectedMissionRevision',
+    'expectedDraftSessionId',
+    'expectedDraftSlotRevision',
+    'expectedDraftContentRevision',
+    'pendingLineId',
+    'expectedWorkRevision',
+  ]);
+  return {
+    commandId: body.commandId as string,
+    expectedMissionRevision: body.expectedMissionRevision as number,
+    expectedDraftSessionId: body.expectedDraftSessionId as string,
+    expectedDraftSlotRevision: body.expectedDraftSlotRevision as number,
+    expectedDraftContentRevision: body.expectedDraftContentRevision as number,
+    pendingLineId: body.pendingLineId as string,
+    expectedWorkRevision: body.expectedWorkRevision as number,
+  };
+}
+
 function quoteLineProposalDecisionBody(value: unknown): {
   readonly commandId: string;
   readonly expectedMissionRevision: number;
@@ -384,7 +413,11 @@ export class AgentMissionController {
       'get_current_quote_creation',
       capability,
     );
-    return unwrap(await this.missions.getCurrent(authorization));
+    return unwrap(
+      authorization.proof.protocolVersion === 2
+        ? await this.missions.getCurrentV2(authorization)
+        : await this.missions.getCurrent(authorization),
+    );
   }
 
   @Get('current/quote-creation/resume')
@@ -588,6 +621,32 @@ export class AgentMissionController {
       expectedWorkRevision: body.expectedWorkRevision,
       scope: body.scope,
       patch: body.patch,
+    }));
+  }
+
+  @Post(':missionId/quote-line-cancellations')
+  @HttpCode(HttpStatus.OK)
+  @Header('Cache-Control', 'private, no-store')
+  async cancelPendingQuoteLine(
+    @Param('missionId') missionId: string,
+    @Body() value: unknown,
+    @Headers('x-bob-agent-mission-capability') capability: string | undefined,
+  ) {
+    const authorization = this.requireAuthority(
+      'cancel_pending_quote_line',
+      capability,
+    );
+    const body = quotePendingLineCancellationBody(value);
+    return unwrap(await this.missions.cancelPendingLine({
+      authorization,
+      missionId,
+      commandId: body.commandId,
+      expectedMissionRevision: body.expectedMissionRevision,
+      expectedDraftSessionId: body.expectedDraftSessionId,
+      expectedDraftSlotRevision: body.expectedDraftSlotRevision,
+      expectedDraftContentRevision: body.expectedDraftContentRevision,
+      pendingLineId: body.pendingLineId,
+      expectedWorkRevision: body.expectedWorkRevision,
     }));
   }
 

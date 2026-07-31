@@ -13,12 +13,15 @@ cd "$ROOT_DIR"
 : "${RLS_CERT_CLEANUP:?RLS_CERT_CLEANUP=true is required}"
 : "${CABINET_RELEASE_ENV:?CABINET_RELEASE_ENV is required}"
 : "${BOB_RELEASE_EXPECTED_ENV:?BOB_RELEASE_EXPECTED_ENV is required}"
-: "${BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED:?BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED=false is required}"
+: "${BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED:?BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED=true or false is required}"
 
-if [ "$BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED" != "false" ]; then
-  echo "BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED must remain false until M2-A-3 certification" >&2
-  exit 1
-fi
+case "$BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED" in
+  true|false) ;;
+  *)
+    echo "BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED must be true or false" >&2
+    exit 1
+    ;;
+esac
 
 case "$CABINET_RELEASE_ENV" in
   development|staging|production) ;;
@@ -27,6 +30,44 @@ case "$CABINET_RELEASE_ENV" in
     exit 1
     ;;
 esac
+if [ "$BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED" = true ] \
+   && [ "$CABINET_RELEASE_ENV" != staging ]; then
+  echo "BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED=true is restricted to staging preview" >&2
+  exit 1
+fi
+
+certify_m2a_preview_release_binding() {
+  preview_owner="${BOB_M2A3_STAGING_PREVIEW_OWNER-}"
+  preview_release_sha="${BOB_M2A3_STAGING_PREVIEW_RELEASE_SHA-}"
+  preview_activation_run="${BOB_M2A3_STAGING_PREVIEW_ACTIVATION_RUN-}"
+  if [ "$BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED" = true ]; then
+    release_sha="${BOB_RELEASE_SHA-}"
+    case "$release_sha" in
+      ???????*) ;;
+      *) echo "BOB_RELEASE_SHA is required while the staging M2-A preview is ON" >&2; return 1 ;;
+    esac
+    if ! printf '%s' "$release_sha" | grep -Eq '^[a-f0-9]{40}$'; then
+      echo "BOB_RELEASE_SHA must be an exact SHA while the staging M2-A preview is ON" >&2
+      return 1
+    fi
+    if [ "${BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED-}" != true ] \
+       || [ "$preview_owner" != bob-m2a3-staging-preview-v1 ] \
+       || [ "$preview_release_sha" != "$release_sha" ]; then
+      echo "An ON staging M2-A preview must be owned by the exact normally released SHA" >&2
+      return 1
+    fi
+    case "$preview_activation_run" in
+      ''|*[!0-9]*|0) echo "The staging M2-A preview activation run is invalid" >&2; return 1 ;;
+    esac
+    return 0
+  fi
+  if [ -n "$preview_owner" ] || [ -n "$preview_release_sha" ] || [ -n "$preview_activation_run" ]; then
+    echo "An OFF M2-A runtime must not retain a staging preview owner block" >&2
+    return 1
+  fi
+}
+
+certify_m2a_preview_release_binding
 case "$BOB_RELEASE_EXPECTED_ENV" in
   development|staging|production) ;;
   *)
@@ -115,17 +156,33 @@ certify_agent_mission_realtime_release_acl() {
     psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 \
       -v release_env="$CABINET_RELEASE_ENV" <<'SQL'
 SELECT pg_catalog.format(
-         '%s|%s',
+         '%s|%s|%s|%s',
          flag.version,
-         CASE WHEN flag."killSwitch" THEN 'true' ELSE 'false' END
+         CASE WHEN flag.enabled THEN 'true' ELSE 'false' END,
+         CASE WHEN flag."killSwitch" THEN 'true' ELSE 'false' END,
+         (
+           SELECT pg_catalog.count(*)
+             FROM public.release_flag_subjects AS subject
+            WHERE subject."flagId" = flag.id
+         )
        )
   FROM public.release_flags AS flag
  WHERE flag.key = 'bob.agent_missions.quote.v1'
    AND flag.environment = :'release_env'::public."ReleaseEnvironment";
 SQL
   )"
-  release_flag_version="${release_flag_snapshot%%|*}"
-  release_flag_kill_switch="${release_flag_snapshot#*|}"
+  old_ifs="$IFS"
+  IFS='|'
+  set -- $release_flag_snapshot
+  IFS="$old_ifs"
+  release_flag_version="${1:-}"
+  release_flag_enabled="${2:-}"
+  release_flag_kill_switch="${3:-}"
+  release_flag_subject_count="${4:-}"
+  if [ "$#" -ne 4 ]; then
+    echo "AgentMission legacy release flag snapshot is missing or malformed for $CABINET_RELEASE_ENV" >&2
+    return 1
+  fi
   case "$release_flag_version" in
     ''|*[!0-9]*|0)
       echo "AgentMission release flag version is missing or invalid for $CABINET_RELEASE_ENV" >&2
@@ -139,20 +196,34 @@ SQL
       return 1
       ;;
   esac
+  case "$release_flag_enabled" in
+    true|false) ;;
+    *) echo "AgentMission legacy release flag enabled state is invalid for $CABINET_RELEASE_ENV" >&2; return 1 ;;
+  esac
+  case "$release_flag_subject_count" in
+    ''|*[!0-9]*) echo "AgentMission legacy release flag subject count is invalid for $CABINET_RELEASE_ENV" >&2; return 1 ;;
+  esac
+  if [ "$BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED" = true ] \
+     && { [ "$release_flag_enabled" != false ] \
+       || [ "$release_flag_kill_switch" != false ] \
+       || [ "$release_flag_subject_count" != 0 ]; }; then
+    echo "AgentMission legacy V1 must remain globally dormant with zero subjects while M2-A is ON" >&2
+    return 1
+  fi
   m2a_release_flag_snapshot="$(
     psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 \
       -v release_env="$CABINET_RELEASE_ENV" <<'SQL'
 SELECT pg_catalog.format(
-         '%s|%s|%s|%s',
+         '%s|%s|%s|%s|%s',
          flag.version,
          CASE WHEN flag.enabled THEN 'true' ELSE 'false' END,
          CASE WHEN flag."killSwitch" THEN 'true' ELSE 'false' END,
-         CASE WHEN EXISTS (
-           SELECT 1
+         (
+           SELECT pg_catalog.count(*)
              FROM public.release_flag_subjects AS subject
             WHERE subject."flagId" = flag.id
-              AND subject.enabled
-         ) THEN 'true' ELSE 'false' END
+         ),
+         flag."updatedByUserId"
        )
   FROM public.release_flags AS flag
  WHERE flag.key = 'bob.agent_missions.quote.m2a'
@@ -166,8 +237,9 @@ SQL
   m2a_release_flag_version="${1:-}"
   m2a_release_flag_enabled="${2:-}"
   m2a_release_flag_kill_switch="${3:-}"
-  m2a_enabled_subject_exists="${4:-}"
-  if [ "$#" -ne 4 ]; then
+  m2a_subject_count="${4:-}"
+  m2a_release_flag_actor="${5:-}"
+  if [ "$#" -ne 5 ]; then
     echo "AgentMission M2-A release flag snapshot is missing or malformed for $CABINET_RELEASE_ENV" >&2
     return 1
   fi
@@ -177,10 +249,15 @@ SQL
       return 1
       ;;
   esac
-  if [ "$m2a_release_flag_enabled" != "false" ] \
+  if [ "$m2a_release_flag_enabled" != "$BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED" ] \
      || [ "$m2a_release_flag_kill_switch" != "false" ] \
-     || [ "$m2a_enabled_subject_exists" != "false" ]; then
-    echo "AgentMission M2-A release flag and every tenant override must remain exactly OFF for $CABINET_RELEASE_ENV" >&2
+     || [ "$m2a_subject_count" != "0" ]; then
+    echo "AgentMission M2-A release flag must match its runtime master, keep kill switch OFF and have zero subjects for $CABINET_RELEASE_ENV" >&2
+    return 1
+  fi
+  if [ "$BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED" = true ] \
+     && [ "$m2a_release_flag_actor" != system:github:agent-mission-m2a3-staging-preview ]; then
+    echo "AgentMission M2-A global ON must be owned by the staging preview workflow" >&2
     return 1
   fi
   psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \

@@ -971,6 +971,37 @@ describe('AgentMission — proposition de ligne M2-A-2', () => {
     expect(cancelled.event.eventType).toBe('line_cancelled');
   });
 
+  it('annule une tête en cours de détail sans fabriquer de décision', () => {
+    const requested = value(awaitingLinesV2().requestLineDetails({
+      expectedRevision: 2,
+      pendingLineId: PENDING_LINE_ID,
+      requiredFact: 'unit_price',
+      workRevisionAfter: 3,
+      occurredAt: at(2),
+    })).mission;
+    const cancelled = value(requested.cancelPendingLine({
+      expectedRevision: requested.revision,
+      pendingLineId: PENDING_LINE_ID,
+      expectedWorkRevision: 3,
+      observedDraft: draft(),
+      occurredAt: at(3),
+    }));
+
+    expect(cancelled.mission.phase).toBe('awaiting_lines');
+    expect(cancelled.mission.payload.draft).toEqual(draft());
+    expect(cancelled.mission.payload.decision).toBeNull();
+    expect(cancelled.event).toMatchObject({
+      eventType: 'line_cancelled',
+      data: {
+        kind: 'line_cancelled',
+        pendingLineId: PENDING_LINE_ID,
+        expectedWorkRevision: 3,
+        choiceId: null,
+        choiceSetHash: null,
+      },
+    });
+  });
+
   it.each([
     ['candidate_unavailable', 'awaiting_line_details'],
     ['choice_set_stale', 'awaiting_lines'],

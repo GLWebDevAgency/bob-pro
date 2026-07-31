@@ -104,6 +104,25 @@ export function runtimeToolResultIntent(tool: string): BobIntent | null {
   return runtimeToolIntentContract(tool)?.resultIntent ?? null;
 }
 
+/**
+ * Dérive les intentions réellement servies depuis les outils effectivement construits.
+ *
+ * Le registre omet déjà les actions optionnelles absentes. Cette projection réutilise donc sa
+ * vérité runtime et le contrat canonique ci-dessus, sans entretenir une deuxième liste d'outils.
+ */
+export function runtimeIntentsForTools(
+  tools: readonly Pick<Tool<unknown, unknown>, 'name'>[],
+): ReadonlySet<BobIntent> {
+  const intents = new Set<BobIntent>();
+  for (const tool of tools) {
+    const toolContract = runtimeToolIntentContract(tool.name);
+    if (toolContract === null) continue;
+    intents.add(toolContract.resultIntent);
+    for (const intent of toolContract.authorityIntents) intents.add(intent);
+  }
+  return intents;
+}
+
 export type RuntimeToolOwnershipPreflight =
   | { readonly status: 'allowed' }
   | { readonly status: 'unknown_tool'; readonly tool: string }

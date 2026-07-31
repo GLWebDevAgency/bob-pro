@@ -396,6 +396,7 @@ export type AgentMissionAction =
   | 'reject_line_proposal'
   | 'confirm_line'
   | 'cancel_line'
+  | 'cancel_pending_line'
   | 'cancel'
   | 'expire';
 
@@ -3338,6 +3339,65 @@ export class AgentMission {
         expectedWorkRevision: decision.expectedWorkRevision,
         choiceId: input.choiceId,
         choiceSetHash: decision.choiceSetHash,
+      },
+    });
+  }
+
+  cancelPendingLine(input: {
+    readonly expectedRevision: number;
+    readonly pendingLineId: string;
+    readonly expectedWorkRevision: number;
+    readonly observedDraft: QuoteMissionDraftReferenceV1;
+    readonly occurredAt: Instant;
+  }): AgentMissionResult<AgentMissionTransition> {
+    const shape = requireExactInput(input, [
+      'expectedRevision',
+      'pendingLineId',
+      'expectedWorkRevision',
+      'observedDraft',
+      'occurredAt',
+    ]);
+    if (!shape.ok) return shape;
+    const ready = this.authorize(
+      'cancel_pending_line',
+      input.expectedRevision,
+      input.occurredAt,
+      'awaiting_line_details',
+    );
+    if (!ready.ok) return ready;
+    if (
+      this.protocolVersion !== AGENT_MISSION_PROTOCOL_M2A
+      || this.snapshot.payload.decision !== null
+    ) {
+      return this.invalidTransition('cancel_pending_line');
+    }
+    if (!isCanonicalUuid(input.pendingLineId)) {
+      return invalid('pendingLineId', 'invalid_uuid');
+    }
+    if (!isRevision(input.expectedWorkRevision, false)) {
+      return invalid('expectedWorkRevision', 'invalid_revision');
+    }
+    const observedDraft = parseDraft(input.observedDraft, 'observedDraft');
+    if (!observedDraft.ok) return observedDraft;
+    if (!sameDraft(observedDraft.value, this.requireDraft())) {
+      return err({
+        code: 'agent_mission_decision_conflict',
+        reason: 'draft_reference',
+      });
+    }
+    return this.activeTransition({
+      occurredAt: input.occurredAt,
+      phase: 'awaiting_lines',
+      draft: observedDraft.value,
+      decision: null,
+      stagedCustomerResolution: null,
+      currentBinding: this.snapshot.currentBinding,
+      data: {
+        kind: 'line_cancelled',
+        pendingLineId: input.pendingLineId,
+        expectedWorkRevision: input.expectedWorkRevision,
+        choiceId: null,
+        choiceSetHash: null,
       },
     });
   }

@@ -1,6 +1,7 @@
 name: Railway API Release
 
 permissions:
+  actions: read
   contents: read
 
 on:
@@ -15,6 +16,10 @@ on:
           - release
           - m1b-staging-certification
           - m1b-staging-recovery
+          - m2a3-semantic-certification
+          - m2a3-staging-schema
+          - m2a3-staging-preview-activate
+          - m2a3-staging-preview-deactivate
           - k2-staging-schema
       environment:
         description: Railway environment
@@ -28,6 +33,14 @@ on:
         description: Railway API service name or id
         required: true
         default: bob-pro-api
+      expected_sha:
+        description: Exact SHA required by schema-only certification paths
+        required: false
+        default: ''
+      normal_staging_release_run_id:
+        description: Successful normal staging release run required by M2-A preview activation
+        required: false
+        default: ''
       founder_authorization_date:
         description: M1-B founder authorization date (YYYY-MM-DD)
         required: false
@@ -62,6 +75,16 @@ on:
       service:
         description: Railway API service name or id
         required: true
+        type: string
+      expected_sha:
+        description: Exact SHA required by schema-only certification paths
+        required: false
+        default: ''
+        type: string
+      normal_staging_release_run_id:
+        description: Successful normal staging release run required by M2-A preview activation
+        required: false
+        default: ''
         type: string
       founder_authorization_date:
         description: M1-B founder authorization date (YYYY-MM-DD)
@@ -98,6 +121,9 @@ on:
       release_environment:
         description: Railway environment certified by the readiness smoke
         value: ${{ jobs.release-api.outputs.release_environment }}
+      m2a3_schema_manifest_digest:
+        description: Exact-SHA Supabase staging schema manifest digest
+        value: ${{ jobs.certify-agent-mission-m2a3-staging-schema.outputs.manifest_digest }}
 jobs:
   validate-purpose:
     runs-on: ubuntu-latest
@@ -108,7 +134,7 @@ jobs:
           RELEASE_PURPOSE: ${{ inputs.purpose }}
         run: |
           case "$RELEASE_PURPOSE" in
-            release|m1b-staging-certification|m1b-staging-recovery|k2-staging-schema) ;;
+            release|m1b-staging-certification|m1b-staging-recovery|m2a3-semantic-certification|m2a3-staging-schema|m2a3-staging-preview-activate|m2a3-staging-preview-deactivate|k2-staging-schema) ;;
             *) echo "Unsupported Railway release purpose" >&2; exit 1 ;;
           esac
 
@@ -135,6 +161,106 @@ jobs:
     uses: ./.github/workflows/agent-mission-m1b-staging.yml
     with:
       mode: ${{ inputs.purpose == 'm1b-staging-recovery' && 'recovery' || 'certification' }}
+      founder_authorization_date: ${{ inputs.founder_authorization_date }}
+      founder_authorization_channel: ${{ inputs.founder_authorization_channel }}
+      founder_authorization_ref: ${{ inputs.founder_authorization_ref }}
+      claude_countersign_ref: ${{ inputs.claude_countersign_ref }}
+      gpt_countersign_ref: ${{ inputs.gpt_countersign_ref }}
+    secrets: inherit
+
+  route-m2a3-semantic-certification:
+    needs: validate-purpose
+    if: ${{ inputs.purpose == 'm2a3-semantic-certification' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    environment: staging
+    steps:
+      - name: Require the dedicated staging target
+        env:
+          RELEASE_ENVIRONMENT: ${{ inputs.environment }}
+          RELEASE_SERVICE: ${{ inputs.service }}
+          EXPECTED_SERVICE: ${{ vars.RAILWAY_API_SERVICE }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          CONTROL_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          test "$RELEASE_ENVIRONMENT" = staging
+          test -n "$EXPECTED_SERVICE"
+          test "$RELEASE_SERVICE" = "$EXPECTED_SERVICE"
+          test "$CONTROL_REF" = refs/heads/main
+          [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test "$EXPECTED_SHA" = "$GITHUB_SHA"
+
+  certify-agent-mission-m2a3-semantic:
+    needs: route-m2a3-semantic-certification
+    if: ${{ inputs.purpose == 'm2a3-semantic-certification' && needs.route-m2a3-semantic-certification.result == 'success' }}
+    uses: ./.github/workflows/agent-mission-m2a3-semantic-staging.yml
+    with:
+      expected_sha: ${{ inputs.expected_sha }}
+    secrets: inherit
+
+  route-m2a3-staging-schema:
+    needs: validate-purpose
+    if: ${{ inputs.purpose == 'm2a3-staging-schema' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    environment: staging
+    steps:
+      - name: Require the exact staging schema target and revision
+        env:
+          RELEASE_ENVIRONMENT: ${{ inputs.environment }}
+          RELEASE_SERVICE: ${{ inputs.service }}
+          EXPECTED_SERVICE: ${{ vars.RAILWAY_API_SERVICE }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          CONTROL_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          test "$RELEASE_ENVIRONMENT" = staging
+          test "$CONTROL_REF" = refs/heads/main
+          test -n "$EXPECTED_SERVICE"
+          test "$RELEASE_SERVICE" = "$EXPECTED_SERVICE"
+          [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test "$EXPECTED_SHA" = "$GITHUB_SHA"
+
+  certify-agent-mission-m2a3-staging-schema:
+    needs: route-m2a3-staging-schema
+    if: ${{ inputs.purpose == 'm2a3-staging-schema' && needs.route-m2a3-staging-schema.result == 'success' }}
+    uses: ./.github/workflows/agent-mission-m2a3-staging-schema.yml
+    with:
+      expected_sha: ${{ inputs.expected_sha }}
+    secrets: inherit
+
+  route-m2a3-staging-preview:
+    needs: validate-purpose
+    if: ${{ inputs.purpose == 'm2a3-staging-preview-activate' || inputs.purpose == 'm2a3-staging-preview-deactivate' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    environment: staging
+    steps:
+      - name: Require the exact persistent staging preview target and revision
+        env:
+          RELEASE_ENVIRONMENT: ${{ inputs.environment }}
+          RELEASE_SERVICE: ${{ inputs.service }}
+          EXPECTED_SERVICE: ${{ vars.RAILWAY_API_SERVICE }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          CONTROL_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          test "$RELEASE_ENVIRONMENT" = staging
+          test "$CONTROL_REF" = refs/heads/main
+          test -n "$EXPECTED_SERVICE"
+          test "$RELEASE_SERVICE" = "$EXPECTED_SERVICE"
+          [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test "$EXPECTED_SHA" = "$GITHUB_SHA"
+
+  operate-agent-mission-m2a3-staging-preview:
+    needs: route-m2a3-staging-preview
+    if: ${{ (inputs.purpose == 'm2a3-staging-preview-activate' || inputs.purpose == 'm2a3-staging-preview-deactivate') && needs.route-m2a3-staging-preview.result == 'success' }}
+    uses: ./.github/workflows/agent-mission-m2a3-staging-preview.yml
+    with:
+      mode: ${{ inputs.purpose == 'm2a3-staging-preview-deactivate' && 'deactivate' || 'activate' }}
+      expected_sha: ${{ inputs.expected_sha }}
+      normal_staging_release_run_id: ${{ inputs.normal_staging_release_run_id }}
       founder_authorization_date: ${{ inputs.founder_authorization_date }}
       founder_authorization_channel: ${{ inputs.founder_authorization_channel }}
       founder_authorization_ref: ${{ inputs.founder_authorization_ref }}

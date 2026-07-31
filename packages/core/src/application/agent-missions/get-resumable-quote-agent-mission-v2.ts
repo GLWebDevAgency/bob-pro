@@ -28,6 +28,7 @@ import {
 } from './agent-mission-application';
 import {
   deriveQuoteLineProposal,
+  type QuoteLineAppendDiff,
 } from './derive-quote-line-proposal';
 import {
   type AgentMissionQuoteLineRequiredFact,
@@ -92,6 +93,7 @@ export interface QuoteAgentMissionPresentationV1 {
     | {
         readonly proposalId: string;
         readonly diffHash: string;
+        readonly diff: QuoteLineAppendDiff;
         readonly line: QuoteDraftPayloadLine;
         readonly catalogue:
           | {
@@ -120,6 +122,35 @@ export type QuoteAgentMissionResumeViewV2 =
       readonly customerChoices: readonly CustomerMissionChoiceView[];
       readonly presentation: QuoteAgentMissionPresentationV1;
     };
+
+/**
+ * Projection serveur réservée au planificateur sémantique.
+ *
+ * Elle reste hors du wire HTTP/mobile : les valeurs proviennent de la tête durable relue dans le
+ * même snapshot que `resume`, tandis que les IDs ne servent qu'à vérifier la cohérence côté
+ * serveur avant de produire le contexte borné et sans autorité envoyé au LLM.
+ */
+export interface QuoteAgentMissionPlannerCurrentLineV1 {
+  readonly pendingLineId: string;
+  readonly expectedWorkRevision: number;
+  readonly serviceReference: string | null;
+  readonly category: CatalogueCategory | null;
+  readonly quantityMilli: number | null;
+  readonly unit: string | null;
+  readonly unitPriceCents: number | null;
+  readonly requestedVatRate: VatRate | null;
+  readonly priceBasis: AgentMissionQuoteLineWork['priceBasis'];
+  readonly housingOlderThan2y: boolean | null;
+  readonly energyRenovation: boolean | null;
+}
+
+export interface QuoteAgentMissionPlannerResumeV2 {
+  readonly resume: QuoteAgentMissionResumeViewV2;
+  readonly currentLine: QuoteAgentMissionPlannerCurrentLineV1 | null;
+  /** Comptes bornés issus du même snapshot transactionnel que la mission et la tête courante. */
+  readonly confirmedLineCount: number;
+  readonly pendingLineCount: number;
+}
 
 export interface GetResumableQuoteAgentMissionV2Deps {
   readonly unitOfWork: AgentMissionResumeV2UnitOfWorkPort;
@@ -269,6 +300,15 @@ function phaseAndWorkAreCoherent(input: {
   }
 }
 
+function phaseRequiresLineDraftStep(
+  phase: AgentMissionViewV1['phase'],
+): boolean {
+  return phase === 'awaiting_lines'
+    || phase === 'awaiting_catalogue_choice'
+    || phase === 'awaiting_line_details'
+    || phase === 'awaiting_line_confirmation';
+}
+
 function catalogueRowsAreAuthoritative(
   rows: readonly CatalogueCandidateRecord[],
   expectedIds: ReadonlySet<string>,
@@ -318,6 +358,19 @@ export class GetResumableQuoteAgentMissionV2 {
   async execute(
     owner: AgentMissionOwner,
   ): Promise<Result<QuoteAgentMissionResumeViewV2, AppError>> {
+    const snapshot = await this.executeSnapshot(owner);
+    return snapshot.ok ? ok(snapshot.value.resume) : snapshot;
+  }
+
+  async executeForPlanner(
+    owner: AgentMissionOwner,
+  ): Promise<Result<QuoteAgentMissionPlannerResumeV2, AppError>> {
+    return this.executeSnapshot(owner);
+  }
+
+  private async executeSnapshot(
+    owner: AgentMissionOwner,
+  ): Promise<Result<QuoteAgentMissionPlannerResumeV2, AppError>> {
     if (!isCanonicalAgentMissionOwner(owner)) {
       return err({
         kind: 'validation',
@@ -334,9 +387,14 @@ export class GetResumableQuoteAgentMissionV2 {
         if (foreground === null) {
           return slot?.agentMissionId == null
             ? ok(Object.freeze({
-                mission: null,
-                presentation: null,
-              }) satisfies QuoteAgentMissionResumeViewV2)
+                resume: Object.freeze({
+                  mission: null,
+                  presentation: null,
+                }),
+                currentLine: null,
+                confirmedLineCount: 0,
+                pendingLineCount: 0,
+              }) satisfies QuoteAgentMissionPlannerResumeV2)
             : unavailable('orphaned_draft_mission_owner');
         }
         if (foreground.status !== 'known') {
@@ -392,6 +450,12 @@ export class GetResumableQuoteAgentMissionV2 {
         const head = workItems[0] ?? null;
         if (!phaseAndWorkAreCoherent({ mission: missionView, workItems })) {
           return unavailable('phase_work_decision_mismatch');
+        }
+        if (
+          phaseRequiresLineDraftStep(missionView.phase)
+          && slot.payload.draft.step !== 'lignes'
+        ) {
+          return unavailable('phase_draft_step_mismatch');
         }
 
         const persistedDecision = missionView.payload.decision;
@@ -488,6 +552,11 @@ export class GetResumableQuoteAgentMissionV2 {
                 proposal = Object.freeze({
                   proposalId: lineDecision.proposalId,
                   diffHash: derived.proposal.diffHash,
+                  diff: Object.freeze({
+                    kind: derived.proposal.diff.kind,
+                    before: Object.freeze({ ...derived.proposal.diff.before }),
+                    after: Object.freeze({ ...derived.proposal.diff.after }),
+                  }),
                   line: Object.freeze({ ...derived.proposal.line }),
                   catalogue: expectedCatalogue === null
                     ? null
@@ -579,7 +648,7 @@ export class GetResumableQuoteAgentMissionV2 {
             idleExpiresAt: missionView.idleExpiresAt,
             hardExpiresAt: missionView.hardExpiresAt,
           });
-        return ok(Object.freeze({
+        const resume = Object.freeze({
           mission: projectedMission,
           draft: Object.freeze({
             sessionId: slot.payload.draft.sessionId,
@@ -589,7 +658,29 @@ export class GetResumableQuoteAgentMissionV2 {
           }),
           customerChoices,
           presentation,
-        }) satisfies QuoteAgentMissionResumeViewV2);
+        }) satisfies QuoteAgentMissionResumeViewV2;
+        const currentLine: QuoteAgentMissionPlannerCurrentLineV1 | null =
+          head === null
+            ? null
+            : Object.freeze({
+                pendingLineId: head.id,
+                expectedWorkRevision: head.revision,
+                serviceReference: head.serviceReference,
+                category: head.category,
+                quantityMilli: head.quantityMilli,
+                unit: head.unit,
+                unitPriceCents: head.unitPriceCents,
+                requestedVatRate: head.requestedVatRate,
+                priceBasis: head.priceBasis,
+                housingOlderThan2y: head.housingOlderThan2y,
+                energyRenovation: head.energyRenovation,
+              });
+        return ok(Object.freeze({
+          resume,
+          currentLine,
+          confirmedLineCount: slot.payload.draft.lines.length,
+          pendingLineCount: workItems.length,
+        }) satisfies QuoteAgentMissionPlannerResumeV2);
       },
     );
 

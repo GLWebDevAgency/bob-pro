@@ -1046,7 +1046,11 @@ async function createRealtimeCallWithBoundedTimeoutRecovery(
   environment,
   dependencies,
   isRealtimeBootstrapTimeoutError,
+  protocolVersion = 1,
 ) {
+  if (protocolVersion !== 1 && protocolVersion !== 2) {
+    fail('realtime bootstrap protocol version must be 1 or 2');
+  }
   const randomUUID = dependencies.randomUUID ?? nodeRandomUUID;
   const sessionHandles = new Set();
   const peers = new Set();
@@ -1070,7 +1074,7 @@ async function createRealtimeCallWithBoundedTimeoutRecovery(
       sessionHandle,
       configVersion: config.configVersion,
       speechDelivery: config.speechDelivery,
-      agentMissionProtocolVersion: 1,
+      agentMissionProtocolVersion: protocolVersion,
     });
     if (record(result) !== null && result.ok === true && Object.hasOwn(result, 'value')) {
       let call;
@@ -1637,6 +1641,128 @@ export async function runM1BPositiveStagingSmoke(environment = process.env, depe
   });
 }
 
+export async function runM2A3PreviewStagingSmoke(environment = process.env, dependencies = {}) {
+  const prepared = await authenticateAndPrepare(environment, dependencies);
+  const { client, isMeaningfulQuoteDraftPayload, isRealtimeBootstrapTimeoutError } = prepared;
+  const existingDraft = expectSuccess(await client.getQuoteDraft(), 'getQuoteDraft');
+  expectCleanDraft(existingDraft, isMeaningfulQuoteDraftPayload);
+  if (existingDraft !== null) {
+    fail('the dedicated account already contains a quote draft before the V2 canary');
+  }
+  const config = expectConfig(
+    expectSuccess(await client.realtimeVoiceConfig(), 'realtimeVoiceConfig'),
+  );
+  const bootstrap = await createRealtimeCallWithBoundedTimeoutRecovery(
+    client,
+    config,
+    environment,
+    dependencies,
+    isRealtimeBootstrapTimeoutError,
+    2,
+  );
+  const { call, peer, sessionHandle, attempts: bootstrapAttempts, recoveredTimeout } = bootstrap;
+  const missionSession = call.agentMissionSession;
+  let primaryError = null;
+  try {
+    if (
+      record(missionSession) === null ||
+      missionSession.protocolVersion !== 2 ||
+      missionSession.realtimeSessionId !== sessionHandle ||
+      missionSession.disposed !== false
+    ) {
+      fail('Mission V2 capability does not match the exact realtime session');
+    }
+    await peer.applyAnswer(call.answerSdp);
+    const current = expectSuccess(
+      await missionSession.getCurrentQuoteCreation(),
+      'getCurrentQuoteCreation during V2 canary',
+    );
+    if (record(current) === null || current.mission !== null) {
+      fail('the V2 canary account contains a preexisting quote mission');
+    }
+  } catch (error) {
+    primaryError = error;
+  }
+  const hangupAccepted = await hangupAndClose(
+    client,
+    peer,
+    sessionHandle,
+    record(missionSession) === null ? null : missionSession,
+  );
+  if (primaryError !== null) throw primaryError;
+  const finalEvidence = await pollNegativeFinalEvidence(
+    { sessionId: sessionHandle },
+    environment,
+    dependencies,
+  );
+  if (finalEvidence?.stage !== 'negative-final' || finalEvidence.passed !== true) {
+    fail('V2 canary final evidence adapter did not return its exact receipt');
+  }
+  return Object.freeze({
+    mode: 'preview-v2',
+    passed: true,
+    protocolVersion: 2,
+    speechDelivery: config.speechDelivery,
+    bootstrapReceipt: 'acknowledged',
+    mutation: 'none',
+    cleanup: 'complete',
+    hangupAccepted,
+    bootstrapAttempts,
+    recoveredTimeout,
+  });
+}
+
+export async function runM2A3PreviewOffStagingSmoke(environment = process.env, dependencies = {}) {
+  const prepared = await authenticateAndPrepare(environment, dependencies);
+  const { client, isMeaningfulQuoteDraftPayload, isRealtimeBootstrapTimeoutError } = prepared;
+  const existingDraft = expectSuccess(await client.getQuoteDraft(), 'getQuoteDraft');
+  expectCleanDraft(existingDraft, isMeaningfulQuoteDraftPayload);
+  if (existingDraft !== null) {
+    fail('the dedicated account already contains a quote draft before the V2 OFF canary');
+  }
+  const config = expectConfig(
+    expectSuccess(await client.realtimeVoiceConfig(), 'realtimeVoiceConfig'),
+  );
+  const bootstrap = await createRealtimeCallWithBoundedTimeoutRecovery(
+    client,
+    config,
+    environment,
+    dependencies,
+    isRealtimeBootstrapTimeoutError,
+    2,
+  );
+  const { call, peer, sessionHandle, attempts: bootstrapAttempts, recoveredTimeout } = bootstrap;
+  let primaryError = null;
+  try {
+    if (call.agentMissionSession !== null) {
+      fail('Mission V2 negotiated while the staging preview was expected OFF');
+    }
+    await peer.applyAnswer(call.answerSdp);
+  } catch (error) {
+    primaryError = error;
+  }
+  const hangupAccepted = await hangupAndClose(client, peer, sessionHandle, null);
+  if (primaryError !== null) throw primaryError;
+  const finalEvidence = await pollNegativeFinalEvidence(
+    { sessionId: sessionHandle },
+    environment,
+    dependencies,
+  );
+  if (finalEvidence?.stage !== 'negative-final' || finalEvidence.passed !== true) {
+    fail('V2 OFF canary final evidence adapter did not return its exact receipt');
+  }
+  return Object.freeze({
+    mode: 'preview-v2-off',
+    passed: true,
+    protocolVersion: 2,
+    agentMission: 'off',
+    cleanup: 'complete',
+    hangupAccepted,
+    bootstrapAttempts,
+    recoveredTimeout,
+  });
+}
+
 export async function runM1BStagingSmoke(command, environment = process.env, dependencies = {}) {
   if (command === 'preflight') {
     return preflightM1BStagingAccount(environment, dependencies);
@@ -1650,7 +1776,13 @@ export async function runM1BStagingSmoke(command, environment = process.env, dep
   if (command === 'recovery') {
     return runM1BRecoveryStagingSmoke(environment, dependencies);
   }
-  fail('expected command preflight, negative, positive or recovery');
+  if (command === 'preview-v2') {
+    return runM2A3PreviewStagingSmoke(environment, dependencies);
+  }
+  if (command === 'preview-v2-off') {
+    return runM2A3PreviewOffStagingSmoke(environment, dependencies);
+  }
+  fail('expected command preflight, negative, positive, recovery, preview-v2 or preview-v2-off');
 }
 
 async function main() {

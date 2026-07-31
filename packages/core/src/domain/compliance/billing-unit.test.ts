@@ -5,6 +5,7 @@ describe('billingUnitToUneceCode — UN/ECE Recommendation 20', () => {
   it.each([
     [undefined, 'C62'],
     ['', 'C62'],
+    ['unit', 'C62'],
     ['pièces', 'C62'],
     ['1 h', 'HUR'],
     ['heures', 'HUR'],
@@ -22,6 +23,10 @@ describe('billingUnitToUneceCode — UN/ECE Recommendation 20', () => {
 
   it('refuse une unité libre inconnue au lieu de la transformer en unité générique', () => {
     expect(billingUnitToUneceCode('palette spéciale')).toMatchObject({
+      ok: false,
+      error: { code: 'VALIDATION', field: 'unit' },
+    });
+    expect(billingUnitToUneceCode('constructor')).toMatchObject({
       ok: false,
       error: { code: 'VALIDATION', field: 'unit' },
     });

@@ -281,6 +281,23 @@ function editedLineM2AMission() {
   return edited.value.mission;
 }
 
+function cancelledPendingLineM2AMission() {
+  const details = patchedLineDetailsM2AMission();
+  const draft = details.toSnapshot().payload.draft;
+  if (draft === null) throw new Error('Brouillon M2-A attendu');
+  const cancelled = details.cancelPendingLine({
+    expectedRevision: details.toSnapshot().revision,
+    pendingLineId: PENDING_LINE_ID,
+    expectedWorkRevision: 6,
+    observedDraft: draft,
+    occurredAt: '2026-07-26T08:09:00.000Z',
+  });
+  if (!cancelled.ok) {
+    throw new Error(`Annulation de ligne M2-A invalide: ${cancelled.error.code}`);
+  }
+  return cancelled.value.mission;
+}
+
 function cataloguePresentation(view: AgentMissionViewV1) {
   const decision = view.payload.decision;
   if (decision?.kind !== 'catalogue') {
@@ -695,6 +712,10 @@ describe('Realtime AgentMission capability handle', () => {
       editedLineM2AMission(),
       '2026-07-26T08:07:00.000Z',
     );
+    const cancelledPendingLineView = missionView(
+      cancelledPendingLineM2AMission(),
+      '2026-07-26T08:09:00.000Z',
+    );
     const catalogueDraft = catalogueView.payload.draft;
     if (catalogueDraft === null) throw new Error('Brouillon catalogue attendu');
     expect(decodeQuoteAgentMissionResumeV2({
@@ -728,6 +749,12 @@ describe('Realtime AgentMission capability handle', () => {
       expect(init?.headers).toMatchObject({
         'x-bob-agent-mission-capability': CAPABILITY_V2,
       });
+      if (path === '/agent-missions/current/quote-creation') {
+        return new Response(JSON.stringify({
+          mission: catalogueView,
+          presentation: cataloguePresentation(catalogueView),
+        }), { headers: { 'content-type': 'application/json' } });
+      }
       if (
         path
         === `/voice/realtime/calls/${SESSION_ID}/agent-mission-bootstrap-acknowledgements`
@@ -873,6 +900,44 @@ describe('Realtime AgentMission capability handle', () => {
           presentation: lineDetailsPresentation(6, 'vat_rate'),
         }), { headers: { 'content-type': 'application/json' } });
       }
+      if (path === `/agent-missions/${MISSION_ID}/quote-line-cancellations`) {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        expect(body).toEqual({
+          commandId: '15151515-1515-4515-8515-151515151515',
+          expectedMissionRevision: patchedDetailsView.revision,
+          expectedDraftSessionId: DRAFT.sessionId,
+          expectedDraftSlotRevision: 2,
+          expectedDraftContentRevision: 1,
+          pendingLineId: PENDING_LINE_ID,
+          expectedWorkRevision: 6,
+        });
+        expect(body).not.toHaveProperty('missionId');
+        expect(body).not.toHaveProperty('decisionId');
+        expect(body).not.toHaveProperty('choiceId');
+        return new Response(JSON.stringify({
+          outcome: 'cancelled',
+          pendingLineId: PENDING_LINE_ID,
+          mission: cancelledPendingLineView,
+          continuation: {
+            outcome: 'empty',
+            pendingLineId: null,
+            presentedChoiceCount: 0,
+            requiredFact: null,
+            proposalId: null,
+          },
+          presentation: {
+            schema: 'bob.agent-mission.quote-presentation',
+            version: 1,
+            requiredFact: null,
+            pendingLine: null,
+            decision: null,
+            catalogueChoices: [],
+            freeLineChoiceId: null,
+            proposalStatus: { kind: 'absent' },
+            proposal: null,
+          },
+        }), { headers: { 'content-type': 'application/json' } });
+      }
       if (path === `/agent-missions/${MISSION_ID}/quote-line-decisions`) {
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
         expect(body).toEqual({
@@ -922,6 +987,16 @@ describe('Realtime AgentMission capability handle', () => {
     expect(JSON.stringify(handle)).toBe('{}');
     expect(JSON.stringify(bootstrap.value)).not.toContain('bam2_');
 
+    await expect(handle.getCurrentQuoteCreation()).resolves.toMatchObject({
+      ok: true,
+      value: {
+        mission: { phase: 'awaiting_catalogue_choice' },
+        presentation: {
+          decision: { kind: 'catalogue' },
+          catalogueChoices: [{ choiceId: CANDIDATE_CHOICE_ID }],
+        },
+      },
+    });
     await expect(handle.acknowledgeQuoteScreen({
       missionId: MISSION_ID,
       commandId: '13131313-1313-4313-8313-131313131313',
@@ -1034,6 +1109,19 @@ describe('Realtime AgentMission capability handle', () => {
       ok: false,
       error: { kind: 'validation' },
     });
+    await expect(handle.cancelPendingQuoteLine({
+      missionId: MISSION_ID,
+      commandId: '15151515-1515-4515-8515-151515151515',
+      expectedMissionRevision: patchedDetailsView.revision,
+      expectedDraftSessionId: DRAFT.sessionId,
+      expectedDraftSlotRevision: 2,
+      expectedDraftContentRevision: 1,
+      pendingLineId: PENDING_LINE_ID,
+      expectedWorkRevision: 0,
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'validation' },
+    });
     expect(fetchMock).toHaveBeenCalledTimes(fetchesAfterBootstrap);
 
     const stagedResult = await handle.stageQuoteLines({
@@ -1092,6 +1180,25 @@ describe('Realtime AgentMission capability handle', () => {
         continuation: { outcome: 'details_requested', requiredFact: 'vat_rate' },
       },
     });
+    await expect(handle.cancelPendingQuoteLine({
+      missionId: MISSION_ID,
+      commandId: '15151515-1515-4515-8515-151515151515',
+      expectedMissionRevision: patchedDetailsView.revision,
+      expectedDraftSessionId: DRAFT.sessionId,
+      expectedDraftSlotRevision: 2,
+      expectedDraftContentRevision: 1,
+      pendingLineId: PENDING_LINE_ID,
+      expectedWorkRevision: 6,
+    })).resolves.toMatchObject({
+      ok: true,
+      value: {
+        outcome: 'cancelled',
+        pendingLineId: PENDING_LINE_ID,
+        mission: { phase: 'awaiting_lines' },
+        continuation: { outcome: 'empty', pendingLineId: null },
+        presentation: { pendingLine: null, decision: null },
+      },
+    });
     await expect(handle.decideQuoteLineProposal({
       missionId: MISSION_ID,
       commandId: '12121212-1212-4212-8212-121212121212',
@@ -1116,11 +1223,13 @@ describe('Realtime AgentMission capability handle', () => {
     expect(paths).toEqual([
       '/voice/realtime/calls',
       `/voice/realtime/calls/${SESSION_ID}/agent-mission-bootstrap-acknowledgements`,
+      '/agent-missions/current/quote-creation',
       `/agent-missions/${MISSION_ID}/screen-acks`,
       `/agent-missions/${MISSION_ID}/decisions`,
       `/agent-missions/${MISSION_ID}/quote-lines`,
       `/agent-missions/${MISSION_ID}/catalogue-choices`,
       `/agent-missions/${MISSION_ID}/quote-line-patches`,
+      `/agent-missions/${MISSION_ID}/quote-line-cancellations`,
       `/agent-missions/${MISSION_ID}/quote-line-decisions`,
     ]);
 
@@ -1154,6 +1263,19 @@ describe('Realtime AgentMission capability handle', () => {
         currency: 'EUR',
         basis: 'per_unit',
       },
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'unavailable' },
+    });
+    await expect(handle.cancelPendingQuoteLine({
+      missionId: MISSION_ID,
+      commandId: '15151515-1515-4515-8515-151515151515',
+      expectedMissionRevision: patchedDetailsView.revision,
+      expectedDraftSessionId: DRAFT.sessionId,
+      expectedDraftSlotRevision: 2,
+      expectedDraftContentRevision: 1,
+      pendingLineId: PENDING_LINE_ID,
+      expectedWorkRevision: 6,
     })).resolves.toMatchObject({
       ok: false,
       error: { kind: 'unavailable' },

@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { withPsqlChildEnvironment } from './psql-child-environment.mjs';
+import { boundedPsqlSpawnOptions, withPsqlChildEnvironment } from './psql-child-environment.mjs';
 
 const OPERATIONS = new Set(['set-global', 'set-kill-switch', 'set-subject', 'remove-subject']);
 const ENVIRONMENTS = new Set(['development', 'staging', 'production']);
@@ -33,36 +33,64 @@ export function parseReleaseFlagArgs(argv) {
   for (let index = 0; index < rest.length; index += 2) {
     const option = rest[index];
     const value = rest[index + 1];
-    if (!option?.startsWith('--') || value === undefined) fail('options must be --name value pairs');
+    if (!option?.startsWith('--') || value === undefined)
+      fail('options must be --name value pairs');
     const name = option.slice(2);
     if (name in values) fail(`duplicate option --${name}`);
     values[name] = value;
   }
-  const allowed = new Set(['key', 'environment', 'enabled', 'subject-type', 'subject-id', 'actor', 'reason', 'expected-version']);
+  const allowed = new Set([
+    'key',
+    'environment',
+    'enabled',
+    'subject-type',
+    'subject-id',
+    'actor',
+    'reason',
+    'expected-version',
+  ]);
   for (const name of Object.keys(values)) if (!allowed.has(name)) fail(`unknown option --${name}`);
 
   const key = text(values.key, 'key', 1, 80);
   if (!KEY_PATTERN.test(key)) fail('key has an invalid format');
   const environment = values.environment;
-  if (!ENVIRONMENTS.has(environment)) fail('environment must be development, staging or production');
+  if (!ENVIRONMENTS.has(environment))
+    fail('environment must be development, staging or production');
   const actor = text(values.actor, 'actor', 1, 160);
   const reason = text(values.reason, 'reason', 3, 500);
   const expectedVersionRaw = values['expected-version'];
   const expectedVersion = expectedVersionRaw === undefined ? undefined : Number(expectedVersionRaw);
-  if (expectedVersion !== undefined && (!Number.isInteger(expectedVersion) || expectedVersion < 1)) {
+  if (
+    expectedVersion !== undefined &&
+    (!Number.isInteger(expectedVersion) || expectedVersion < 1)
+  ) {
     fail('expected-version must be a positive integer');
   }
   const needsEnabled = operation !== 'remove-subject';
   const needsSubject = operation === 'set-subject' || operation === 'remove-subject';
   const enabled = needsEnabled ? bool(values.enabled, 'enabled') : undefined;
-  if (!needsEnabled && values.enabled !== undefined) fail('--enabled is not valid for remove-subject');
+  if (!needsEnabled && values.enabled !== undefined)
+    fail('--enabled is not valid for remove-subject');
   const subjectType = needsSubject ? values['subject-type'] : undefined;
   if (needsSubject && !SUBJECT_TYPES.has(subjectType)) fail('subject-type must be user or cabinet');
   const subjectId = needsSubject ? text(values['subject-id'], 'subject-id', 1, 160) : undefined;
-  if (!needsSubject && (values['subject-type'] !== undefined || values['subject-id'] !== undefined)) {
+  if (
+    !needsSubject &&
+    (values['subject-type'] !== undefined || values['subject-id'] !== undefined)
+  ) {
     fail('subject options are only valid for subject operations');
   }
-  return { operation, key, environment, actor, reason, enabled, subjectType, subjectId, expectedVersion };
+  return {
+    operation,
+    key,
+    environment,
+    actor,
+    reason,
+    enabled,
+    subjectType,
+    subjectId,
+    expectedVersion,
+  };
 }
 
 const EFFECTIVE_CABINET_PREFLIGHT_SQL = `
@@ -104,6 +132,8 @@ SELECT
 
 const GLOBAL_SQL = `
 BEGIN;
+SET LOCAL lock_timeout = '3s';
+SET LOCAL statement_timeout = '15s';
 SELECT pg_advisory_xact_lock(hashtextextended(:'key' || ':' || :'environment', 2));
 WITH locked AS MATERIALIZED (
   SELECT * FROM release_flags
@@ -134,12 +164,15 @@ ${EFFECTIVE_CABINET_PREFLIGHT_SQL}
 COMMIT;
 `;
 
-const KILL_SWITCH_SQL = GLOBAL_SQL
-  .replace("SET enabled = :'enabled'::boolean", "SET \"killSwitch\" = :'enabled'::boolean")
-  .replace("'set-global'", "'set-kill-switch'");
+const KILL_SWITCH_SQL = GLOBAL_SQL.replace(
+  "SET enabled = :'enabled'::boolean",
+  'SET "killSwitch" = :\'enabled\'::boolean',
+).replace("'set-global'", "'set-kill-switch'");
 
 const SET_SUBJECT_SQL = `
 BEGIN;
+SET LOCAL lock_timeout = '3s';
+SET LOCAL statement_timeout = '15s';
 SELECT pg_advisory_xact_lock(hashtextextended(:'key' || ':' || :'environment', 2));
 WITH target_cabinet AS MATERIALIZED (
   SELECT cabinet.id FROM cabinets cabinet
@@ -226,6 +259,8 @@ COMMIT;
 
 const REMOVE_SUBJECT_SQL = `
 BEGIN;
+SET LOCAL lock_timeout = '3s';
+SET LOCAL statement_timeout = '15s';
 SELECT pg_advisory_xact_lock(hashtextextended(:'key' || ':' || :'environment', 2));
 WITH flag_before AS MATERIALIZED (
   SELECT * FROM release_flags
@@ -288,14 +323,21 @@ function validateDirectUrl(raw) {
     fail('DIRECT_URL must be a valid PostgreSQL URL');
   }
   const user = decodeURIComponent(parsed.username);
-  if (!['postgres:', 'postgresql:'].includes(parsed.protocol)) fail('DIRECT_URL must use PostgreSQL');
-  if (user !== 'postgres' && !user.startsWith('postgres.')) fail('DIRECT_URL must use the privileged migration role');
+  if (!['postgres:', 'postgresql:'].includes(parsed.protocol))
+    fail('DIRECT_URL must use PostgreSQL');
+  if (user !== 'postgres' && !user.startsWith('postgres.'))
+    fail('DIRECT_URL must use the privileged migration role');
   return raw;
 }
 
 export function validateCabinetPilotActivation(input, environment = process.env) {
   if (input.key !== 'cabinet.slice0' || input.environment === 'development') return;
-  const workerCabinets = new Set((environment.JOB_CABINET_IDS ?? '').split(',').map((id) => id.trim()).filter(Boolean));
+  const workerCabinets = new Set(
+    (environment.JOB_CABINET_IDS ?? '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean),
+  );
   if (workerCabinets.size > 100) fail('JOB_CABINET_IDS is limited to 100 distinct pilot cabinets');
   if (input.enabled !== 'true') return;
   if (input.operation === 'set-global') {
@@ -321,7 +363,9 @@ export function validateCabinetPilotActivation(input, environment = process.env)
 export function runReleaseFlagOperation(input, dependencies = {}) {
   const operationEnvironment = dependencies.environment ?? process.env;
   const activationWorkerUserId = validateCabinetPilotActivation(input, operationEnvironment);
-  const configuredWorkerUserId = UUID_PATTERN.test((operationEnvironment.CABINET_INVITATION_WORKER_USER_ID ?? '').trim())
+  const configuredWorkerUserId = UUID_PATTERN.test(
+    (operationEnvironment.CABINET_INVITATION_WORKER_USER_ID ?? '').trim(),
+  )
     ? operationEnvironment.CABINET_INVITATION_WORKER_USER_ID.trim()
     : undefined;
   const directUrl = validateDirectUrl(dependencies.directUrl ?? process.env.DIRECT_URL ?? '');
@@ -337,8 +381,9 @@ export function runReleaseFlagOperation(input, dependencies = {}) {
     worker_user_id: configuredWorkerUserId ?? '00000000-0000-4000-8000-000000000000',
     job_ids: operationEnvironment.JOB_CABINET_IDS ?? '',
     preflight_live: String(
-      (input.key === 'cabinet.slice0' && input.environment !== 'development')
-      || (input.key === 'cabinet.cert-live' && operationEnvironment.BOB_INTERNAL_RELEASE_FLAG_PREFLIGHT_CERT === 'true'),
+      (input.key === 'cabinet.slice0' && input.environment !== 'development') ||
+        (input.key === 'cabinet.cert-live' &&
+          operationEnvironment.BOB_INTERNAL_RELEASE_FLAG_PREFLIGHT_CERT === 'true'),
     ),
     audit_id: randomUUID(),
     ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
@@ -347,18 +392,20 @@ export function runReleaseFlagOperation(input, dependencies = {}) {
   };
   const args = ['--no-psqlrc', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1'];
   for (const [name, value] of Object.entries(variables)) args.push('-v', `${name}=${value}`);
-  const result = withPsqlChildEnvironment(
-    directUrl,
-    operationEnvironment,
-    (childEnvironment) =>
-      spawn('psql', args, {
+  const result = withPsqlChildEnvironment(directUrl, operationEnvironment, (childEnvironment) =>
+    spawn(
+      'psql',
+      args,
+      boundedPsqlSpawnOptions(childEnvironment, {
         input: sqlForReleaseFlagOperation(input.operation),
         encoding: 'utf8',
-        env: childEnvironment,
       }),
+    ),
   );
   if (result.status !== 0) {
-    const diagnostic = String(result.stderr || 'psql failed').replaceAll(directUrl, '[redacted]').trim();
+    const diagnostic = String(result.stderr || 'psql failed')
+      .replaceAll(directUrl, '[redacted]')
+      .trim();
     fail(`database operation failed${diagnostic ? `: ${diagnostic}` : ''}`);
   }
   if (!String(result.stdout).trim()) fail('flag or subject target was not found');

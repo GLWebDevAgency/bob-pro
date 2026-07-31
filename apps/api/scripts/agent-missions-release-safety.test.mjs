@@ -694,14 +694,8 @@ test('M2-A ferme exactement work items, capability, trigger et policies RLS', ()
     'certify_m2a_quote_draft_reader_n1 cutover',
     m2aWriterCutover,
   );
-  const m2aNewCutover = localCertificate.indexOf(
-    "'catalogue-m2a-new-cutover'",
-    m2aReaderCutover,
-  );
-  const m2aWorkMission = localCertificate.indexOf(
-    'writer-m2a-work',
-    m2aNewCutover,
-  );
+  const m2aNewCutover = localCertificate.indexOf("'catalogue-m2a-new-cutover'", m2aReaderCutover);
+  const m2aWorkMission = localCertificate.indexOf('writer-m2a-work', m2aNewCutover);
   assert.ok(
     m2aReaderPreExpand >= 0 &&
       m2aExpand > m2aReaderPreExpand &&
@@ -816,9 +810,7 @@ test('M2-A ferme exactement work items, capability, trigger et policies RLS', ()
 });
 
 test('M2-A-2 exécute le writer M2-A-1 et le reader N-1 après chaque migration', () => {
-  const expand = localCertificate.indexOf(
-    '20260730110000_agent_mission_line_confirmation_expand',
-  );
+  const expand = localCertificate.indexOf('20260730110000_agent_mission_line_confirmation_expand');
   const writerAfterExpand = localCertificate.indexOf(
     'certify_m2a1_quote_line_writer_n1 \\\n  expand',
     expand,
@@ -872,6 +864,136 @@ test('M2-A-2 exécute le writer M2-A-1 et le reader N-1 après chaque migration'
     localCertificate,
     /ALTER DEFAULT PRIVILEGES IN SCHEMA public[\s\S]*?GRANT EXECUTE ON FUNCTIONS TO anon, authenticated, service_role[\s\S]*?AGENT_MISSION_M2A2_DATA_API_FUNCTION_ACL_SURVIVED[\s\S]*?REVOKE EXECUTE ON FUNCTIONS FROM anon, authenticated, service_role/u,
     'L’expand doit retirer les ACL Data API même si les default privileges Supabase les accordent.',
+  );
+});
+
+test('M2-A-3 rejoue les quatre formes line_cancelled sous writer N-1 à chaque étape', () => {
+  const preFlag = localCertificate.indexOf('certify_m2a3_flag_off pre-expand');
+  const preSealed = localCertificate.indexOf('pre-expand sealed accepted a300', preFlag);
+  const preNull = localCertificate.indexOf('pre-expand null_pair rejected a301', preSealed);
+  const preMixedId = localCertificate.indexOf('pre-expand mixed_id_null rejected a302', preNull);
+  const preMixedHash = localCertificate.indexOf(
+    'pre-expand mixed_null_hash rejected a303',
+    preMixedId,
+  );
+  const expand = localCertificate.indexOf(
+    '20260731120000_agent_mission_line_cancel_choice_expand',
+    preMixedHash,
+  );
+  const expandFlag = localCertificate.indexOf('certify_m2a3_flag_off expand', expand);
+  const expandProofsEnd = localCertificate.indexOf(
+    'expand mixed_null_hash rejected a313',
+    expandFlag,
+  );
+  const validate = localCertificate.indexOf(
+    '20260731120100_agent_mission_line_cancel_choice_validate',
+    expandProofsEnd,
+  );
+  const validateFlag = localCertificate.indexOf('certify_m2a3_flag_off validate', validate);
+  const validateProofsEnd = localCertificate.indexOf(
+    'validate mixed_null_hash rejected a323',
+    validateFlag,
+  );
+  const cutover = localCertificate.indexOf(
+    '20260731120200_agent_mission_line_cancel_choice_cutover',
+    validateProofsEnd,
+  );
+  const cutoverFlag = localCertificate.indexOf('certify_m2a3_flag_off cutover', cutover);
+  const cutoverSealed = localCertificate.indexOf('cutover sealed accepted a330', cutoverFlag);
+  const cutoverNull = localCertificate.indexOf('cutover null_pair accepted a331', cutoverSealed);
+  const cutoverMixedId = localCertificate.indexOf(
+    'cutover mixed_id_null rejected a332',
+    cutoverNull,
+  );
+  const cutoverMixedHash = localCertificate.indexOf(
+    'cutover mixed_null_hash rejected a333',
+    cutoverMixedId,
+  );
+
+  assert.ok(
+    preFlag >= 0 &&
+      preSealed > preFlag &&
+      preNull > preSealed &&
+      preMixedId > preNull &&
+      preMixedHash > preMixedId &&
+      expand > preMixedHash &&
+      expandFlag > expand &&
+      expandProofsEnd > expandFlag &&
+      validate > expandProofsEnd &&
+      validateFlag > validate &&
+      validateProofsEnd > validateFlag &&
+      cutover > validateProofsEnd &&
+      cutoverFlag > cutover &&
+      cutoverSealed > cutoverFlag &&
+      cutoverNull > cutoverSealed &&
+      cutoverMixedId > cutoverNull &&
+      cutoverMixedHash > cutoverMixedId,
+    'Le writer N-1 M2-A-3 doit tenter chaque paire avant et après chaque migration.',
+  );
+
+  const helperStart = localCertificate.indexOf('certify_m2a2_line_cancel_event_writer_n1()');
+  const helperEnd = localCertificate.indexOf('\ncertify_m2a3_flag_off()', helperStart);
+  const helper = localCertificate.slice(helperStart, helperEnd);
+  assert.ok(helperStart >= 0 && helperEnd > helperStart);
+  assert.match(helper, /"\$PSQL_BIN" "\$DATABASE_URL"/u);
+  assert.doesNotMatch(
+    helper,
+    /\bSET\s+(?:LOCAL\s+)?ROLE\b/u,
+    'Le writer doit rester bob_app sous FORCE RLS.',
+  );
+  assert.match(
+    helper,
+    /app\.current_company_id[\s\S]*?app\.current_user_id[\s\S]*?app\.current_agent_mission_id/u,
+  );
+  assert.match(helper, /EXCEPTION WHEN check_violation/u);
+  assert.match(helper, /GET STACKED DIAGNOSTICS rejected_constraint = CONSTRAINT_NAME/u);
+  assert.match(
+    helper,
+    /WHEN 'sealed'[\s\S]*?'choiceId'[\s\S]*?::UUID[\s\S]*?'choiceSetHash', repeat\('c', 64\)/u,
+  );
+  assert.match(
+    helper,
+    /WHEN 'null_pair'[\s\S]*?'choiceId', 'null'::JSONB[\s\S]*?'choiceSetHash', 'null'::JSONB/u,
+  );
+  assert.match(
+    helper,
+    /WHEN 'mixed_id_null'[\s\S]*?'choiceId'[\s\S]*?::UUID[\s\S]*?'choiceSetHash', 'null'::JSONB/u,
+  );
+  assert.match(
+    helper,
+    /WHEN 'mixed_null_hash'[\s\S]*?'choiceId', 'null'::JSONB[\s\S]*?'choiceSetHash', repeat\('c', 64\)/u,
+  );
+  assert.match(
+    helper,
+    /AGENT_MISSION_M2A3_CANCEL_EXPECTED_ACCEPTED[\s\S]*?AGENT_MISSION_M2A3_CANCEL_SHAPE_ACCEPTED[\s\S]*?AGENT_MISSION_M2A3_CANCEL_REJECTION_MUTATED/u,
+  );
+
+  for (const migration of [
+    '20260731120000_agent_mission_line_cancel_choice_expand',
+    '20260731120100_agent_mission_line_cancel_choice_validate',
+    '20260731120200_agent_mission_line_cancel_choice_cutover',
+  ]) {
+    assert.match(
+      localCertificate,
+      new RegExp(`"\\$PSQL_BIN" "\\$DIRECT_URL"[\\s\\S]{0,180}${migration}`, 'u'),
+    );
+  }
+  assert.equal(
+    localCertificate.match(/certify_m2a3_flag_off (?:pre-expand|expand|validate|cutover)/gu)
+      ?.length,
+    4,
+  );
+  const flagHelper = localCertificate.slice(
+    helperEnd,
+    localCertificate.indexOf('\ncertify_m2a_quote_draft_reader_n1 pre-expand', helperEnd),
+  );
+  assert.match(
+    flagHelper,
+    /"updatedByUserId" = 'system:migration'[\s\S]*?release_flag_subjects[\s\S]*?subject\.enabled/u,
+  );
+  assert.match(
+    flagHelper,
+    /release_flags NO FORCE ROW LEVEL SECURITY[\s\S]*?ROLLBACK[\s\S]*?release_flags'::pg_catalog\.regclass[\s\S]*?agent_mission_events'::pg_catalog\.regclass[\s\S]*?relforcerowsecurity/u,
   );
 });
 
@@ -1104,15 +1226,19 @@ test('la capability realtime est provisionnée sous un owner NOLOGIN avant sa ce
   assert.match(release, /CABINET_RELEASE_ENV is required/u);
   assert.match(
     release,
-    /BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED=false is required[\s\S]*?must remain false until M2-A-3 certification/u,
+    /BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED=true or false is required[\s\S]*?true\|false[\s\S]*?BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED=true is restricted to staging preview/u,
   );
   assert.match(
     release,
-    /release_flag_snapshot="\$\([\s\S]*?bob\.agent_missions\.quote\.v1[\s\S]*?release_flag_kill_switch="\$\{release_flag_snapshot#\*\|\}"[\s\S]*?-v release_env="\$CABINET_RELEASE_ENV"[\s\S]*?-v release_flag_version="\$release_flag_version"[\s\S]*?-v release_flag_kill_switch="\$release_flag_kill_switch"/u,
+    /release_flag_snapshot="\$\([\s\S]*?bob\.agent_missions\.quote\.v1[\s\S]*?release_flag_enabled="\$\{2:-\}"[\s\S]*?release_flag_subject_count="\$\{4:-\}"[\s\S]*?legacy V1 must remain globally dormant with zero subjects[\s\S]*?-v release_env="\$CABINET_RELEASE_ENV"[\s\S]*?-v release_flag_version="\$release_flag_version"[\s\S]*?-v release_flag_kill_switch="\$release_flag_kill_switch"/u,
   );
   assert.match(
     release,
-    /m2a_release_flag_snapshot="\$\([\s\S]*?release_flag_subjects[\s\S]*?subject\.enabled[\s\S]*?flag\.key = 'bob\.agent_missions\.quote\.m2a'[\s\S]*?m2a_release_flag_enabled[\s\S]*?m2a_enabled_subject_exists[\s\S]*?every tenant override must remain exactly OFF[\s\S]*?-v m2a_release_flag_version="\$m2a_release_flag_version"/u,
+    /m2a_release_flag_snapshot="\$\([\s\S]*?pg_catalog\.count\(\*\)[\s\S]*?release_flag_subjects[\s\S]*?flag\."updatedByUserId"[\s\S]*?flag\.key = 'bob\.agent_missions\.quote\.m2a'[\s\S]*?m2a_release_flag_enabled[\s\S]*?m2a_subject_count[\s\S]*?m2a_release_flag_actor[\s\S]*?must match its runtime master, keep kill switch OFF and have zero subjects[\s\S]*?global ON must be owned by the staging preview workflow[\s\S]*?-v m2a_release_flag_version="\$m2a_release_flag_version"/u,
+  );
+  assert.match(
+    release,
+    /certify_m2a_preview_release_binding\(\)[\s\S]*?BOB_M2A3_STAGING_PREVIEW_OWNER[\s\S]*?BOB_M2A3_STAGING_PREVIEW_RELEASE_SHA[\s\S]*?BOB_M2A3_STAGING_PREVIEW_ACTIVATION_RUN[\s\S]*?BOB_RELEASE_SHA[\s\S]*?bob-m2a3-staging-preview-v1[\s\S]*?exact normally released SHA[\s\S]*?OFF M2-A runtime must not retain a staging preview owner block[\s\S]*?certify_m2a_preview_release_binding/u,
   );
   assert.match(
     realtimeReleaseCertificate,
@@ -1132,7 +1258,7 @@ test('la capability realtime est provisionnée sous un owner NOLOGIN avant sa ce
   );
   assert.match(
     realtimeReleaseCertificate,
-    /bob\.agent_missions\.quote\.m2a[\s\S]*?expected_m2a_release_flag_version[\s\S]*?AgentMission M2-A disabled flag exact version revalidation drift/u,
+    /bob\.agent_missions\.quote\.m2a[\s\S]*?expected_m2a_release_flag_version[\s\S]*?AgentMission M2-A flag exact version revalidation drift/u,
   );
   assert.equal(
     (ci.match(/BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED=false/gu) ?? []).length,
@@ -1159,10 +1285,7 @@ test('le trigger de tokens catalogue garde une autorité NOBYPASSRLS exacte apr�
     migrate,
   );
   const rlsReplay = release.indexOf('-f apps/api/prisma/rls.sql');
-  const provision = release.indexOf(
-    '\nprovision_catalogue_search_token_authority\n',
-    rlsReplay,
-  );
+  const provision = release.indexOf('\nprovision_catalogue_search_token_authority\n', rlsReplay);
   const certificate = release.indexOf('certify_agent_mission_release_acl', provision);
   assert.ok(ensureBeforeMigrate >= 0 && ensureBeforeMigrate < migrate);
   assert.ok(rlsReplay > migrate && provision > rlsReplay && certificate > provision);
@@ -1306,6 +1429,9 @@ test('local et CI statique exercent les mêmes ACL que release', () => {
     '20260730110000_agent_mission_line_confirmation_expand',
     '20260730110100_agent_mission_line_confirmation_validate',
     '20260730110200_agent_mission_line_confirmation_cutover',
+    '20260731120000_agent_mission_line_cancel_choice_expand',
+    '20260731120100_agent_mission_line_cancel_choice_validate',
+    '20260731120200_agent_mission_line_cancel_choice_cutover',
   ]) {
     assert.match(localCertificate, new RegExp(migration, 'u'));
   }

@@ -6,6 +6,9 @@ import {
   hasBillingControlCharacter,
   MAX_BILLING_AMOUNT_CENTS,
 } from '../../domain/billing/shared/line-item';
+import {
+  resolveBillingUnitReference,
+} from '../../domain/billing/shared/billing-unit-reference';
 import type { VatRate } from '../../domain/billing/shared/vat-rate';
 import type { Instant } from '../../shared-kernel/time';
 import {
@@ -154,10 +157,14 @@ export function normalizeAgentMissionQuoteLineCandidate(
     AGENT_MISSION_QUOTE_LINE_MAX_SERVICE_REFERENCE_LENGTH,
   );
   if (serviceReference === undefined) return fail('serviceReference', 'invalid_value');
-  const unit = canonicalSingleLine(
+  const unitReference = canonicalSingleLine(
     input['unitReference'],
     AGENT_MISSION_QUOTE_LINE_MAX_UNIT_LENGTH,
   );
+  if (unitReference === undefined) return fail('unitReference', 'invalid_value');
+  const unit = unitReference === null
+    ? null
+    : resolveBillingUnitReference(unitReference)?.value;
   if (unit === undefined) return fail('unitReference', 'invalid_value');
   if (
     input['categoryHint'] !== null

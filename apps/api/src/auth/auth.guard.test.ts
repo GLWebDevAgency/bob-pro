@@ -62,6 +62,70 @@ describe('SupabaseAuthGuard — prod (JWT Supabase, C24b provisioning)', () => {
     expect(r.principal).toEqual({ userId: 'a1b2c3d4-0000-4000-8000-1234567890ab', companyId: 'company-a1b2' });
   });
 
+  it('ne pose le fuseau confirmé que depuis app_metadata signée et liée au tenant courant', async () => {
+    jwtVerifyMock.mockResolvedValue({
+      payload: {
+        sub: 'a1b2c3d4-0000-4000-8000-1234567890ab',
+        app_metadata: {
+          company_id: 'company-a1b2',
+          bob_time_zone: 'Europe/Paris',
+          bob_time_zone_confirmed_at: '2026-07-31T00:00:00.000Z',
+          bob_time_zone_company_id: 'company-a1b2',
+        },
+      },
+    } as never);
+
+    const result = await activate(new SupabaseAuthGuard(), {
+      url: '/quotes',
+      method: 'GET',
+      headers: BEARER,
+    });
+
+    expect(result.principal).toMatchObject({
+      confirmedTimeZone: {
+        timeZone: 'Europe/Paris',
+        confirmedAt: '2026-07-31T00:00:00.000Z',
+      },
+    });
+  });
+
+  it.each([
+    {
+      bob_time_zone: 'Europe/Paris',
+      bob_time_zone_confirmed_at: '2026-07-31T00:00:00.000Z',
+      bob_time_zone_company_id: 'company-autre',
+    },
+    {
+      bob_time_zone: 'Europe/Introuvable',
+      bob_time_zone_confirmed_at: '2026-07-31T00:00:00.000Z',
+      bob_time_zone_company_id: 'company-a1b2',
+    },
+    {
+      bob_time_zone: 'Europe/Paris',
+      bob_time_zone_confirmed_at: '2026-07-31',
+      bob_time_zone_company_id: 'company-a1b2',
+    },
+  ])('ignore un fuseau non fiable sans refuser le JWT tenant valide : %j', async (timeZoneMetadata) => {
+    jwtVerifyMock.mockResolvedValue({
+      payload: {
+        sub: 'a1b2c3d4-0000-4000-8000-1234567890ab',
+        app_metadata: {
+          company_id: 'company-a1b2',
+          ...timeZoneMetadata,
+        },
+      },
+    } as never);
+
+    const result = await activate(new SupabaseAuthGuard(), {
+      url: '/quotes',
+      method: 'GET',
+      headers: BEARER,
+    });
+
+    expect(result.allowed).toBe(true);
+    expect(result.principal).not.toHaveProperty('confirmedTimeZone');
+  });
+
   it('JWT valide SANS company_id sur un endpoint tenant : 403 PROVISIONING_REQUIRED — plus JAMAIS le tenant démo', async () => {
     jwtVerifyMock.mockResolvedValue(payload() as never);
     const guard = new SupabaseAuthGuard();

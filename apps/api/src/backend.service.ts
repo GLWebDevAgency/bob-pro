@@ -176,6 +176,7 @@ import {
   type RetractationProfessional,
   type Result,
   type AppError,
+  parseIanaTimeZone,
   isMissionKindId,
   type MissionKindId,
   type CreateQuoteInput,
@@ -330,7 +331,10 @@ import {
   type Provider,
   type BatchItem,
   type PendingAction,
+  type PreclassifiedAgentPlan,
+  type RealtimeSemanticHostManifest,
   type JournalEntry,
+  type AgentContext,
   type ContextEntitySummary,
   type ReadContextEntityInput,
   type RuntimeInvocation,
@@ -1298,6 +1302,15 @@ export interface AgentExecutionOptions {
   readonly requiredProvider?: Provider;
   /** Kinds négociés par le transport authentifié, jamais lus depuis `AgentAskPayload`. */
   readonly admittedMissionKinds?: readonly MissionKindId[];
+}
+
+/** Métadonnées du plan produit avant l'enveloppe BackendService par Bob Live. */
+export interface PreclassifiedAgentExecutionOptions extends AgentExecutionOptions {
+  /**
+   * Durée mesurée par l'unique planner sémantique. Elle entre dans les mêmes métriques et traces
+   * que la classification historique, sans provoquer un second appel modèle.
+   */
+  readonly plannerDurationMs: number;
 }
 
 /**
@@ -5071,6 +5084,7 @@ export class BackendService {
   private bobAgent(
     requiredProvider?: Provider,
     admittedMissionKinds: readonly MissionKindId[] = [],
+    preclassified = false,
   ) {
     const router = new ModelRouter({
       hasClaudeKey: hasClaudeKey(),
@@ -5082,7 +5096,11 @@ export class BackendService {
     });
     // Le fournisseur qui qualifie la demande (tool-calling) est choisi par le routeur.
     const provider = router.route('intent.detect').model;
-    const llm = provider !== 'unavailable' ? buildLlmForProvider(provider) : undefined;
+    // Un tour Bob Live a déjà consommé son unique complétion dans le planner sémantique. Ne pas
+    // injecter de LLM ici rend toute reclassification/naturalisation accidentelle impossible.
+    const llm = !preclassified && provider !== 'unavailable'
+      ? buildLlmForProvider(provider)
+      : undefined;
     const executionAuthority = createLegacyExecutionAuthority(admittedMissionKinds);
     return {
       provider,
@@ -5133,7 +5151,70 @@ export class BackendService {
         : inputOrMessage,
     );
     if (!parsed.ok) return parsed;
-    const input = parsed.value;
+    return this.runBobRequest(parsed.value, execution, null);
+  }
+
+  /**
+   * Exécute le plan strict déjà produit par Bob Live. Cette méthode n'est exposée par aucun
+   * controller : seuls les transports serveur authentifiés peuvent fournir ce plan.
+   */
+  async askBobWithPlan(
+    input: AgentAskPayload,
+    plan: PreclassifiedAgentPlan,
+    execution: PreclassifiedAgentExecutionOptions,
+  ): Promise<Result<AgentRun, AppError>> {
+    execution.signal?.throwIfAborted();
+    if (
+      !Number.isInteger(execution.plannerDurationMs)
+      || execution.plannerDurationMs < 0
+      || execution.plannerDurationMs > 120_000
+    ) {
+      return err({
+        kind: 'validation',
+        issues: [{
+          field: 'plannerDurationMs',
+          message: 'Durée du planificateur invalide.',
+        }],
+      });
+    }
+    const parsed = parseAgentAskPayload(input);
+    if (!parsed.ok) return parsed;
+    return this.runBobRequest(parsed.value, execution, {
+      plan,
+      plannerDurationMs: execution.plannerDurationMs,
+    });
+  }
+
+  /**
+   * Prépare la surface sémantique depuis le même BobAgent tenanté que l'exécution du tour.
+   * Aucun appel LLM n'est réalisé ici ; une offre sans assistant échoue avant la planification.
+   */
+  async prepareRealtimeSemanticHost(input: {
+    readonly context?: AgentContext;
+    readonly admittedMissionKinds: readonly MissionKindId[];
+  }): Promise<Result<RealtimeSemanticHostManifest, AppError>> {
+    const subscriptionResult = await this.subscriptionFor(this.companyId());
+    if (!subscriptionResult.ok) return subscriptionResult;
+    if (!subscriptionResult.value.can('ai_assistant')) {
+      return err(appForbidden("L'assistant Bob est inclus à partir de l'offre Solo."));
+    }
+    const runtime = this.bobAgent(
+      undefined,
+      input.admittedMissionKinds,
+      true,
+    );
+    return ok(runtime.agent.realtimeSemanticHostManifest(input.context));
+  }
+
+  private async runBobRequest(
+    input: AgentAskPayload,
+    execution: AgentExecutionOptions | undefined,
+    preclassified: {
+      readonly plan: PreclassifiedAgentPlan;
+      readonly plannerDurationMs: number;
+    } | null,
+  ): Promise<Result<AgentRun, AppError>> {
+    execution?.signal?.throwIfAborted();
 
     // L'assistant agentique est réservé aux offres avec IA (Solo+). Sans lui, l'app reste 100 % manuelle.
     const subscriptionResult = await this.subscriptionFor(this.companyId());
@@ -5157,6 +5238,7 @@ export class BackendService {
     const bobRuntime = this.bobAgent(
       execution?.requiredProvider,
       execution?.admittedMissionKinds ?? [],
+      preclassified !== null,
     );
     if (bobRuntime.provider === 'unavailable') {
       return err(appUnavailable('bob-llm'));
@@ -5167,15 +5249,18 @@ export class BackendService {
     const planStartedMs = Date.now();
     let planificationMs: number | null = null;
     let executionMs: number | null = null;
-    let r = await agent.ask(input.message, {
+    const askOptions = {
       autonomy: effectiveAutonomy,
       ...(input.history !== undefined ? { history: input.history } : {}),
       ...(input.tone !== undefined ? { tone: input.tone } : {}),
       ...(input.context !== undefined ? { context: input.context } : {}),
       ...(execution?.signal === undefined ? {} : { signal: execution.signal }),
-    });
+    };
+    let r = preclassified === null
+      ? await agent.ask(input.message, askOptions)
+      : await agent.askWithPlan(input.message, preclassified.plan, askOptions);
     execution?.signal?.throwIfAborted();
-    planificationMs = Date.now() - planStartedMs;
+    planificationMs = preclassified?.plannerDurationMs ?? (Date.now() - planStartedMs);
 
     // Une proposition HTTP devient une ressource serveur opaque. Le client conserve args/label
     // uniquement pour l'aperçu, mais /ai/confirm les ignore et recharge ce dry-run tenant-scoped.
@@ -5286,7 +5371,7 @@ export class BackendService {
       }
     }
     execution?.signal?.throwIfAborted();
-    const ms = Date.now() - start;
+    const ms = Date.now() - start + (preclassified?.plannerDurationMs ?? 0);
     const intent = r.ok ? r.value.intent : 'error';
     const model = r.ok ? r.value.model : 'unavailable';
     const outcome = r.ok ? 'ok' : 'error';
@@ -5305,26 +5390,30 @@ export class BackendService {
       effectiveAutonomy,
       contextual: input.context !== undefined,
       blockedIntentCount: bobRuntime.executionAuthority.blockedIntents.length,
+      planningSource: preclassified === null ? 'bob_agent' : 'realtime_semantic_planner',
+      plannerDurationMs: planificationMs,
     });
-    // TRAÇAGE VOCAL — moitié « ce que Bob a compris / a fait / répond ». L'enregistreur ne
-    // retient ce tour QUE si le message correspond à une transcription récente du même
-    // utilisateur : une conversation au clavier passe ici sans laisser de trace vocale.
-    const pending = r.ok ? r.value.pending : undefined;
-    this.voiceTrace?.notePlanning({
-      companyId: this.companyId(),
-      userId: getPrincipal()?.userId ?? null,
-      message: input.message,
-      intent,
-      tool: pending?.tool ?? null,
-      toolArgs: pending?.args ?? null,
-      autonomy: effectiveAutonomy,
-      llmModel: model,
-      // Ce que Bob dit — la formulation vocale d'abord, à défaut le corps de la carte d'action.
-      reply: r.ok ? (r.value.naturalBody ?? r.value.spokenPrompt ?? r.value.card.body) : null,
-      planificationMs: planificationMs ?? ms,
-      executionMs,
-      error: r.ok ? null : voiceTraceErrorFacts(r.error),
-    });
+    // VoiceTrace V1 accepte encore des données brutes : il reste strictement réservé au chemin
+    // historique. Bob Live possède déjà sa télémétrie structurée non-PII et ne doit jamais y
+    // recopier transcription, arguments ou réponse du planificateur sémantique.
+    if (preclassified === null) {
+      const pending = r.ok ? r.value.pending : undefined;
+      this.voiceTrace?.notePlanning({
+        companyId: this.companyId(),
+        userId: getPrincipal()?.userId ?? null,
+        message: input.message,
+        intent,
+        tool: pending?.tool ?? null,
+        toolArgs: pending?.args ?? null,
+        autonomy: effectiveAutonomy,
+        llmModel: model,
+        // Ce que Bob dit — la formulation vocale d'abord, à défaut le corps de la carte d'action.
+        reply: r.ok ? (r.value.naturalBody ?? r.value.spokenPrompt ?? r.value.card.body) : null,
+        planificationMs: planificationMs ?? ms,
+        executionMs,
+        error: r.ok ? null : voiceTraceErrorFacts(r.error),
+      });
+    }
     return r;
   }
 
@@ -10698,6 +10787,70 @@ export class BackendService {
       name: provisioned.name,
     });
     return ok({ companyId });
+  }
+
+  /**
+   * Préférence conversationnelle Bob Live : écriture Supabase Auth uniquement, hors transaction
+   * tenant. Le JWT courant reste inchangé ; le client doit le rafraîchir avant le bootstrap Live.
+   */
+  async confirmConversationTimeZone(
+    rawTimeZone: string,
+  ): Promise<
+    Result<
+      {
+        timeZone: string;
+        confirmedAt: string;
+        requiresSessionRefresh: true;
+      },
+      AppError
+    >
+  > {
+    const principal = getPrincipal();
+    if (!principal || principal.companyId === null) {
+      throw new Error(
+        'confirmConversationTimeZone sans Principal tenanté — le guard doit refuser avant ce point.',
+      );
+    }
+
+    const timeZone = parseIanaTimeZone(rawTimeZone);
+    if (timeZone === null) {
+      return err({
+        kind: 'validation',
+        issues: [{ field: 'timeZone', message: 'Fuseau IANA invalide.' }],
+      });
+    }
+    if (typeof this.supabaseAdmin.setUserConfirmedTimeZone !== 'function') {
+      return err({
+        kind: 'dependency',
+        port: 'supabase-admin',
+        cause: 'confirmation-time-zone-indisponible',
+      });
+    }
+
+    const confirmedAt = this.clock.now();
+    try {
+      await this.supabaseAdmin.setUserConfirmedTimeZone(
+        principal.userId,
+        principal.companyId,
+        timeZone,
+        confirmedAt,
+      );
+    } catch (error) {
+      const cause = error instanceof Error ? error.message : 'supabase-admin';
+      this.logger.error(
+        'Confirmation du fuseau Bob Live impossible.',
+        undefined,
+        'BackendService',
+        { cause },
+      );
+      return err({ kind: 'dependency', port: 'supabase-admin', cause });
+    }
+
+    return ok({
+      timeZone,
+      confirmedAt,
+      requiresSessionRefresh: true as const,
+    });
   }
 
   /**

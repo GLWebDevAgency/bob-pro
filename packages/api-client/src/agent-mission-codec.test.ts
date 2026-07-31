@@ -6,6 +6,7 @@ import {
 } from '@bob/core';
 import {
   decodeAgentMissionCatalogueChoice,
+  decodeAgentMissionCurrentV2,
   decodeAgentMissionDecision,
   decodeAgentMissionDecisionV2,
   decodeAgentMissionScreenAck,
@@ -533,6 +534,36 @@ describe('AgentMission HTTP codecs', () => {
     expect(decodeAgentMissionViewV2({
       ...catalogueM2AView,
       protocolVersion: 2,
+    })).toBeNull();
+  });
+
+  it('ferme l’enveloppe current V2 et interdit mission sans présentation', () => {
+    const mission = viewAt(
+      catalogueChoiceM2AMission(),
+      '2026-07-26T08:04:00.000Z',
+    );
+    const wire = {
+      mission,
+      presentation: cataloguePresentation(mission),
+    };
+
+    expect(decodeAgentMissionCurrentV2(wire)).toEqual(wire);
+    expect(decodeAgentMissionCurrentV2({
+      mission: null,
+      presentation: null,
+    })).toEqual({ mission: null, presentation: null });
+    expect(decodeAgentMissionCurrentV2({ mission })).toBeNull();
+    expect(decodeAgentMissionCurrentV2({
+      mission,
+      presentation: null,
+    })).toBeNull();
+    expect(decodeAgentMissionCurrentV2({
+      mission: null,
+      presentation: wire.presentation,
+    })).toBeNull();
+    expect(decodeAgentMissionCurrentV2({
+      ...wire,
+      extra: true,
     })).toBeNull();
   });
 

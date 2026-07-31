@@ -328,6 +328,142 @@ M2 étend le cadre aux lignes, catalogue, quantité, unité, prix, TVA, dates et
 missions contrat, facture, client, catalogue, document et notification ajoutent ensuite leurs
 schemas et use cases sans introduire un second cerveau.
 
+### Convergence obligatoire des parcours vocaux historiques
+
+**Directive fondateur — conversation Codex du 30 juillet 2026.**
+
+M2-A n'est pas une verticale premium isolée. Elle devient le contrat de référence auquel tous les
+parcours vocaux antérieurs doivent converger avant leur activation publique :
+
+| Surface                   | Capacité cible absorbée par le moteur unique                                     |
+| ------------------------- | -------------------------------------------------------------------------------- |
+| devis                     | création complète, client, lignes, catalogue, TVA, conditions, revue et émission |
+| factures                  | création depuis devis ou libre, lignes, échéance, paiement, relance et avoir     |
+| clients                   | recherche, création, correction et désambiguïsation                              |
+| catalogue                 | recherche, proposition d'usage, création et modification confirmées              |
+| documents                 | scan, explication, classement, choix de dossier et corrections                   |
+| notifications             | briefing, ouverture de l'entité, lecture et action confirmée                     |
+| dépenses                  | capture, qualification, affectation et paiement confirmé                         |
+| clôture/comptabilité      | lecture, explication, résolution guidée et escalade cabinet                      |
+| navigation/contexte écran | lecture de l'écran, résumé agrégé et navigation sans perte de mission            |
+
+Pour chaque surface :
+
+- la transcription et le contexte réel sont interprétés par le LLM au moyen d'un manifeste de
+  capacités et de contrats d'outils typés ; aucune liste de tournures, regex métier ou handler
+  écran ne devient le moteur principal de compréhension ;
+- le LLM reçoit un accès **outillé et tenanté** aux données utiles, pas un dump global du tenant :
+  clients, catalogue et documents sont recherchés à la demande, bornés et relus sous leurs fences ;
+- le domaine reste déterministe : il valide la frame candidate, résout les références, applique
+  invariants et politiques de confirmation, puis produit une projection et un diff autoritaires ;
+- une ambiguïté ou un fait manquant produit une question minimale avec les mêmes choix réels à la
+  voix et au toucher ;
+- accepter, modifier, refuser ou annuler consomme la même décision scellée, quelle que soit
+  l'affordance ;
+- la mission reprend après navigation, interruption, reconnexion ou kill sans relire un transcript
+  ni réexécuter un effet déjà commité ;
+- l'ancien writer devient inerte dès que la mission possède la capacité ; aucun fallback silencieux
+  ne réactive un parseur local ou un deuxième cerveau.
+
+L'inventaire des anciens outils et handlers est une **surface à absorber**, pas une API publique à
+figer. Un parcours historique reste OFF ou explicitement limité tant qu'un test contractuel ne
+prouve pas compréhension LLM, parité voix/toucher, reprise, données tenant réelles et effet domaine
+unique.
+
+### Preuve M2-A-3 sur le modèle réellement déployé
+
+Les tests avec `LlmPort` fabriqué prouvent le parseur et les fences, mais pas la compréhension. Le
+train M2-A-3 ajoute donc un corpus français versionné — version courante `4` — et une suite réseau
+opt-in qui :
+
+- appelle exclusivement `buildLlmForProvider('openai')` puis `planRealtimeSemanticTurn` ;
+- exige le provider, le modèle planner, la clé, l'URL officielle et le SHA exact ; une activation
+  partielle échoue au lieu de sauter la suite. La V1 certifie uniquement le modèle par défaut
+  versionné dans le code : toute présence de `OPENAI_MODEL` ferme le gate ;
+- couvre au minimum une formulation directe, une formulation familière, une anaphore de choix,
+  une réponse elliptique à un fait requis, une correction multi-tours et une injection stockée
+  dans une parole Bob traitée comme donnée non fiable ;
+- vérifie une seule opération, zéro fait inventé, un seul `complete`, zéro `generate`, zéro retry,
+  zéro fallback legacy et zéro deuxième planner ;
+- présente au modèle uniquement les opérations admises par la phase autoritaire. Une TVA absente
+  reste `null` et une sélection ordinale ne transporte aucune ligne issue du contexte ; la
+  composition « sélection puis nouvelle ligne » reste fermée jusqu'à l'extraction isolée d'un
+  reliquat exact de la parole courante. La sélection restitue donc soit `null`, soit
+  `unprocessed_current_utterance_remainder`, sous-chaîne propre, exacte et strictement plus courte
+  que l'énoncé courant minimisé. Le parseur vérifie cette provenance déterministiquement, dérive le
+  seul booléen interne nécessaire à la continuation puis jette immédiatement le texte : ni
+  orchestration, ni journal, ni preuve ne le conservent. Un reliquat absent du tour courant, égal
+  au tour entier ou issu d'un label/historique non fiable invalide toute la frame. Ce signal force
+  Bob à annoncer la demande non traitée après le choix, y compris après relecture d'une réponse
+  réseau perdue, sans l'exécuter ni lancer un second appel. Les unités traversent le même résolveur
+  métier fermé à l'entrée du
+  runtime, lors de la consommation du catalogue par la mission, dans la projection légale et dans
+  le scoreur : des graphies sûres telles que `heure`, `heures`, `h` et `1 h` deviennent `heure`,
+  sans faux négatif. La source catalogue reste lossless et n'est pas réécrite. Les unités libres
+  ne sont jamais singularisées génériquement ; `machine` et `machines` restent distinctes.
+  `unité` et `pièce` restent aussi distinctes dans le métier malgré leur code UN/ECE C62 commun.
+  Une absence ne vaut jamais `unité` dans la mission ;
+- utilise le mode strict uniquement sur les outils et fournisseurs qui le supportent, sans
+  désactiver la capacité multi-actions des gestes globaux ni envoyer un champ OpenAI à un adapter
+  tiers. Le contrat strict OpenAI est prévalidé localement selon son sous-ensemble documenté et
+  ses budgets avant tout appel réseau. Une dérive locale reste fail-closed mais produit un reçu
+  rouge borné `local_contract/strict_schema_invalid` avec `providerRequestCount=0` pour cette
+  tentative ; si le corpus rencontre à la fois une dérive locale et une panne fournisseur, le
+  reçu porte l'étage fermé `multiple_failures` au lieu de masquer une cause. Une réponse HTTP
+  fournisseur est réduite à une catégorie fermée, sans corps, message, paramètre ni identifiant
+  fournisseur ;
+- écrit seulement un rapport non-PII : version du corpus, SHA, provider/modèle, résultat et latence
+  de chaque identifiant de cas, compteurs par cas, codes d'issue fermés et statut borné du modèle
+  observé. Seule la source `versioned_default` peut certifier ; `environment_override` reste un
+  diagnostic rouge et ne passe pas le validateur. Aucun transcript, prompt, argument d'outil,
+  valeur de modèle invalide ou donnée tenant n'entre dans l'artefact ; une garde confidentialité
+  indépendante passe avant tout upload, succès comme échec ;
+- exige le même `expected_sha` que le gate schéma, prouve
+  `checkout=github.sha=expected_sha`, puis s'exécute sur ce SHA de certification staging et non sur
+  chaque PR. La PR exécute en permanence le corpus et le scoreur déterministes.
+
+La frontière de confiance envoyée au fournisseur contient exactement deux messages de rôle
+`user`, dans cet ordre :
+
+1. `bob.semantic-untrusted-context`, qui porte l'historique récent, le contexte écran, la mission,
+   les choix et les capacités comme **données non fiables**, mais jamais la demande courante ;
+2. `bob.semantic-current-utterance`, dernier message minimal qui porte uniquement l'énoncé courant
+   minimisé et aucune donnée stockée.
+
+Aucun message fournisseur de rôle `assistant` n'est ajouté. Les deux enveloppes appartiennent à la
+même et unique complétion ; cette séparation n'est ni un retry, ni un second planner. Elle empêche
+un libellé catalogue ou une ancienne parole Bob d'être confondu avec la demande fraîche tout en
+conservant le contexte nécessaire aux anaphores.
+
+Une nouvelle tournure française observée en échec rejoint ce corpus versionné. Elle n'ajoute jamais
+une regex métier dans le chemin de production.
+
+Le premier run réseau exact-SHA du 31 juillet 2026 (`30611888276`) a correctement appelé six fois
+l'adapter OpenAI runtime sans retry et a passé le corpus déterministe 13/13, mais il a échoué 4/6
+sur le modèle réel. Les échecs observés sont contractuels : TVA `0` inventée lorsque le taux est
+absent, opération de démarrage émise hors phase, et recopie de la ligne courante comme ligne
+additionnelle lors de deux choix ordinaux. Ce run est une preuve d'échec utile, jamais une
+certification. `M2A3-14` reste ouvert jusqu'à un nouveau run couvrant intégralement le corpus
+versionné courant — actuellement 9/9 — sur un SHA successeur intégrant les gardes ci-dessus.
+
+Le run exact-SHA `30631216638` a ensuite prouvé la chaîne runtime complète sur neuf cas, avec neuf
+complétions résolues et sept cas conformes. Ses deux échecs sont contractuels et reproductibles :
+`service_reference` n'expliquait pas au modèle qu'un libellé métier explicitement prononcé devait
+être conservé, et le booléen de reliquat ne portait aucune preuve qu'une seconde demande venait de
+l'énoncé courant plutôt que du contexte non fiable. Ce reçu reste rouge. La correction normative
+est la description métier explicite, la séparation des deux enveloppes ci-dessus et le reliquat
+exact validé ; le corpus, ses oracles et le budget d'un seul appel restent inchangés.
+
+Le run exact-SHA `30634046636` sur
+`3bc464936adba9e124a01f867cc7e8f6be256c56` solde ce gate : neuf complétions runtime observées,
+9/9 cas conformes, zéro retry et reçu non-PII validé. Cette preuve autorise le rollout preview de
+`quote_line_m2a3` ; elle ne certifie aucun autre kind ni les performances appareil.
+
+Cette preuve est strictement bornée à `quote_line_m2a3`. Elle ne certifie ni les dates relatives,
+ni les contrats, ni les futurs `mission kinds` : chacun recevra son propre corpus versionné et sa
+preuve exacte avant activation. Elle ne devient donc jamais, à elle seule, une attestation
+« Jarvis général ».
+
 ## 7. Critères d'acceptation binaires
 
 - [ ] Le cas canonique contrat produit tous les faits candidats attendus en une passe.
@@ -341,6 +477,11 @@ schemas et use cases sans introduire un second cerveau.
 - [ ] Une mission reprend après kill sans transcript et sans perdre les faits acceptés.
 - [ ] Aucun test de langue ajouté ne dépend de mocks atteignables en production.
 - [ ] p95 compréhension + résolution est mesuré séparément du transport et de la parole.
+- [ ] Chaque parcours vocal public appartient à un `mission kind` du moteur unique ; aucun handler
+      regex/local historique ne conserve une autorité d'écriture concurrente.
+- [ ] L'inventaire devis, facture, client, catalogue, document, notification, dépense,
+      clôture/comptabilité et navigation indique pour chaque geste : use case commun,
+      confirmation, reprise et preuve E2E.
 
 ## 8. Definition of Done
 
@@ -350,5 +491,7 @@ schemas et use cases sans introduire un second cerveau.
 - [ ] Tests d'intégration sur vraies données tenantées pour chaque résolveur livré.
 - [ ] Scénarios E2E voix/tap/reprise/interruption sur staging exact-SHA.
 - [ ] Aucun changement de modèle ou de prompt publié sans eval de non-régression et mesure latency.
+- [ ] Les parcours historiques absorbés passent le même test-contractuel voix/toucher/reprise que
+      M2-A ; un parcours non absorbé est fermé ou décrit honnêtement comme limité.
 - [ ] Le registre reste `implemented` jusqu'aux preuves device et staging ; aucun pourcentage ne
       remplace ces preuves.

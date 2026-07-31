@@ -24,6 +24,8 @@ export * from './agent/autonomy';
 export * from './agent/confirmation';
 export * from './agent/action-diff';
 export * from './agent/bob-agent';
+export * from './agent/classifier';
+export * from './agent/realtime-semantic-planner';
 export * from './agent/intent-ownership';
 export * from './agent/runtime-tool-intent';
 export * from './agent/mission-understanding/quote-creation';

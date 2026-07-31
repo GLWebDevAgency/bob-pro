@@ -15,6 +15,7 @@ import {
 } from './intent-ownership';
 import {
   preflightRuntimeToolOwnership,
+  runtimeIntentsForTools,
   runtimeToolResultIntent,
 } from './runtime-tool-intent';
 import {
@@ -22,7 +23,12 @@ import {
   classifyWithRegex,
   DETERMINISTIC_CLASSIFIER_MODEL,
   INTENTS_HORS_OUTILLAGE_LLM,
+  isPreclassifiedAgentPlan,
+  TOOL_TO_INTENT,
+  type PreclassifiedAgentPlan,
+  type RealtimeGlobalToolName,
 } from './classifier';
+import type { RealtimeSemanticHostManifest } from './realtime-semantic-planner';
 import {
   AgentRuntime,
   type RuntimeInvocation,
@@ -1969,6 +1975,53 @@ export class BobAgent {
     return this.tools.find((t) => t.name === name);
   }
 
+  /**
+   * Manifeste exact de la surface globale réellement exécutable par CET agent.
+   *
+   * Les outils optionnels viennent du registre déjà construit, les lectures directes de leurs
+   * ports réellement câblés, puis l'ownership MissionKind retire toute intention absorbée.
+   * Le planner ne maintient ainsi ni catalogue parallèle ni capacité déclarative optimiste.
+   */
+  realtimeSemanticHostManifest(
+    context?: AgentContext,
+  ): RealtimeSemanticHostManifest {
+    const intents = new Set<BobIntent>(runtimeIntentsForTools(this.tools));
+    for (const intent of Object.keys(NAV_ROUTES) as BobIntent[]) intents.add(intent);
+    intents.add('aide');
+
+    if (
+      this.deps.actions.readContextEntity !== undefined
+      && context !== undefined
+      && context.entities.length > 0
+    ) intents.add('contexte_ecran');
+    if (this.deps.actions.getVatPosition !== undefined) intents.add('tva');
+    if (this.deps.actions.getAgedBalance !== undefined) intents.add('balance');
+    if (
+      this.deps.actions.getIncomeStatement !== undefined
+      || this.deps.actions.getTrialBalance !== undefined
+    ) intents.add('resultat');
+    if (this.deps.actions.getBalanceSheet !== undefined) intents.add('bilan');
+    if (this.deps.actions.getClosingReview !== undefined) intents.add('revue_cloture');
+    if (this.deps.actions.getBusinessReview !== undefined) {
+      intents.add('pilotage');
+      intents.add('dso');
+      intents.add('top_clients');
+    }
+
+    for (const intent of [...intents]) {
+      if (this.executionAuthority.isIntentBlocked(intent)) intents.delete(intent);
+    }
+    const globalToolNames = Object.freeze(
+      (Object.keys(TOOL_TO_INTENT) as RealtimeGlobalToolName[])
+        .filter((name) => intents.has(TOOL_TO_INTENT[name])),
+    );
+    return Object.freeze({
+      schema: 'bob.realtime-semantic-host-manifest',
+      version: 1,
+      globalToolNames,
+    });
+  }
+
   /** Qualifie la demande : LLM tool-calling si disponible (avec repli déterministe), sinon regex. */
   private async classify(
     message: string,
@@ -2002,6 +2055,37 @@ export class BobAgent {
   }
 
   async ask(message: string, opts: AskOptions = {}): Promise<Result<AgentRun, AppError>> {
+    return this.askInternal(message, opts, null, true);
+  }
+
+  /**
+   * Exécute un plan déjà produit par l'unique planificateur sémantique du tour.
+   *
+   * Ce chemin reste volontairement dans BobAgent pour réutiliser l'ownership MissionKind, les
+   * politiques de confirmation et les mêmes use cases que `ask`. Il ne relit en revanche AUCUNE
+   * continuation historique : le plan typé est l'unique autorité sémantique du tour Realtime.
+   * Il n'appelle ni le classifieur ni le naturaliseur.
+   */
+  async askWithPlan(
+    message: string,
+    plan: PreclassifiedAgentPlan,
+    opts: AskOptions = {},
+  ): Promise<Result<AgentRun, AppError>> {
+    if (!isPreclassifiedAgentPlan(plan)) {
+      return err({
+        kind: 'validation',
+        issues: [{ field: 'plan', message: 'Plan agent préclassifié invalide.' }],
+      });
+    }
+    return this.askInternal(message, opts, plan, false);
+  }
+
+  private async askInternal(
+    message: string,
+    opts: AskOptions,
+    suppliedPlan: PreclassifiedAgentPlan | null,
+    allowNaturalization: boolean,
+  ): Promise<Result<AgentRun, AppError>> {
     opts.signal?.throwIfAborted();
     const payload = parseAgentAskPayload({
       message,
@@ -2017,49 +2101,60 @@ export class BobAgent {
     const context = payload.value.context;
     opts.onPhase?.('comprends');
     const routed = this.deps.router.route('intent.detect');
+    const allowLegacyContinuations = suppliedPlan === null;
     // Une réponse vocale courte (« hier », « par carte ») doit poursuivre la question Bob en
     // cours. On n'élargit ce contexte qu'au parcours règlement, avec une question Bob explicite,
-    // pour ne jamais ressusciter arbitrairement un ancien intent mutatif.
+    // pour ne jamais ressusciter arbitrairement un ancien intent mutatif. Ce chemin est strictement
+    // réservé à `ask()` : `askWithPlan()` reçoit déjà la continuation structurée du planner.
     const lastBobTurn = [...(history ?? [])].reverse().find((turn) => turn.role === 'bob');
     const recentUserTurns = (history ?? []).slice(-5).filter((turn) => turn.role === 'user');
-    const isExpensePaymentContinuation = lastBobTurn !== undefined
+    const isExpensePaymentContinuation = allowLegacyContinuations
+      && lastBobTurn !== undefined
       && /(date|moyen).{0,30}r[èe]glement|r[èe]glement.{0,30}(date|moyen)/i.test(lastBobTurn.text)
       && recentUserTurns.some((turn) => /(d[ée]pense|fournisseur).*(pay[ée]|r[ée]gl)|(?:pay[ée]|r[ée]gl).*(d[ée]pense|fournisseur)/i.test(turn.text));
     // B8 — continuité du numéro : après la question Bob « il me faut le numéro du bon de
     // commande… », la réponse courte (« c'est le n° 4500123 ») reste dans ce parcours.
-    const isPurchaseOrderContinuation = lastBobTurn !== undefined
+    const isPurchaseOrderContinuation = allowLegacyContinuations
+      && lastBobTurn !== undefined
       && /num[ée]ro du bon de commande/i.test(lastBobTurn.text)
       && recentUserTurns.some((turn) => /bon de commande|purchase order|num[ée]ro d.engagement|\bbc[- ]?\d/i.test(turn.text));
     // M4 — continuité de la dépense dictée : après une question Bob (fournisseur/montant/moyen/
     // catégorie « … de cette dépense »), la réponse courte (« chez Total », « 89 € ») poursuit
     // LE parcours en cours au lieu de ressusciter un autre intent.
-    const isDictatedExpenseContinuation = lastBobTurn !== undefined
+    const isDictatedExpenseContinuation = allowLegacyContinuations
+      && lastBobTurn !== undefined
       && /(fournisseur|montant|moyen|cat[ée]gorie|date).{0,50}d[ée]pense|d[ée]pense.{0,50}(fournisseur|montant|moyen|cat[ée]gorie|date)/i.test(lastBobTurn.text)
       && recentUserTurns.some((turn) => /j\W{0,3}ai d[ée]pens[ée]|\d\s*(?:€|euros?)|d[ée]pense/i.test(turn.text));
     // B1 — continuité de la facture directe : après une question Bob du parcours (« … de cette
     // facture directe »), la réponse courte (« 380 € », « pour le dépannage ») poursuit le
     // parcours au lieu de ressusciter un autre intent.
-    const isDirectInvoiceContinuation = lastBobTurn !== undefined
+    const isDirectInvoiceContinuation = allowLegacyContinuations
+      && lastBobTurn !== undefined
       && /facture directe/i.test(lastBobTurn.text)
       && recentUserTurns.some((turn) => /factur/i.test(turn.text));
     // B2 — continuité de la situation : après la question d'avancement (« … de cette
     // situation »), la réponse courte (« 40 % », « 12 000 € HT ») poursuit le parcours.
-    const isSituationContinuation = lastBobTurn !== undefined
+    const isSituationContinuation = allowLegacyContinuations
+      && lastBobTurn !== undefined
       && /situation/i.test(lastBobTurn.text)
       && /avancement|montant|pourcentage/i.test(lastBobTurn.text)
       && recentUserTurns.some((turn) => /situation/i.test(turn.text));
     // B4 — continuité des conditions de paiement : après la question du délai ou du client
     // (« … conditions de paiement »), la réponse courte (« 45 jours fin de mois ») poursuit.
-    const isPaymentTermsContinuation = lastBobTurn !== undefined
+    const isPaymentTermsContinuation = allowLegacyContinuations
+      && lastBobTurn !== undefined
       && /conditions de paiement/i.test(lastBobTurn.text)
       && recentUserTurns.some((turn) => /paie|paye|r[èe]gle|jours|conditions/i.test(turn.text));
     // BT-23 — une réponse courte (« le premier », « mixte ») n'a de sens que juste après LA
     // question sur la nature de l'opération et dans un parcours d'émission réellement présent
     // dans l'historique. Hors de ce contexte, aucun ordinal ne devient un fait fiscal.
-    const lastInvoiceIssueTurn = [...recentUserTurns]
-      .reverse()
-      .find((turn) => detectIntent(turn.text) === 'emettre_facture');
-    const isOperationCategoryContinuation = lastBobTurn !== undefined
+    const lastInvoiceIssueTurn = allowLegacyContinuations
+      ? [...recentUserTurns]
+        .reverse()
+        .find((turn) => detectIntent(turn.text) === 'emettre_facture')
+      : undefined;
+    const isOperationCategoryContinuation = allowLegacyContinuations
+      && lastBobTurn !== undefined
       && /nature (?:principale )?de l[’']op[ée]ration/i.test(lastBobTurn.text)
       && lastInvoiceIssueTurn !== undefined;
     if (
@@ -2089,7 +2184,7 @@ export class BobAgent {
     // B8 — passerelle d'enchaînement : après « Bon de commande lié ✓ », un OUI franc délègue au
     // flow generer_facture_devis EXISTANT via sa commande canonique VERBATIM ; un NON franc clôt
     // proprement (le lien, lui, est déjà fait). Jamais d'action sur une réponse ambiguë.
-    const invoiceChainRef = lastBobTurn !== undefined
+    const invoiceChainRef = allowLegacyContinuations && lastBobTurn !== undefined
       ? (/facture du devis\s+([\p{L}\p{N}][\p{L}\p{N}\-./]*)\s+avec ce bon de commande/iu.exec(lastBobTurn.text)?.[1] ?? null)
       : null;
     if (invoiceChainRef !== null && parseVoiceConsent(userMessage) === 'cancel') {
@@ -2121,7 +2216,14 @@ export class BobAgent {
     // Le message des handlers : la commande canonique quand l'enchaînement a été accepté,
     // sinon la demande telle que dite (les handlers relisent l'historique eux-mêmes).
     const effectiveMessage = chainCommand ?? operationCategoryCommand ?? userMessage;
-    const plan = await this.classify(classificationMessage, routed.model, history, context, opts.signal);
+    const plan = suppliedPlan
+      ?? await this.classify(
+        classificationMessage,
+        routed.model,
+        history,
+        context,
+        opts.signal,
+      );
     opts.signal?.throwIfAborted();
     if (plan.steps.some((step) => this.executionAuthority.isIntentBlocked(step.intent))) {
       return err({
@@ -2160,6 +2262,7 @@ export class BobAgent {
     // canoniques garanties par detectIntent — une reformulation les casserait.
     if (
       result.ok
+      && allowNaturalization
       && this.deps.llm
       && model !== 'unavailable'
       && model !== DETERMINISTIC_CLASSIFIER_MODEL

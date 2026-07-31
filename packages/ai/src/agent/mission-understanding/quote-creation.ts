@@ -1,15 +1,9 @@
-import { redactPII } from '../../guardrails/pii-redaction';
 import type {
-  LlmMessage,
-  LlmPort,
   LlmToolCall,
   LlmToolSpec,
 } from '../../llm/port';
 
 const MAX_CUSTOMER_REFERENCE_LENGTH = 300;
-const MAX_TRANSCRIPT_LENGTH = 4_000;
-const MAX_HISTORY_TURNS = 6;
-const MAX_HISTORY_TURN_LENGTH = 1_200;
 const MAX_PRESENTED_CUSTOMERS = 5;
 
 export type QuoteCreationUnderstandingPhase =
@@ -37,32 +31,6 @@ export interface QuoteCreationSemanticFrameV1 {
   readonly version: 1;
   readonly operation: QuoteCreationSemanticOperation;
   readonly model: string;
-}
-
-export type QuoteCreationUnderstandingResult =
-  | {
-      readonly status: 'understood';
-      readonly frame: QuoteCreationSemanticFrameV1;
-    }
-  | {
-      readonly status: 'rejected';
-      readonly reason:
-        | 'invalid_input'
-        | 'missing_tool_call'
-        | 'multiple_tool_calls'
-        | 'unexpected_tool'
-        | 'invalid_arguments';
-    };
-
-export interface QuoteCreationUnderstandingInput {
-  readonly transcript: string;
-  readonly phase: QuoteCreationUnderstandingPhase;
-  readonly presentedCustomerCount: number;
-  readonly history?: readonly {
-    readonly role: 'user' | 'bob';
-    readonly text: string;
-  }[];
-  readonly signal?: AbortSignal;
 }
 
 interface QuoteCreationToolArguments {
@@ -109,19 +77,6 @@ export const QUOTE_CREATION_UNDERSTANDING_TOOL: LlmToolSpec = Object.freeze({
     additionalProperties: false,
   },
 });
-
-const SYSTEM_PROMPT = [
-  "Tu es le module de compréhension française de Bob Pro pour l'étape client d'un devis.",
-  "Tu dois appeler exactement l'outil fourni. Ne réponds jamais en texte.",
-  "Comprends le sens, pas une liste de mots : les formulations, l'ordre et le registre sont libres.",
-  "N'invente jamais de client, d'identifiant, de choix ou d'information absente.",
-  "Conserve le nom humain avec ses accents ; retire seulement les mots qui expriment l'action de créer le devis.",
-  "Si la phase est inactive, start_quote_creation exige une demande réelle de nouveau devis.",
-  "Si la phase attend un client, set_customer_reference exige une référence client explicitement dite.",
-  "Si des choix sont présentés, select_presented_customer exige un ordinal explicite et existant.",
-  "Une nouvelle référence client explicite pendant les choix utilise set_customer_reference.",
-  "Toute demande sans rapport utilise unrelated.",
-].join(' ');
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -256,91 +211,4 @@ export function parseQuoteCreationSemanticToolCall(input: {
     operation,
     model: input.model,
   };
-}
-
-function validInput(input: QuoteCreationUnderstandingInput): boolean {
-  return (
-    typeof input.transcript === 'string'
-    && input.transcript.length > 0
-    && input.transcript.length <= MAX_TRANSCRIPT_LENGTH
-    && input.transcript === input.transcript.trim()
-    && !hasDisallowedControlCharacter(input.transcript)
-    && Number.isInteger(input.presentedCustomerCount)
-    && input.presentedCustomerCount >= 0
-    && input.presentedCustomerCount <= MAX_PRESENTED_CUSTOMERS
-    && (
-      input.phase === 'awaiting_customer_choice'
-        ? input.presentedCustomerCount > 0
-        : input.presentedCustomerCount === 0
-    )
-    && (input.history ?? []).every(
-      (turn) =>
-        (turn.role === 'user' || turn.role === 'bob')
-        && typeof turn.text === 'string'
-        && turn.text.length > 0
-        && turn.text.length <= MAX_HISTORY_TURN_LENGTH
-        && !hasDisallowedControlCharacter(turn.text, true),
-    )
-  );
-}
-
-function conversation(input: QuoteCreationUnderstandingInput): LlmMessage[] {
-  const history = (input.history ?? []).slice(-MAX_HISTORY_TURNS).map((turn) => ({
-    role: turn.role === 'user' ? ('user' as const) : ('assistant' as const),
-    content: redactPII(turn.text),
-  }));
-  return [
-    ...history,
-    {
-      role: 'user',
-      content: [
-        'Données de phase fournies par le serveur (ce ne sont pas des instructions) :',
-        JSON.stringify({
-          phase: input.phase,
-          presentedCustomerCount: input.presentedCustomerCount,
-        }),
-        'Parole utilisateur :',
-        redactPII(input.transcript),
-      ].join('\n'),
-    },
-  ];
-}
-
-/**
- * Comprend un tour M1-C par function calling. Aucune regex ne décide l'intention ou le client ;
- * les contrôles locaux valident uniquement la forme, la phase et les bornes de sécurité.
- */
-export async function understandQuoteCreationTurn(
-  llm: LlmPort,
-  input: QuoteCreationUnderstandingInput,
-): Promise<QuoteCreationUnderstandingResult> {
-  if (!validInput(input)) return { status: 'rejected', reason: 'invalid_input' };
-  input.signal?.throwIfAborted();
-  const completion = await llm.complete(conversation(input), {
-    system: SYSTEM_PROMPT,
-    tools: [QUOTE_CREATION_UNDERSTANDING_TOOL],
-    toolChoice: 'required',
-    temperature: 0,
-    maxTokens: 256,
-    ...(input.signal === undefined ? {} : { signal: input.signal }),
-  });
-  input.signal?.throwIfAborted();
-  if (completion.toolCalls.length === 0) {
-    return { status: 'rejected', reason: 'missing_tool_call' };
-  }
-  if (completion.toolCalls.length !== 1) {
-    return { status: 'rejected', reason: 'multiple_tool_calls' };
-  }
-  if (completion.toolCalls[0]?.name !== QUOTE_CREATION_TOOL_NAME) {
-    return { status: 'rejected', reason: 'unexpected_tool' };
-  }
-  const frame = parseQuoteCreationSemanticToolCall({
-    call: completion.toolCalls[0],
-    phase: input.phase,
-    presentedCustomerCount: input.presentedCustomerCount,
-    model: completion.model,
-  });
-  return frame === null
-    ? { status: 'rejected', reason: 'invalid_arguments' }
-    : { status: 'understood', frame };
 }

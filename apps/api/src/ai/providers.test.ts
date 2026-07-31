@@ -1,16 +1,25 @@
+import { planRealtimeSemanticTurn } from '@bob/ai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  buildLlmForProvider,
   buildSttCloud,
   buildTtsCloud,
   buildRealtimeSpeechAuditStt,
   buildRealtimeSpeechTts,
+  DEFAULT_OPENAI_CHAT_MODEL,
   LocalWhisperAuditSttAdapter,
   OpenAiRealtimeSpeechTtsAdapter,
   MistralVoxtralSttAdapter,
   MistralVoxtralTtsAdapter,
   OpenAiCompatibleLlmAdapter,
+  resolveOpenAiChatModel,
 } from './providers';
 import { LOCAL_WHISPER_AUDIT_CONTRACT } from './local-whisper-audit-contract';
+import {
+  classifyLlmProviderHttpFailure,
+  LlmProviderHttpError,
+  LlmStrictSchemaError,
+} from './provider-failure';
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -40,11 +49,580 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe('OpenAI chat model runtime contract', () => {
+  it('résout le défaut versionné quand Railway ne pose aucun override', () => {
+    delete process.env.OPENAI_MODEL;
+    expect(resolveOpenAiChatModel()).toBe(DEFAULT_OPENAI_CHAT_MODEL);
+  });
+
+  it('conserve un snapshot explicite valide sans le normaliser', () => {
+    expect(resolveOpenAiChatModel('gpt-4o-mini-2026-07-18')).toBe(
+      'gpt-4o-mini-2026-07-18',
+    );
+  });
+
+  it.each(['', ' ', ' gpt-4o-mini', 'gpt-4o-mini ', 'gpt/model'])(
+    'refuse fermement un override ambigu %j',
+    (configured) => {
+      expect(() => resolveOpenAiChatModel(configured)).toThrow(
+        /OPENAI_MODEL doit être un identifiant de modèle valide/u,
+      );
+    },
+  );
+
+  it('branche le modèle résolu dans la requête réelle de l’adapter', async () => {
+    process.env.OPENAI_API_KEY = 'openai-test-key';
+    delete process.env.OPENAI_MODEL;
+    const fetchMock = vi.fn(
+      async (_url: string | URL | Request, _init?: RequestInit) =>
+        new Response(
+          JSON.stringify({
+          model: DEFAULT_OPENAI_CHAT_MODEL,
+          choices: [{ message: { content: 'ok', tool_calls: [] } }],
+          }),
+          {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+          },
+        ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const llm = buildLlmForProvider('openai');
+    await expect(llm?.complete([{ role: 'user', content: 'Bonjour' }])).resolves.toMatchObject({
+      model: DEFAULT_OPENAI_CHAT_MODEL,
+    });
+
+    const body = JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string) as {
+      readonly model?: unknown;
+    };
+    expect(body.model).toBe(DEFAULT_OPENAI_CHAT_MODEL);
+  });
+
+  it('distingue le modèle produit du modèle réellement attesté par le fournisseur', async () => {
+    process.env.OPENAI_API_KEY = 'openai-test-key';
+    process.env.OPENAI_MODEL = 'gpt-test';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              choices: [{ message: { content: 'ok', tool_calls: [] } }],
+            }),
+            {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            },
+          ),
+      ),
+    );
+
+    await expect(
+      buildLlmForProvider('openai')?.complete([{ role: 'user', content: 'Bonjour' }]),
+    ).resolves.toMatchObject({
+      model: 'gpt-test',
+      providerReportedModel: null,
+    });
+  });
+
+  it('émet les contrôles stricts uniquement sur l’adapter OpenAI natif qualifié', async () => {
+    const fetchMock = vi.fn(
+      async (_url: string | URL | Request, _init?: RequestInit) =>
+        new Response(
+          JSON.stringify({
+            model: 'gpt-test',
+            choices: [{ message: { content: null, tool_calls: [] } }],
+          }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    process.env.OPENAI_API_KEY = 'openai-test-key';
+    process.env.OPENAI_MODEL = 'gpt-test';
+    const tool = {
+      name: 'mission_test',
+      description: 'Test',
+      schemaAdherence: 'strict' as const,
+      parameters: {
+        type: 'object',
+        properties: { value: { type: ['string', 'null'] } },
+        required: ['value'],
+        additionalProperties: false,
+      },
+    };
+
+    await buildLlmForProvider('openai')?.complete([{ role: 'user', content: 'Bonjour' }], {
+      tools: [tool],
+      toolChoice: 'auto',
+      toolCallConcurrency: 'single',
+    });
+    const openAiBody = JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string) as {
+      readonly parallel_tool_calls?: unknown;
+      readonly tools?: Array<{ readonly function?: Record<string, unknown> }>;
+    };
+    expect(openAiBody.parallel_tool_calls).toBe(false);
+    expect(openAiBody.tools?.[0]?.function?.strict).toBe(true);
+
+    fetchMock.mockClear();
+    await new OpenAiCompatibleLlmAdapter({
+      id: 'mistral-compatible-test',
+      baseUrl: 'https://mistral-compatible.test/v1',
+      apiKey: 'mistral-key',
+      model: 'mistral-test',
+    }).complete([{ role: 'user', content: 'Bonjour' }], {
+      tools: [tool],
+      toolChoice: 'auto',
+      toolCallConcurrency: 'single',
+    });
+    const compatibleBody = JSON.parse(
+      (fetchMock.mock.calls[0]?.[1] as RequestInit).body as string,
+    ) as {
+      readonly parallel_tool_calls?: unknown;
+      readonly tools?: Array<{ readonly function?: Record<string, unknown> }>;
+    };
+    expect(compatibleBody).not.toHaveProperty('parallel_tool_calls');
+    expect(compatibleBody.tools?.[0]?.function).not.toHaveProperty('strict');
+
+    fetchMock.mockClear();
+    process.env.OPENAI_URL = 'https://proxy-openai-compatible.test/v1';
+    await buildLlmForProvider('openai')?.complete([{ role: 'user', content: 'Bonjour' }], {
+      tools: [tool],
+      toolChoice: 'auto',
+      toolCallConcurrency: 'single',
+    });
+    const proxiedOpenAiBody = JSON.parse(
+      (fetchMock.mock.calls[0]?.[1] as RequestInit).body as string,
+    ) as {
+      readonly parallel_tool_calls?: unknown;
+      readonly tools?: Array<{ readonly function?: Record<string, unknown> }>;
+    };
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      'https://proxy-openai-compatible.test/v1/chat/completions',
+    );
+    expect(proxiedOpenAiBody).not.toHaveProperty('parallel_tool_calls');
+    expect(proxiedOpenAiBody.tools?.[0]?.function).not.toHaveProperty('strict');
+  });
+
+  it('refuse localement un schéma OpenAI strict invalide avant tout appel réseau', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const adapter = new OpenAiCompatibleLlmAdapter({
+      id: 'openai-strict-test',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'openai-key',
+      model: 'gpt-test',
+      nativeOpenAiToolControls: true,
+    });
+
+    await expect(
+      adapter.complete([{ role: 'user', content: 'Bonjour' }], {
+        tools: [{
+          name: 'mission_invalide',
+          description: 'Test',
+          schemaAdherence: 'strict',
+          parameters: {
+            type: 'object',
+            properties: {
+              kind: { const: 'sans_type' },
+            },
+            required: ['kind'],
+            additionalProperties: false,
+          },
+        }],
+      }),
+    ).rejects.toBeInstanceOf(LlmStrictSchemaError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'root anyOf',
+      {
+        anyOf: [
+          {
+            type: 'object',
+            properties: { value: { type: 'string' } },
+            required: ['value'],
+            additionalProperties: false,
+          },
+        ],
+      },
+    ],
+    ['root non objet', { type: 'string' }],
+    [
+      'composition allOf',
+      {
+        type: 'object',
+        properties: {
+          value: {
+            allOf: [{ type: 'string' }],
+          },
+        },
+        required: ['value'],
+        additionalProperties: false,
+      },
+    ],
+    [
+      'condition if/then',
+      {
+        type: 'object',
+        properties: {
+          value: {
+            type: 'string',
+            if: { const: 'a', type: 'string' },
+            then: { const: 'b', type: 'string' },
+          },
+        },
+        required: ['value'],
+        additionalProperties: false,
+      },
+    ],
+    [
+      'profondeur 11',
+      Array.from({ length: 11 }).reduce<Record<string, unknown>>(
+        (nested) => ({
+          type: 'object',
+          properties: { value: nested },
+          required: ['value'],
+          additionalProperties: false,
+        }),
+        { type: 'string' },
+      ),
+    ],
+  ])('refuse le schéma strict OpenAI hors contrat : %s', async (_label, parameters) => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const adapter = new OpenAiCompatibleLlmAdapter({
+      id: 'openai-strict-contract-test',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'openai-key',
+      model: 'gpt-test',
+      nativeOpenAiToolControls: true,
+    });
+
+    await expect(adapter.complete([{ role: 'user', content: 'Bonjour' }], {
+      tools: [{
+        name: 'mission_invalide',
+        description: 'Test',
+        schemaAdherence: 'strict',
+        parameters,
+      }],
+    })).rejects.toBeInstanceOf(LlmStrictSchemaError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('accepte un const entier déclaré number dans un schéma strict valide', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      model: 'gpt-test',
+      choices: [{ message: { content: null, tool_calls: [] } }],
+    }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const adapter = new OpenAiCompatibleLlmAdapter({
+      id: 'openai-strict-number-test',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'openai-key',
+      model: 'gpt-test',
+      nativeOpenAiToolControls: true,
+    });
+
+    await expect(adapter.complete([{ role: 'user', content: 'Bonjour' }], {
+      tools: [{
+        name: 'mission_valide',
+        description: 'Test',
+        schemaAdherence: 'strict',
+        parameters: {
+          type: 'object',
+          properties: { version: { type: 'number', const: 1 } },
+          required: ['version'],
+          additionalProperties: false,
+        },
+      }],
+    })).resolves.toBeDefined();
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [401, 'invalid_function_parameters', 'authentication_failed'],
+    [403, 'invalid_function_parameters', 'permission_denied'],
+    [429, 'invalid_function_parameters', 'rate_limited'],
+    [500, 'invalid_function_parameters', 'provider_unavailable'],
+    [400, 'invalid_function_parameters', 'invalid_function_parameters'],
+  ] as const)(
+    'priorise le statut HTTP %s sur le code fournisseur incohérent',
+    (status, code, expected) => {
+      expect(classifyLlmProviderHttpFailure(status, { error: { code } })).toBe(expected);
+    },
+  );
+
+  it('borne une erreur HTTP OpenAI à une catégorie fermée sans conserver le corps', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({
+        error: {
+          type: 'invalid_request_error',
+          code: 'invalid_function_parameters',
+          param: 'tools[0].function.parameters',
+          message: 'transcript et secret fournisseur à ne jamais propager',
+        },
+      }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      })),
+    );
+    const adapter = new OpenAiCompatibleLlmAdapter({
+      id: 'openai-error-test',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'openai-key',
+      model: 'gpt-test',
+    });
+
+    const failure = await adapter.complete([{ role: 'user', content: 'Bonjour' }])
+      .then(() => null, (error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(LlmProviderHttpError);
+    expect(failure).toMatchObject({
+      status: 400,
+      category: 'invalid_function_parameters',
+      message: 'llm_provider_invalid_function_parameters',
+    });
+    expect(JSON.stringify(failure)).not.toContain('transcript');
+    expect(JSON.stringify(failure)).not.toContain('secret fournisseur');
+    expect(JSON.stringify(failure)).not.toContain('tools[0]');
+  });
+
+  it('ignore un corps d’erreur fournisseur surdimensionné et conserve seulement le statut', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({
+        error: {
+          code: 'invalid_function_parameters',
+          message: `donnée-non-publiable-${'x'.repeat(20 * 1024)}`,
+        },
+      }), { status: 400 })),
+    );
+    const adapter = new OpenAiCompatibleLlmAdapter({
+      id: 'openai-oversized-error-test',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'openai-key',
+      model: 'gpt-test',
+    });
+
+    const failure = await adapter.complete([{ role: 'user', content: 'Bonjour' }])
+      .then(() => null, (error: unknown) => error);
+
+    expect(failure).toMatchObject({
+      status: 400,
+      category: 'provider_http_error',
+      message: 'llm_provider_http_error',
+    });
+    expect(JSON.stringify(failure)).not.toContain('donnée-non-publiable');
+  });
+
+  it('conserve la catégorie bornée sur un adapter OpenAI-compatible tiers', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({
+        error: { message: 'secret tiers non publiable' },
+      }), { status: 503 })),
+    );
+    const adapter = new OpenAiCompatibleLlmAdapter({
+      id: 'proxy-compatible-test',
+      baseUrl: 'https://proxy-compatible.test/v1',
+      apiKey: 'proxy-key',
+      model: 'proxy-model',
+    });
+
+    const failure = await adapter.complete([{ role: 'user', content: 'Bonjour' }])
+      .then(() => null, (error: unknown) => error);
+
+    expect(failure).toMatchObject({
+      status: 503,
+      category: 'provider_unavailable',
+      message: 'llm_provider_unavailable',
+    });
+    expect(JSON.stringify(failure)).not.toContain('secret tiers');
+  });
+
+  it('ne requalifie pas une annulation appelant pendant la lecture d’une erreur HTTP', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({
+        error: { message: 'corps non pertinent' },
+      }), { status: 503 })),
+    );
+    const adapter = new OpenAiCompatibleLlmAdapter({
+      id: 'openai-abort-test',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'openai-key',
+      model: 'gpt-test',
+    });
+    const controller = new AbortController();
+    const reason = new Error('caller_cancelled');
+    controller.abort(reason);
+
+    const failure = await adapter.complete([{ role: 'user', content: 'Bonjour' }], {
+      signal: controller.signal,
+    }).then(() => null, (error: unknown) => error);
+
+    expect(failure).toBe(reason);
+    expect(failure).not.toBeInstanceOf(LlmProviderHttpError);
+  });
+
+  it('préserve le strict mission et le multi-actions global dans le wire OpenAI réel', async () => {
+    process.env.OPENAI_API_KEY = 'openai-test-key';
+    process.env.OPENAI_MODEL = 'gpt-test';
+    delete process.env.OPENAI_URL;
+    const fetchMock = vi.fn(
+      async (_url: string | URL | Request, _init?: RequestInit) =>
+        new Response(
+          JSON.stringify({
+            model: 'gpt-test',
+            choices: [{
+              message: {
+                content: null,
+                tool_calls: [{
+                  function: {
+                    name: 'mettre_a_jour_mission_devis_v2',
+                    arguments: JSON.stringify({
+                      operations: [{
+                        kind: 'select_presented_choice',
+                        ordinal: 1,
+                        unprocessed_current_utterance_remainder: null,
+                      }],
+                    }),
+                  },
+                }],
+              },
+            }],
+          }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const llm = buildLlmForProvider('openai');
+    if (llm === undefined) throw new Error('Adapter OpenAI attendu.');
+
+    await expect(
+      planRealtimeSemanticTurn(llm, {
+        transcript: 'Prends la première.',
+        history: [],
+        context: {
+          screen: { name: '/devis/new', instanceId: 'quote-test' },
+          entities: [],
+          capabilities: ['quote.read', 'quote.line.update'],
+        },
+        screen: {
+          route: '/devis/new',
+          revision: 1,
+          digest: 'a'.repeat(64),
+        },
+        quoteMission: {
+          missionAlias: 'M1',
+          missionRevision: 1,
+          confirmedLineCount: 0,
+          pendingLineCount: 1,
+          pendingDecisionKind: 'catalogue',
+          protocolVersion: 2,
+          phase: 'awaiting_catalogue_choice',
+          requiredFact: null,
+          currentLine: {
+            label: 'Main-d’œuvre',
+            category: 'labor',
+            quantityDecimal: '2',
+            unit: 'heure',
+            unitPriceDecimal: null,
+            currency: 'EUR',
+            vatRate: null,
+            priceBasis: 'per_unit',
+            housingOlderThan2y: null,
+            energyRenovation: null,
+          },
+          presentedChoices: [{
+            alias: 'C1',
+            kind: 'catalogue',
+            available: true,
+            label: 'Main-d’œuvre atelier',
+            category: 'labor',
+            unit: 'heure',
+            unitPriceDecimal: '55.00',
+            currency: 'EUR',
+          }],
+        },
+        hostManifest: {
+          schema: 'bob.realtime-semantic-host-manifest',
+          version: 1,
+          globalToolNames: ['factures_impayees', 'ouvrir_cloture'],
+        },
+        missionCapabilities: [
+          'quote.line.stage',
+          'quote.catalogue.search',
+          'quote.line.patch',
+          'quote.line.confirm',
+        ],
+        locale: 'fr-FR',
+        timeZone: 'Europe/Paris',
+        now: '2026-07-31T08:00:00.000Z',
+      }),
+    ).resolves.toMatchObject({ status: 'mission_frame' });
+
+    const body = JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string) as {
+      readonly parallel_tool_calls?: unknown;
+      readonly messages?: ReadonlyArray<{
+        readonly role?: unknown;
+        readonly content?: unknown;
+      }>;
+      readonly tools?: Array<{
+        readonly function?: {
+          readonly name?: unknown;
+          readonly strict?: unknown;
+        };
+      }>;
+    };
+    const missionTool = body.tools?.find(
+      (tool) => tool.function?.name === 'mettre_a_jour_mission_devis_v2',
+    );
+    expect(body.messages?.map((message) => message.role)).toEqual([
+      'system',
+      'user',
+      'user',
+    ]);
+    expect(body.messages?.[1]?.content).toContain(
+      '"schema":"bob.semantic-untrusted-context"',
+    );
+    expect(body.messages?.[1]?.content).not.toContain('currentUserUtterance');
+    expect(body.messages?.[2]?.content).toBe(
+      '{"schema":"bob.semantic-current-utterance","version":1,"currentUserUtterance":"Prends la première."}',
+    );
+    expect(body.tools?.map((tool) => tool.function?.name)).toEqual([
+      'mettre_a_jour_mission_devis_v2',
+      'factures_impayees',
+      'ouvrir_cloture',
+    ]);
+    expect(missionTool?.function?.strict).toBe(true);
+    expect(body).not.toHaveProperty('parallel_tool_calls');
+  });
+});
+
 describe('Mistral Voxtral providers', () => {
   it('transcrit via audio/transcriptions avec langue fr et context bias', async () => {
-    const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify({ text: ' Bonjour Bob ' }), { status: 200 }));
+    const fetchMock = vi.fn(
+      async (_url: string | URL | Request, _init?: RequestInit) =>
+        new Response(JSON.stringify({ text: ' Bonjour Bob ' }), { status: 200 }),
+    );
     vi.stubGlobal('fetch', fetchMock);
-    const adapter = new MistralVoxtralSttAdapter('mistral-key', 'voxtral-test', 'https://api.test/v1', 'Durand,F-2026-001');
+    const adapter = new MistralVoxtralSttAdapter(
+      'mistral-key',
+      'voxtral-test',
+      'https://api.test/v1',
+      'Durand,F-2026-001',
+    );
 
     const r = await adapter.transcribe(Buffer.from([1, 2, 3]).toString('base64'), 'audio/webm');
 

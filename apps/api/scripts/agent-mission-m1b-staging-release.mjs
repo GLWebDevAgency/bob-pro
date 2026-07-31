@@ -181,13 +181,23 @@ const RELEASE_FLAG_SQL = `
 SET LOCAL statement_timeout = '5s';
 SET LOCAL lock_timeout = '2s';
 SELECT pg_catalog.format(
-         '%s|%s',
-         flag.version,
-         CASE WHEN flag."killSwitch" THEN 'true' ELSE 'false' END
+         '%s|%s|%s|%s|%s',
+         v1_flag.version,
+         CASE WHEN v1_flag.enabled THEN 'true' ELSE 'false' END,
+         CASE WHEN v1_flag."killSwitch" THEN 'true' ELSE 'false' END,
+         (
+           SELECT pg_catalog.count(*)
+             FROM public.release_flag_subjects AS subject
+            WHERE subject."flagId" = v1_flag.id
+         ),
+         m2a_flag.version
        )
-  FROM public.release_flags AS flag
- WHERE flag.key = 'bob.agent_missions.quote.v1'
-   AND flag.environment = 'staging'::public."ReleaseEnvironment";
+  FROM public.release_flags AS v1_flag
+  JOIN public.release_flags AS m2a_flag
+    ON m2a_flag.environment = v1_flag.environment
+   AND m2a_flag.key = 'bob.agent_missions.quote.m2a'
+ WHERE v1_flag.key = 'bob.agent_missions.quote.v1'
+   AND v1_flag.environment = 'staging'::public."ReleaseEnvironment";
 `;
 
 const FOREIGN_AUTHORITY_SNAPSHOT_SQL = `
@@ -248,11 +258,11 @@ function fail(message) {
 function required(environment, name, maximum = 8_192) {
   const value = environment[name];
   if (
-    typeof value !== 'string'
-    || value.length < 1
-    || value.length > maximum
-    || value !== value.trim()
-    || /[\u0000-\u001f\u007f]/u.test(value)
+    typeof value !== 'string' ||
+    value.length < 1 ||
+    value.length > maximum ||
+    value !== value.trim() ||
+    /[\u0000-\u001f\u007f]/u.test(value)
   ) {
     fail(`${name} is missing or invalid`);
   }
@@ -269,15 +279,8 @@ function positiveInteger(environment, name, minimum, maximum) {
   return parsed;
 }
 
-export function parseM1BStagingReleaseEnvironment(
-  phase,
-  environment = process.env,
-) {
-  if (
-    phase !== 'predeploy'
-    && phase !== 'postdeploy'
-    && phase !== 'restore-capacity'
-  ) {
+export function parseM1BStagingReleaseEnvironment(phase, environment = process.env) {
+  if (phase !== 'predeploy' && phase !== 'postdeploy' && phase !== 'restore-capacity') {
     fail('phase must be predeploy, postdeploy or restore-capacity');
   }
   if (required(environment, 'CABINET_RELEASE_ENV', 16) !== 'staging') {
@@ -288,12 +291,7 @@ export function parseM1BStagingReleaseEnvironment(
   const drainTimeoutSeconds =
     environment.BOB_LIVE_DRAIN_TIMEOUT_SECONDS === undefined
       ? 930
-      : positiveInteger(
-          environment,
-          'BOB_LIVE_DRAIN_TIMEOUT_SECONDS',
-          30,
-          1_800,
-        );
+      : positiveInteger(environment, 'BOB_LIVE_DRAIN_TIMEOUT_SECONDS', 30, 1_800);
   return Object.freeze({
     phase,
     environment,
@@ -306,12 +304,7 @@ export function parseM1BStagingReleaseEnvironment(
 
 function securePsql(
   url,
-  {
-    input,
-    variables = [],
-    file,
-    label = file ?? 'inline-sql',
-  },
+  { input, variables = [], file, label = file ?? 'inline-sql' },
   environment,
   dependencies = {},
 ) {
@@ -327,10 +320,14 @@ function securePsql(
     ...(file === undefined ? [] : ['-f', file]),
   ];
   const result = withPsqlChildEnvironment(url, environment, (childEnvironment) =>
-    spawn('psql', args, boundedPsqlSpawnOptions(childEnvironment, {
-      input,
-      encoding: 'utf8',
-    })),
+    spawn(
+      'psql',
+      args,
+      boundedPsqlSpawnOptions(childEnvironment, {
+        input,
+        encoding: 'utf8',
+      }),
+    ),
   );
   if (result.status !== 0) {
     const failureKind =
@@ -355,9 +352,7 @@ async function assertStrictMigrationState(config, dependencies = {}) {
   } catch {
     fail('applied migration inventory is invalid');
   }
-  const local = await (
-    dependencies.readLocalMigrationChecksums ?? readLocalMigrationChecksums
-  )();
+  const local = await (dependencies.readLocalMigrationChecksums ?? readLocalMigrationChecksums)();
   let summary;
   try {
     summary = assertAppliedMigrationChecksums({
@@ -403,15 +398,12 @@ function readCapacityState(config, dependencies = {}) {
 async function waitForClosedCapacity(config, dependencies = {}, initialState) {
   const now = dependencies.now ?? (() => Date.now());
   const sleep =
-    dependencies.sleep
-    ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+    dependencies.sleep ??
+    ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
   const deadline = now() + config.drainTimeoutSeconds * 1_000;
   let state = initialState;
   while (true) {
-    state ??= (dependencies.readCapacityState ?? readCapacityState)(
-      config,
-      dependencies,
-    );
+    state ??= (dependencies.readCapacityState ?? readCapacityState)(config, dependencies);
     if (state.mode !== 'closed') {
       fail('realtime capacity returned an invalid drain state');
     }
@@ -431,10 +423,7 @@ function runKeyManager(mode, config, dependencies = {}) {
   const spawn = dependencies.spawnSync ?? spawnSync;
   const result = spawn(
     process.execPath,
-    [
-      'apps/api/scripts/manage-agent-mission-fingerprint-key-versions.mjs',
-      mode,
-    ],
+    ['apps/api/scripts/manage-agent-mission-fingerprint-key-versions.mjs', mode],
     {
       encoding: 'utf8',
       env: {
@@ -455,15 +444,18 @@ function readReleaseFlag(config, dependencies = {}) {
     config.environment,
     dependencies,
   );
-  const [version, killSwitch, ...extra] = raw.split('|');
+  const [version, enabled, killSwitch, subjectCount, m2aVersion, ...extra] = raw.split('|');
   if (
-    extra.length > 0
-    || !POSITIVE_INTEGER.test(version ?? '')
-    || !['true', 'false'].includes(killSwitch)
+    extra.length > 0 ||
+    !POSITIVE_INTEGER.test(version ?? '') ||
+    enabled !== 'false' ||
+    !['true', 'false'].includes(killSwitch) ||
+    subjectCount !== '0' ||
+    !POSITIVE_INTEGER.test(m2aVersion ?? '')
   ) {
-    fail('canonical M1-B release flag snapshot is invalid');
+    fail('canonical AgentMission release flag snapshot is invalid');
   }
-  return { version, killSwitch };
+  return { version, enabled, killSwitch, subjectCount, m2aVersion };
 }
 
 function certifyAgentMissionAcl(config, dependencies = {}) {
@@ -488,6 +480,7 @@ function certifyAgentMissionAcl(config, dependencies = {}) {
         ['release_env', 'staging'],
         ['release_flag_version', flag.version],
         ['release_flag_kill_switch', flag.killSwitch],
+        ['m2a_release_flag_version', flag.m2aVersion],
       ],
     },
     config.environment,
@@ -534,9 +527,7 @@ function foreignAuthoritySnapshot(config, dependencies = {}) {
 
 function isBobLiveEnabled(config) {
   const liveEnabled =
-    config.environment.BOB_LIVE_ENABLED
-    ?? config.environment.OPENAI_REALTIME_ENABLED
-    ?? 'false';
+    config.environment.BOB_LIVE_ENABLED ?? config.environment.OPENAI_REALTIME_ENABLED ?? 'false';
   if (liveEnabled !== 'true' && liveEnabled !== 'false') {
     fail('Bob Live enablement is invalid');
   }
@@ -549,9 +540,7 @@ function capacityConfiguration(config) {
   }
   const provider = config.environment.BOB_LIVE_PROVIDER ?? 'openai';
   if (provider !== 'openai') fail('M1-B staging requires the OpenAI Bob Live provider');
-  const model =
-    config.environment.OPENAI_REALTIME_MODEL
-    ?? 'gpt-realtime-2.1';
+  const model = config.environment.OPENAI_REALTIME_MODEL ?? 'gpt-realtime-2.1';
   if (!SAFE_MODEL.test(model)) fail('OPENAI_REALTIME_MODEL is invalid');
   const globalMax = positiveInteger(
     config.environment,
@@ -622,10 +611,7 @@ function certifyActiveCapacity(config, configuration, dependencies = {}) {
 
 async function restoreCapacity(config, dependencies = {}) {
   const configuration = capacityConfiguration(config);
-  const state = (dependencies.readCapacityState ?? readCapacityState)(
-    config,
-    dependencies,
-  );
+  const state = (dependencies.readCapacityState ?? readCapacityState)(config, dependencies);
 
   if (state.mode === 'active') {
     if (configuration.enabled) {
@@ -636,47 +622,27 @@ async function restoreCapacity(config, dependencies = {}) {
       );
       return 'active';
     }
-    await (
-      dependencies.closeAndDrainCapacity ?? closeAndDrainCapacity
-    )(config, dependencies);
-    (dependencies.certifyCapacityAuthority ?? certifyCapacityAuthority)(
-      config,
-      dependencies,
-    );
+    await (dependencies.closeAndDrainCapacity ?? closeAndDrainCapacity)(config, dependencies);
+    (dependencies.certifyCapacityAuthority ?? certifyCapacityAuthority)(config, dependencies);
     return 'closed';
   }
 
-  await (
-    dependencies.waitForClosedCapacity ?? waitForClosedCapacity
-  )(config, dependencies, state);
-  (dependencies.certifyCapacityAuthority ?? certifyCapacityAuthority)(
-    config,
-    dependencies,
-  );
+  await (dependencies.waitForClosedCapacity ?? waitForClosedCapacity)(config, dependencies, state);
+  (dependencies.certifyCapacityAuthority ?? certifyCapacityAuthority)(config, dependencies);
   if (!configuration.enabled) return 'closed';
-  return (dependencies.configureCapacity ?? configureCapacity)(
-    config,
-    dependencies,
-    configuration,
-  );
+  return (dependencies.configureCapacity ?? configureCapacity)(config, dependencies, configuration);
 }
 
-export async function runM1BStagingRelease(
-  phase,
-  environment = process.env,
-  dependencies = {},
-) {
+export async function runM1BStagingRelease(phase, environment = process.env, dependencies = {}) {
   const config = parseM1BStagingReleaseEnvironment(phase, environment);
-  const certifyDatabase =
-    dependencies.certifyDatabase ?? certifyM1BStagingDatabase;
+  const certifyDatabase = dependencies.certifyDatabase ?? certifyM1BStagingDatabase;
   certifyDatabase(environment);
-  const migrations = await (
-    dependencies.assertStrictMigrationState ?? assertStrictMigrationState
-  )(config, dependencies);
+  const migrations = await (dependencies.assertStrictMigrationState ?? assertStrictMigrationState)(
+    config,
+    dependencies,
+  );
   if (phase === 'restore-capacity') {
-    const capacity = await (
-      dependencies.restoreCapacity ?? restoreCapacity
-    )(config, dependencies);
+    const capacity = await (dependencies.restoreCapacity ?? restoreCapacity)(config, dependencies);
     return Object.freeze({
       phase,
       passed: true,
@@ -685,33 +651,23 @@ export async function runM1BStagingRelease(
       pendingMigrations: migrations.pendingCount,
     });
   }
-  const snapshot =
-    (dependencies.foreignAuthoritySnapshot ?? foreignAuthoritySnapshot)(
-      config,
-      dependencies,
-    );
+  const snapshot = (dependencies.foreignAuthoritySnapshot ?? foreignAuthoritySnapshot)(
+    config,
+    dependencies,
+  );
 
-  await (
-    dependencies.closeAndDrainCapacity ?? closeAndDrainCapacity
-  )(config, dependencies);
-  (dependencies.certifyCapacityAuthority ?? certifyCapacityAuthority)(
-    config,
-    dependencies,
-  );
+  await (dependencies.closeAndDrainCapacity ?? closeAndDrainCapacity)(config, dependencies);
+  (dependencies.certifyCapacityAuthority ?? certifyCapacityAuthority)(config, dependencies);
   (dependencies.runKeyManager ?? runKeyManager)('stage', config, dependencies);
-  (dependencies.certifyAgentMissionAcl ?? certifyAgentMissionAcl)(
-    config,
-    dependencies,
-  );
+  (dependencies.certifyAgentMissionAcl ?? certifyAgentMissionAcl)(config, dependencies);
   if (phase === 'postdeploy') {
     (dependencies.runKeyManager ?? runKeyManager)('retire', config, dependencies);
   }
 
-  const finalSnapshot =
-    (dependencies.foreignAuthoritySnapshot ?? foreignAuthoritySnapshot)(
-      config,
-      dependencies,
-    );
+  const finalSnapshot = (dependencies.foreignAuthoritySnapshot ?? foreignAuthoritySnapshot)(
+    config,
+    dependencies,
+  );
   if (finalSnapshot !== snapshot) {
     fail('a foreign protocol authority changed during the M1-B gate');
   }

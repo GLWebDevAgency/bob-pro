@@ -1,0 +1,166 @@
+name: AgentMission M2-A-3 Semantic Model Staging
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact 40-character staging certification SHA
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      expected_sha:
+        description: Exact 40-character staging certification SHA
+        required: true
+        type: string
+
+concurrency:
+  group: railway-api-staging
+  cancel-in-progress: false
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: staging
+    env:
+      RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+      RAILWAY_ENVIRONMENT_ID: ${{ vars.RAILWAY_ENVIRONMENT_ID }}
+      RAILWAY_API_SERVICE_ID: ${{ vars.RAILWAY_API_SERVICE_ID }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate the immutable staging target before installing dependencies
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$EXPECTED_SHA" = "$GITHUB_SHA"
+          node <<'NODE'
+          const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+          const required = [
+            'RAILWAY_PROJECT_ID',
+            'RAILWAY_ENVIRONMENT_ID',
+            'RAILWAY_API_SERVICE_ID',
+            'RAILWAY_TOKEN',
+            'EXPECTED_SHA',
+          ];
+          for (const name of required) {
+            const value = process.env[name];
+            if (
+              typeof value !== 'string'
+              || value.length < 1
+              || value.length > 16_384
+              || value !== value.trim()
+              || /[\u0000-\u001f\u007f]/u.test(value)
+            ) {
+              throw new Error(`${name} is required by the staging environment`);
+            }
+          }
+          for (const name of [
+            'RAILWAY_PROJECT_ID',
+            'RAILWAY_ENVIRONMENT_ID',
+            'RAILWAY_API_SERVICE_ID',
+          ]) {
+            if (!uuid.test(process.env[name] ?? '')) {
+              throw new Error(`${name} must be a UUID`);
+            }
+          }
+          if (
+            !/^[a-f0-9]{40}$/.test(process.env.EXPECTED_SHA ?? '')
+            || process.env.EXPECTED_SHA !== process.env.GITHUB_SHA
+          ) {
+            throw new Error('expected_sha must match GITHUB_SHA exactly');
+          }
+          NODE
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - name: Install and build the exact semantic runtime
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter "@bob/api..." build
+          sh apps/api/scripts/install-railway-cli.sh
+      - name: Prove the versioned corpus and scorekeeper without network
+        run: |
+          pnpm --filter @bob/api exec vitest run \
+            src/voice/realtime/evaluation/m2a3-semantic-model-evaluation.test.ts \
+          --reporter=verbose
+          node --test \
+            apps/api/scripts/validate-agent-mission-m2a3-semantic-evidence.test.mjs
+      - name: Run the exact staging OpenAI planner once per corpus case
+        id: live_eval
+        continue-on-error: true
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/.release-evidence/agent-mission-m2a3"
+          BOB_RAILWAY_RETRY_GUARD_PATH="$GITHUB_WORKSPACE/.release-evidence/agent-mission-m2a3" \
+            apps/api/scripts/run-m2a3-railway-with-bounded-fetch-retry.sh \
+            railway run --project "$RAILWAY_PROJECT_ID" \
+              --service "$RAILWAY_API_SERVICE_ID" \
+              --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+              env \
+                BOB_LIVE_PROVIDER=openai \
+                RUN_BOB_LIVE_M2A3_MODEL_EVAL=true \
+                BOB_LIVE_M2A3_EVAL_RELEASE_SHA="$GITHUB_SHA" \
+                BOB_LIVE_M2A3_EVAL_EVIDENCE_PATH="$GITHUB_WORKSPACE/.release-evidence/agent-mission-m2a3/semantic-model.json" \
+                pnpm --filter @bob/api exec vitest run \
+                  src/voice/realtime/evaluation/m2a3-semantic-model-evaluation.live.test.ts \
+                  --reporter=verbose
+      - name: Validate any bounded Railway transport evidence
+        id: transport_guard
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          evidence="$GITHUB_WORKSPACE/.release-evidence/agent-mission-m2a3/railway-control-plane-fetch-failure.json"
+          node apps/api/scripts/validate-m2a3-railway-transport-evidence.mjs \
+            "$evidence" \
+            >> "$GITHUB_OUTPUT"
+      - name: Preserve bounded Railway transport evidence
+        if: ${{ always() && steps.transport_guard.outcome == 'success' && steps.transport_guard.outputs.present == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: agent-mission-m2a3-railway-transport-${{ github.sha }}-${{ github.run_attempt }}
+          path: .release-evidence/agent-mission-m2a3/railway-control-plane-fetch-failure.json
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 90
+      - name: Guard the receipt schema and confidentiality before any upload
+        id: receipt_guard
+        if: ${{ always() }}
+        run: |
+          node apps/api/scripts/validate-agent-mission-m2a3-semantic-evidence.mjs \
+            "$GITHUB_WORKSPACE/.release-evidence/agent-mission-m2a3/semantic-model.json" \
+            "$GITHUB_SHA"
+      - name: Preserve exact-SHA semantic evidence
+        if: ${{ always() && steps.receipt_guard.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: agent-mission-m2a3-semantic-${{ github.sha }}
+          path: .release-evidence/agent-mission-m2a3/semantic-model.json
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 90
+      - name: Require the live gate and the confidentiality guard
+        if: ${{ always() }}
+        env:
+          LIVE_OUTCOME: ${{ steps.live_eval.outcome }}
+          TRANSPORT_GUARD_OUTCOME: ${{ steps.transport_guard.outcome }}
+          RECEIPT_GUARD_OUTCOME: ${{ steps.receipt_guard.outcome }}
+        run: |
+          set -euo pipefail
+          test "${LIVE_OUTCOME:-missing}" = "success"
+          test "${TRANSPORT_GUARD_OUTCOME:-missing}" = "success"
+          test "${RECEIPT_GUARD_OUTCOME:-missing}" = "success"

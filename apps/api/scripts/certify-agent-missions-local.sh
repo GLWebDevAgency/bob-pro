@@ -2732,6 +2732,324 @@ COMMIT;
 SQL
 }
 
+# Forme ligne `line_cancelled` exacte au writer M2-A-2, rejouée sous bob_app non-superuser.
+# La preuve SQL cible la compatibilité du CHECK de données à chaque étape du train ; les tests core
+# couvrent séparément la transition métier complète.
+certify_m2a2_line_cancel_event_writer_n1() {
+  cancel_stage="$1"
+  cancel_shape="$2"
+  cancel_expected="$3"
+  cancel_fixture_prefix="$4"
+
+  case "$cancel_shape" in
+    sealed|null_pair|mixed_id_null|mixed_null_hash) ;;
+    *)
+      echo "Unsupported M2-A-3 cancellation fixture shape: $cancel_shape" >&2
+      exit 1
+      ;;
+  esac
+  case "$cancel_expected" in
+    accepted|rejected) ;;
+    *)
+      echo "Unsupported M2-A-3 cancellation expectation: $cancel_expected" >&2
+      exit 1
+      ;;
+  esac
+  case "$cancel_fixture_prefix" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *)
+      echo "M2-A-3 cancellation fixture prefix must contain four lowercase hex chars" >&2
+      exit 1
+      ;;
+  esac
+
+  cancel_owner="writer-m2a3-${cancel_fixture_prefix}-${cancel_shape}"
+  cancel_mission_id="${cancel_fixture_prefix}0000-0000-4000-8000-000000000001"
+  cancel_start_event_id="${cancel_fixture_prefix}0000-0000-4000-8000-000000000002"
+  cancel_line_event_id="${cancel_fixture_prefix}0000-0000-4000-8000-000000000003"
+  cancel_work_id="${cancel_fixture_prefix}0000-0000-4000-8000-000000000004"
+  cancel_event_id="${cancel_fixture_prefix}0000-0000-4000-8000-000000000005"
+  cancel_choice_id="${cancel_fixture_prefix}0000-0000-4000-8000-000000000006"
+  cancel_command_id="${cancel_fixture_prefix}0000-0000-4000-8000-000000000007"
+
+  certify_m2a1_quote_line_writer_n1 \
+    "$cancel_stage-$cancel_shape" \
+    "$cancel_owner" \
+    "$cancel_mission_id" \
+    "$cancel_start_event_id" \
+    "$cancel_line_event_id" \
+    "$cancel_work_id"
+
+  "$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+    -v cancel_stage="$cancel_stage" \
+    -v cancel_shape="$cancel_shape" \
+    -v cancel_expected="$cancel_expected" \
+    -v cancel_owner="$cancel_owner" \
+    -v cancel_mission_id="$cancel_mission_id" \
+    -v cancel_work_id="$cancel_work_id" \
+    -v cancel_event_id="$cancel_event_id" \
+    -v cancel_choice_id="$cancel_choice_id" \
+    -v cancel_command_id="$cancel_command_id" <<'SQL'
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '30s';
+SELECT set_config('app.current_company_id', 'writer-n1-company', true);
+SELECT set_config('app.current_user_id', :'cancel_owner', true);
+SELECT set_config('app.current_agent_mission_id', :'cancel_mission_id', true);
+SELECT set_config('bob.cert.m2a3_cancel_stage', :'cancel_stage', true);
+SELECT set_config('bob.cert.m2a3_cancel_shape', :'cancel_shape', true);
+SELECT set_config('bob.cert.m2a3_cancel_expected', :'cancel_expected', true);
+SELECT set_config('bob.cert.m2a3_cancel_event_id', :'cancel_event_id', true);
+SELECT set_config('bob.cert.m2a3_cancel_mission_id', :'cancel_mission_id', true);
+SELECT set_config('bob.cert.m2a3_cancel_owner', :'cancel_owner', true);
+SELECT set_config('bob.cert.m2a3_cancel_work_id', :'cancel_work_id', true);
+SELECT set_config('bob.cert.m2a3_cancel_choice_id', :'cancel_choice_id', true);
+SELECT set_config('bob.cert.m2a3_cancel_command_id', :'cancel_command_id', true);
+SELECT set_config('bob.cert.m2a3_cancel_occurred_at', clock_timestamp()::TEXT, true);
+
+DO $m2a3_cancel_event_writer_n1$
+DECLARE
+  cancellation_data JSONB;
+  insert_accepted BOOLEAN := FALSE;
+  rejected_constraint TEXT;
+  stage TEXT := current_setting('bob.cert.m2a3_cancel_stage');
+  shape TEXT := current_setting('bob.cert.m2a3_cancel_shape');
+  expected TEXT := current_setting('bob.cert.m2a3_cancel_expected');
+BEGIN
+  cancellation_data := CASE shape
+    WHEN 'sealed' THEN jsonb_build_object(
+      'kind', 'line_cancelled',
+      'pendingLineId',
+        current_setting('bob.cert.m2a3_cancel_work_id')::UUID,
+      'expectedWorkRevision', 1,
+      'choiceId', current_setting('bob.cert.m2a3_cancel_choice_id')::UUID,
+      'choiceSetHash', repeat('c', 64)
+    )
+    WHEN 'null_pair' THEN jsonb_build_object(
+      'kind', 'line_cancelled',
+      'pendingLineId',
+        current_setting('bob.cert.m2a3_cancel_work_id')::UUID,
+      'expectedWorkRevision', 1,
+      'choiceId', 'null'::JSONB,
+      'choiceSetHash', 'null'::JSONB
+    )
+    WHEN 'mixed_id_null' THEN jsonb_build_object(
+      'kind', 'line_cancelled',
+      'pendingLineId',
+        current_setting('bob.cert.m2a3_cancel_work_id')::UUID,
+      'expectedWorkRevision', 1,
+      'choiceId', current_setting('bob.cert.m2a3_cancel_choice_id')::UUID,
+      'choiceSetHash', 'null'::JSONB
+    )
+    WHEN 'mixed_null_hash' THEN jsonb_build_object(
+      'kind', 'line_cancelled',
+      'pendingLineId',
+        current_setting('bob.cert.m2a3_cancel_work_id')::UUID,
+      'expectedWorkRevision', 1,
+      'choiceId', 'null'::JSONB,
+      'choiceSetHash', repeat('c', 64)
+    )
+    ELSE NULL
+  END;
+  IF cancellation_data IS NULL THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A3_CANCEL_FIXTURE_SHAPE_DRIFT:%:%',
+      stage, shape;
+  END IF;
+
+  BEGIN
+    UPDATE public.agent_missions
+       SET "revision" = 3,
+           "idleExpiresAt" = LEAST(
+             current_setting('bob.cert.m2a3_cancel_occurred_at')::TIMESTAMPTZ
+               + INTERVAL '24 hours',
+             "hardExpiresAt"
+           ),
+           "updatedAt" =
+             current_setting('bob.cert.m2a3_cancel_occurred_at')::TIMESTAMPTZ
+     WHERE "id" =
+       current_setting('bob.cert.m2a3_cancel_mission_id')::UUID
+       AND "revision" = 2;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'AGENT_MISSION_M2A3_CANCEL_MISSION_FENCE_DRIFT:%:%',
+        stage, shape;
+    END IF;
+
+    INSERT INTO public.agent_mission_events (
+      "id", "companyId", "ownerUserId", "missionId", "sequence", "eventType",
+      "eventVersion", "actor", "commandId", "requestFingerprintHmac",
+      "fingerprintKeyVersion", "fingerprintCanonicalizationVersion",
+      "missionRevisionBefore", "missionRevisionAfter", "draftSlotRevisionBefore",
+      "draftSlotRevisionAfter", "draftContentRevisionBefore",
+      "draftContentRevisionAfter", "realtimeSessionId", "turnId", "contextRevision",
+      "contextDigest", "data", "occurredAt", "retentionExpiresAt"
+    ) VALUES (
+      current_setting('bob.cert.m2a3_cancel_event_id')::UUID,
+      'writer-n1-company',
+      current_setting('bob.cert.m2a3_cancel_owner'),
+      current_setting('bob.cert.m2a3_cancel_mission_id')::UUID,
+      3,
+      'line_cancelled',
+      1,
+      'user_tap',
+      current_setting('bob.cert.m2a3_cancel_command_id')::UUID,
+      repeat('3', 64),
+      1,
+      1,
+      2,
+      3,
+      1,
+      1,
+      0,
+      0,
+      NULL,
+      NULL,
+      NULL,
+      NULL,
+      cancellation_data,
+      current_setting('bob.cert.m2a3_cancel_occurred_at')::TIMESTAMPTZ,
+      current_setting('bob.cert.m2a3_cancel_occurred_at')::TIMESTAMPTZ
+        + INTERVAL '2160 hours'
+    );
+    insert_accepted := TRUE;
+  EXCEPTION WHEN check_violation THEN
+    GET STACKED DIAGNOSTICS rejected_constraint = CONSTRAINT_NAME;
+    IF expected = 'accepted' THEN
+      RAISE EXCEPTION
+        'AGENT_MISSION_M2A3_CANCEL_EXPECTED_ACCEPTED:%:%:%',
+        stage, shape, rejected_constraint;
+    END IF;
+    IF shape = 'null_pair'
+       AND stage IN ('pre-expand', 'expand', 'validate')
+       AND rejected_constraint <> 'agent_mission_events_data_check' THEN
+      RAISE EXCEPTION
+        'AGENT_MISSION_M2A3_CANCEL_NULL_PAIR_WRONG_CONSTRAINT:%:%',
+        stage, rejected_constraint;
+    END IF;
+    IF shape IN ('mixed_id_null', 'mixed_null_hash')
+       AND stage IN ('expand', 'validate')
+       AND rejected_constraint NOT IN (
+         'agent_mission_events_data_check',
+         'agent_mission_events_data_m2a3_check'
+       ) THEN
+      RAISE EXCEPTION
+        'AGENT_MISSION_M2A3_CANCEL_MIXED_WRONG_CONSTRAINT:%:%:%',
+        stage, shape, rejected_constraint;
+    END IF;
+    IF (
+      stage = 'pre-expand'
+      OR stage = 'cutover'
+    ) AND rejected_constraint <> 'agent_mission_events_data_check' THEN
+      RAISE EXCEPTION
+        'AGENT_MISSION_M2A3_CANCEL_CANONICAL_CONSTRAINT_DRIFT:%:%:%',
+        stage, shape, rejected_constraint;
+    END IF;
+  END;
+
+  IF expected = 'rejected' AND insert_accepted THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A3_CANCEL_SHAPE_ACCEPTED:%:%',
+      stage, shape;
+  END IF;
+  IF expected = 'accepted' AND NOT insert_accepted THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A3_CANCEL_SHAPE_REJECTED:%:%',
+      stage, shape;
+  END IF;
+  IF expected = 'accepted' AND NOT EXISTS (
+    SELECT 1
+      FROM public.agent_mission_events
+     WHERE "id" =
+       current_setting('bob.cert.m2a3_cancel_event_id')::UUID
+       AND "data" = cancellation_data
+  ) THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A3_CANCEL_ACCEPTED_ROW_DRIFT:%:%',
+      stage, shape;
+  END IF;
+  IF expected = 'rejected' AND (
+    EXISTS (
+      SELECT 1
+        FROM public.agent_mission_events
+       WHERE "id" =
+         current_setting('bob.cert.m2a3_cancel_event_id')::UUID
+    )
+    OR (
+      SELECT "revision"
+        FROM public.agent_missions
+       WHERE "id" =
+         current_setting('bob.cert.m2a3_cancel_mission_id')::UUID
+    ) <> 2
+  ) THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A3_CANCEL_REJECTION_MUTATED:%:%',
+      stage, shape;
+  END IF;
+END;
+$m2a3_cancel_event_writer_n1$;
+COMMIT;
+SQL
+}
+
+certify_m2a3_flag_off() {
+  flag_stage="$1"
+  "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+    -v flag_stage="$flag_stage" <<'SQL'
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '30s';
+SELECT set_config('bob.cert.m2a3_flag_stage', :'flag_stage', true);
+SET LOCAL ROLE bob_schema_owner;
+ALTER TABLE public.release_flags NO FORCE ROW LEVEL SECURITY;
+DO $m2a3_flag_exact$
+BEGIN
+  IF (
+    SELECT pg_catalog.count(*)
+      FROM public.release_flags AS flag
+     WHERE flag.key = 'bob.agent_missions.quote.m2a'
+       AND flag.environment::TEXT IN (
+         'development',
+         'staging',
+         'production'
+       )
+       AND NOT flag.enabled
+       AND NOT flag."killSwitch"
+       AND flag.version = 1
+       AND flag."updatedByUserId" = 'system:migration'
+  ) <> 3
+  OR (
+    SELECT pg_catalog.count(*)
+      FROM public.release_flags AS flag
+     WHERE flag.key = 'bob.agent_missions.quote.m2a'
+  ) <> 3
+  OR EXISTS (
+    SELECT 1
+      FROM public.release_flag_subjects AS subject
+      JOIN public.release_flags AS flag
+        ON flag.id = subject."flagId"
+     WHERE flag.key = 'bob.agent_missions.quote.m2a'
+       AND subject.enabled
+  ) THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A3_RELEASE_FLAG_NOT_OFF:%',
+      current_setting('bob.cert.m2a3_flag_stage');
+  END IF;
+END;
+$m2a3_flag_exact$;
+ROLLBACK;
+
+DO $m2a3_force_rls_restored$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_class AS relation
+     WHERE relation.oid IN (
+       'public.release_flags'::pg_catalog.regclass,
+       'public.agent_mission_events'::pg_catalog.regclass
+     )
+       AND (NOT relation.relrowsecurity OR NOT relation.relforcerowsecurity)
+  ) THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A3_FORCE_RLS_NOT_RESTORED';
+  END IF;
+END;
+$m2a3_force_rls_restored$;
+SQL
+}
+
 certify_m2a_quote_draft_reader_n1 pre-expand
 
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
@@ -3978,6 +4296,58 @@ certify_m2a1_quote_line_writer_n1 \
   f5000000-0000-4000-8000-000000000003 \
   f5000000-0000-4000-8000-000000000004
 certify_m2a_quote_draft_reader_n1 m2a2cutover
+
+# M2-A-3 : `line_cancelled` conserve la paire scellée M2-A-2 et ajoute uniquement null/null.
+# Chaque forme exacte est tentée sous bob_app avant/après chaque étape ; les paires mixtes restent
+# refusées et le flag public est certifié OFF, overrides compris.
+certify_m2a3_flag_off pre-expand
+certify_m2a2_line_cancel_event_writer_n1 \
+  pre-expand sealed accepted a300
+certify_m2a2_line_cancel_event_writer_n1 \
+  pre-expand null_pair rejected a301
+certify_m2a2_line_cancel_event_writer_n1 \
+  pre-expand mixed_id_null rejected a302
+certify_m2a2_line_cancel_event_writer_n1 \
+  pre-expand mixed_null_hash rejected a303
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260731120000_agent_mission_line_cancel_choice_expand/migration.sql"
+
+certify_m2a3_flag_off expand
+certify_m2a2_line_cancel_event_writer_n1 \
+  expand sealed accepted a310
+certify_m2a2_line_cancel_event_writer_n1 \
+  expand null_pair rejected a311
+certify_m2a2_line_cancel_event_writer_n1 \
+  expand mixed_id_null rejected a312
+certify_m2a2_line_cancel_event_writer_n1 \
+  expand mixed_null_hash rejected a313
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260731120100_agent_mission_line_cancel_choice_validate/migration.sql"
+
+certify_m2a3_flag_off validate
+certify_m2a2_line_cancel_event_writer_n1 \
+  validate sealed accepted a320
+certify_m2a2_line_cancel_event_writer_n1 \
+  validate null_pair rejected a321
+certify_m2a2_line_cancel_event_writer_n1 \
+  validate mixed_id_null rejected a322
+certify_m2a2_line_cancel_event_writer_n1 \
+  validate mixed_null_hash rejected a323
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260731120200_agent_mission_line_cancel_choice_cutover/migration.sql"
+
+certify_m2a3_flag_off cutover
+certify_m2a2_line_cancel_event_writer_n1 \
+  cutover sealed accepted a330
+certify_m2a2_line_cancel_event_writer_n1 \
+  cutover null_pair accepted a331
+certify_m2a2_line_cancel_event_writer_n1 \
+  cutover mixed_id_null rejected a332
+certify_m2a2_line_cancel_event_writer_n1 \
+  cutover mixed_null_hash rejected a333
 
 # Les flags restent exactement OFF et FORCE RLS doit avoir été restauré après l'écriture globale.
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'

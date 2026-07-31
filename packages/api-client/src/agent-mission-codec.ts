@@ -6,12 +6,15 @@ import {
   AGENT_MISSION_HARD_TTL_MS,
   AGENT_MISSION_RETENTION_MS,
   AgentMission,
+  calculateBillingLineTotalCents,
   computeQuoteMissionCatalogueChoiceSetHash,
   computeQuoteMissionLineConfirmationChoiceSetHash,
   isCatalogueCategory,
   isCanonicalAgentMissionDraftSessionId,
   isCanonicalAgentMissionUuid,
   isVatRate,
+  MAX_BILLING_AMOUNT_CENTS,
+  MAX_BILLING_LINES,
   parseCustomPrestation,
   parseQuoteDraftPayload,
   type AcknowledgeQuoteScreenOutput,
@@ -33,6 +36,7 @@ import {
 } from '@bob/core';
 import type {
   RealtimeAgentMissionAcknowledgeQuoteScreenOutputV2,
+  RealtimeAgentMissionCancelPendingQuoteLineOutput,
   RealtimeAgentMissionCatalogueChoiceOutput,
   RealtimeAgentMissionLineContinuation,
   RealtimeAgentMissionLineProposalDecisionOutput,
@@ -70,6 +74,12 @@ const RESUME_V1_PHASES = [
 ] as const satisfies readonly QuoteCreationMissionPhase[];
 const RESUME_V2_PHASES = [
   ...RESUME_V1_PHASES,
+  'awaiting_catalogue_choice',
+  'awaiting_line_details',
+  'awaiting_line_confirmation',
+] as const satisfies readonly QuoteCreationMissionPhase[];
+const RESUME_V2_LINE_PHASES = [
+  'awaiting_lines',
   'awaiting_catalogue_choice',
   'awaiting_line_details',
   'awaiting_line_confirmation',
@@ -217,11 +227,26 @@ export function decodeAgentMissionCurrent(
 
 export function decodeAgentMissionCurrentV2(
   value: unknown,
-): { readonly mission: AgentMissionViewV1 | null } | null {
-  return decodeAgentMissionCurrentForProtocol(
-    value,
+): {
+  readonly mission: AgentMissionViewV1 | null;
+  readonly presentation: QuoteAgentMissionPresentationV1 | null;
+} | null {
+  const response = record(value);
+  if (!response || !exactKeys(response, ['mission', 'presentation'])) return null;
+  if (response.mission === null) {
+    return response.presentation === null
+      ? Object.freeze({ mission: null, presentation: null })
+      : null;
+  }
+  const mission = decodeAgentMissionView(
+    response.mission,
     AGENT_MISSION_PROTOCOL_M2A,
   );
+  if (mission === null) return null;
+  const presentation = decodeCommandPresentation(response.presentation, mission);
+  return presentation === null
+    ? null
+    : Object.freeze({ mission, presentation });
 }
 
 const RESUME_MISSION_KEYS = [
@@ -448,8 +473,14 @@ const CATALOGUE_CHOICE_PRESENTATION_KEYS = [
   'unitPriceCents',
   'vatRate',
 ] as const;
-const PROPOSAL_KEYS = ['proposalId', 'diffHash', 'line', 'catalogue'] as const;
+const PROPOSAL_KEYS = ['proposalId', 'diffHash', 'diff', 'line', 'catalogue'] as const;
 const PROPOSAL_CATALOGUE_KEYS = ['itemId', 'revision', 'label'] as const;
+const PROPOSAL_DIFF_KEYS = ['kind', 'before', 'after'] as const;
+const PROPOSAL_DIFF_SNAPSHOT_KEYS = [
+  'contentRevision',
+  'lineCount',
+  'totalHtCents',
+] as const;
 
 function sameDraftReference(
   left: {
@@ -903,6 +934,43 @@ function decodeQuoteAgentMissionPresentation(
     }
     const line = decodeProposalLine(proposalRecord.line);
     if (line === null) return null;
+    const diffRecord = record(proposalRecord.diff);
+    const before = record(diffRecord?.before);
+    const after = record(diffRecord?.after);
+    const appendedAmount = calculateBillingLineTotalCents(line);
+    if (
+      diffRecord === null
+      || before === null
+      || after === null
+      || !exactKeys(diffRecord, PROPOSAL_DIFF_KEYS)
+      || !exactKeys(before, PROPOSAL_DIFF_SNAPSHOT_KEYS)
+      || !exactKeys(after, PROPOSAL_DIFF_SNAPSHOT_KEYS)
+      || diffRecord.kind !== 'append_line'
+      || !positiveRevision(before.contentRevision, true)
+      || before.contentRevision !== decision.expectedDraft.contentRevision
+      || !positiveRevision(after.contentRevision)
+      || after.contentRevision !== (before.contentRevision as number) + 1
+      || !Number.isSafeInteger(before.lineCount)
+      || Object.is(before.lineCount, -0)
+      || (before.lineCount as number) < 0
+      || (before.lineCount as number) >= MAX_BILLING_LINES
+      || !Number.isSafeInteger(after.lineCount)
+      || Object.is(after.lineCount, -0)
+      || after.lineCount !== (before.lineCount as number) + 1
+      || (after.lineCount as number) > MAX_BILLING_LINES
+      || !Number.isSafeInteger(before.totalHtCents)
+      || Object.is(before.totalHtCents, -0)
+      || (before.totalHtCents as number) < 0
+      || (before.totalHtCents as number) > MAX_BILLING_AMOUNT_CENTS
+      || !Number.isSafeInteger(after.totalHtCents)
+      || Object.is(after.totalHtCents, -0)
+      || (after.totalHtCents as number) < 0
+      || (after.totalHtCents as number) > MAX_BILLING_AMOUNT_CENTS
+      || appendedAmount === null
+      || after.totalHtCents !== (before.totalHtCents as number) + appendedAmount
+    ) {
+      return null;
+    }
     const catalogueRecord = proposalRecord.catalogue === null
       ? null
       : record(proposalRecord.catalogue);
@@ -925,6 +993,19 @@ function decodeQuoteAgentMissionPresentation(
     proposal = Object.freeze({
       proposalId: decision.proposalId,
       diffHash: decision.diffHash,
+      diff: Object.freeze({
+        kind: 'append_line',
+        before: Object.freeze({
+          contentRevision: before.contentRevision as number,
+          lineCount: before.lineCount as number,
+          totalHtCents: before.totalHtCents as number,
+        }),
+        after: Object.freeze({
+          contentRevision: after.contentRevision as number,
+          lineCount: after.lineCount as number,
+          totalHtCents: after.totalHtCents as number,
+        }),
+      }),
       line: Object.freeze({ ...line }),
       catalogue: catalogueRecord === null
         ? null
@@ -1073,6 +1154,14 @@ export function decodeQuoteAgentMissionResumeV2(
     customerChoices: response.customerChoices,
   }, RESUME_V2_PHASES);
   if (resume?.mission === null || resume === null) return null;
+  if (
+    RESUME_V2_LINE_PHASES.includes(
+      resume.mission.phase as (typeof RESUME_V2_LINE_PHASES)[number],
+    )
+    && resume.draft.step !== 'lignes'
+  ) {
+    return null;
+  }
   const presentation = decodeQuoteAgentMissionPresentation(
     response.presentation,
     resume.mission,
@@ -1699,6 +1788,51 @@ export function decodeAgentMissionPatchQuoteLine(
     continuation,
     presentation,
   }) as RealtimeAgentMissionPatchQuoteLineOutput;
+}
+
+export function decodeAgentMissionCancelPendingQuoteLine(
+  value: unknown,
+  expectedMissionId: string,
+): RealtimeAgentMissionCancelPendingQuoteLineOutput | null {
+  const response = record(value);
+  if (
+    response === null
+    || !exactKeys(response, [
+      'outcome',
+      'pendingLineId',
+      'mission',
+      'continuation',
+      'presentation',
+    ])
+  ) {
+    return null;
+  }
+  const mission = decodeAgentMissionView(
+    response.mission,
+    AGENT_MISSION_PROTOCOL_M2A,
+  );
+  const continuation = decodeAgentMissionLineContinuation(response.continuation);
+  const presentation = mission === null
+    ? null
+    : decodeCommandPresentation(response.presentation, mission);
+  if (
+    mission === null
+    || mission.id !== expectedMissionId
+    || continuation === null
+    || presentation === null
+    || !continuationMatchesPresentation(continuation, presentation)
+    || (response.outcome !== 'cancelled' && response.outcome !== 'replayed')
+    || !isCanonicalAgentMissionUuid(response.pendingLineId)
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    outcome: response.outcome,
+    pendingLineId: response.pendingLineId,
+    mission,
+    continuation,
+    presentation,
+  }) as RealtimeAgentMissionCancelPendingQuoteLineOutput;
 }
 
 export function decodeAgentMissionLineProposalDecision(

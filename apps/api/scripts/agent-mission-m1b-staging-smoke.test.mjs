@@ -8,6 +8,8 @@ import {
   runM1BNegativeStagingSmoke,
   runM1BPositiveStagingSmoke,
   runM1BRecoveryStagingSmoke,
+  runM2A3PreviewOffStagingSmoke,
+  runM2A3PreviewStagingSmoke,
   validateM1BStagingAccessToken,
 } from './agent-mission-m1b-staging-smoke.mjs';
 
@@ -287,6 +289,7 @@ function fakeDependencies(options = {}) {
     async createRealtimeVoiceCall(input) {
       createAttempts += 1;
       realtimeSessionId = input.sessionHandle;
+      missionSession.protocolVersion = input.agentMissionProtocolVersion;
       events.push(`realtime:create:${input.agentMissionProtocolVersion}`);
       if (
         Array.isArray(options.createErrors) &&
@@ -648,6 +651,86 @@ test('preuve OFF établit une vraie session WebRTC avec capability Mission nulle
   ]);
 });
 
+test('canary preview négocie V2, lit sans muter puis libère toute la session', async () => {
+  const fake = fakeDependencies();
+  const result = await runM2A3PreviewStagingSmoke(environment(), fake.dependencies);
+  assert.deepEqual(result, {
+    mode: 'preview-v2',
+    passed: true,
+    protocolVersion: 2,
+    speechDelivery: 'openai-native-webrtc-v1',
+    bootstrapReceipt: 'acknowledged',
+    mutation: 'none',
+    cleanup: 'complete',
+    hangupAccepted: true,
+    bootstrapAttempts: 1,
+    recoveredTimeout: false,
+  });
+  assert.deepEqual(fake.events, [
+    'company:get',
+    'evidence:clean',
+    'draft:get',
+    'realtime:config',
+    'peer:create:1',
+    'realtime:create:2',
+    'peer:answer:true',
+    'mission:get-current',
+    'realtime:hangup',
+    'peer:close',
+    'mission:dispose',
+    `evidence:negative-final:${SESSION_ID}`,
+  ]);
+  assert.equal(fake.state().mission, null);
+  assert.equal(fake.state().draft, null);
+});
+
+test('canary preview refuse V1/null et réconcilie le transport sans mutation', async () => {
+  const wrongProtocol = fakeDependencies();
+  const originalCreateClient = wrongProtocol.dependencies.createClient;
+  wrongProtocol.dependencies.createClient = async (...args) => {
+    const client = await originalCreateClient(...args);
+    const originalCreate = client.createRealtimeVoiceCall.bind(client);
+    client.createRealtimeVoiceCall = async (input) => {
+      const result = await originalCreate(input);
+      if (result.ok && result.value.agentMissionSession) {
+        result.value.agentMissionSession.protocolVersion = 1;
+      }
+      return result;
+    };
+    return client;
+  };
+  await assert.rejects(
+    runM2A3PreviewStagingSmoke(environment(), wrongProtocol.dependencies),
+    /Mission V2 capability/u,
+  );
+  assert.equal(wrongProtocol.events.includes('realtime:hangup'), true);
+  assert.equal(wrongProtocol.state().mission, null);
+
+  const noCapability = fakeDependencies({ agentMissionOff: true });
+  await assert.rejects(
+    runM2A3PreviewStagingSmoke(environment(), noCapability.dependencies),
+    /Mission V2 capability/u,
+  );
+  assert.equal(noCapability.events.includes('realtime:hangup'), true);
+});
+
+test('canary preview OFF demande explicitement V2 et exige une capability nulle', async () => {
+  const fake = fakeDependencies({ agentMissionOff: true });
+  const result = await runM2A3PreviewOffStagingSmoke(environment(), fake.dependencies);
+  assert.deepEqual(result, {
+    mode: 'preview-v2-off',
+    passed: true,
+    protocolVersion: 2,
+    agentMission: 'off',
+    cleanup: 'complete',
+    hangupAccepted: true,
+    bootstrapAttempts: 1,
+    recoveredTimeout: false,
+  });
+  assert.equal(fake.events.includes('realtime:create:2'), true);
+  assert.equal(fake.events.includes('mission:get-current'), false);
+});
+
 test('preuve OFF repolle la lease exacte après un hangup indisponible', async () => {
   const fake = fakeDependencies({
     agentMissionOff: true,
@@ -982,10 +1065,7 @@ test('la doctrine échec visible publie seulement une classe fermée', () => {
     describeM1BOperationFailure({ issues: [{ field: 'x', message: 'y' }] }),
     'class=invalid_result',
   );
-  assert.equal(
-    describeM1BOperationFailure({ kind: 'a'.repeat(500) }),
-    'class=invalid_result',
-  );
+  assert.equal(describeM1BOperationFailure({ kind: 'a'.repeat(500) }), 'class=invalid_result');
 });
 
 test('un échec d’opération imprime seulement sa classe fermée sur stderr', async () => {
@@ -1012,10 +1092,7 @@ test('un échec d’opération imprime seulement sa classe fermée sur stderr', 
     process.stderr.write = originalWrite;
   }
   const line = stderrLines.find((entry) => entry.includes('deleteQuoteDraft failed'));
-  assert.equal(
-    line,
-    'agent-mission-m1b-staging-smoke:deleteQuoteDraft failed class=conflict\n',
-  );
+  assert.equal(line, 'agent-mission-m1b-staging-smoke:deleteQuoteDraft failed class=conflict\n');
   for (const value of privateValues) assert.equal(stderrLines.join('').includes(value), false);
 });
 
@@ -1087,12 +1164,7 @@ test('réconcilie deux réponses cancel perdues jusqu’à la preuve terminale t
 });
 
 test('un refus cancel recovery ne publie jamais les champs privés sur stderr', async () => {
-  const privateValues = [
-    COMPANY_ID,
-    USER_ID,
-    'm1b-staging@bob.test',
-    'v=0\r\na=private-sdp',
-  ];
+  const privateValues = [COMPANY_ID, USER_ID, 'm1b-staging@bob.test', 'v=0\r\na=private-sdp'];
   const fake = fakeDependencies({
     preexistingMission: activeMission(),
     preexistingDraft: recoveryQuoteDraft(),

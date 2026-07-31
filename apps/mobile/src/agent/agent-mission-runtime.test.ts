@@ -2,29 +2,46 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ok,
   type AcknowledgeQuoteScreenOutput,
+  type AgentMissionViewV1,
   type CancelQuoteAgentMissionOutput,
   type DecideQuoteAgentMissionOutput,
+  type QuoteAgentMissionPresentationV1,
 } from '@bob/core';
 import {
+  REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
   REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
+  type RealtimeAgentMissionCatalogueChoiceOutput,
+  type RealtimeAgentMissionCancelPendingQuoteLineOutput,
+  type RealtimeAgentMissionLineProposalDecisionOutput,
+  type RealtimeAgentMissionPatchQuoteLineOutput,
   type RealtimeAgentMissionSession,
+  type RealtimeAgentMissionStageQuoteLinesOutput,
 } from '@bob/api-client';
 import {
   AgentMissionRuntimeOwner,
   FencedAgentMissionRuntimeActions,
+  type AgentMissionCatalogueChoiceInput,
+  type AgentMissionCancelPendingQuoteLineInput,
+  type AgentMissionLineProposalDecisionInput,
+  type AgentMissionPatchQuoteLineInput,
   type AgentMissionRuntimeCapture,
+  type AgentMissionStageQuoteLinesInput,
 } from './agent-mission-runtime';
 
 function session(
   id: string,
   disposals: string[],
+  protocolVersion:
+    | typeof REALTIME_AGENT_MISSION_PROTOCOL_VERSION
+    | typeof REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION =
+      REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
 ): RealtimeAgentMissionSession {
   let disposed = false;
   const unused = async (): Promise<never> => {
     throw new Error('unused_agent_mission_method');
   };
   return {
-    protocolVersion: REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
+    protocolVersion,
     realtimeSessionId: id,
     get disposed() {
       return disposed;
@@ -34,6 +51,11 @@ function session(
     cancelQuoteCreation: unused,
     acknowledgeQuoteScreen: unused,
     decideQuoteCreation: unused,
+    stageQuoteLines: unused,
+    decideQuoteCatalogueChoice: unused,
+    patchQuoteLine: unused,
+    cancelPendingQuoteLine: unused,
+    decideQuoteLineProposal: unused,
     dispose: () => {
       if (disposed) return;
       disposed = true;
@@ -49,6 +71,98 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
+
+const PRESENTATION = {
+  schema: 'bob.agent-mission.quote-presentation',
+  version: 1,
+  requiredFact: null,
+  pendingLine: null,
+  decision: null,
+  catalogueChoices: [],
+  freeLineChoiceId: null,
+  proposalStatus: { kind: 'absent' as const },
+  proposal: null,
+} as const satisfies QuoteAgentMissionPresentationV1;
+
+const V2_REALTIME_ID = 'a0000000-0000-4000-8000-000000000001';
+const V2_MISSION_ID = 'a0000000-0000-4000-8000-000000000002';
+const V2_COMMAND_ID = 'a0000000-0000-4000-8000-000000000003';
+const V2_PENDING_LINE_ID = 'a0000000-0000-4000-8000-000000000004';
+const V2_DECISION_ID = 'a0000000-0000-4000-8000-000000000005';
+const V2_CHOICE_ID = 'a0000000-0000-4000-8000-000000000006';
+const V2_PROPOSAL_ID = 'a0000000-0000-4000-8000-000000000007';
+const V2_SCREEN_ID = 'devis-new:v2';
+
+function v2Mission(id = V2_MISSION_ID): AgentMissionViewV1 {
+  return { id } as unknown as AgentMissionViewV1;
+}
+
+const V2_COMMON = Object.freeze({
+  missionId: V2_MISSION_ID,
+  commandId: V2_COMMAND_ID,
+  expectedMissionRevision: 5,
+  expectedDraftSessionId: 'draft-v2',
+  expectedDraftSlotRevision: 3,
+  expectedDraftContentRevision: 2,
+  expectedScreenInstanceId: V2_SCREEN_ID,
+});
+
+const V2_STAGE_INPUT = {
+  ...V2_COMMON,
+  lines: [{
+    serviceReference: 'Main-d’œuvre plomberie',
+    categoryHint: 'labor',
+    quantityDecimal: '2',
+    unitReference: 'heure',
+    unitPriceDecimal: '55',
+    currency: 'EUR',
+    priceBasis: 'per_unit',
+    vatRateHint: '20',
+  }] as const,
+} as const satisfies AgentMissionStageQuoteLinesInput;
+
+const V2_CATALOGUE_INPUT = {
+  ...V2_COMMON,
+  decisionId: V2_DECISION_ID,
+  choiceSetRevision: 5,
+  pendingLineId: V2_PENDING_LINE_ID,
+  expectedWorkRevision: 2,
+  choiceId: V2_CHOICE_ID,
+  additionalLines: [],
+} as const satisfies AgentMissionCatalogueChoiceInput;
+
+const V2_PATCH_INPUT = {
+  ...V2_COMMON,
+  pendingLineId: V2_PENDING_LINE_ID,
+  expectedWorkRevision: 3,
+  scope: 'explicit_correction',
+  patch: {
+    field: 'unit_price',
+    decimal: '60',
+    currency: 'EUR',
+    basis: 'per_unit',
+  } as const,
+} as const satisfies AgentMissionPatchQuoteLineInput;
+
+const V2_CANCEL_PENDING_INPUT = {
+  ...V2_COMMON,
+  pendingLineId: V2_PENDING_LINE_ID,
+  expectedWorkRevision: 3,
+} as const satisfies AgentMissionCancelPendingQuoteLineInput;
+
+const V2_PROPOSAL_INPUT = {
+  ...V2_COMMON,
+  decisionId: V2_DECISION_ID,
+  choiceSetRevision: 5,
+  choiceSetHash: 'a'.repeat(64),
+  choiceId: V2_CHOICE_ID,
+  pendingLineId: V2_PENDING_LINE_ID,
+  proposalId: V2_PROPOSAL_ID,
+  proposalRevision: 1,
+  expectedWorkRevision: 4,
+  expectedCatalogue: null,
+  diffHash: 'b'.repeat(64),
+} as const satisfies AgentMissionLineProposalDecisionInput;
 
 describe('AgentMissionRuntimeOwner', () => {
   it('transfère move-only, remplace en disposant l’ancien une fois et fence sa génération', () => {
@@ -324,7 +438,7 @@ describe('AgentMissionRuntimeOwner', () => {
 
     await expect(actions.acknowledgeQuoteScreen(input)).resolves.toEqual({
       status: 'completed',
-      value: output,
+      value: { ...output, presentation: null },
     });
     expect(acknowledgeQuoteScreen).toHaveBeenCalledWith({
       missionId,
@@ -385,7 +499,7 @@ describe('AgentMissionRuntimeOwner', () => {
 
     await expect(actions.decideQuoteCreation(input)).resolves.toEqual({
       status: 'completed',
-      value: output,
+      value: { ...output, presentation: null },
     });
     expect(decideQuoteCreation).toHaveBeenCalledWith({
       missionId,
@@ -453,6 +567,20 @@ describe('AgentMissionRuntimeOwner', () => {
       reason: 'manual_handoff',
     });
 
+    await expect(actions.abandonQuoteCreation({
+      ...input,
+      commandId: '90000000-0000-4000-8000-000000000004',
+    })).resolves.toEqual({
+      status: 'completed',
+      value: output,
+    });
+    expect(cancelQuoteCreation).toHaveBeenLastCalledWith({
+      missionId,
+      commandId: '90000000-0000-4000-8000-000000000004',
+      expectedMissionRevision: 4,
+      reason: 'user_cancelled',
+    });
+
     cancelQuoteCreation.mockResolvedValueOnce(ok({
       ...output,
       mission: {
@@ -463,7 +591,202 @@ describe('AgentMissionRuntimeOwner', () => {
     } as typeof output));
     await expect(actions.manualHandoffQuoteCreation({
       ...input,
-      commandId: '90000000-0000-4000-8000-000000000004',
+      commandId: '90000000-0000-4000-8000-000000000005',
     })).resolves.toEqual({ status: 'invalid_response' });
+  });
+
+  it('refuse les cinq commandes ligne V2 sur une capability V1 avant tout réseau', async () => {
+    const owner = new AgentMissionRuntimeOwner();
+    const candidate = session(V2_REALTIME_ID, []);
+    const stageQuoteLines = vi.fn();
+    const decideQuoteCatalogueChoice = vi.fn();
+    const patchQuoteLine = vi.fn();
+    const cancelPendingQuoteLine = vi.fn();
+    const decideQuoteLineProposal = vi.fn();
+    Object.assign(candidate, {
+      stageQuoteLines,
+      decideQuoteCatalogueChoice,
+      patchQuoteLine,
+      cancelPendingQuoteLine,
+      decideQuoteLineProposal,
+    });
+    owner.adopt(candidate);
+    owner.confirmContext(V2_REALTIME_ID, {
+      sessionHandle: V2_REALTIME_ID,
+      contextRevision: 7,
+      contextDigest: 'c'.repeat(64),
+    }, {
+      screen: { name: '/devis/new', instanceId: V2_SCREEN_ID },
+      entities: [],
+      capabilities: ['screen.read'],
+    });
+    const actions = new FencedAgentMissionRuntimeActions(owner);
+
+    await expect(actions.stageQuoteLines(V2_STAGE_INPUT))
+      .resolves.toEqual({ status: 'unavailable' });
+    await expect(actions.decideQuoteCatalogueChoice(V2_CATALOGUE_INPUT))
+      .resolves.toEqual({ status: 'unavailable' });
+    await expect(actions.patchQuoteLine(V2_PATCH_INPUT))
+      .resolves.toEqual({ status: 'unavailable' });
+    await expect(actions.cancelPendingQuoteLine(V2_CANCEL_PENDING_INPUT))
+      .resolves.toEqual({ status: 'unavailable' });
+    await expect(actions.decideQuoteLineProposal(V2_PROPOSAL_INPUT))
+      .resolves.toEqual({ status: 'unavailable' });
+    expect(stageQuoteLines).not.toHaveBeenCalled();
+    expect(decideQuoteCatalogueChoice).not.toHaveBeenCalled();
+    expect(patchQuoteLine).not.toHaveBeenCalled();
+    expect(cancelPendingQuoteLine).not.toHaveBeenCalled();
+    expect(decideQuoteLineProposal).not.toHaveBeenCalled();
+  });
+
+  it('transmet les cinq commandes V2 sans le fence écran et conserve leur présentation', async () => {
+    const owner = new AgentMissionRuntimeOwner();
+    const candidate = session(
+      V2_REALTIME_ID,
+      [],
+      REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
+    );
+    const continuation = {
+      outcome: 'stable',
+      pendingLineId: V2_PENDING_LINE_ID,
+      presentedChoiceCount: 0,
+      requiredFact: null,
+      proposalId: null,
+    } as const;
+    const stageOutput = {
+      outcome: 'staged',
+      mission: v2Mission(),
+      continuation,
+      presentation: PRESENTATION,
+    } as unknown as RealtimeAgentMissionStageQuoteLinesOutput;
+    const catalogueOutput = {
+      outcome: 'selected',
+      resolution: 'selected',
+      invalidationReason: null,
+      mission: v2Mission(),
+      continuation,
+      presentation: PRESENTATION,
+    } as RealtimeAgentMissionCatalogueChoiceOutput;
+    const patchOutput = {
+      outcome: 'patched',
+      pendingLineId: V2_PENDING_LINE_ID,
+      workRevisionAfter: 4,
+      mission: v2Mission(),
+      continuation,
+      presentation: PRESENTATION,
+    } as RealtimeAgentMissionPatchQuoteLineOutput;
+    const cancelPendingOutput = {
+      outcome: 'cancelled',
+      pendingLineId: V2_PENDING_LINE_ID,
+      mission: v2Mission(),
+      continuation,
+      presentation: PRESENTATION,
+    } as RealtimeAgentMissionCancelPendingQuoteLineOutput;
+    const proposalOutput = {
+      outcome: 'confirmed',
+      invalidationReason: null,
+      mission: v2Mission(),
+      continuation,
+      presentation: PRESENTATION,
+    } as RealtimeAgentMissionLineProposalDecisionOutput;
+    const stageQuoteLines = vi.fn(async (_input: unknown) => ok(stageOutput));
+    const decideQuoteCatalogueChoice = vi.fn(
+      async (_input: unknown) => ok(catalogueOutput),
+    );
+    const patchQuoteLine = vi.fn(async (_input: unknown) => ok(patchOutput));
+    const cancelPendingQuoteLine = vi.fn(
+      async (_input: unknown) => ok(cancelPendingOutput),
+    );
+    const decideQuoteLineProposal = vi.fn(
+      async (_input: unknown) => ok(proposalOutput),
+    );
+    Object.assign(candidate, {
+      stageQuoteLines,
+      decideQuoteCatalogueChoice,
+      patchQuoteLine,
+      cancelPendingQuoteLine,
+      decideQuoteLineProposal,
+    });
+    owner.adopt(candidate);
+    owner.confirmContext(V2_REALTIME_ID, {
+      sessionHandle: V2_REALTIME_ID,
+      contextRevision: 8,
+      contextDigest: 'd'.repeat(64),
+    }, {
+      screen: { name: '/devis/new', instanceId: V2_SCREEN_ID },
+      entities: [],
+      capabilities: ['screen.read'],
+    });
+    const actions = new FencedAgentMissionRuntimeActions(owner);
+
+    await expect(actions.stageQuoteLines(V2_STAGE_INPUT)).resolves.toEqual({
+      status: 'completed',
+      value: stageOutput,
+    });
+    await expect(actions.decideQuoteCatalogueChoice(V2_CATALOGUE_INPUT))
+      .resolves.toEqual({ status: 'completed', value: catalogueOutput });
+    await expect(actions.patchQuoteLine(V2_PATCH_INPUT)).resolves.toEqual({
+      status: 'completed',
+      value: patchOutput,
+    });
+    await expect(actions.cancelPendingQuoteLine(V2_CANCEL_PENDING_INPUT))
+      .resolves.toEqual({
+        status: 'completed',
+        value: cancelPendingOutput,
+      });
+    await expect(actions.decideQuoteLineProposal(V2_PROPOSAL_INPUT))
+      .resolves.toEqual({ status: 'completed', value: proposalOutput });
+    for (const call of [
+      stageQuoteLines.mock.calls[0],
+      decideQuoteCatalogueChoice.mock.calls[0],
+      patchQuoteLine.mock.calls[0],
+      cancelPendingQuoteLine.mock.calls[0],
+      decideQuoteLineProposal.mock.calls[0],
+    ]) {
+      expect(call?.[0]).not.toHaveProperty('expectedScreenInstanceId');
+    }
+  });
+
+  it('partage un staging V2 identique puis fence sa réponse après navigation', async () => {
+    const owner = new AgentMissionRuntimeOwner();
+    const candidate = session(
+      V2_REALTIME_ID,
+      [],
+      REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
+    );
+    const output = {
+      mission: v2Mission(),
+      continuation: {
+        outcome: 'stable',
+        pendingLineId: V2_PENDING_LINE_ID,
+        presentedChoiceCount: 0,
+        requiredFact: null,
+        proposalId: null,
+      },
+      presentation: PRESENTATION,
+    } as unknown as RealtimeAgentMissionStageQuoteLinesOutput;
+    const gate = deferred<ReturnType<typeof ok<typeof output>>>();
+    const stageQuoteLines = vi.fn((_input: unknown) => gate.promise);
+    Object.assign(candidate, { stageQuoteLines });
+    owner.adopt(candidate);
+    owner.confirmContext(V2_REALTIME_ID, {
+      sessionHandle: V2_REALTIME_ID,
+      contextRevision: 9,
+      contextDigest: 'e'.repeat(64),
+    }, {
+      screen: { name: '/devis/new', instanceId: V2_SCREEN_ID },
+      entities: [],
+      capabilities: ['screen.read'],
+    });
+    const actions = new FencedAgentMissionRuntimeActions(owner);
+
+    const first = actions.stageQuoteLines(V2_STAGE_INPUT);
+    const doubled = actions.stageQuoteLines(V2_STAGE_INPUT);
+    expect(first).toBe(doubled);
+    expect(stageQuoteLines).toHaveBeenCalledOnce();
+    owner.invalidateContext(V2_REALTIME_ID);
+    gate.resolve(ok(output));
+    await expect(first).resolves.toEqual({ status: 'stale' });
+    await expect(doubled).resolves.toEqual({ status: 'stale' });
   });
 });

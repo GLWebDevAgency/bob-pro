@@ -199,6 +199,28 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     if (!r.ok) expect(r.error.kind).toBe('validation');
   });
 
+  it('confirme seulement un fuseau IANA explicite en parité locale', async () => {
+    const client = makeClient();
+    const confirmed = await client.confirmConversationTimeZone('Europe/Paris');
+    expect(confirmed.ok).toBe(true);
+    if (confirmed.ok) {
+      expect(confirmed.value).toMatchObject({
+        timeZone: 'Europe/Paris',
+        requiresSessionRefresh: true,
+      });
+      expect(new Date(confirmed.value.confirmedAt).toISOString()).toBe(
+        confirmed.value.confirmedAt,
+      );
+    }
+
+    await expect(
+      client.confirmConversationTimeZone('Europe/Introuvable'),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'validation' },
+    });
+  });
+
   it('C26b : getSubscription = early-access HONNÊTE aligné sur le seed (business actif, 0 € facturé)', async () => {
     const r = await makeClient().getSubscription();
     expect(r.ok).toBe(true);

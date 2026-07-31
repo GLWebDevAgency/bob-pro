@@ -112,6 +112,12 @@ jobs:
         run: >-
           node --test
           apps/api/scripts/agent-mission-m1b-staging-migration-reconcile.postgres.test.mjs
+      - name: Certify M2-A-3 Prisma recovery before and after SQL COMMIT
+        env:
+          RUN_AGENT_MISSION_M2A3_PRISMA_RECOVERY_CERT: 'true'
+        run: >-
+          node --test
+          apps/api/scripts/agent-mission-m2a3-prisma-recovery.postgres.test.mjs
       - name: Certify AgentMission with a non-superuser deployer
         run: sh apps/api/scripts/certify-agent-missions-local.sh
 
