@@ -15,14 +15,19 @@
  * ─── LES SIX, ET OÙ ILS SONT ────────────────────────────────────────────────────────────
  *  1. MINIMIZE-ON-SCROLL — `barStyle`, `rowStyle`, `pressableStyle`, `visualStyle` : une seule
  *     progression 0..1 partagée (`bob-tab-bar-minimize.tsx`), ressort critique-amorti, zéro
- *     `setState` par frame.
- *  2. HIGHLIGHT GLISSANT — `highlightStyle` : UN SEUL bloc en absolu, `translateX` transform-only,
- *     ressort sous-amorti reciblé en préservant la vélocité.
+ *     `setState` par frame. Il est BRANCHÉ par `TabsScrollView` (`bob-tabs-scroll-view.tsx`) sur
+ *     quatre des cinq écrans d'onglet, sous le flag `mobile_tabs_experiment_v1` — le cinquième,
+ *     `assistant`, est nommé et motivé dans `bob-tab-bar-minimize.tsx`.
+ *  2. HIGHLIGHT GLISSANT — DEUX nœuds : `highlightTravelStyle` ne porte QUE `translateX` (c'est
+ *     lui qui bouge à chaque frame de scrub, et « transform-only » est donc vrai au sens strict),
+ *     `highlightBoxStyle` porte la géométrie et ne dépend que de la progression du repli. Ressort
+ *     sous-amorti reciblé en préservant la vélocité.
  *  3. SCRUB — `Gesture.Race(pan, tap)` sur toute la capsule, mapping 1:1 sans ressort pendant le
  *     drag, tick au FRANCHISSEMENT de frontière, navigation au RELÂCHEMENT seulement.
  *  4. FLOU DE BORD — `ProgressiveBlurBob` du kit de matière, déclaré AVANT le chrome. Il n'est
  *     pas réécrit ici : il est consommé.
- *  5. FADE-THROUGH — `bob-tab-slot.tsx`, à côté.
+ *  5. FADE-THROUGH — `bob-tab-slot.tsx`, monté autour de CHAQUE écran d'onglet par le
+ *     `screenLayout` de `app/(tabs)/_layout.tsx`, sous le même flag.
  *  6. TEINTE PILOTÉE PAR LE HIGHLIGHT — `glyphStyle` et `labelStyle` : opacité et couleur
  *     interpolées sur la DISTANCE au highlight, jamais sur un booléen de focus.
  *
@@ -83,7 +88,6 @@ import {
   TAB_BAR_BORDER_WIDTH,
   TAB_BAR_MARGIN,
   TAB_BAR_ROW_PAD_H,
-  TAB_BAR_SIDE_INSET,
   TAB_BAR_SLIDE_SPRING,
   edgeFalloffHeight,
   font,
@@ -102,10 +106,12 @@ import {
   useScreenReaderPreference,
   useTheme,
   type TabBarGeometryBounds,
+  type TabBarPlatform,
   type TabHapticPort,
   type TabLabelTier,
   type TabTintPalette,
 } from '@bob/ui';
+import { useKeyboardVisible } from './bob-tab-bar-keyboard';
 import { setMinimized, useTabBarMinimizeState } from './bob-tab-bar-minimize';
 
 /** Taille de glyphe, reprise telle quelle de la barre livrée : la matière ne change pas. */
@@ -141,9 +147,43 @@ export interface BobTabBarProps {
 interface LabelMeasure {
   readonly natural: number;
   readonly longestWord: number;
+  /** Hauteur d'UNE ligne de label à la taille de texte COURANTE — c'est elle qui grandit. */
+  readonly lineHeight: number;
 }
 
 type LabelMeasures = Readonly<Record<string, LabelMeasure>>;
+
+/**
+ * ─── B4 · CE QUI FAIT GRANDIR LA PILULE À 200 % ─────────────────────────────────────────────
+ *
+ * Le socle écrit `hauteurÉtendue = max(CIBLE, hauteur MESURÉE du contenu à la taille de texte
+ * courante) + 2 × 4`, et « 58 pt est sa valeur à la taille standard, donc un PLANCHER, jamais un
+ * plafond ». La logique le sait faire depuis toujours (`expandedContentHeight`) — mais tant
+ * qu'aucun appelant ne mesurait, les 50/35 restaient des CONSTANTES et l'affirmation était
+ * fausse. Voici la mesure, et elle vient d'où elle doit venir : de la sonde de label, la seule
+ * qui rende un `Text` à sa taille intrinsèque.
+ *
+ * Le glyphe, lui, ne suit PAS la taille du texte — c'est un `Svg` de 23 pt, et le socle ne
+ * demande pas qu'il grandisse. Ce qui grandit, c'est la ligne de texte, et le rang à deux lignes
+ * la compte deux fois : « la pilule grandit d'autant ».
+ */
+function contentHeights(
+  measures: LabelMeasures,
+  tier: TabLabelTier,
+): { readonly expanded: number; readonly minimized: number } {
+  // Le pire cas décide : une seule ligne plus haute que les autres fait grandir TOUTE la rangée.
+  const lineHeight = Object.values(measures).reduce(
+    (worst, measure) => Math.max(worst, measure.lineHeight),
+    0,
+  );
+  const lines = tier === 'icon-only' ? 0 : tier === 'two-lines' ? 2 : 1;
+  return {
+    expanded: lines === 0 ? ICON_SIZE : ICON_SIZE + ITEM_GAP + lineHeight * lines,
+    // Au repli le label a disparu : il ne reste que le glyphe. Le plancher de 35 pt le domine à
+    // la taille standard, et c'est bien le plancher qui gagne — pas ce calcul.
+    minimized: ICON_SIZE,
+  };
+}
 
 /** Palier de la barre : un seul label qui ne tient pas fait passer TOUS les onglets en icônes. */
 function barLabelTier(
@@ -181,6 +221,7 @@ export function BobTabBar({
   const reduceMotion = useReduceMotionPreference();
   const screenReader = useScreenReaderPreference();
   const minimize = useTabBarMinimizeState();
+  const keyboardVisible = useKeyboardVisible();
 
   const palette = useMemo(() => tabTintPalette(appearance), [appearance]);
   const tabCount = Math.max(items.length, 1);
@@ -188,25 +229,56 @@ export function BobTabBar({
     items.findIndex((item) => item.key === activeKey),
     0,
   );
+  const platform: TabBarPlatform = Platform.OS === 'android' ? 'android' : 'ios';
 
-  const bounds = useMemo(
-    () =>
-      tabBarGeometryBounds({
-        platform: Platform.OS === 'android' ? 'android' : 'ios',
-        windowWidth,
-        tabCount,
-      }),
-    [windowWidth, tabCount],
+  // ── Dynamic Type · la sonde mesure, puis disparaît ───────────────────────────────────
+  const fontScale = PixelRatio.getFontScale();
+  const [measures, setMeasures] = useState<LabelMeasures>({});
+  const measuredScale = useRef(fontScale);
+  if (measuredScale.current !== fontScale) {
+    // La taille système a changé : les mesures d'hier ne valent plus rien. On repart d'une
+    // sonde neuve — et la sonde se démonte dès qu'elle a répondu, donc rien ne persiste.
+    measuredScale.current = fontScale;
+    if (Object.keys(measures).length > 0) setMeasures({});
+  }
+  const pending = items.some((item) => measures[item.key] === undefined);
+  const reportMeasure = useCallback(
+    (key: string, kind: 'natural' | 'longestWord', width: number, height: number) => {
+      setMeasures((current) => {
+        const previous = current[key] ?? { natural: 0, longestWord: 0, lineHeight: 0 };
+        const lineHeight = Math.max(previous.lineHeight, height);
+        if (previous[kind] === width && previous.lineHeight === lineHeight) return current;
+        return { ...current, [key]: { ...previous, [kind]: width, lineHeight } };
+      });
+    },
+    [],
   );
-  const expanded = useMemo(
-    () =>
-      tabBarGeometry(0, {
-        platform: Platform.OS === 'android' ? 'android' : 'ios',
-        windowWidth,
-        tabCount,
-      }),
-    [windowWidth, tabCount],
+
+  /*
+   * PAS DE CIRCULARITÉ, ET C'EST VÉRIFIABLE. La LARGEUR d'onglet ne dépend d'aucune hauteur :
+   * elle divise la fenêtre. On la calcule donc d'abord, on en déduit le PALIER du label, et le
+   * palier donne enfin les deux hauteurs de contenu. Trois pas, une seule direction.
+   */
+  const itemWidthAtRest = useMemo(
+    () => tabBarGeometry(0, { platform, windowWidth, tabCount }).itemWidth,
+    [platform, windowWidth, tabCount],
   );
+  const labelTier = barLabelTier(items, measures, itemWidthAtRest);
+  const showLabel = labelTier !== 'icon-only';
+  const heights = useMemo(() => contentHeights(measures, labelTier), [measures, labelTier]);
+
+  const metrics = useMemo(
+    () => ({
+      platform,
+      windowWidth,
+      tabCount,
+      expandedContentHeight: heights.expanded,
+      minimizedContentHeight: heights.minimized,
+    }),
+    [platform, windowWidth, tabCount, heights],
+  );
+  const bounds = useMemo(() => tabBarGeometryBounds(metrics), [metrics]);
+  const expanded = useMemo(() => tabBarGeometry(0, metrics), [metrics]);
 
   // ── Position du highlight : la SEULE source de la teinte (comportement 6) ─────────────
   const slideIndex = useSharedValue(activeIndex);
@@ -262,7 +334,10 @@ export function BobTabBar({
 
   // ── Comportement 3 · le geste ────────────────────────────────────────────────────────
   const gesture = useMemo(() => {
-    const sideInsetMax = TAB_BAR_SIDE_INSET;
+    // Le retrait latéral EFFECTIF, pas la constante du socle : sur un écran étroit il est
+    // clampé pour tenir la cible en largeur (B1). Le mapping du doigt doit lire la MÊME
+    // grandeur que le rendu, sinon il est décalé exactement là où la barre est la plus serrée.
+    const sideInsetMax = bounds.sideInset[1];
     const margin = TAB_BAR_MARGIN;
     const border = TAB_BAR_BORDER_WIDTH;
     const rowPad = TAB_BAR_ROW_PAD_H;
@@ -395,8 +470,33 @@ export function BobTabBar({
     ),
   }));
 
-  // ── Comportement 2 · un seul bloc de highlight, transform-only ───────────────────────
-  const highlightStyle = useAnimatedStyle(() => {
+  /**
+   * ─── COMPORTEMENT 2 · DEUX NŒUDS, ET C'EST CE QUI REND « TRANSFORM-ONLY » VRAI ─────────
+   *
+   * Le nœud de VOYAGE ne porte QUE `translateX`. C'est lui qui bouge à chaque frame de scrub,
+   * et il ne produit AUCUNE géométrie : la promesse « transform-only, zéro travail de layout
+   * par frame » (§ 2) est littéralement tenue, pas approchée. Un test lit ce style et vérifie
+   * qu'il n'a pas d'autre clé — la promesse est donc verrouillée, pas affirmée.
+   *
+   * Avant, un `useAnimatedStyle` unique produisait `height`, `width`, `borderRadius` et `top`
+   * en plus du `transform` : chaque frame de scrub redemandait donc du layout, et la phrase
+   * était fausse.
+   */
+  const highlightTravelStyle = useAnimatedStyle(() => {
+    const sideInset = interpolate(
+      progress.value,
+      [0, 1],
+      [bounds.sideInset[0], bounds.sideInset[1]],
+      Extrapolation.CLAMP,
+    );
+    const pillWidth = Math.max(bounds.windowWidth - 2 * bounds.margin - 2 * sideInset, 0);
+    const contentWidth = Math.max(pillWidth - 2 * bounds.borderWidth - 2 * bounds.rowPadH, 0);
+    const itemWidth = contentWidth / bounds.tabCount;
+    return { transform: [{ translateX: bounds.rowPadH + itemWidth * slideIndex.value }] };
+  });
+
+  /** La GÉOMÉTRIE du highlight — elle ne dépend QUE de la progression du repli, jamais du doigt. */
+  const highlightBoxStyle = useAnimatedStyle(() => {
     const visual = interpolate(
       progress.value,
       [0, 1],
@@ -418,40 +518,16 @@ export function BobTabBar({
     );
     const pillWidth = Math.max(bounds.windowWidth - 2 * bounds.margin - 2 * sideInset, 0);
     const contentWidth = Math.max(pillWidth - 2 * bounds.borderWidth - 2 * bounds.rowPadH, 0);
-    const itemWidth = contentWidth / bounds.tabCount;
     return {
       height: visual,
-      width: itemWidth,
+      width: contentWidth / bounds.tabCount,
       borderRadius: visual / 2,
       // Centré dans la boîte INTÉRIEURE de la pilule — le highlight suit la barre pendant
-      // qu'elle s'ouvre, il n'est jamais recalé après coup.
-      top: (pressable + 2 * rhythm - visual) / 2,
-      transform: [{ translateX: bounds.rowPadH + itemWidth * slideIndex.value }],
+      // qu'elle s'ouvre, il n'est jamais recalé après coup. `marginTop` et non `top` : le
+      // décalage vertical appartient à la BOÎTE, pas au nœud de voyage.
+      marginTop: (pressable + 2 * rhythm - visual) / 2,
     };
   });
-
-  // ── Dynamic Type · le palier du label ────────────────────────────────────────────────
-  const fontScale = PixelRatio.getFontScale();
-  const [measures, setMeasures] = useState<LabelMeasures>({});
-  const measuredScale = useRef(fontScale);
-  if (measuredScale.current !== fontScale) {
-    // La taille système a changé : les mesures d'hier ne valent plus rien. On repart d'une
-    // sonde neuve — et la sonde se démonte dès qu'elle a répondu, donc rien ne persiste.
-    measuredScale.current = fontScale;
-    if (Object.keys(measures).length > 0) setMeasures({});
-  }
-  const pending = items.some((item) => measures[item.key] === undefined);
-  const reportMeasure = useCallback(
-    (key: string, kind: 'natural' | 'longestWord', width: number) => {
-      setMeasures((current) => {
-        const previous = current[key] ?? { natural: 0, longestWord: 0 };
-        if (previous[kind] === width) return current;
-        return { ...current, [key]: { ...previous, [kind]: width } };
-      });
-    },
-    [],
-  );
-  const showLabel = barLabelTier(items, measures, expanded.itemWidth) !== 'icon-only';
 
   // ── Comportement 4 · la retombée, déclarée AVANT le chrome ───────────────────────────
   const bottomOffset = tabBarBottomOffset(insets.bottom);
@@ -481,20 +557,27 @@ export function BobTabBar({
     >
       {/* 1 — LA CAPSULE DE HIGHLIGHT, déclarée d'abord : elle passe SOUS les icônes et les
              labels. C'est ce qui en fait un FOND DE TEXTE, et c'est pour cela que sa teinte
-             est une contrainte de contraste (§ 2, A23), pas un goût. */}
+             est une contrainte de contraste (§ 2, A23), pas un goût.
+
+             DEUX NŒUDS : le VOYAGE (transform seul, une frame de scrub ne touche que lui) et
+             la BOÎTE (géométrie, pilotée par le seul repli). Le parent n'a pas d'`overflow`,
+             donc il ne coupe rien : il ne fait que déplacer. */}
       <Animated.View
         pointerEvents="none"
-        testID={testID === undefined ? undefined : `${testID}-highlight`}
-        style={[
-          {
-            position: 'absolute' as const,
-            left: 0,
-            backgroundColor: palette.highlight,
-            borderCurve: 'continuous' as const,
-          },
-          highlightStyle,
-        ]}
-      />
+        testID={testID === undefined ? undefined : `${testID}-highlight-travel`}
+        style={[{ position: 'absolute' as const, left: 0, top: 0 }, highlightTravelStyle]}
+      >
+        <Animated.View
+          testID={testID === undefined ? undefined : `${testID}-highlight`}
+          style={[
+            {
+              backgroundColor: palette.highlight,
+              borderCurve: 'continuous' as const,
+            },
+            highlightBoxStyle,
+          ]}
+        />
+      </Animated.View>
 
       {/* 2 — LA RANGÉE D'ONGLETS, déclarée ensuite : peinte AU-DESSUS du highlight. */}
       <Animated.View
@@ -536,9 +619,17 @@ export function BobTabBar({
 
   return (
     <View
-      pointerEvents="box-none"
+      pointerEvents={keyboardVisible ? 'none' : 'box-none'}
       testID={testID}
-      style={{ position: 'absolute', left: 0, right: 0, bottom: 0 }}
+      style={{
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        bottom: 0,
+        // CLAVIER OUVERT → la barre se retire (`bob-tab-bar-keyboard.ts` dit pourquoi). Masquée
+        // et non démontée : les valeurs partagées survivent, la barre ne « saute » pas au retour.
+        display: keyboardVisible ? 'none' : 'flex',
+      }}
     >
       {/* CONTENU → RETOMBÉE → CHROME, par l'ordre de DÉCLARATION seul. La retombée est en mode
           NOMINAL teinté : sur cette barre, le mode flouté ne coexiste jamais avec un chrome dont
@@ -664,6 +755,12 @@ function TabItem({
         pressableStyle,
       ]}
     >
+      {/* `overflow: 'hidden'` — assumé, et borné. AU REPOS ÉTENDU la boîte mesure EXACTEMENT le
+          contenu (les deux hauteurs sortent de la sonde, § B4) : elle ne coupe donc rien, à
+          aucune taille de texte, et un test le vérifie à 100 % et à 200 %. Elle ne coupe que
+          PENDANT le repli — où le label est déjà en train de disparaître (opacité 1 → 0 sur
+          `progress ∈ [0 ; 0,4]`) — et au repli complet, où il n'y a plus que le glyphe. Sans ce
+          `hidden`, un label invisible mais toujours dans le flux déborderait de la pilule. */}
       <Animated.View
         style={[
           {
@@ -717,7 +814,12 @@ function TabItem({
 
 interface LabelProbesProps {
   readonly items: readonly BobTabBarItem[];
-  readonly onMeasure: (key: string, kind: 'natural' | 'longestWord', width: number) => void;
+  readonly onMeasure: (
+    key: string,
+    kind: 'natural' | 'longestWord',
+    width: number,
+    height: number,
+  ) => void;
 }
 
 /**
@@ -735,7 +837,10 @@ function LabelProbes({ items, onMeasure }: LabelProbesProps): ReactElement {
   const measure =
     (key: string, kind: 'natural' | 'longestWord') =>
     (event: LayoutChangeEvent): void => {
-      onMeasure(key, kind, event.nativeEvent.layout.width);
+      // La HAUTEUR compte autant que la largeur : la sonde rend UNE ligne, donc sa hauteur EST
+      // la hauteur de ligne à la taille de texte courante. C'est elle qui fait grandir la pilule
+      // à 200 % — sans elle, les 50/35 restaient des plafonds (B4).
+      onMeasure(key, kind, event.nativeEvent.layout.width, event.nativeEvent.layout.height);
     };
   return (
     <View
