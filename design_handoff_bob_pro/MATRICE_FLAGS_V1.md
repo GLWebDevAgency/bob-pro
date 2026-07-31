@@ -328,6 +328,7 @@ Flags **non sensibles** à valeur figée. `enforcement` : `"default"` = la valeu
     { "name": "EXPO_PUBLIC_TERMS_URL", "v1Value": "https://bob-pro-sign-web-staging.vercel.app/legal/conditions-utilisation", "scope": "mobile-preview", "enforcement": "posed" },
     { "name": "EXPO_PUBLIC_PRIVACY_URL", "v1Value": "https://bob-pro-sign-web-staging.vercel.app/legal/confidentialite", "scope": "mobile-preview", "enforcement": "posed" },
     { "name": "EXPO_PUBLIC_SIGNUP_CONFIRMATION_WEB_URL", "v1Value": "https://bob-pro-sign-web-staging.vercel.app/auth/confirme", "scope": "mobile-preview", "enforcement": "posed" },
+    { "name": "EXPO_PUBLIC_MOBILE_TABS_EXPERIMENT_V1", "v1Value": "1", "scope": "mobile-preview", "enforcement": "posed" },
     { "name": "NEXT_PUBLIC_API_URL", "v1Value": "https://bob-pro-api-production.up.railway.app", "scope": "web", "enforcement": "posed" },
     { "name": "NEXT_PUBLIC_SUPABASE_URL", "v1Value": "https://cvdkqjczgqoeshputacl.supabase.co", "scope": "web", "enforcement": "posed" },
     { "name": "MUSTANG_VERSION", "v1Value": "2.24.0", "scope": "ci", "enforcement": "posed" },
