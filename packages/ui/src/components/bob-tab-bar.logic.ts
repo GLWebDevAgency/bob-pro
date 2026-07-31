@@ -62,12 +62,17 @@ export type TabBarPlatform = 'ios' | 'android';
  * Type) : il ne rétrécit pas avec le visuel, il ne s'échelonne pas avec le texte, et il ne se
  * complète par AUCUN `hitSlop`.
  *
+ * IL PORTE SUR LES DEUX DIMENSIONS. Le critère d'acceptation n° 1 du socle écrit
+ * « `height ≥ 44.0` (iOS) / `≥ 48.0` (Android) ET `width ≥ 44.0 / 48.0` » : une cible haute de
+ * 48 dp et large de 43 n'est pas une cible. La hauteur est plancherée par `max(CIBLE, visuel)` ;
+ * la LARGEUR l'est par le clamp du retrait latéral — voir `affordableSideInset`.
+ *
  * POURQUOI PAS UN `hitSlop` — la raison est mécanique, pas doctrinale. La recherche de cible
  * n'entre dans un enfant que si le point est DÉJÀ dans les bornes de l'ancêtre : Android
  * (`TouchTargetHelper.findTouchTargetView` n'élargit du `hitSlop` que l'enfant testé, jamais ses
  * ancêtres) comme iOS (`hitTest:` s'arrête au premier `pointInside:` faux d'une superview). Un
- * `hitSlop` qui déborde la pilule n'est donc jamais dispatché. La cible est tenue par la
- * HAUTEUR MESURÉE du `Pressable`, et par rien d'autre.
+ * `hitSlop` qui déborde la pilule n'est donc jamais dispatché. La cible est tenue par le
+ * RECTANGLE MESURÉ du `Pressable`, et par rien d'autre.
  */
 export const TAB_BAR_TOUCH_TARGET: Readonly<Record<TabBarPlatform, number>> = Object.freeze({
   ios: 44,
@@ -104,7 +109,16 @@ export const TAB_BAR_BLEED: number = patterns.edgeFalloff.bleed;
 /**
  * MESURES D'ENTRÉE de la géométrie. Les deux hauteurs de contenu sont des PLANCHERS à la taille
  * de texte standard, jamais des hauteurs figées ([08 § Typographie](08-accessibility-adaptive-design.md),
- * règle A19) : à 200 % le contenu mesuré les dépasse et c'est lui qui gagne.
+ * règle A19) : à 200 % le contenu mesuré les dépasse et c'est lui qui gagne. Ce n'est plus une
+ * promesse de commentaire : `bob-tab-bar.tsx` passe RÉELLEMENT ces deux hauteurs, mesurées par
+ * la sonde de label, et un test de rendu vérifie qu'à ~200 % sur deux lignes la pilule dépasse
+ * ses 60 pt de taille standard. *(Auparavant, aucun appelant ne les passait : les 50/35 et 58/60
+ * étaient des PLAFONDS et cette phrase était fausse.)*
+ *
+ * LES DEUX HAUTEURS SONT FACULTATIVES, ET CE N'EST PAS UNE PORTE DÉROBÉE. Elles arrivent d'une
+ * mesure `onLayout`, donc APRÈS la première passe de layout : avant, la géométrie vaut ses
+ * planchers à la taille standard. Le composant les passe dès qu'il les a — un appelant qui les
+ * omet obtient une barre à taille standard, pas une barre qui rogne son contenu.
  */
 export interface TabBarMetrics {
   readonly platform: TabBarPlatform;
@@ -127,7 +141,10 @@ export interface TabBarGeometryBounds {
   readonly visual: readonly [number, number];
   /** Rythme extérieur : [4, 0]. */
   readonly rhythm: readonly [number, number];
-  /** Retrait latéral : [0, 34]. */
+  /**
+   * Retrait latéral : `[0, min(34, ce que l'écran peut payer)]`. La borne haute est CLAMPÉE, et
+   * c'est le seul endroit du fichier où une valeur du socle cède — voir `affordableSideInset`.
+   */
   readonly sideInset: readonly [number, number];
   readonly touchFloor: number;
   readonly borderWidth: number;
@@ -135,6 +152,11 @@ export interface TabBarGeometryBounds {
   readonly margin: number;
   readonly windowWidth: number;
   readonly tabCount: number;
+  /**
+   * `false` quand MÊME un retrait latéral nul ne suffit plus à tenir la cible en LARGEUR. Rien
+   * ne le rattrape dans la barre : c'est une déclaration, pas une compensation silencieuse.
+   */
+  readonly touchWidthHeld: boolean;
 }
 
 /** Géométrie RÉSOLUE à un `progress` donné. Toutes les valeurs sont en points. */
@@ -153,10 +175,73 @@ export interface TabBarGeometry {
   readonly sideInset: number;
   /** Largeur mesurée de la pilule (border-box). */
   readonly pillWidth: number;
-  /** Largeur d'un onglet — CALCULÉE, jamais mesurée : aucune frame de retard, aucun saut. */
+  /**
+   * Largeur d'un onglet — CALCULÉE, jamais mesurée : aucune frame de retard, aucun saut. Le
+   * `Pressable` étant `flex: 1` dans la rangée, c'est AUSSI sa largeur mesurée : c'est donc la
+   * moitié « width » du critère d'acceptation n° 1, pas une grandeur décorative.
+   */
   readonly itemWidth: number;
   /** `borderRadius = hauteur / 2`, recalculé à chaque frame : une formule, pas une constante. */
   readonly borderRadius: number;
+  /** `itemWidth ≥ CIBLE` à ce `progress`. Faux = la cible tombe, et on le DIT. */
+  readonly touchWidthHeld: boolean;
+}
+
+/**
+ * ─── B1 · LA LARGEUR EST PLANCHERÉE COMME LA HAUTEUR, ET VOICI CE QUI CÈDE ──────────────────
+ *
+ * LE PROBLÈME, EN CHIFFRES. Le `Pressable` d'un onglet est `flex: 1` dans la rangée : sa largeur
+ * MESURÉE vaut `itemWidth = (fenêtre − 2×12 − 2×34 − 2×1 − 2×4) / 5` au repli. Le retrait
+ * latéral animé retire à lui seul **68 pt** à la pilule. Sur une fenêtre de 320 pt cela donne
+ * 43,6 pt — SOUS les 44 pt d'iOS, et très en dessous des 48 dp d'Android. La hauteur était
+ * plancherée par `max(CIBLE, visuel)` ; la largeur, elle, était une simple division. Elle
+ * tombait en silence.
+ *
+ * CE QUI CÈDE : **LE RETRAIT LATÉRAL ANIMÉ**, et lui seul. La hiérarchie n'est pas un goût, elle
+ * est écrite au § Cibles tactiles et Dynamic Type : la cible est le « plancher absolu, jamais
+ * compensé » ; le retrait latéral, lui, est une grandeur d'ANIMATION du repli. Entre un plancher
+ * absolu et une esthétique de repli, c'est l'esthétique qui plie. Sur les écrans larges rien ne
+ * change (le clamp ne mord pas) ; sur les écrans étroits la pilule se replie MOINS.
+ *
+ * CE QUI NE CÈDE PAS, et pourquoi :
+ *  · le nombre d'onglets — c'est une décision produit (cinq destinations stables, § Exigences
+ *    communes), pas une variable de layout ;
+ *  · un défilement horizontal de la rangée — il rendrait des onglets INATTEIGNABLES sans geste,
+ *    ce que la même § Exigences communes interdit (« tous les onglets restant visibles et
+ *    atteignables ») ;
+ *  · la marge de safe area de 12 pt — c'est elle qui empêche la pilule de coller aux bords, et
+ *    la référence la pose pour cette raison. La sacrifier réglerait 24 pt de plus au prix d'une
+ *    barre collée aux arêtes de l'écran.
+ *
+ * LA LIMITE RÉSIDUELLE, DÉCLARÉE : sous `minimumWindowWidth()` — **254 pt sur iOS**, **274 dp sur
+ * Android** pour cinq onglets — même un retrait NUL ne tient plus la cible, et la barre n'a plus
+ * rien à céder. `touchWidthHeld` passe alors à `false`. Aucun téléphone visé ne s'y trouve : la
+ * fenêtre la plus étroite du parc réel est l'écran de couverture d'un pliable (~280 dp), puis les
+ * 320 pt/dp des petits appareils (iPhone SE 1re gén., petits Android). Un test balaie ces
+ * largeurs réelles, sur les DEUX OS, sur toute la course.
+ */
+
+/**
+ * Largeur de fenêtre EN DEÇÀ DE LAQUELLE la cible ne tient plus en largeur, retrait latéral déjà
+ * ramené à zéro : `2×marge + 2×bordure + 2×rythme horizontal + tabCount × CIBLE`.
+ */
+export function minimumWindowWidth(platform: TabBarPlatform, tabCount: number): number {
+  const count = Math.max(Math.floor(tabCount), 1);
+  return (
+    2 * TAB_BAR_MARGIN +
+    2 * TAB_BAR_BORDER_WIDTH +
+    2 * TAB_BAR_ROW_PAD_H +
+    count * touchTargetFloor(platform)
+  );
+}
+
+/**
+ * Retrait latéral MAXIMAL, par côté, qu'un écran peut payer sans faire tomber la cible en
+ * largeur. Jamais plus que les 34 pt du socle, jamais moins que 0.
+ */
+export function affordableSideInset(platform: TabBarPlatform, windowWidth: number, tabCount: number): number {
+  const slack = Math.max(windowWidth, 0) - minimumWindowWidth(platform, tabCount);
+  return Math.min(TAB_BAR_SIDE_INSET, Math.max(slack / 2, 0));
 }
 
 function clamp01(value: number): number {
@@ -177,18 +262,23 @@ function lerp(from: number, to: number, t: number): number {
 export function tabBarGeometryBounds(metrics: TabBarMetrics): TabBarGeometryBounds {
   const expanded = Math.max(metrics.expandedContentHeight ?? 0, TAB_BAR_EXPANDED_VISUAL);
   const minimized = Math.max(metrics.minimizedContentHeight ?? 0, TAB_BAR_MINIMIZED_VISUAL);
+  const windowWidth = Math.max(metrics.windowWidth, 0);
+  const tabCount = Math.max(Math.floor(metrics.tabCount), 1);
   return Object.freeze({
     // Le visuel replié ne dépasse jamais le visuel étendu : à 200 %, un label sur deux lignes
     // fait grandir l'étendu, pas le replié — mais rien ne garantit l'ordre des deux MESURES.
     visual: [expanded, Math.min(minimized, expanded)] as const,
     rhythm: [TAB_BAR_OUTER_RHYTHM, 0] as const,
-    sideInset: [0, TAB_BAR_SIDE_INSET] as const,
+    // LE RETRAIT LATÉRAL EST CE QUI CÈDE quand la cible ne tient plus en largeur (voir le bloc
+    // « B1 » ci-dessus). Sur un écran large la borne vaut exactement les 34 pt du socle.
+    sideInset: [0, affordableSideInset(metrics.platform, windowWidth, tabCount)] as const,
     touchFloor: touchTargetFloor(metrics.platform),
     borderWidth: TAB_BAR_BORDER_WIDTH,
     rowPadH: TAB_BAR_ROW_PAD_H,
     margin: TAB_BAR_MARGIN,
-    windowWidth: Math.max(metrics.windowWidth, 0),
-    tabCount: Math.max(Math.floor(metrics.tabCount), 1),
+    windowWidth,
+    tabCount,
+    touchWidthHeld: windowWidth >= minimumWindowWidth(metrics.platform, tabCount),
   });
 }
 
@@ -218,6 +308,7 @@ export function tabBarGeometry(progress: number, metrics: TabBarMetrics): TabBar
   const sideInset = lerp(bounds.sideInset[0], bounds.sideInset[1], p);
   const pillWidth = Math.max(bounds.windowWidth - 2 * bounds.margin - 2 * sideInset, 0);
   const contentWidth = Math.max(pillWidth - 2 * bounds.borderWidth - 2 * bounds.rowPadH, 0);
+  const itemWidth = contentWidth / bounds.tabCount;
   return Object.freeze({
     innerVisualHeight,
     pressableHeight,
@@ -229,8 +320,12 @@ export function tabBarGeometry(progress: number, metrics: TabBarMetrics): TabBar
     pillToPressableGap: outerRhythm + bounds.borderWidth,
     sideInset,
     pillWidth,
-    itemWidth: contentWidth / bounds.tabCount,
+    itemWidth,
     borderRadius: pillMeasuredHeight / 2,
+    // Arrondi de flottant : `(320 − 24 − 2×33 − 2 − 8) / 5` vaut 44 en arithmétique exacte et
+    // 43,999999999999996 en IEEE-754. Une cible n'est pas ratée d'un milliardième de point ; le
+    // socle tolère déjà ± 0,5 pt de pixel. On tolère ici le seul bruit de calcul.
+    touchWidthHeld: itemWidth >= bounds.touchFloor - 1e-9,
   });
 }
 
@@ -329,7 +424,14 @@ export function tabIndexAtX(x: number, geometry: TabBarGeometry, tabCount: numbe
   return Math.min(Math.max(raw, 0), count - 1);
 }
 
-/** Position du bloc de highlight — `translateX` TRANSFORM-ONLY : zéro travail de layout par frame. */
+/**
+ * Position du bloc de highlight. Elle est portée par un nœud DÉDIÉ dont le style ne contient que
+ * `transform: [{ translateX }]` — c'est ce qui rend l'affirmation « transform-only » vraie AU
+ * SENS STRICT : le nœud qui bouge à chaque frame de scrub ne produit aucune géométrie. Hauteur,
+ * largeur, rayon et centrage vivent sur un nœud SÉPARÉ, piloté par la seule progression du repli
+ * (`bob-tab-bar.tsx`, `highlightTravelStyle` contre `highlightBoxStyle`). Un test lit les deux
+ * styles rendus et vérifie que le premier n'a pas d'autre clé.
+ */
 export function highlightTranslateX(slideIndex: number, geometry: TabBarGeometry): number {
   const index = Number.isFinite(slideIndex) ? slideIndex : 0;
   return TAB_BAR_ROW_PAD_H + geometry.itemWidth * index;
@@ -454,6 +556,34 @@ export function mixTint(from: string, to: string, t: number): string {
   );
 }
 
+/**
+ * ─── ROUE DÉCLARÉE n° 1 · LE CALCUL DE CONTRASTE WCAG 2.x ───────────────────────────────────
+ *
+ * C'EST LA QUATRIÈME COPIE DU DÉPÔT, et la seule expédiée dans le barrel PUBLIC `@bob/ui`. Elle
+ * se déclare, elle ne se cache pas. Les quatre :
+ *
+ *  1. `packages/tokens/src/index.test.ts` (l. 19-35) — certifie les paires de rôles livrées ;
+ *  2. `packages/tokens/src/surface-veil.test.ts` — certifie les voiles de surface ;
+ *  3. `scripts/check-mobile-experience-docs.mjs` (l. 132, contrôle `C4`) — RECALCULE la table de
+ *     contraste du socle 04 § 2 depuis `@bob/tokens`, en Node pur ;
+ *  4. celle-ci.
+ *
+ * POURQUOI ON N'A PAS FACTORISÉ. Les trois autres sont des SECONDES OPINIONS délibérées : un
+ * test qui importerait la fonction qu'il vérifie ne vérifierait plus rien, et le script de docs
+ * tourne en `.mjs` hors de tout paquet TypeScript. Les factoriser ne supprimerait pas une
+ * duplication : elle supprimerait la CONTRE-EXPERTISE. Aucune des trois n'est d'ailleurs
+ * exportable — deux sont des fichiers de test, la troisième un script.
+ *
+ * POURQUOI CELLE-CI EXISTE QUAND MÊME. Le § 6 exige un échantillonnage du contraste **sur toute
+ * la course d'interpolation** et sur **deux fonds** — pas sur deux extrémités. C'est du code de
+ * PRODUCTION (`sampleTintCourse`), pas de test : il lui faut une fonction, pas un helper de
+ * suite.
+ *
+ * CE QUI EMPÊCHE LA QUATRIÈME VÉRITÉ. Un test ÉPINGLE cette implémentation sur les **dix-huit
+ * cellules** de la table A23 du socle — la même table que le contrôle `C4` recalcule depuis
+ * `@bob/tokens`. La chaîne est fermée : notre fonction → table du socle ← `C4` ← tokens. Une
+ * dérive de constante (le `0,03928`, le `2,4`, les trois coefficients) fait rougir ce test.
+ */
 function linearize(component: number): number {
   const s = component / 255;
   return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;

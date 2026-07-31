@@ -30,6 +30,7 @@ import {
   TAB_BAR_SIDE_INSET,
   TAB_BAR_SLIDE_SPRING,
   TAB_LABEL_MAX_LINES,
+  affordableSideInset,
   boundaryTick,
   contrastRatio,
   effectiveDuration,
@@ -37,6 +38,7 @@ import {
   highlightProximity,
   highlightTranslateX,
   minimizeDecision,
+  minimumWindowWidth,
   mixTint,
   motionAllowed,
   resolveBarLabelTier,
@@ -155,6 +157,88 @@ describe('cible tactile — plancher absolu, porté par le `Pressable` et par ri
       expect(geometry.itemWidth * TABS).toBeCloseTo(contentWidth, 10);
       expect(geometry.itemWidth).toBeGreaterThan(0);
     }
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// CONTRAINTE DURE — LA MOITIÉ « WIDTH » DU CRITÈRE D'ACCEPTATION N° 1
+// « measure() sur le Pressable de CHACUN des cinq onglets → height ≥ 44/48 ET width ≥ 44/48 »
+// ════════════════════════════════════════════════════════════════════════════════════════════
+
+describe('cible tactile EN LARGEUR — la moitié du critère qui n’était ni tenue ni testée', () => {
+  /**
+   * LES LARGEURS RÉELLES DU PARC, de la plus étroite à la plus large. Rien d'inventé :
+   * 280 dp = écran de couverture d'un pliable ; 320 = iPhone SE 1re gén. et petits Android ;
+   * 360 = la largeur Android la plus répandue ; 375 = iPhone SE 2/3 et 13 mini ; 390 = iPhone
+   * 13/14/15 ; 393 = Pixel 7/8 ; 412 = grands Android ; 430 = iPhone Pro Max.
+   */
+  const REAL_WIDTHS = [280, 320, 360, 375, 390, 393, 412, 430];
+
+  it.each<TabBarPlatform>(['ios', 'android'])(
+    'sur %s, `itemWidth ≥ CIBLE` sur 101 points de la course, à TOUTES les largeurs réelles',
+    (platform) => {
+      const floor = touchTargetFloor(platform);
+      for (const windowWidth of REAL_WIDTHS) {
+        for (let i = 0; i <= 100; i += 1) {
+          const geometry = tabBarGeometry(i / 100, metrics(platform, { windowWidth }));
+          expect(geometry.touchWidthHeld, `${platform} ${windowWidth} @ ${i}%`).toBe(true);
+          // Le `Pressable` est `flex: 1` : `itemWidth` EST sa largeur mesurée.
+          expect(geometry.itemWidth, `${platform} ${windowWidth} @ ${i}%`).toBeGreaterThanOrEqual(
+            floor - 1e-9,
+          );
+          // Et l'autre moitié du critère tient en même temps.
+          expect(geometry.pressableHeight).toBeGreaterThanOrEqual(floor);
+        }
+      }
+    },
+  );
+
+  it('CE QUI CÈDE est le retrait latéral — nommément, et seulement lui', () => {
+    // Écran large : rien ne cède, le retrait vaut les 34 pt du socle.
+    expect(affordableSideInset('ios', 390, 5)).toBe(TAB_BAR_SIDE_INSET);
+    expect(tabBarGeometry(1, metrics('ios', { windowWidth: 390 })).sideInset).toBe(34);
+
+    // Écran étroit : il est RABOTÉ, exactement de ce qu'il faut et pas plus.
+    expect(affordableSideInset('ios', 320, 5)).toBe(33);
+    expect(affordableSideInset('android', 320, 5)).toBe(23);
+    expect(affordableSideInset('android', 280, 5)).toBe(3);
+
+    // Et la marge de safe area, elle, ne bouge JAMAIS : c'est l'autre grandeur horizontale, et
+    // elle n'entre pas dans le troc.
+    for (const windowWidth of REAL_WIDTHS) {
+      expect(tabBarGeometryBounds(metrics('android', { windowWidth })).margin).toBe(TAB_BAR_MARGIN);
+    }
+  });
+
+  it('le retrait clampé reste une INTERPOLATION propre : 0 au repos, son maximum au repli', () => {
+    const bounds = tabBarGeometryBounds(metrics('android', { windowWidth: 320 }));
+    expect(bounds.sideInset[0]).toBe(0);
+    expect(bounds.sideInset[1]).toBe(23);
+    expect(tabBarGeometry(0, metrics('android', { windowWidth: 320 })).sideInset).toBe(0);
+    expect(tabBarGeometry(0.5, metrics('android', { windowWidth: 320 })).sideInset).toBe(11.5);
+    expect(tabBarGeometry(1, metrics('android', { windowWidth: 320 })).sideInset).toBe(23);
+  });
+
+  it('DÉCLARE la limite résiduelle plutôt que de laisser la cible tomber en silence', () => {
+    // Sous ce seuil, un retrait NUL ne suffit plus : la barre n'a plus rien à céder.
+    expect(minimumWindowWidth('ios', 5)).toBe(254);
+    expect(minimumWindowWidth('android', 5)).toBe(274);
+    // Aucune largeur du parc réel ne s'y trouve — c'est plus étroit que tout écran vendu.
+    for (const windowWidth of REAL_WIDTHS) {
+      expect(windowWidth).toBeGreaterThanOrEqual(minimumWindowWidth('android', 5));
+    }
+    // En deçà, le drapeau tombe à `false` : c'est une DÉCLARATION, pas un silence.
+    expect(tabBarGeometry(1, metrics('android', { windowWidth: 260 })).touchWidthHeld).toBe(false);
+    expect(tabBarGeometryBounds(metrics('android', { windowWidth: 260 })).touchWidthHeld).toBe(
+      false,
+    );
+    // Et le retrait est alors ramené à zéro : tout ce qui pouvait céder a cédé.
+    expect(affordableSideInset('android', 260, 5)).toBe(0);
+  });
+
+  it('avec MOINS d’onglets, le seuil descend — le nombre d’onglets est bien le facteur', () => {
+    expect(minimumWindowWidth('android', 4)).toBe(274 - 48);
+    expect(minimumWindowWidth('android', 6)).toBe(274 + 48);
   });
 });
 
@@ -419,14 +503,63 @@ describe('contraste AA — prouvé par échantillonnage, jamais par raisonnement
     expect(mixTint('#0C2340', '#5B6B7B', 1)).toBe('#5B6B7B');
   });
 
-  it('reproduit la table de contraste du socle (A23) au centième près', () => {
+  /**
+   * ─── L'ÉPINGLE DE LA ROUE DÉCLARÉE n° 1 ────────────────────────────────────────────────
+   *
+   * `contrastRatio` est la QUATRIÈME implémentation WCAG du dépôt, et la seule exportée
+   * publiquement — le fichier de logique le déclare et l'assume. C'est ICI qu'on l'empêche de
+   * devenir une quatrième VÉRITÉ. Les DIX-HUIT cellules ci-dessous sont celles de la table A23
+   * du socle (04 § 2), que le contrôle `C4` de `scripts/check-mobile-experience-docs.mjs`
+   * recalcule indépendamment depuis `@bob/tokens`, en Node pur et avec sa propre écriture de la
+   * formule. La chaîne est fermée : notre fonction → table du socle ← `C4` ← tokens.
+   *
+   * LA TOLÉRANCE EST CELLE DU CONTRÔLE `C4`, pas une tolérance de confort : `0,011`, exactement
+   * la valeur qu'il applique à la même table (`Math.abs(actual - printed[i]) > 0.011`). Les
+   * nombres du socle sont publiés arrondis au centième ; élargir au-delà laisserait passer une
+   * dérive, resserrer en deçà rendrait rouge un couple parfaitement conforme. C'est assez serré
+   * pour qu'une dérive d'exposant (2,4 → 2,2) ou de coefficient fasse rougir — c'est vérifié.
+   */
+  const C4_TOLERANCE = 0.011;
+
+  it('ÉPINGLE les 18 cellules de la table A23 du socle, à la tolérance du contrôle `C4`', () => {
+    const roles = [
+      resolveColorRole('navigation.active'),
+      resolveColorRole('navigation.assistantActive'),
+      resolveColorRole('navigation.inactive'),
+    ] as const;
+    const table: readonly (readonly [string, readonly [number, number, number]])[] = [
+      [surfaceTint.light.marine.flat, [14.69, 7.36, 5.1]],
+      [surfaceTint.light.ai.flat, [14.49, 7.26, 5.03]],
+      [surfaceTint.light.neutral.raised, [13.55, 6.78, 4.7]],
+      [surfaceTint.light.marine.raised, [12.91, 6.46, 4.48]],
+      [surfaceTint.light.neutral.border, [12.57, 6.29, 4.36]],
+      [surfaceTint.light.marine.border, [11.6, 5.81, 4.02]],
+    ];
+    for (const [background, expected] of table) {
+      roles.forEach((role, at) => {
+        const gap = Math.abs(contrastRatio(role, background) - (expected[at] as number));
+        expect(gap, `${role} sur ${background}`).toBeLessThanOrEqual(C4_TOLERANCE);
+      });
+    }
+  });
+
+  it('reproduit le VERDICT AA / sous-AA de la table A23, teinte par teinte', () => {
     const inactive = resolveColorRole('navigation.inactive');
-    expect(contrastRatio(inactive, surfaceTint.light.marine.flat)).toBeCloseTo(5.1, 1);
-    expect(contrastRatio(inactive, surfaceTint.light.neutral.raised)).toBeCloseTo(4.7, 1);
-    // La teinte que la rédaction A3 donnait en exemple tombe SOUS le seuil : elle est écartée.
-    expect(contrastRatio(inactive, surfaceTint.light.marine.raised)).toBeLessThan(
-      WCAG_AA_NORMAL_TEXT,
-    );
+    for (const tint of [
+      surfaceTint.light.marine.flat,
+      surfaceTint.light.ai.flat,
+      surfaceTint.light.neutral.raised,
+    ]) {
+      expect(contrastRatio(inactive, tint), tint).toBeGreaterThanOrEqual(WCAG_AA_NORMAL_TEXT);
+    }
+    // Les trois qui tombent — dont celle que la rédaction A3 donnait en exemple.
+    for (const tint of [
+      surfaceTint.light.marine.raised,
+      surfaceTint.light.neutral.border,
+      surfaceTint.light.marine.border,
+    ]) {
+      expect(contrastRatio(inactive, tint), tint).toBeLessThan(WCAG_AA_NORMAL_TEXT);
+    }
   });
 
   it.each(['light', 'dark'] as const)(
