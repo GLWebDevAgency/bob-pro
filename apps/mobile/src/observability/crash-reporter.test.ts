@@ -65,6 +65,20 @@ describe('Souveraineté — seule la région UE est admise', () => {
   });
 });
 
+describe('Build de développement — canal dormant (SPEC_SYSTEME_ERREUR §5.3)', () => {
+  it('un build __DEV__ reste dormant MÊME avec un DSN UE valide, sans jamais lever', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    expect(resolveCrashReporterConfig(EU_DSN, 'production', true)).toBeNull();
+
+    expect(String(warn.mock.calls[0]?.[0])).toContain('build de développement');
+  });
+
+  it('hors dev (défaut des tests node), le même DSN active le canal', () => {
+    expect(resolveCrashReporterConfig(EU_DSN, 'production', false)?.dsn).toBe(EU_DSN);
+  });
+});
+
 describe('Initialisation — jamais une cause de plantage', () => {
   it('initialise le SDK avec les options minimisées quand le DSN est conforme', async () => {
     const sdk = sdkDouble();
