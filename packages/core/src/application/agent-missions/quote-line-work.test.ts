@@ -413,6 +413,50 @@ describe('transitions de proposition M2-A-2', () => {
     expect(parseAgentMissionQuoteLineWork(patched.value)).toEqual(patched);
   });
 
+  it('ne marque pas comme override une graphie équivalente de l’unité catalogue', () => {
+    const current = queued({
+      state: 'awaiting_details',
+      requiredFact: 'unit',
+      catalogueResolution: 'selected',
+      catalogueItemId: selectedCatalogue.id,
+      expectedCatalogueRevision: selectedCatalogue.revision,
+      unit: 'jour',
+    });
+    expect(patchQuoteLineFactOnWork({
+      workItem: current,
+      expectedRevision: 1,
+      patch: { field: 'unit', value: 'heure' },
+      scope: 'answer_required_fact',
+      selectedCatalogue: { ...selectedCatalogue, unit: 'heures' },
+      selectedCatalogueStatus: 'matched',
+      occurredAt,
+    })).toMatchObject({
+      ok: true,
+      value: {
+        unit: 'heure',
+        catalogueUnitOverrideConfirmed: false,
+        state: 'queued',
+        revision: 2,
+      },
+    });
+
+    expect(patchQuoteLineFactOnWork({
+      workItem: current,
+      expectedRevision: 1,
+      patch: { field: 'unit', value: 'pièce' },
+      scope: 'answer_required_fact',
+      selectedCatalogue: { ...selectedCatalogue, unit: 'unité' },
+      selectedCatalogueStatus: 'matched',
+      occurredAt,
+    })).toMatchObject({
+      ok: true,
+      value: {
+        unit: 'pièce',
+        catalogueUnitOverrideConfirmed: true,
+      },
+    });
+  });
+
   it('conserve la correction mais relance la résolution si le catalogue est périmé', () => {
     expect(patchQuoteLineFactOnWork({
       workItem: queued({

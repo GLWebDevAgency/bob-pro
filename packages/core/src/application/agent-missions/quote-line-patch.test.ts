@@ -12,6 +12,10 @@ describe('normalizeAgentMissionQuoteLinePatch', () => {
       { field: 'quantity', quantityMilli: 2_500 },
     ],
     [
+      { field: 'unit', value: 'heures' },
+      { field: 'unit', value: 'heure' },
+    ],
+    [
       {
         field: 'unit_price',
         decimal: '55',

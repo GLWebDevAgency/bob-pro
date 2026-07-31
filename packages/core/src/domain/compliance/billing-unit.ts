@@ -1,4 +1,8 @@
 import { err, ok, type DomainResult } from '../../shared-kernel/result';
+import {
+  resolveBillingUnitReference,
+  type StandardBillingUnitReference,
+} from '../billing/shared/billing-unit-reference';
 
 /** Sous-ensemble UN/ECE Recommendation 20 réellement proposé par Bob. */
 export type BillingUneceUnitCode =
@@ -13,18 +17,22 @@ export type BillingUneceUnitCode =
   | 'LTR' // litre
   | 'LS'; // forfait (lump sum)
 
-function canonicalBillingUnit(value: string): string {
-  return value
-    .trim()
-    .toLocaleLowerCase('fr-FR')
-    .normalize('NFD')
-    .replace(/\p{Diacritic}/gu, '')
-    .replace(/[²]/gu, '2')
-    .replace(/[³]/gu, '3')
-    .replace(/[._]/gu, ' ')
-    .replace(/\s+/gu, ' ')
-    .replace(/^1\s+/u, '');
-}
+const UNECE_BY_STANDARD_UNIT: Readonly<
+  Record<StandardBillingUnitReference, BillingUneceUnitCode>
+> = Object.freeze({
+  unité: 'C62',
+  pièce: 'C62',
+  heure: 'HUR',
+  jour: 'DAY',
+  mètre: 'MTR',
+  kilomètre: 'KMT',
+  'm²': 'MTK',
+  'm³': 'MTQ',
+  kilogramme: 'KGM',
+  litre: 'LTR',
+  forfait: 'LS',
+  lot: 'LS',
+});
 
 /**
  * Traduit l'unité humaine conservée dans la pièce vers son code international. Une unité
@@ -35,21 +43,10 @@ export function billingUnitToUneceCode(
   unit: string | null | undefined,
 ): DomainResult<BillingUneceUnitCode> {
   if (unit === null || unit === undefined || unit.trim().length === 0) return ok('C62');
-  const canonical = canonicalBillingUnit(unit);
-  const mappings: readonly [RegExp, BillingUneceUnitCode][] = [
-    [/^(?:u|unite?s?|piece?s?)$/u, 'C62'],
-    [/^(?:h|heure?s?|hr?s?)$/u, 'HUR'],
-    [/^(?:j|jour?s?)$/u, 'DAY'],
-    [/^(?:m|metre?s?)$/u, 'MTR'],
-    [/^(?:km|kilometre?s?)$/u, 'KMT'],
-    [/^(?:m\s?2|metre?s? carre?s?)$/u, 'MTK'],
-    [/^(?:m\s?3|metre?s? cube?s?)$/u, 'MTQ'],
-    [/^(?:kg|kilogramme?s?)$/u, 'KGM'],
-    [/^(?:l|litre?s?)$/u, 'LTR'],
-    [/^(?:forfait|lot)$/u, 'LS'],
-  ];
-  const matched = mappings.find(([pattern]) => pattern.test(canonical));
-  if (matched !== undefined) return ok(matched[1]);
+  const resolved = resolveBillingUnitReference(unit);
+  if (resolved?.standard !== null && resolved?.standard !== undefined) {
+    return ok(UNECE_BY_STANDARD_UNIT[resolved.standard]);
+  }
   return err({
     code: 'VALIDATION',
     field: 'unit',

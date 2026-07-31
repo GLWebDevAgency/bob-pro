@@ -52,6 +52,21 @@ describe('normalizeAgentMissionQuoteLineCandidate', () => {
     });
   });
 
+  it('canonise les alias sûrs d’unité et conserve les unités métier libres', () => {
+    expect(normalizeAgentMissionQuoteLineCandidate(candidate({
+      unitReference: 'heures',
+    }))).toMatchObject({
+      ok: true,
+      value: { unit: 'heure' },
+    });
+    expect(normalizeAgentMissionQuoteLineCandidate(candidate({
+      unitReference: 'machine',
+    }))).toMatchObject({
+      ok: true,
+      value: { unit: 'machine' },
+    });
+  });
+
   it('accepte les faits absents sans fabriquer de valeur', () => {
     expect(normalizeAgentMissionQuoteLineCandidate(candidate({
       categoryHint: null,

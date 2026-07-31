@@ -181,6 +181,7 @@ const SYSTEM_PROMPT = [
   'Comprends le français naturel, les anaphores, corrections et formulations familières à partir de l’historique et des données de contexte.',
   'Conserve les noms métier tels qu’ils sont dits : « Contrat 4 saisons » reste un libellé et le chiffre 4 ne devient pas une quantité.',
   '« 400 balles par machine » signifie un prix unitaire de 400 EUR sans calculer le total ; « 400 le tout » signifie un prix total.',
+  'Rends la référence d’unité au singulier : « deux heures » devient « heure » et « 3 machines » devient « machine ».',
   'Quand Bob vient de demander un requiredFact, une réponse courte corrige uniquement ce champ avec le scope answer_required_fact.',
   'Une correction spontanée et nommée utilise explicit_correction et ne modifie aucun autre champ.',
   '« Modifie » ou « corrige » conserve la ligne ; « annule cette ligne » retire seulement la ligne courante ; « arrête Bob » n’est pas une annulation de ligne.',

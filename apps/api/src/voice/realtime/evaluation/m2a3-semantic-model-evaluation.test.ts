@@ -89,7 +89,10 @@ function fakeLlm(caseId: string): LlmPort {
   };
 }
 
-function appendedLineResult(serviceReference: string) {
+function appendedLineResult(
+  serviceReference: string,
+  unitReference: string | null = 'heure',
+) {
   return {
     status: 'mission_frame' as const,
     plannerDurationMs: 1,
@@ -102,7 +105,7 @@ function appendedLineResult(serviceReference: string) {
           serviceReference,
           categoryHint: 'labor' as const,
           quantityDecimal: '2',
-          unitReference: 'heure',
+          unitReference,
           unitPriceDecimal: '55',
           currency: 'EUR' as const,
           priceBasis: 'per_unit' as const,
@@ -229,6 +232,26 @@ describe('M2-A-3 — corpus modèle sémantique déterministe', () => {
       );
       expect(result.passed).toBe(false);
       expect(result.issues).toContain('service_label_unverified_content');
+    }
+  });
+
+  it('compare l’unité selon le canonique métier partagé sans confondre absence ou C62', () => {
+    const evaluationCase = M2A3_SEMANTIC_MODEL_CORPUS[0];
+
+    for (const equivalent of ['heure', 'heures', 'h', '1 h']) {
+      expect(evaluateM2A3SemanticModelCase(
+        evaluationCase,
+        appendedLineResult('Main-d’œuvre plomberie', equivalent),
+      )).toMatchObject({ passed: true, issues: [] });
+    }
+
+    for (const different of [null, 'jour', 'forfait', 'unité']) {
+      const result = evaluateM2A3SemanticModelCase(
+        evaluationCase,
+        appendedLineResult('Main-d’œuvre plomberie', different),
+      );
+      expect(result.passed).toBe(false);
+      expect(result.issues).toContain('unit_mismatch');
     }
   });
 

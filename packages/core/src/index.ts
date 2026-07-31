@@ -9,6 +9,7 @@ export * from './domain/billing/shared/vat-rate';
 export * from './domain/billing/shared/doc-number';
 export * from './domain/billing/shared/quantity';
 export * from './domain/billing/shared/line-item';
+export * from './domain/billing/shared/billing-unit-reference';
 export * from './domain/billing/shared/totals';
 export * from './domain/billing/shared/purchase-order-ref';
 export * from './domain/billing/shared/discount';

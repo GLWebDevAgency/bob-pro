@@ -324,6 +324,7 @@ describe('parseQuoteCreationSemanticToolCallV2', () => {
 
     expect(linesTool.schemaAdherence).toBe('strict');
     expect(JSON.stringify(linesTool)).toContain('append_line_candidates');
+    expect(JSON.stringify(linesTool)).toContain('« deux heures » devient « heure »');
     expect(JSON.stringify(linesTool)).not.toContain('start_quote_creation');
     expect(JSON.stringify(linesTool)).not.toContain('select_presented_choice');
     expect(JSON.stringify(catalogueTool)).toContain('select_presented_choice');

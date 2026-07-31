@@ -390,7 +390,13 @@ opt-in qui :
   composition « sélection puis nouvelle ligne » reste fermée jusqu'à l'extraction isolée d'un
   reliquat exact de la parole courante. En attendant, un booléen non métier indique qu'une demande
   reste non traitée et force Bob à l'annoncer après le choix, y compris après relecture d'une
-  réponse réseau perdue ;
+  réponse réseau perdue. Les unités traversent le même résolveur métier fermé à l'entrée du
+  runtime, lors de la consommation du catalogue par la mission, dans la projection légale et dans
+  le scoreur : des graphies sûres telles que `heure`, `heures`, `h` et `1 h` deviennent `heure`,
+  sans faux négatif. La source catalogue reste lossless et n'est pas réécrite. Les unités libres
+  ne sont jamais singularisées génériquement ; `machine` et `machines` restent distinctes.
+  `unité` et `pièce` restent aussi distinctes dans le métier malgré leur code UN/ECE C62 commun.
+  Une absence ne vaut jamais `unité` dans la mission ;
 - utilise le mode strict uniquement sur les outils et fournisseurs qui le supportent, sans
   désactiver la capacité multi-actions des gestes globaux ni envoyer un champ OpenAI à un adapter
   tiers. Le contrat strict OpenAI est prévalidé localement selon son sous-ensemble documenté et

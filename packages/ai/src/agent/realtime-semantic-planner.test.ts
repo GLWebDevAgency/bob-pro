@@ -156,6 +156,9 @@ describe('planRealtimeSemanticTurn — monobrain strict', () => {
     );
 
     const options = model.complete.mock.calls[0]?.[1];
+    expect(options?.system).toContain(
+      '« deux heures » devient « heure » et « 3 machines » devient « machine »',
+    );
     expect(options?.toolCallConcurrency).toBe('single');
     expect(options?.tools).toHaveLength(1);
     expect(options?.tools?.[0]?.schemaAdherence).toBe('strict');

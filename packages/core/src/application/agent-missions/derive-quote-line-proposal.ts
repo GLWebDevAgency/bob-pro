@@ -2,6 +2,10 @@ import {
   calculateBillingLineTotalCents,
   MAX_BILLING_AMOUNT_CENTS,
 } from '../../domain/billing/shared/line-item';
+import {
+  equivalentBillingUnitReferences,
+  resolveBillingUnitReference,
+} from '../../domain/billing/shared/billing-unit-reference';
 import { sha256Hex } from '../../shared-kernel/sha256';
 import {
   appendResolvedQuoteDraftLine,
@@ -285,12 +289,14 @@ export function deriveQuoteLineProposal(input: {
     catalogue?.unit !== null
     && catalogue?.unit !== undefined
     && input.workItem.unit !== null
-    && input.workItem.unit !== catalogue.unit
+    && !equivalentBillingUnitReferences(input.workItem.unit, catalogue.unit)
     && !input.workItem.catalogueUnitOverrideConfirmed
   ) {
     return required('unit');
   }
-  const unit = input.workItem.unit ?? catalogue?.unit ?? null;
+  const unitReference = input.workItem.unit ?? catalogue?.unit ?? null;
+  if (unitReference === null) return required('unit');
+  const unit = resolveBillingUnitReference(unitReference)?.value ?? null;
   if (unit === null) return required('unit');
 
   const price = resolvePerUnitPrice({

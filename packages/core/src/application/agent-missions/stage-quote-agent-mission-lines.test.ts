@@ -151,6 +151,25 @@ describe('stageQuoteAgentMissionLinesInTransaction', () => {
     ]);
   });
 
+  it('persiste le canonique partagé de l’unité au bord transactionnel', async () => {
+    const tx = transaction({});
+
+    const result = await stageQuoteAgentMissionLinesInTransaction({
+      transaction: tx.value,
+      owner: OWNER,
+      mission: mission(),
+      confirmedLineCount: 0,
+      candidates: [{ ...CANDIDATE, unitReference: 'heures' }],
+      origin: 'user_voice',
+      occurredAt: OCCURRED_AT,
+      ids: new SequenceIds(),
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(tx.inserted).toHaveLength(1);
+    expect(tx.inserted[0]?.[0]?.unit).toBe('heure');
+  });
+
   it('refuse V1 avant de verrouiller ou écrire la file', async () => {
     const tx = transaction({});
 

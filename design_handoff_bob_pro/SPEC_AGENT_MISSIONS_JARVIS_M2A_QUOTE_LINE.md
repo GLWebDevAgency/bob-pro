@@ -82,6 +82,9 @@ Il étend l'autorité AgentMission déjà fusionnée.
 - ajout automatique d'une nouvelle entrée dans le catalogue ;
 - choix d'un chantier, remise globale, retenue de garantie ou acompte ;
 - dates de contrat, récurrence et missions autres que `quote_creation@1` ;
+- correspondance légale UN/ECE des unités métier libres lors d'une future émission Factur-X :
+  une unité non supportée bloque honnêtement l'émission tant qu'aucun choix explicite n'est
+  disponible ; elle ne retombe jamais silencieusement sur C62 ;
 - activation du protocole `openai-native-webrtc-v1` pour AgentMission ;
 - stockage de transcript, audio, prompt, réponse LLM ou nom de catalogue dans le journal ;
 - Mistral V3 ;
@@ -357,6 +360,10 @@ Règles :
   par la quantité est exacte ; sinon Bob demande le prix unitaire ou la répartition et ne fait
   aucun arrondi caché ;
 - `deux heures` doit produire quantité `2` et unité `heure` ;
+- les alias standards fermés sont canonisés par le même résolveur après le modèle, avant toute
+  persistance et toute comparaison catalogue (`heures`, `h`, `1 h` → `heure`). Il ne singularise
+  jamais une unité libre ; `machine` et `machines`, `unité` et `pièce`, `forfait` et `lot`
+  demeurent des références métier distinctes ;
 - une TVA absente de la parole courante reste `vatRateHint=null` ; `0` signifie exclusivement que
   l'utilisateur a réellement donné un taux nul dans ce tour ;
 - `Contrat 4 saisons` reste un `serviceReference` complet et ne fabrique ni quantité ni date ;
@@ -663,7 +670,11 @@ transactionnelle et ne doit pas être reparcouru pour deviner si une recherche r
 Une entrée catalogue complète seulement les faits absents. Le libellé, la catégorie et l'unité
 catalogue sont les valeurs proposées de référence. Un prix ou une quantité explicitement dits par
 l'utilisateur ne sont jamais écrasés par le catalogue : le diff affiche l'écart. Une contradiction
-de catégorie ou d'unité est demandée explicitement au lieu de choisir silencieusement. Pour une
+de catégorie ou d'unité est demandée explicitement au lieu de choisir silencieusement. Les graphies
+standards sûres sont comparées après résolution partagée afin qu'un historique `heures` et un
+catalogue `heure` ne créent pas une fausse contradiction ; les unités métier distinctes ne sont
+jamais fusionnées selon leur seul code légal. Cette résolution appartient à la consommation par
+la mission : elle ne réécrit ni les lignes historiques ni la source catalogue lossless. Pour une
 ligne libre, le `serviceReference` normalisé par le modèle est une proposition de libellé avec
 provenance `user_voice`; il ne devient contenu financier qu'à la confirmation.
 
@@ -1447,6 +1458,9 @@ M2-A-1 est `implemented` uniquement si, flag M2-A toujours OFF :
       session sans mutation silencieuse ;
 - [ ] `400 balles par machine`, quantité `3` et unité `machine` deviennent 40 000 centimes,
       quantité millième `3000`, sans total calculé par le LLM ;
+- [ ] `heure`, `heures`, `h` et `1 h` persistent `heure` et ne déclenchent pas d'arbitrage face à
+      un catalogue `heure`; une unité absente, `jour`, `unité` ou `pièce` distincte reste refusée
+      ou explicitement arbitrée selon la phase ;
 - [ ] « Contrat 4 saisons » ne fabrique ni quantité ni date ;
 - [ ] « non, 450 et pas 400 » corrige seulement la proposition courante ;
 - [ ] « modifie la ligne » revient aux détails alors que « annule cette ligne » retire seulement

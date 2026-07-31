@@ -9,6 +9,7 @@ import {
   type RealtimeSemanticPlannerInput,
   type RealtimeSemanticPlannerResult,
 } from '@bob/ai';
+import { equivalentBillingUnitReferences } from '@bob/core';
 import {
   isLlmStrictSchemaError,
   llmProviderFailureCategory,
@@ -612,7 +613,7 @@ export function evaluateM2A3SemanticModelCase(
         normalizeDecimal(line?.quantityDecimal ?? null) !== normalizeDecimal(oracle.quantityDecimal)
       )
         issues.push('quantity_mismatch');
-      if (normalizeToken(line?.unitReference ?? '') !== normalizeToken(oracle.unit)) {
+      if (!equivalentBillingUnitReferences(line?.unitReference ?? null, oracle.unit)) {
         issues.push('unit_mismatch');
       }
       if (

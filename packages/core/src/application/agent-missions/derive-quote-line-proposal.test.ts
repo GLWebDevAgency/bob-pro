@@ -222,6 +222,56 @@ describe('deriveQuoteLineProposal', () => {
     });
   });
 
+  it('compare catalogue et voix avec le même canonique d’unité métier', () => {
+    const selected = {
+      ...catalogue,
+      unit: 'heure',
+    };
+    expect(deriveQuoteLineProposal({
+      workItem: work({
+        catalogueResolution: 'selected',
+        catalogueItemId: selected.id,
+        expectedCatalogueRevision: selected.revision,
+        unit: 'heures',
+      }),
+      payload: payload(),
+      selectedCatalogue: selected,
+      vatContext,
+    })).toMatchObject({
+      kind: 'resolved',
+      proposal: {
+        facts: { unit: 'heure' },
+        line: { unit: 'heure' },
+      },
+    });
+
+    for (const distinctUnit of ['jour', 'unité']) {
+      expect(deriveQuoteLineProposal({
+        workItem: work({
+          catalogueResolution: 'selected',
+          catalogueItemId: selected.id,
+          expectedCatalogueRevision: selected.revision,
+          unit: distinctUnit,
+        }),
+        payload: payload(),
+        selectedCatalogue: selected,
+        vatContext,
+      })).toEqual({ kind: 'required_fact', requiredFact: 'unit' });
+    }
+
+    expect(deriveQuoteLineProposal({
+      workItem: work({
+        catalogueResolution: 'selected',
+        catalogueItemId: selected.id,
+        expectedCatalogueRevision: selected.revision,
+        unit: 'pièce',
+      }),
+      payload: payload(),
+      selectedCatalogue: { ...selected, unit: 'unité' },
+      vatContext,
+    })).toEqual({ kind: 'required_fact', requiredFact: 'unit' });
+  });
+
   it('convertit un total exact avec BigInt et refuse une division inexacte', () => {
     expect(deriveQuoteLineProposal({
       workItem: work({

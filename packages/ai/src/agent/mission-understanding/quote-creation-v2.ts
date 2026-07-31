@@ -89,7 +89,12 @@ const LINE_SCHEMA = {
     service_reference: { type: ['string', 'null'], maxLength: MAX_REFERENCE_LENGTH },
     category_hint: { type: ['string', 'null'], enum: [...CATEGORY_HINTS, null] },
     quantity_decimal: { type: ['string', 'null'], maxLength: 64 },
-    unit_reference: { type: ['string', 'null'], maxLength: MAX_UNIT_LENGTH },
+    unit_reference: {
+      type: ['string', 'null'],
+      maxLength: MAX_UNIT_LENGTH,
+      description:
+        'Référence métier au singulier : « deux heures » devient « heure », « 3 machines » devient « machine ».',
+    },
     unit_price_decimal: { type: ['string', 'null'], maxLength: 64 },
     currency: { type: ['string', 'null'], enum: ['EUR', null] },
     price_basis: { type: ['string', 'null'], enum: [...PRICE_BASES, null] },
