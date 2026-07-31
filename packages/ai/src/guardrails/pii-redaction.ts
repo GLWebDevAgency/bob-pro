@@ -96,7 +96,7 @@ const IBAN_CANDIDATE = new RegExp(
 // Téléphone FR : formes internationale et locale, y compris (0), parenthèses et séparateurs
 // usuels. Les bornes numériques empêchent d'absorber un chiffre voisin.
 const PHONE_FR_INTERNATIONAL =
-  /(?<!\d)\+33(?:[\s./-]*\(0\))?[\s./-]*[1-9](?:[\s./-]?\d{2}){4}(?!\d)/g;
+  /(?<!\d)(?:\+33|\(\+33\)|00[\s./-]*33)(?:[\s./-]*(?:\(0\)|0))?[\s./-]*[1-9](?:[\s./-]?\d{2}){4}(?!\d)/g;
 const PHONE_FR_LOCAL =
   /(?<!\d)\(?0[1-9]\)?(?:[\s./-]?\d{2}){4}(?!\d)/g;
 // SIREN (9 chiffres) / SIRET (14), contigu ou groupé 3-3-3[-5]. N'attrape pas

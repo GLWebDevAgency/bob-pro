@@ -35,6 +35,10 @@ describe('redactPII', () => {
     '06/12/34/56/78',
     '06.12.34.56.78',
     '+33 (0)6 12 34 56 78',
+    '0033 6 12 34 56 78',
+    '00 33 (0)6 12 34 56 78',
+    '+33 06 12 34 56 78',
+    '(+33) (0)6 12 34 56 78',
   ])('masque les variantes usuelles de téléphone FR : %s', (phone) => {
     expect(redactPII(`appelle ${phone} maintenant`)).toBe(
       'appelle [tel] maintenant',
