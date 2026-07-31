@@ -10,7 +10,10 @@ import {
 } from './m2a3-semantic-model-evaluation';
 
 function operationFor(caseId: string): Record<string, unknown> {
-  if (caseId === 'catalogue-anaphora-price') {
+  if (
+    caseId === 'catalogue-anaphora-price'
+    || caseId === 'catalogue-stored-injection'
+  ) {
     return {
       kind: 'select_presented_choice',
       ordinal: 1,
@@ -98,15 +101,16 @@ function appendedLineResult(serviceReference: string) {
 }
 
 describe('M2-A-3 — corpus modèle sémantique déterministe', () => {
-  it('versionne cinq cas distincts sans identifiant ni donnée personnelle', () => {
+  it('versionne six cas distincts, dont une injection stockée, sans donnée personnelle', () => {
     expect(M2A3_SEMANTIC_MODEL_CORPUS.map((entry) => entry.id)).toEqual([
       'line-paraphrase-direct',
       'line-paraphrase-familiar',
       'catalogue-anaphora-price',
+      'catalogue-stored-injection',
       'required-fact-elliptical',
       'confirmation-multiturn-correction',
     ]);
-    expect(new Set(M2A3_SEMANTIC_MODEL_CORPUS.map((entry) => entry.id)).size).toBe(5);
+    expect(new Set(M2A3_SEMANTIC_MODEL_CORPUS.map((entry) => entry.id)).size).toBe(6);
     expect(JSON.stringify(M2A3_SEMANTIC_MODEL_CORPUS)).not.toMatch(
       /customerId|missionId|choiceId|proposalId|diffHash|@/u,
     );
@@ -216,9 +220,9 @@ describe('M2-A-3 — corpus modèle sémantique déterministe', () => {
     const evidence = publicM2A3SemanticEvidence({
       releaseSha: 'a'.repeat(40),
       requestedModel: 'gpt-test',
-      completionCount: 5,
+      completionCount: 6,
       generateCount: 0,
-      providerRequestCount: 5,
+      providerRequestCount: 6,
       failureStage: null,
       results: M2A3_SEMANTIC_MODEL_CORPUS.map((entry) => ({
         id: entry.id,
@@ -235,10 +239,10 @@ describe('M2-A-3 — corpus modèle sémantique déterministe', () => {
       schema: 'bob.m2a3.semantic-model-eval',
       version: 1,
       scope: 'quote_line_m2a3',
-      corpusVersion: 1,
-      completionCount: 5,
+      corpusVersion: 2,
+      completionCount: 6,
       generateCount: 0,
-      providerRequestCount: 5,
+      providerRequestCount: 6,
       outcome: 'passed',
     });
     expect(serialized).not.toContain('utterance');
@@ -251,9 +255,9 @@ describe('M2-A-3 — corpus modèle sémantique déterministe', () => {
     const evidence = publicM2A3SemanticEvidence({
       releaseSha: 'b'.repeat(40),
       requestedModel: 'gpt-test',
-      completionCount: 5,
+      completionCount: 6,
       generateCount: 0,
-      providerRequestCount: 6,
+      providerRequestCount: 7,
       failureStage: null,
       results: M2A3_SEMANTIC_MODEL_CORPUS.map((entry) => ({
         id: entry.id,
@@ -267,7 +271,7 @@ describe('M2-A-3 — corpus modèle sémantique déterministe', () => {
 
     expect(evidence).toMatchObject({
       outcome: 'failed',
-      providerRequestCount: 6,
+      providerRequestCount: 7,
     });
   });
 });

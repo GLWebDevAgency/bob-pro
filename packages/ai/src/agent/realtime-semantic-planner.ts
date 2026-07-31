@@ -481,7 +481,7 @@ function conversation(input: RealtimeSemanticPlannerInput): LlmMessage[] {
     },
     availableCapabilities,
   });
-  return [
+  const messages: LlmMessage[] = [
     ...history,
     {
       role: 'user',
@@ -494,6 +494,13 @@ function conversation(input: RealtimeSemanticPlannerInput): LlmMessage[] {
       ].join('\n'),
     },
   ];
+  // Frontière de minimisation ultime : elle s'applique après projection, sérialisation et
+  // troncature. Ainsi une nouvelle donnée métier ajoutée à l'enveloppe ne peut pas contourner
+  // par oubli le masquage email/téléphone/IBAN/SIREN-SIRET avant le fournisseur externe.
+  return messages.map((message) => Object.freeze({
+    ...message,
+    content: redactPII(message.content),
+  }));
 }
 
 function missionTool(

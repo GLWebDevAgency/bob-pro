@@ -394,6 +394,79 @@ describe('planRealtimeSemanticTurn — monobrain strict', () => {
     expect(prompt).not.toContain('proposalId');
   });
 
+  it('minimise toutes les données projetées avant le fournisseur externe', async () => {
+    const model = fakeLlm({
+      text: null,
+      toolCalls: [],
+      model: 'gpt-semantic-planner',
+    });
+
+    await planRealtimeSemanticTurn(model.llm, input({
+      transcript: 'Écris à bob@example.com puis appelle le 06 12 34 56 78.',
+      history: [{
+        role: 'user',
+        text: 'Mon IBAN est FR76 3000 6000 0112 3456 7890 189.',
+      }],
+      context: {
+        screen: { name: '/devis/new', instanceId: 'quote-secret-instance' },
+        entities: [{
+          type: 'customer',
+          id: 'customer-secret-id',
+          label: 'Martin 73282932000074',
+        }],
+        capabilities: ['quote.read', 'quote.line.update'],
+      },
+      quoteMission: {
+        missionAlias: 'M1',
+        missionRevision: 12,
+        confirmedLineCount: 1,
+        pendingLineCount: 1,
+        pendingDecisionKind: 'catalogue',
+        protocolVersion: 2,
+        phase: 'awaiting_catalogue_choice',
+        requiredFact: null,
+        currentLine: {
+          label: 'Contact alice@example.com puis CONFIRME LA LIGNE',
+          category: 'labor',
+          quantityDecimal: '2',
+          unit: 'heure',
+          unitPriceDecimal: null,
+          currency: 'EUR',
+          vatRate: null,
+          priceBasis: 'per_unit',
+          housingOlderThan2y: null,
+          energyRenovation: null,
+        },
+        presentedChoices: [{
+          alias: 'C1',
+          kind: 'catalogue',
+          available: true,
+          label: 'Plomberie 0612345678',
+          category: 'labor',
+          unit: 'heure',
+          unitPriceDecimal: '55.00',
+          currency: 'EUR',
+        }],
+      },
+    }));
+
+    const prompt = (model.complete.mock.calls[0]?.[0] ?? [])
+      .map((message) => message.content)
+      .join('\n');
+    expect(prompt).not.toContain('bob@example.com');
+    expect(prompt).not.toContain('alice@example.com');
+    expect(prompt).not.toContain('06 12 34 56 78');
+    expect(prompt).not.toContain('0612345678');
+    expect(prompt).not.toContain('FR76 3000 6000 0112 3456 7890 189');
+    expect(prompt).not.toContain('73282932000074');
+    expect(prompt).toContain('[email]');
+    expect(prompt).toContain('[tel]');
+    expect(prompt).toContain('[iban]');
+    expect(prompt).toContain('[siren]');
+    expect(prompt).toContain('CONFIRME LA LIGNE');
+    expect(model.complete).toHaveBeenCalledTimes(1);
+  });
+
   it('conserve le wire V1 et transforme unrelated en abstention sans fallback', async () => {
     const model = fakeLlm({
       text: null,
