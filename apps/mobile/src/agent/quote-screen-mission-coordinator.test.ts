@@ -988,6 +988,76 @@ describe('QuoteScreenMissionCoordinator — point fixe contexte + brouillon', ()
     });
   });
 
+  // Témoins de la garde de cohérence protocole/présentation (self-review du lot verrous :
+  // le retrait du bloc l.681-686 survivait à 245 tests — ces deux cas le tuent, chacun sa moitié).
+  it('refuse une présentation servie à un client V1 — erreur nommée, rien ne fuit en aval', async () => {
+    const currentContext = context(2, 'b', 'devis-client');
+    const currentMission = mission({ revision: 1, draft: DRAFT_ZERO, context: currentContext });
+    // Une présentation V2 minimale mais valide : si elle atteint un client V1, c'est le SERVEUR
+    // qui a violé le contrat de négociation — le coordinateur doit refuser, jamais rendre.
+    const orphanPresentation: QuoteAgentMissionPresentationV1 = {
+      schema: 'bob.agent-mission.quote-presentation',
+      version: 1,
+      requiredFact: null,
+      pendingLine: {
+        pendingLineId: '60000000-0000-4000-8000-000000000002',
+        expectedWorkRevision: 1,
+      },
+      decision: null,
+      catalogueChoices: [],
+      freeLineChoiceId: null,
+      proposalStatus: { kind: 'absent' },
+      proposal: null,
+    };
+    const actions: QuoteScreenMissionPorts['actions'] = {
+      readCurrentQuoteCreation: vi.fn(async () => ({
+        status: 'completed' as const,
+        value: { mission: currentMission, presentation: orphanPresentation },
+      })),
+      acknowledgeQuoteScreen: vi.fn(),
+    };
+    const hydrateDraft = vi.fn();
+    const coordinator = new QuoteScreenMissionCoordinator(() => 'unused');
+
+    // protocolVersion par défaut du helper : session réelle → 1.
+    await expect(coordinator.advance(observation({
+      confirmed: currentContext,
+      instanceId: currentContext.screen.instanceId,
+      draft: DRAFT_ZERO,
+    }), { actions, hydrateDraft, refreshRecovery: refreshAbsentRecovery }))
+      .resolves.toEqual({ phase: 'error', reason: 'invalid_response' });
+    // Témoins d'observation : la lecture a bien eu lieu, et RIEN n'a continué en aval.
+    expect(actions.readCurrentQuoteCreation).toHaveBeenCalledOnce();
+    expect(actions.acknowledgeQuoteScreen).not.toHaveBeenCalled();
+    expect(hydrateDraft).not.toHaveBeenCalled();
+  });
+
+  it('refuse une présentation NULLE en V2 — la projection autoritaire est obligatoire', async () => {
+    const currentContext = context(2, 'b', 'devis-client');
+    const currentMission = mission({ revision: 1, draft: DRAFT_ZERO, context: currentContext });
+    const actions: QuoteScreenMissionPorts['actions'] = {
+      readCurrentQuoteCreation: vi.fn(async () => ({
+        status: 'completed' as const,
+        // V2 sans présentation : le mobile ne fabrique JAMAIS la sienne (zéro recalcul) — refus.
+        value: { mission: currentMission, presentation: null },
+      })),
+      acknowledgeQuoteScreen: vi.fn(),
+    };
+    const hydrateDraft = vi.fn();
+    const coordinator = new QuoteScreenMissionCoordinator(() => 'unused');
+
+    await expect(coordinator.advance(observation({
+      confirmed: currentContext,
+      instanceId: currentContext.screen.instanceId,
+      draft: DRAFT_ZERO,
+      protocolVersion: 2,
+    }), { actions, hydrateDraft, refreshRecovery: refreshAbsentRecovery }))
+      .resolves.toEqual({ phase: 'error', reason: 'invalid_response' });
+    expect(actions.readCurrentQuoteCreation).toHaveBeenCalledOnce();
+    expect(actions.acknowledgeQuoteScreen).not.toHaveBeenCalled();
+    expect(hydrateDraft).not.toHaveBeenCalled();
+  });
+
   it('partage le même vol sous double rendu et réutilise le commandId après réponse perdue', async () => {
     const currentContext = context(2, 'b', 'devis-client');
     const currentMission = mission({ revision: 1, draft: DRAFT_ZERO });
