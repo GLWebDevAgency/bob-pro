@@ -12,10 +12,11 @@
  *    confronte le rendu à LA FONCTION QUI L'A PRODUIT. Elle établit la NON-DIVERGENCE de deux
  *    écritures de la même formule, jamais la justesse de la formule. Si `tabBarGeometry()`
  *    était fausse, ces tests-là resteraient verts. Les valeurs que le socle CHIFFRE sont donc
- *    posées ailleurs, en LITTÉRAUX calculés à la main, calcul écrit en commentaire : bloc
- *    « 1bis » (largeurs, retraits, table d'acceptation 60/46/50), bloc « Dynamic Type »
- *    (50/58/60 et leur témoin), bloc « overflow » (les deux prémisses), bloc « palette » (les
- *    six hex et leur contraste). Ce sont ces trois blocs-là qui tuent une formule fausse ;
+ *    posées ailleurs, en LITTÉRAUX calculés à la main, calcul écrit en commentaire, dans QUATRE
+ *    blocs : « 1bis » (largeurs, retraits, table d'acceptation 60/46/50), « Dynamic Type »
+ *    (50/58/60 et leur témoin), « overflow » (les deux prémisses) et « palette » (les six hex et
+ *    leur contraste). Ce sont ces quatre blocs-là qui tuent une formule fausse — la rédaction
+ *    précédente en énumérait quatre et en annonçait trois ;
  *  · l'ORDRE DE PEINTURE, par la déclaration seule ;
  *  · le fail-CLOSED au PREMIER rendu : aucun détecteur de geste monté tant que le lecteur
  *    d'écran est inconnu ;

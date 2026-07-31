@@ -602,12 +602,14 @@ export function mixTint(from: string, to: string, t: number): string {
  * C'est une copie PARMI CINQ dans le dépôt, et la seule expédiée dans le barrel PUBLIC
  * `@bob/ui`. Elle se déclare, elle ne se cache pas. Les cinq, au 31/07/2026 :
  *
- *  1. `packages/tokens/src/index.test.ts` (l. 19-35) — certifie les paires de rôles livrées ;
- *  2. `packages/tokens/src/surface-veil.test.ts` (l. 47-51) — certifie les voiles de surface ;
- *  3. `scripts/check-mobile-experience-docs.mjs` (l. 131-134, contrôle `C4`) — RECALCULE la table
- *     de contraste du socle 04 § 2 depuis `@bob/tokens`, en Node pur ;
- *  4. `apps/mobile/src/components/bob-tab-bar.test.tsx` (l. 417-421) — recalcule le contraste sur
- *     les couleurs LUES DANS L'ARBRE RENDU, ce qu'aucune des autres ne fait ;
+ *  1. `packages/tokens/src/index.test.ts`, `relativeLuminance` (l. 19) — certifie les paires de
+ *     rôles livrées ;
+ *  2. `packages/tokens/src/surface-veil.test.ts`, `relativeLuminance` (l. 46) — certifie les
+ *     voiles de surface ;
+ *  3. `scripts/check-mobile-experience-docs.mjs`, `lin`/`lum` (l. 131-134, contrôle `C4`) —
+ *     RECALCULE la table de contraste du socle 04 § 2 depuis `@bob/tokens`, en Node pur ;
+ *  4. `apps/mobile/src/components/bob-tab-bar.test.tsx`, `wcagContrast` (l. 414) — recalcule le
+ *     contraste sur les couleurs LUES DANS L'ARBRE RENDU, ce qu'aucune des autres ne fait ;
  *  5. celle-ci.
  *
  * *(Rédaction précédente : « C'EST LA QUATRIÈME COPIE DU DÉPÔT […] Les quatre : » suivi d'une
