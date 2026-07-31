@@ -8,7 +8,7 @@ function fail(message) {
   throw new Error(`agent-mission-m1b-staging-readiness:${message}`);
 }
 
-export function parseM1BReadinessEnvironment(environment = process.env) {
+export function parseM1BReadinessEnvironment(environment = process.env, { observe = false } = {}) {
   const rawOrigin = environment.API_BASE_URL;
   let origin;
   try {
@@ -17,17 +17,17 @@ export function parseM1BReadinessEnvironment(environment = process.env) {
     fail('API_BASE_URL must be a valid URL');
   }
   if (
-    origin.protocol !== 'https:'
-    || origin.username
-    || origin.password
-    || origin.pathname !== '/'
-    || origin.search
-    || origin.hash
+    origin.protocol !== 'https:' ||
+    origin.username ||
+    origin.password ||
+    origin.pathname !== '/' ||
+    origin.search ||
+    origin.hash
   ) {
     fail('API_BASE_URL must be a credential-free HTTPS origin');
   }
-  const releaseSha = environment.BOB_M1B_RELEASE_SHA;
-  if (typeof releaseSha !== 'string' || !SHA.test(releaseSha)) {
+  const releaseSha = observe ? null : environment.BOB_M1B_RELEASE_SHA;
+  if (!observe && (typeof releaseSha !== 'string' || !SHA.test(releaseSha))) {
     fail('BOB_M1B_RELEASE_SHA must be an exact lowercase 40-hex SHA');
   }
   return Object.freeze({
@@ -38,22 +38,23 @@ export function parseM1BReadinessEnvironment(environment = process.env) {
 
 export function validateM1BReadinessPayload(payload, configuration) {
   if (
-    typeof payload !== 'object'
-    || payload === null
-    || Array.isArray(payload)
-    || payload.ready !== true
-    || payload.release?.sha !== configuration.releaseSha
-    || payload.release?.environment !== 'staging'
-    || payload.dependencies?.bobLiveSpeechAudit !== 'ready'
-    || payload.capabilities?.realtimeAdmissionCancellationFence !== 'v1'
-    || payload.capabilities?.agentMissionBootstrapReceipt !== 'v1'
-    || payload.network?.clientIpSource !== 'railway-x-real-ip'
+    typeof payload !== 'object' ||
+    payload === null ||
+    Array.isArray(payload) ||
+    payload.ready !== true ||
+    !SHA.test(payload.release?.sha ?? '') ||
+    (configuration.releaseSha !== null && payload.release.sha !== configuration.releaseSha) ||
+    payload.release?.environment !== 'staging' ||
+    payload.dependencies?.bobLiveSpeechAudit !== 'ready' ||
+    payload.capabilities?.realtimeAdmissionCancellationFence !== 'v1' ||
+    payload.capabilities?.agentMissionBootstrapReceipt !== 'v1' ||
+    payload.network?.clientIpSource !== 'railway-x-real-ip'
   ) {
     fail('the expected M1-B staging revision is not ready');
   }
   return Object.freeze({
     ready: true,
-    releaseSha: configuration.releaseSha,
+    releaseSha: payload.release.sha,
     releaseEnvironment: 'staging',
     bobLiveSpeechAudit: 'ready',
     realtimeAdmissionCancellationFence: 'v1',
@@ -102,15 +103,14 @@ async function request(fetchImpl, url, accept, timeoutMilliseconds) {
   }
 }
 
-export async function certifyM1BStagingReadiness(
-  environment = process.env,
-  dependencies = {},
-) {
-  const configuration = parseM1BReadinessEnvironment(environment);
+export async function certifyM1BStagingReadiness(environment = process.env, dependencies = {}) {
+  const configuration = parseM1BReadinessEnvironment(environment, {
+    observe: dependencies.observe === true,
+  });
   const fetchImpl = dependencies.fetchImpl ?? globalThis.fetch;
-  const sleep = dependencies.sleep ?? ((milliseconds) => (
-    new Promise((resolve) => setTimeout(resolve, milliseconds))
-  ));
+  const sleep =
+    dependencies.sleep ??
+    ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
   const attempts = dependencies.attempts ?? 18;
   if (typeof fetchImpl !== 'function') fail('fetch is unavailable');
 
@@ -141,10 +141,7 @@ export async function certifyM1BStagingReadiness(
         await response?.body?.cancel().catch(() => undefined);
       }
     } catch (error) {
-      if (
-        attempt === attempts
-        || !(error?.name === 'AbortError' || error instanceof TypeError)
-      ) {
+      if (attempt === attempts || !(error?.name === 'AbortError' || error instanceof TypeError)) {
         throw error;
       }
     }
@@ -166,7 +163,13 @@ export async function certifyM1BStagingReadiness(
 }
 
 async function main() {
-  const result = await certifyM1BStagingReadiness();
+  const [command] = process.argv.slice(2);
+  if (command !== undefined && command !== 'observe') {
+    fail('command must be observe or omitted');
+  }
+  const result = await certifyM1BStagingReadiness(process.env, {
+    observe: command === 'observe',
+  });
   process.stdout.write(
     `agent-mission-m1b-staging-readiness:ok:${result.releaseEnvironment}:${result.releaseSha}\n`,
   );
@@ -175,9 +178,9 @@ async function main() {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
     process.stderr.write(
-      `${error instanceof Error
-        ? error.message
-        : 'agent-mission-m1b-staging-readiness:unknown error'}\n`,
+      `${
+        error instanceof Error ? error.message : 'agent-mission-m1b-staging-readiness:unknown error'
+      }\n`,
     );
     process.exitCode = 1;
   });

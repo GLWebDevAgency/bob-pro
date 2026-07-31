@@ -1000,8 +1000,12 @@ export function loadEnv(): Env {
   const bobLive = resolveBobLiveEnv(parsed.data);
   const agentMissionKeyRing = resolveAgentMissionHmacKeyRing(parsed.data);
   const agentMissionsQuoteV1Enabled = parsed.data.BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED === 'true';
-  const agentMissionsQuoteM2AEnabled =
-    parsed.data.BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED === 'true';
+  const agentMissionsQuoteM2AEnabled = parsed.data.BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED === 'true';
+  if (agentMissionsQuoteM2AEnabled && parsed.data.CABINET_RELEASE_ENV !== 'staging') {
+    throw new Error(
+      'BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED=true est réservé à CABINET_RELEASE_ENV=staging.',
+    );
+  }
   if (agentMissionsQuoteM2AEnabled && !agentMissionsQuoteV1Enabled) {
     throw new Error(
       'BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED=true exige BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED=true.',

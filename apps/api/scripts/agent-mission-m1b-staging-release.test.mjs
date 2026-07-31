@@ -66,24 +66,23 @@ test('le gate est strictement staging et borne le drain', () => {
     60,
   );
   assert.equal(
-    parseM1BStagingReleaseEnvironment(
-      'restore-capacity',
-      environment(),
-    ).phase,
+    parseM1BStagingReleaseEnvironment('restore-capacity', environment()).phase,
     'restore-capacity',
   );
   assert.throws(
-    () => parseM1BStagingReleaseEnvironment(
-      'predeploy',
-      environment({ CABINET_RELEASE_ENV: 'production' }),
-    ),
+    () =>
+      parseM1BStagingReleaseEnvironment(
+        'predeploy',
+        environment({ CABINET_RELEASE_ENV: 'production' }),
+      ),
     /staging-only/u,
   );
   assert.throws(
-    () => parseM1BStagingReleaseEnvironment(
-      'postdeploy',
-      environment({ BOB_LIVE_DRAIN_TIMEOUT_SECONDS: '29' }),
-    ),
+    () =>
+      parseM1BStagingReleaseEnvironment(
+        'postdeploy',
+        environment({ BOB_LIVE_DRAIN_TIMEOUT_SECONDS: '29' }),
+      ),
     /outside its allowed range/u,
   );
   assert.throws(
@@ -94,11 +93,7 @@ test('le gate est strictement staging et borne le drain', () => {
 
 test('predeploy ferme, stage et certifie sans jamais rouvrir', async () => {
   const events = [];
-  const result = await runM1BStagingRelease(
-    'predeploy',
-    environment(),
-    dependencies(events),
-  );
+  const result = await runM1BStagingRelease('predeploy', environment(), dependencies(events));
 
   assert.deepEqual(events, [
     'database',
@@ -121,11 +116,7 @@ test('predeploy ferme, stage et certifie sans jamais rouvrir', async () => {
 
 test('postdeploy retire puis ne rouvre qu’après toutes les preuves', async () => {
   const events = [];
-  const result = await runM1BStagingRelease(
-    'postdeploy',
-    environment(),
-    dependencies(events),
-  );
+  const result = await runM1BStagingRelease('postdeploy', environment(), dependencies(events));
 
   assert.deepEqual(events, [
     'database',
@@ -144,37 +135,33 @@ test('postdeploy retire puis ne rouvre qu’après toutes les preuves', async ()
 
 test('la restauration de capacité active est un no-op sans toucher au keyspace', async () => {
   const events = [];
-  const result = await runM1BStagingRelease(
-    'restore-capacity',
-    environment(),
-    {
-      certifyDatabase() {
-        events.push('database');
-      },
-      async assertStrictMigrationState() {
-        events.push('migrations');
-        return { appliedCount: 87, pendingCount: 0 };
-      },
-      readCapacityState() {
-        events.push('capacity:state');
-        return { mode: 'active', usedSessions: 3 };
-      },
-      certifyActiveCapacity() {
-        events.push('capacity:active-configuration');
-      },
-      configureCapacity() {
-        events.push('capacity:configured');
-        return 'active';
-      },
-      runKeyManager() {
-        events.push('keys:forbidden');
-      },
-      foreignAuthoritySnapshot() {
-        events.push('foreign-snapshot:forbidden');
-        return 'stable';
-      },
+  const result = await runM1BStagingRelease('restore-capacity', environment(), {
+    certifyDatabase() {
+      events.push('database');
     },
-  );
+    async assertStrictMigrationState() {
+      events.push('migrations');
+      return { appliedCount: 87, pendingCount: 0 };
+    },
+    readCapacityState() {
+      events.push('capacity:state');
+      return { mode: 'active', usedSessions: 3 };
+    },
+    certifyActiveCapacity() {
+      events.push('capacity:active-configuration');
+    },
+    configureCapacity() {
+      events.push('capacity:configured');
+      return 'active';
+    },
+    runKeyManager() {
+      events.push('keys:forbidden');
+    },
+    foreignAuthoritySnapshot() {
+      events.push('foreign-snapshot:forbidden');
+      return 'stable';
+    },
+  });
 
   assert.deepEqual(events, [
     'database',
@@ -187,36 +174,32 @@ test('la restauration de capacité active est un no-op sans toucher au keyspace'
 
 test('la restauration attend une capacité fermée puis la rouvre sans key manager', async () => {
   const events = [];
-  const result = await runM1BStagingRelease(
-    'restore-capacity',
-    environment(),
-    {
-      certifyDatabase() {
-        events.push('database');
-      },
-      async assertStrictMigrationState() {
-        events.push('migrations');
-        return { appliedCount: 87, pendingCount: 0 };
-      },
-      certifyCapacityAuthority() {
-        events.push('capacity:acl');
-      },
-      readCapacityState() {
-        events.push('capacity:state:closed-with-leases');
-        return { mode: 'closed', usedSessions: 2 };
-      },
-      async waitForClosedCapacity(_config, _dependencies, initialState) {
-        events.push(`capacity:drained:${initialState.usedSessions}`);
-      },
-      configureCapacity() {
-        events.push('capacity:configured');
-        return 'active';
-      },
-      runKeyManager() {
-        events.push('keys:forbidden');
-      },
+  const result = await runM1BStagingRelease('restore-capacity', environment(), {
+    certifyDatabase() {
+      events.push('database');
     },
-  );
+    async assertStrictMigrationState() {
+      events.push('migrations');
+      return { appliedCount: 87, pendingCount: 0 };
+    },
+    certifyCapacityAuthority() {
+      events.push('capacity:acl');
+    },
+    readCapacityState() {
+      events.push('capacity:state:closed-with-leases');
+      return { mode: 'closed', usedSessions: 2 };
+    },
+    async waitForClosedCapacity(_config, _dependencies, initialState) {
+      events.push(`capacity:drained:${initialState.usedSessions}`);
+    },
+    configureCapacity() {
+      events.push('capacity:configured');
+      return 'active';
+    },
+    runKeyManager() {
+      events.push('keys:forbidden');
+    },
+  });
 
   assert.deepEqual(events, [
     'database',
@@ -287,40 +270,39 @@ test('un drift étranger ou une fermeture incomplète échoue fermé avant confi
     runM1BStagingRelease('predeploy', environment(), closeFailure),
     /drain failed/u,
   );
-  assert.equal(closeEvents.some((event) => event.startsWith('keys:')), false);
+  assert.equal(
+    closeEvents.some((event) => event.startsWith('keys:')),
+    false,
+  );
   assert.equal(closeEvents.includes('capacity:configured'), false);
 });
 
 test('borne chaque connexion PostgreSQL et le key manager natif', async () => {
   const calls = [];
   const stableSnapshot = JSON.stringify({ stable: true });
-  await runM1BStagingRelease(
-    'predeploy',
-    environment(),
-    {
-      certifyDatabase() {},
-      async assertStrictMigrationState() {
-        return { appliedCount: 87, pendingCount: 0 };
-      },
-      spawnSync(command, args, options) {
-        calls.push({ command, args, options });
-        if (command === process.execPath) {
-          return { status: 0, stdout: '', stderr: '' };
-        }
-        const input = String(options.input ?? '');
-        if (input.includes('FROM public.realtime_global_capacity')) {
-          return { status: 0, stdout: 'closed|0\n', stderr: '' };
-        }
-        if (input.includes('jsonb_build_object')) {
-          return { status: 0, stdout: `${stableSnapshot}\n`, stderr: '' };
-        }
-        if (input.includes("flag.key = 'bob.agent_missions.quote.v1'")) {
-          return { status: 0, stdout: '1|true\n', stderr: '' };
-        }
-        return { status: 0, stdout: '', stderr: '' };
-      },
+  await runM1BStagingRelease('predeploy', environment(), {
+    certifyDatabase() {},
+    async assertStrictMigrationState() {
+      return { appliedCount: 87, pendingCount: 0 };
     },
-  );
+    spawnSync(command, args, options) {
+      calls.push({ command, args, options });
+      if (command === process.execPath) {
+        return { status: 0, stdout: '', stderr: '' };
+      }
+      const input = String(options.input ?? '');
+      if (input.includes('FROM public.realtime_global_capacity')) {
+        return { status: 0, stdout: 'closed|0\n', stderr: '' };
+      }
+      if (input.includes('jsonb_build_object')) {
+        return { status: 0, stdout: `${stableSnapshot}\n`, stderr: '' };
+      }
+      if (input.includes("v1_flag.key = 'bob.agent_missions.quote.v1'")) {
+        return { status: 0, stdout: '1|false|true|0|7\n', stderr: '' };
+      }
+      return { status: 0, stdout: '', stderr: '' };
+    },
+  });
 
   const psqlCalls = calls.filter(({ command }) => command === 'psql');
   const managerCalls = calls.filter(({ command }) => command === process.execPath);
@@ -333,10 +315,7 @@ test('borne chaque connexion PostgreSQL et le key manager natif', async () => {
   }
   for (const { args } of psqlCalls) {
     const assignments = args.filter(
-      (value, index) =>
-        index > 0
-        && args[index - 1] === '-v'
-        && value !== 'ON_ERROR_STOP=1',
+      (value, index) => index > 0 && args[index - 1] === '-v' && value !== 'ON_ERROR_STOP=1',
     );
     assert.equal(
       assignments.length,
@@ -347,27 +326,56 @@ test('borne chaque connexion PostgreSQL et le key manager natif', async () => {
   assert.equal(managerCalls[0].options.timeout, 75_000);
   assert.equal(managerCalls[0].options.killSignal, 'SIGKILL');
   assert.equal(managerCalls[0].options.env.PGCONNECT_TIMEOUT, '10');
+  const realtimeCertificate = psqlCalls.find(({ args }) =>
+    args.includes('apps/api/prisma/agent-mission-realtime-release-cert.sql'),
+  );
+  assert.ok(realtimeCertificate);
+  assert.ok(realtimeCertificate.args.includes('release_flag_version=1'));
+  assert.ok(realtimeCertificate.args.includes('release_flag_kill_switch=true'));
+  assert.ok(realtimeCertificate.args.includes('m2a_release_flag_version=7'));
+});
+
+test('refuse un snapshot de flags incomplet avant le certificat runtime', async () => {
+  await assert.rejects(
+    runM1BStagingRelease('predeploy', environment(), {
+      certifyDatabase() {},
+      async assertStrictMigrationState() {
+        return { appliedCount: 87, pendingCount: 0 };
+      },
+      spawnSync(command, _args, options) {
+        if (command === process.execPath) return { status: 0, stdout: '', stderr: '' };
+        const input = String(options.input ?? '');
+        if (input.includes('FROM public.realtime_global_capacity')) {
+          return { status: 0, stdout: 'closed|0\n', stderr: '' };
+        }
+        if (input.includes('jsonb_build_object')) {
+          return { status: 0, stdout: '{"stable":true}\n', stderr: '' };
+        }
+        if (input.includes("v1_flag.key = 'bob.agent_missions.quote.v1'")) {
+          return { status: 0, stdout: '1|false|false|0\n', stderr: '' };
+        }
+        return { status: 0, stdout: '', stderr: '' };
+      },
+    }),
+    /canonical AgentMission release flag snapshot is invalid/u,
+  );
 });
 
 test('un échec PostgreSQL expose la sous-preuve bornée sans journaliser stderr', async () => {
   await assert.rejects(
-    runM1BStagingRelease(
-      'predeploy',
-      environment(),
-      {
-        certifyDatabase() {},
-        async assertStrictMigrationState() {
-          return { appliedCount: 87, pendingCount: 0 };
-        },
-        spawnSync() {
-          return {
-            status: 1,
-            stdout: '',
-            stderr: 'secret-value-that-must-not-be-logged',
-          };
-        },
+    runM1BStagingRelease('predeploy', environment(), {
+      certifyDatabase() {},
+      async assertStrictMigrationState() {
+        return { appliedCount: 87, pendingCount: 0 };
       },
-    ),
+      spawnSync() {
+        return {
+          status: 1,
+          stdout: '',
+          stderr: 'secret-value-that-must-not-be-logged',
+        };
+      },
+    }),
     (error) => {
       assert.match(
         error.message,

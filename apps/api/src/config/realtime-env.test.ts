@@ -79,6 +79,11 @@ describe('Bob Live — validation de la politique d’admission', () => {
 
   it('interdit le master M2-A sans le socle V1 et accepte son bloc complet dormant', () => {
     validRealtimeEnv();
+    vi.stubEnv('CABINET_RELEASE_ENV', 'staging');
+    vi.stubEnv(
+      'BOB_LIVE_LOCAL_AUDIT_BASE_URL',
+      'http://bob-live-whisper-audit.railway.internal:8080/v1',
+    );
     vi.stubEnv('BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED', 'true');
     expect(() => loadEnv()).toThrow(
       /BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED=true exige BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED=true/u,
@@ -92,6 +97,20 @@ describe('Bob Live — validation de la politique d’admission', () => {
       BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED: 'true',
       BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED: 'true',
     });
+  });
+
+  it('interdit le master M2-A hors staging même avec le socle complet', () => {
+    validRealtimeEnv();
+    const missionSecret = Buffer.alloc(32, 17).toString('base64url');
+    vi.stubEnv('BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED', 'true');
+    vi.stubEnv('BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED', 'true');
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEY_VERSION', '1');
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEYRING', JSON.stringify({ 1: missionSecret }));
+
+    for (const environment of ['development', 'production'] as const) {
+      vi.stubEnv('CABINET_RELEASE_ENV', environment);
+      expect(() => loadEnv()).toThrow(/réservé à CABINET_RELEASE_ENV=staging/u);
+    }
   });
 
   it('impose le bloc AgentMission tout-ou-rien et absent lorsque le master est OFF', () => {

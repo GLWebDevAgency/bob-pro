@@ -79,6 +79,8 @@ test('le workflow Railway déjà présent sur main sert seulement de trampoline 
   assert.match(railwayReleaseWorkflow, /- m1b-staging-recovery/u);
   assert.match(railwayReleaseWorkflow, /- m2a3-semantic-certification/u);
   assert.match(railwayReleaseWorkflow, /- m2a3-staging-schema/u);
+  assert.match(railwayReleaseWorkflow, /- m2a3-staging-preview-activate/u);
+  assert.match(railwayReleaseWorkflow, /- m2a3-staging-preview-deactivate/u);
   assert.match(railwayReleaseWorkflow, /- k2-staging-schema/u);
   assert.match(
     railwayReleaseWorkflow,
@@ -92,7 +94,7 @@ test('le workflow Railway déjà présent sur main sert seulement de trampoline 
   );
   assert.match(
     railwayReleaseWorkflow,
-    /validate-purpose:[\s\S]*?release\|m1b-staging-certification\|m1b-staging-recovery\|m2a3-semantic-certification\|m2a3-staging-schema\|k2-staging-schema\)[\s\S]*?Unsupported Railway release purpose/u,
+    /validate-purpose:[\s\S]*?release\|m1b-staging-certification\|m1b-staging-recovery\|m2a3-semantic-certification\|m2a3-staging-schema\|m2a3-staging-preview-activate\|m2a3-staging-preview-deactivate\|k2-staging-schema\)[\s\S]*?Unsupported Railway release purpose/u,
   );
   assert.match(
     railwayReleaseWorkflow,

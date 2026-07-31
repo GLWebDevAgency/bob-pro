@@ -50,22 +50,43 @@ test('exige un origin HTTPS exact et le SHA complet lowercase', () => {
     releaseSha: RELEASE_SHA,
   });
   assert.throws(
-    () => parseM1BReadinessEnvironment(environment({
-      API_BASE_URL: 'http://bob-pro-api-staging.example.test',
-    })),
+    () =>
+      parseM1BReadinessEnvironment(
+        environment({
+          API_BASE_URL: 'http://bob-pro-api-staging.example.test',
+        }),
+      ),
     /HTTPS origin/u,
   );
   assert.throws(
-    () => parseM1BReadinessEnvironment(environment({
-      API_BASE_URL: 'https://user:secret@bob-pro-api-staging.example.test/path',
-    })),
+    () =>
+      parseM1BReadinessEnvironment(
+        environment({
+          API_BASE_URL: 'https://user:secret@bob-pro-api-staging.example.test/path',
+        }),
+      ),
     /HTTPS origin/u,
   );
   assert.throws(
-    () => parseM1BReadinessEnvironment(environment({
-      BOB_M1B_RELEASE_SHA: 'A'.repeat(40),
-    })),
+    () =>
+      parseM1BReadinessEnvironment(
+        environment({
+          BOB_M1B_RELEASE_SHA: 'A'.repeat(40),
+        }),
+      ),
     /lowercase 40-hex/u,
+  );
+  assert.deepEqual(
+    parseM1BReadinessEnvironment(
+      { API_BASE_URL: environment().API_BASE_URL },
+      {
+        observe: true,
+      },
+    ),
+    {
+      apiOrigin: 'https://bob-pro-api-staging.example.test',
+      releaseSha: null,
+    },
   );
 });
 
@@ -81,24 +102,36 @@ test('valide simultanément readiness, SHA, staging et capacités réseau', () =
     clientIpSource: 'railway-x-real-ip',
   });
   assert.throws(
-    () => validateM1BReadinessPayload(payload({
-      dependencies: { bobLiveSpeechAudit: 'not_applicable' },
-    }), config),
+    () =>
+      validateM1BReadinessPayload(
+        payload({
+          dependencies: { bobLiveSpeechAudit: 'not_applicable' },
+        }),
+        config,
+      ),
     /not ready/u,
   );
   assert.throws(
-    () => validateM1BReadinessPayload(payload({
-      release: { sha: 'b'.repeat(40), environment: 'staging' },
-    }), config),
+    () =>
+      validateM1BReadinessPayload(
+        payload({
+          release: { sha: 'b'.repeat(40), environment: 'staging' },
+        }),
+        config,
+      ),
     /not ready/u,
   );
   assert.throws(
-    () => validateM1BReadinessPayload(payload({
-      capabilities: {
-        realtimeAdmissionCancellationFence: 'v1',
-        agentMissionBootstrapReceipt: 'v2',
-      },
-    }), config),
+    () =>
+      validateM1BReadinessPayload(
+        payload({
+          capabilities: {
+            realtimeAdmissionCancellationFence: 'v1',
+            agentMissionBootstrapReceipt: 'v2',
+          },
+        }),
+        config,
+      ),
     /not ready/u,
   );
 });
@@ -109,9 +142,14 @@ test('réessaie la révision précédente puis exige /metrics fermé', async () 
     calls.push(url);
     if (url.endsWith('/metrics')) return response(401);
     if (calls.filter((entry) => entry.endsWith('/health/ready')).length === 1) {
-      return response(200, JSON.stringify(payload({
-        release: { sha: 'b'.repeat(40), environment: 'staging' },
-      })));
+      return response(
+        200,
+        JSON.stringify(
+          payload({
+            release: { sha: 'b'.repeat(40), environment: 'staging' },
+          }),
+        ),
+      );
     }
     return response(200, JSON.stringify(payload()));
   };
@@ -125,14 +163,32 @@ test('réessaie la révision précédente puis exige /metrics fermé', async () 
   assert.equal(calls.at(-1).endsWith('/metrics'), true);
 });
 
+test('observe honnêtement le SHA actuellement servi sans attendu fourni par le caller', async () => {
+  const observedSha = 'b'.repeat(40);
+  const result = await certifyM1BStagingReadiness(
+    { API_BASE_URL: environment().API_BASE_URL },
+    {
+      observe: true,
+      attempts: 1,
+      fetchImpl: async (url) =>
+        url.endsWith('/metrics')
+          ? response(403)
+          : response(
+              200,
+              JSON.stringify(payload({ release: { sha: observedSha, environment: 'staging' } })),
+            ),
+    },
+  );
+  assert.equal(result.releaseSha, observedSha);
+});
+
 test('échoue fermé sur métriques publiques, JSON invalide ou fenêtre épuisée', async () => {
   await assert.rejects(
     certifyM1BStagingReadiness(environment(), {
-      fetchImpl: async (url) => (
+      fetchImpl: async (url) =>
         url.endsWith('/metrics')
           ? response(200, '# public metrics')
-          : response(200, JSON.stringify(payload()))
-      ),
+          : response(200, JSON.stringify(payload())),
       attempts: 1,
     }),
     /metrics returned HTTP 200/u,

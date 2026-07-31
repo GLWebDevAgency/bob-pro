@@ -8,7 +8,9 @@
 
 **Train M2-A-2 : implemented, flag public OFF ; non certified**
 
-**Train M2-A-3 : implemented jusqu’à `1c7f12c9`, flag public OFF ; non certified**
+**Train M2-A-3 : implemented jusqu’à `3bc464936adba9e124a01f867cc7e8f6be256c56` ;
+préactivation staging certifiée flags OFF ; rollout preview global autorisé mais non prouvé ;
+production/public OFF ; non certified**
 
 **Date : 31 juillet 2026**
 
@@ -146,11 +148,7 @@ interface QuoteLineSemanticContextV1 {
     readonly phase: QuoteCreationMissionPhase;
     readonly confirmedLineCount: number;
     readonly pendingLineCount: number;
-    readonly pendingDecisionKind:
-      | 'customer'
-      | 'catalogue'
-      | 'line_confirmation'
-      | null;
+    readonly pendingDecisionKind: 'customer' | 'catalogue' | 'line_confirmation' | null;
     readonly presentedChoiceCount: number;
     readonly requiredFact: QuoteLineRequiredFact | null;
     /**
@@ -258,9 +256,15 @@ donc le support serveur d'un protocole AgentMission `2`, additif au protocole `1
 - l'application mobile publiée continue à demander V1 pendant M2-A-1/M2-A-2. Le basculement de sa
   négociation vers V2, sa projection et les preuves device appartiennent à M2-A-3.
 
-Le master M2-A vaut `false` dans tous les environnements à l'atterrissage. Il est invalide au boot
+Le master M2-A vaut `false` dans tous les environnements à l'atterrissage historique. Il est
+invalide au boot
 si le master V1 et le keyring AgentMission ne sont pas eux-mêmes complets. Aucune « tolérance » ne
 rabaisse silencieusement une demande V2 vers V1.
+
+Après les gates exact-SHA de préactivation, l'amendement fondateur du 31 juillet 2026 autorise un
+train de rollout séparé : staging/preview peut passer globalement à V2 selon `M2A3-PREVIEW-01` ;
+development et production restent `OFF`. Cette ouverture ne réécrit aucune preuve schema-only
+historique et ne vaut ni certification appareil ni publication grand public.
 
 ```ts
 interface QuoteCreationSemanticFrameV2 {
@@ -306,12 +310,7 @@ type QuoteCreationSemanticOperationV2 =
 
 interface QuoteLineCandidateV1 {
   readonly serviceReference: string | null;
-  readonly categoryHint:
-    | 'labor'
-    | 'supply'
-    | 'travel'
-    | 'subscription'
-    | null;
+  readonly categoryHint: 'labor' | 'supply' | 'travel' | 'subscription' | null;
   readonly quantityDecimal: string | null;
   readonly unitReference: string | null;
   readonly unitPriceDecimal: string | null;
@@ -375,12 +374,12 @@ Règles :
 
 Matrice d'autorisation :
 
-| Phase | Opérations sémantiques admises |
+| Phase                                              | Opérations sémantiques admises                                                                                                         |
 | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| inactive | `start_quote_creation` ; les lignes sont staged mais non exécutées |
+| inactive                                           | `start_quote_creation` ; les lignes sont staged mais non exécutées                                                                     |
 | étapes client                                      | `set_customer_reference`, `select_presented_choice` ; seul `set_customer_reference` peut porter les lignes dictées dans le même tour   |
-| `awaiting_lines` | `append_line_candidates` |
-| `awaiting_catalogue_choice` | `select_presented_choice` en M2-A-1 ; correction explicite de `service_reference` en M2-A-2 |
+| `awaiting_lines`                                   | `append_line_candidates`                                                                                                               |
+| `awaiting_catalogue_choice`                        | `select_presented_choice` en M2-A-1 ; correction explicite de `service_reference` en M2-A-2                                            |
 | `awaiting_line_details` _(M2-A-2 uniquement)_      | `patch_pending_line` pour le `requiredFact` courant ou une correction explicite ; `cancel_current_line` pour retirer seulement la tête |
 | `awaiting_line_confirmation` _(M2-A-2 uniquement)_ | confirmer, rejeter pour modifier, annuler la ligne ou patch explicite                                                                  |
 
@@ -461,10 +460,7 @@ interface AgentMissionQuoteLineWork {
   readonly ordinal: number;
   readonly revision: number;
   readonly state:
-    | 'queued'
-    | 'awaiting_catalogue_choice'
-    | 'awaiting_details'
-    | 'awaiting_confirmation';
+    'queued' | 'awaiting_catalogue_choice' | 'awaiting_details' | 'awaiting_confirmation';
   readonly origin: 'user_voice' | 'user_tap';
   readonly serviceReference: string | null;
   readonly category: Exclude<LineCategory, 'disbursement'> | null;
@@ -783,9 +779,7 @@ interface LineConfirmationDecisionV1 {
   readonly proposalRevision: 1;
   readonly expectedDraft: QuoteMissionDraftReferenceV1;
   readonly expectedWorkRevision: number;
-  readonly expectedCatalogue:
-    | { readonly itemId: string; readonly revision: number }
-    | null;
+  readonly expectedCatalogue: { readonly itemId: string; readonly revision: number } | null;
   /**
    * SHA-256 canonique des faits fiscaux relus à la présentation. La confirmation relit puis
    * compare cette fence même si deux contextes distincts produiraient encore le même taux.
@@ -910,14 +904,14 @@ line_cancelled
 
 Le contrat de données est fermé et ne porte aucune valeur métier :
 
-| Event | Corrélation | Effet brouillon | Clés après `kind`, dans l'ordre canonique |
-|---|---|---|---|
-| `line_fact_patched` | user | no-op | `pendingLineId`, `field`, `workRevisionAfter` |
-| `line_details_requested` | system + continuation | no-op | `pendingLineId`, `requiredFact`, `workRevisionAfter` |
-| `line_proposal_presented` | system + continuation | no-op | `pendingLineId`, `proposalId`, `proposalRevision`, `expectedWorkRevision`, `diffHash`, `choiceSetHash` |
-| `line_proposal_rejected` | user | no-op | `pendingLineId`, `proposalId`, `workRevisionAfter`, `choiceId`, `choiceSetHash` |
-| `line_confirmed` | user | slot +1, content +1 | `pendingLineId`, `proposalId`, `proposalRevision`, `expectedWorkRevision`, `choiceId`, `choiceSetHash`, `diffHash` |
-| `line_cancelled` | user | no-op | `pendingLineId`, `expectedWorkRevision`, `choiceId`, `choiceSetHash` |
+| Event                     | Corrélation           | Effet brouillon     | Clés après `kind`, dans l'ordre canonique                                                                          |
+| ------------------------- | --------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `line_fact_patched`       | user                  | no-op               | `pendingLineId`, `field`, `workRevisionAfter`                                                                      |
+| `line_details_requested`  | system + continuation | no-op               | `pendingLineId`, `requiredFact`, `workRevisionAfter`                                                               |
+| `line_proposal_presented` | system + continuation | no-op               | `pendingLineId`, `proposalId`, `proposalRevision`, `expectedWorkRevision`, `diffHash`, `choiceSetHash`             |
+| `line_proposal_rejected`  | user                  | no-op               | `pendingLineId`, `proposalId`, `workRevisionAfter`, `choiceId`, `choiceSetHash`                                    |
+| `line_confirmed`          | user                  | slot +1, content +1 | `pendingLineId`, `proposalId`, `proposalRevision`, `expectedWorkRevision`, `choiceId`, `choiceSetHash`, `diffHash` |
+| `line_cancelled`          | user                  | no-op               | `pendingLineId`, `expectedWorkRevision`, `choiceId`, `choiceSetHash`                                               |
 
 `requiredFact` appartient à l'union fermée et peut être JSON `null` uniquement pour l'édition
 générique qui demande à l'utilisateur quel champ changer.
@@ -992,12 +986,10 @@ interface QuoteAgentMissionPresentationV1 {
    * Fence minimale permettant de construire un patch CAS après un GET froid. Nulle sans tête de
    * file ; elle ne contient aucune valeur métier.
    */
-  readonly pendingLine:
-    | {
-        readonly pendingLineId: string;
-        readonly expectedWorkRevision: number;
-      }
-    | null;
+  readonly pendingLine: {
+    readonly pendingLineId: string;
+    readonly expectedWorkRevision: number;
+  } | null;
   /**
    * Décision scellée exécutable après kill/reconnexion. Le mobile ne reconstruit aucun choix à
    * partir d'un ordinal local et ne reçoit jamais une action libre à transmettre au serveur.
@@ -1037,9 +1029,7 @@ interface QuoteAgentMissionPresentationV1 {
           readonly contentRevision: number;
         };
         readonly expectedWorkRevision: number;
-        readonly expectedCatalogue:
-          | { readonly itemId: string; readonly revision: number }
-          | null;
+        readonly expectedCatalogue: { readonly itemId: string; readonly revision: number } | null;
         readonly expectedVatContextDigest: string;
         readonly diffHash: string;
         readonly choices: readonly [
@@ -1086,9 +1076,11 @@ interface QuoteAgentMissionPresentationV1 {
       };
     };
     readonly line: QuoteDraftPayloadLine;
-    readonly catalogue:
-      | { readonly itemId: string; readonly revision: number; readonly label: string }
-      | null;
+    readonly catalogue: {
+      readonly itemId: string;
+      readonly revision: number;
+      readonly label: string;
+    } | null;
   } | null;
 }
 ```
@@ -1145,7 +1137,9 @@ La réponse vocale est reconstruite depuis la relecture :
 
 ## 15. Compatibilité et migrations
 
-Le flag M2-A reste OFF pendant tout le train.
+Le flag M2-A reste OFF pendant tout le train d'implémentation et les gates de préactivation.
+L'ouverture persistante de staging/preview est un train de rollout distinct, postérieur, audité et
+réversible ; elle ne modifie jamais la sémantique des migrations ci-dessous.
 
 Les unions JSON et CHECK PostgreSQL étant fermés, le rollout est append-only :
 
@@ -1217,12 +1211,12 @@ converti en succès ni masqué par un retry global.
 
 ### 15.1 Trains de livraison — une seule PR active à la fois
 
-| Train | Résultat atomique | Statut actuel | Promotion maximale du train |
-|---|---|---|---|
-| M2-A-0 | schéma work items + RLS + contrat core + parité catalogue SQL | `implemented` | `implemented` |
-| M2-A-1 | frame V2, staging initial, recherche 0/1/N, continuation et choix API | `implemented` | `implemented` |
-| M2-A-2 | questions persistées, TVA, proposition, primitive partagée et confirmation | `implemented` | `implemented` |
-| M2-A-3 | projection mobile, parité voix/tap, reprise et certification device/staging | `implemented` dans `1a2e5eaa` | `certified` |
+| Train  | Résultat atomique                                                           | Statut actuel                                                                                 | Promotion maximale du train |
+| ------ | --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | --------------------------- |
+| M2-A-0 | schéma work items + RLS + contrat core + parité catalogue SQL               | `implemented`                                                                                 | `implemented`               |
+| M2-A-1 | frame V2, staging initial, recherche 0/1/N, continuation et choix API       | `implemented`                                                                                 | `implemented`               |
+| M2-A-2 | questions persistées, TVA, proposition, primitive partagée et confirmation  | `implemented`                                                                                 | `implemented`               |
+| M2-A-3 | projection mobile, parité voix/tap, reprise et certification device/staging | `implemented` dans `3bc464936adba9e124a01f867cc7e8f6be256c56` ; préactivation staging prouvée | `certified` après device    |
 
 Chaque PR est fusionnée et sa CI verte avant d'ouvrir la suivante. Aucun sous-train n'est présenté
 comme une fonctionnalité finie ; le flag reste OFF jusqu'à M2-A-3.
@@ -1526,12 +1520,12 @@ Les migrations sont appliquées par `prisma migrate deploy`, une seule à la foi
 Prisma temporaire sans symlink contenant tous les historiques et uniquement le suffixe jusqu'à
 l'étape courante. La machine à états est fermée :
 
-| État | Historique Prisma M2-A-3 | Schéma attendu |
-|---|---|---|
-| `S0` | aucun | ancien CHECK canonique validé |
-| `S1` | expand | ancien CHECK validé + nouveau CHECK `NOT VALID` |
-| `S2` | expand + validate | les deux CHECK validés |
-| `S3` | expand + validate + cutover | nouveau CHECK canonique, ancien absent |
+| État | Historique Prisma M2-A-3    | Schéma attendu                                  |
+| ---- | --------------------------- | ----------------------------------------------- |
+| `S0` | aucun                       | ancien CHECK canonique validé                   |
+| `S1` | expand                      | ancien CHECK validé + nouveau CHECK `NOT VALID` |
+| `S2` | expand + validate           | les deux CHECK validés                          |
+| `S3` | expand + validate + cutover | nouveau CHECK canonique, ancien absent          |
 
 La lignée Prisma est elle aussi une machine fermée : aucune tentative d'une phase future n'est
 admise, les phases restent monotones dans `started_at`, chaque tentative d'une phase dépendante
@@ -1693,15 +1687,16 @@ intents et reçus preflight/certified.
       sheet et un chrome Bob ; le wizard sans mission reste fonctionnel ;
 - [x] `M2A3-11` : suites core/AI/client/API/mobile, PostgreSQL réel, typecheck, lint, builds et
       reviews adversariales sont verts depuis un checkout propre ;
-- [ ] `M2A3-12` : Supabase staging exact-SHA sous déployeur/runtime non-superuser restitue la preuve
+- [x] `M2A3-12` : Supabase staging exact-SHA sous déployeur/runtime non-superuser restitue la preuve
       non-PII complète, flags publics OFF ; après un premier train `S0→S3`, un SHA successeur aux
       migrations byte-identiques obtient un manifest `finalized-recertification` sans commande
       Prisma mutante ni changement d'inventaire ; une panne du control plane Railway antérieure au
       processus enfant ne peut être rejouée que par le wrapper borné ci-dessus, sans masquer ni
-      réexécuter une panne de l'opérateur ;
+      réexécuter une panne de l'opérateur. Preuve : run `30633677151`, SHA
+      `3bc464936adba9e124a01f867cc7e8f6be256c56` ;
 - [ ] `M2A3-13` : sur iPhone et Android physiques, parler pendant Bob coupe localement le son avant
       le réseau et capture le nouveau tour ; tant que cette preuve manque, M2-A reste non certified.
-- [ ] `M2A3-14` : le planner reçoit le contexte écran, la mission, le fuseau confirmé, l'historique
+- [x] `M2A3-14` : le planner reçoit le contexte écran, la mission, le fuseau confirmé, l'historique
       récent borné et le manifeste de capacités ; paraphrases, anaphores et corrections multi-tours
       passent des evals sur un vrai appel modèle, pas seulement des tool-calls fabriqués. Le
       contexte porte la fence écran `{route, revision, digest}`, la révision et la décision de
@@ -1737,7 +1732,8 @@ intents et reçus preflight/certified.
       qu'après une garde confidentialité indépendante, y compris lorsque l'eval live échoue. Il
       exige la source `versioned_default` ; tout `OPENAI_MODEL` Railway, même valide, ferme la
       certification V1 et reste seulement diagnosticable comme `environment_override` dans le
-      reçu rouge local ;
+      reçu rouge local. Preuve : 9/9 sur le modèle runtime exact, run `30634046636`, SHA
+      `3bc464936adba9e124a01f867cc7e8f6be256c56` ;
 - [x] `M2A3-15` : un tour n'est jamais envoyé séquentiellement à deux cerveaux. Le planner unique
       choisit le `mission kind` ou le geste global ; aucun `unrelated → askBob` ne double la latence
       et aucun fallback regex ne conserve une autorité d'écriture.
@@ -1750,7 +1746,7 @@ intents et reçus preflight/certified.
       reprise ne masquent pas les rôles `header`/`alert`, et les libellés voix/toucher restent
       utilisables sans dépendre de la couleur ni du regard.
 
-### 17.2 Preuve d'implémentation locale M2-A-3 — `1c7f12c9`
+### 17.2 Preuves M2-A-3 avant activation — `3bc464936adba9e124a01f867cc7e8f6be256c56`
 
 Le statut `implemented` repose sur les preuves reproductibles suivantes, rejouées le 31 juillet
 2026 depuis le checkout propre du commit :
@@ -1769,9 +1765,67 @@ Le statut `implemented` repose sur les preuves reproductibles suivantes, rejoué
 - revues adversariales indépendantes recovery/correctness et staging/frontières de confiance :
   deux verdicts `GO`, zéro P0/P1 ouvert.
 
-`M2A3-12`, `M2A3-13` et `M2A3-14` restent volontairement non cochés : la certification Supabase
-staging exact-SHA, les essais iPhone/Android physiques et l'eval du modèle réellement déployé
-restent dus. Le flag public demeure OFF et le train ne peut donc pas être qualifié `certified`.
+Les preuves distantes associées sont : gate Supabase schema-only flags OFF `30633677151`, eval
+modèle runtime 9/9 `30634046636` et release staging exact-SHA `30635671866`. Elles démontrent
+l'aptitude à ouvrir le rollout ; elles ne démontrent pas que le flag est déjà ouvert.
+
+`M2A3-13` reste volontairement non coché : les essais iPhone/Android physiques, le barge-in et les
+SLO restent dus. Le train ne peut donc pas être qualifié `certified`, même si staging/preview est
+ouvert globalement pour obtenir ces preuves.
+
+### 17.3 Gate de rollout staging/preview — `M2A3-PREVIEW-01`
+
+Décision fondateur : 31 juillet 2026, chat courant. Contre-signature Claude demandée dans le canal
+Git-native avant mutation de la matrice normative.
+
+Implémentation opérateur :
+
+- `.github/workflows/agent-mission-m2a3-staging-preview.yml`, sérialisé avec toutes les releases
+  staging et joignable uniquement via les purposes `m2a3-staging-preview-activate|deactivate` ;
+- `agent-mission-m2a3-staging-preview-flag.mjs`, CAS audité sur le flag M2-A avec canary borné,
+  récupération d'ACK perdu et zéro sujet dans l'état final ;
+- profil Railway persistant `m2a3-preview`, mutation atomique sans auto-déploiement, ownership
+  stable, SHA exact et restauration explicite de `BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED=false` ;
+- smoke réel `preview-v2`/`preview-v2-off`, lecture seule de la mission, ACK bootstrap, application
+  SDP, hangup et preuve finale d'absence de brouillon/mission/lease ;
+- reçu strict non-PII `bob.agent-mission.m2a3.staging-preview-evidence@3`, construit depuis les
+  observations live (et jamais depuis le mode demandé), qui lie aussi la release staging normale
+  réussie du même SHA, les versions exactes des flags M2-A/V1, la décision et ses contre-signatures
+  vérifiées par empreinte, ainsi que la provenance du déploiement exact lors d'une désactivation ;
+
+Ordre binaire d'activation : release staging **normale** complète du SHA sur `main`, avec reçu
+GitHub non expiré et masters `OFF` → readiness exacte
+→ override canary M2-A → variables V1+M2-A et writer → déploiement du même SHA → WebRTC V2 canary
+→ suppression de l'override → flag global M2-A `ON` → second WebRTC V2 global. Le rollback n'est
+armé qu'après la preuve initiale d'un état entièrement `OFF`, afin qu'un simple retry contre un
+état préexistant ne puisse jamais désactiver un rollout sain.
+
+La même preuve initiale capture deux fois, autour de la readiness exacte, l'identifiant du seul
+déploiement normal effectivement servi. Le rollback utilise cet identifiant comme autorité et
+redéploie cet artefact capturé : il ne dépend donc ni du `latestDeployment` Railway, qui peut être
+`FAILED`, ni d'un checkout plus récent. Le job d'activation porte explicitement `always()` afin
+qu'une annulation GitHub exécute d'abord la coupure DB inline ; un job de rollback indépendant
+réalise ensuite la convergence runtime et la preuve OFF.
+
+Les mutations et lectures de flags certifient l'identité Supabase staging dans le même processus,
+sur un snapshot PostgreSQL repeatable-read borné. La désactivation et le rollback installent
+d'abord uniquement le control plane de sécurité épinglé (client PostgreSQL 16 et CLI Railway),
+puis coupent la base avant toute dépendance applicative, build ou readiness. Si une dérive
+concurrente empêche le retour canonique `OFF`, l'opérateur arme les kill switches M2-A **et** V1,
+restaure ensuite la capacité globale, puis refuse de présenter cet état d'urgence comme un `OFF`
+canonique.
+
+- [ ] checkout, release Railway et `/health/ready` portent le même SHA exact ;
+- [ ] les variables staging valent V1 master `true`, M2-A master `true`, keyring/version stables,
+      sans bloc partiel ni matériau remplacé ;
+- [ ] le flag DB M2-A est global `true`, kill switch `false`, zéro subject activé ; le flag V1
+      reste global `false` ;
+- [ ] le rituel production refuse M2-A `true` et aucune variable/ligne production n'est mutée ;
+- [ ] le canary authentifié obtient `bam2`, protocole `2`, ACK bootstrap, lecture capability puis
+      hangup ; une capability nulle ou V1 échoue ;
+- [ ] le chemin d'échec remet d'abord le flag DB `OFF`, retire uniquement le bloc Railway possédé
+      puis prouve l'état fermé ;
+- [ ] le reçu non-PII lie décision, SHA, versions de flags, déploiement et résultat du canary.
 
 ## 18. Definition of Done
 
@@ -1784,7 +1838,8 @@ M2-A passe de `implemented` à `certified` seulement si :
 5. certification staging Supabase avec déployeur non-superuser et writer N-1 ;
 6. test appareil sur compte interne avec données réelles, barge-in et reprise ;
 7. artefact de preuve non-PII : SHA, versions de flags, phases, latences, replays et état final ;
-8. flag public toujours OFF tant que M2-B création/revue n'est pas certifié.
+8. production et publication grand public restent OFF tant que M2-B création/revue n'est pas
+   certifié ; staging interne peut être global ON uniquement via `M2A3-PREVIEW-01`.
 
 La publication du devis vocal complet reste interdite tant que M2-B et M2-C ne sont pas eux-mêmes
 `certified`.

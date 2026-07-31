@@ -335,17 +335,17 @@ schemas et use cases sans introduire un second cerveau.
 M2-A n'est pas une verticale premium isolée. Elle devient le contrat de référence auquel tous les
 parcours vocaux antérieurs doivent converger avant leur activation publique :
 
-| Surface | Capacité cible absorbée par le moteur unique |
-| --- | --- |
-| devis | création complète, client, lignes, catalogue, TVA, conditions, revue et émission |
-| factures | création depuis devis ou libre, lignes, échéance, paiement, relance et avoir |
-| clients | recherche, création, correction et désambiguïsation |
-| catalogue | recherche, proposition d'usage, création et modification confirmées |
-| documents | scan, explication, classement, choix de dossier et corrections |
-| notifications | briefing, ouverture de l'entité, lecture et action confirmée |
-| dépenses | capture, qualification, affectation et paiement confirmé |
-| clôture/comptabilité | lecture, explication, résolution guidée et escalade cabinet |
-| navigation/contexte écran | lecture de l'écran, résumé agrégé et navigation sans perte de mission |
+| Surface                   | Capacité cible absorbée par le moteur unique                                     |
+| ------------------------- | -------------------------------------------------------------------------------- |
+| devis                     | création complète, client, lignes, catalogue, TVA, conditions, revue et émission |
+| factures                  | création depuis devis ou libre, lignes, échéance, paiement, relance et avoir     |
+| clients                   | recherche, création, correction et désambiguïsation                              |
+| catalogue                 | recherche, proposition d'usage, création et modification confirmées              |
+| documents                 | scan, explication, classement, choix de dossier et corrections                   |
+| notifications             | briefing, ouverture de l'entité, lecture et action confirmée                     |
+| dépenses                  | capture, qualification, affectation et paiement confirmé                         |
+| clôture/comptabilité      | lecture, explication, résolution guidée et escalade cabinet                      |
+| navigation/contexte écran | lecture de l'écran, résumé agrégé et navigation sans perte de mission            |
 
 Pour chaque surface :
 
@@ -453,6 +453,11 @@ complétions résolues et sept cas conformes. Ses deux échecs sont contractuels
 l'énoncé courant plutôt que du contexte non fiable. Ce reçu reste rouge. La correction normative
 est la description métier explicite, la séparation des deux enveloppes ci-dessus et le reliquat
 exact validé ; le corpus, ses oracles et le budget d'un seul appel restent inchangés.
+
+Le run exact-SHA `30634046636` sur
+`3bc464936adba9e124a01f867cc7e8f6be256c56` solde ce gate : neuf complétions runtime observées,
+9/9 cas conformes, zéro retry et reçu non-PII validé. Cette preuve autorise le rollout preview de
+`quote_line_m2a3` ; elle ne certifie aucun autre kind ni les performances appareil.
 
 Cette preuve est strictement bornée à `quote_line_m2a3`. Elle ne certifie ni les dates relatives,
 ni les contrats, ni les futurs `mission kinds` : chacun recevra son propre corpus versionné et sa

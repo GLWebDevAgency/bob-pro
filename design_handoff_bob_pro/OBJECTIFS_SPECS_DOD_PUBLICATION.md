@@ -17,6 +17,13 @@ fondateur :
    tranquillement hors chemin critique ; sa version complète remplacera le tour-par-tour, sans
    jamais conditionner la publication.
 
+**Amendement fondateur : 2026-07-31, chat courant** — Mission V2/M2-A devient la baseline globale
+de **staging/preview** dès que le gate `M2A3-PREVIEW-01` est vert. Ce choix remplace le rollout
+interne limité à un compte : staging porte le master V1, le master M2-A et le flag DB M2-A global
+à `ON`, sans override sujet. La production et toute publication grand public restent strictement
+`OFF` jusqu'au GO final V1. **Contre-signature Claude : demandée le 2026-07-31 dans le canal
+Git-native ; à consigner avant mutation de la matrice normative.**
+
 Rappel de dépendance : la DoD §6.3 (« Bob Live passe sur appareils ») reste suspendue à
 l'actation par le fondateur de la **clé OpenAI production + budget** (D3 du PROGRAMME).
 
@@ -27,10 +34,10 @@ antérieure contradictoire sur la priorité des fournisseurs vocaux, l'ordre des
 mode de collaboration Git. Les documents historiques restent utiles pour leur architecture et
 leurs preuves, mais ne peuvent pas réintroduire un chantier hors du chemin critique défini ici.
 
-La [matrice des flags V1](MATRICE_FLAGS_V1.md) décrit l'état réellement configuré tant que la
-bascule GPT Realtime n'a pas été livrée. Elle sera modifiée **dans le même lot atomique** que le
-code, les gardes d'environnement et les tests anti-drift ; une spec ne doit jamais faire croire
-qu'un fournisseur est actif avant que le runtime ne le prouve.
+La [matrice des flags V1](MATRICE_FLAGS_V1.md) distingue la cible de production et les overrides
+explicites de staging/preview. Elle sera modifiée **dans le même lot atomique** que le code, les
+gardes d'environnement, les tests anti-drift et la contre-signature ; une spec ne doit jamais
+faire croire qu'un fournisseur est actif avant que le runtime ne le prouve.
 
 ## 1. Objectif produit
 
@@ -141,6 +148,47 @@ Une ancienne interaction fondée sur un parseur local, une regex métier, une mu
 d'écran ou un outil annoncé mais non câblé reste fermée tant qu'elle n'a pas cette parité, cette
 reprise et une preuve E2E. Les données du tenant sont accessibles au modèle par outils de recherche
 bornés et revalidés ; elles ne sont jamais chargées en bloc dans le prompt.
+
+#### 4.2.2 Rollout Mission V2 de staging/preview
+
+L'activation du 31 juillet est un train d'exploitation distinct des preuves de préactivation :
+
+- les runs Supabase et modèle qui ont certifié le SHA avec les flags `OFF` restent immuables ;
+- le SHA à ouvrir passe d'abord par le workflow Railway `purpose=release` complet sur staging,
+  migrations et readiness incluses. Le workflow persistant exige le reçu GitHub non expiré de
+  cette release normale réussie sur `main`, puis refuse de muter si ce même SHA n'est pas déjà
+  servi par `/health/ready` ;
+- staging exige exactement `BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED=true`,
+  `BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED=true`, le keyring stable déjà lié en base, le flag
+  `bob.agent_missions.quote.m2a` global `ON`, kill switch `OFF` et zéro override sujet ;
+  le flag legacy `bob.agent_missions.quote.v1` reste global `OFF`, kill switch `OFF` et sans aucun
+  sujet ;
+- production refuse le master M2-A à `true` au démarrage du rituel de release ;
+- l'opérateur est CAS, audité, exact-SHA et réversible. Un échec de release ou de smoke remet le
+  flag DB `OFF` avant toute installation de dépendance applicative, build, readiness ou autre
+  reprise ; seul le control plane de sécurité épinglé (client PostgreSQL 16 et CLI Railway) peut
+  être installé avant cette coupure. Il retire ensuite uniquement le bloc Railway qu'il possède.
+  Si un état concurrent empêche le `OFF` canonique, les kill switches
+  M2-A et V1 sont armés fail-closed et cet état d'urgence n'est jamais annoncé comme un `OFF` ;
+- avant la première mutation, l'opérateur scelle l'identifiant du déploiement normal effectivement
+  servi et son SHA. Le rollback redéploie cet artefact capturé, même si le déploiement V2 le plus
+  récent a échoué ; une annulation GitHub conserve le job d'activation assez longtemps pour
+  exécuter la coupure DB inline, doublée par le job de rollback indépendant ;
+- l'ouverture passe d'abord par un override unique du compte canary alors que le global reste
+  `OFF`. Après un premier WebRTC V2 réel, l'override est supprimé, l'absence de tout sujet est
+  prouvée, puis seulement le global passe à `ON` et un second canary est exécuté ;
+- le smoke vertical authentifié prouve `config → call protocol 2 → capability bam2 → ACK bootstrap
+→ lecture capability → hangup` ; un HTTP 200 avec capability nulle est un échec ;
+- ce rollout autorise les essais preview. Il ne promeut pas M2-A à `certified` : les preuves
+  iPhone/Android, barge-in, SLO et Voice Trace restent dues.
+
+L'opérateur canonique est
+`.github/workflows/agent-mission-m2a3-staging-preview.yml`, appelé par les purposes
+`m2a3-staging-preview-activate` et `m2a3-staging-preview-deactivate` du routeur Railway. Il partage
+le mutex `railway-api-staging`, cible un environnement GitHub littéral `staging`, ne contient aucun
+chemin production et ne déclenche aucun cleanup après une activation réussie. Son mode
+`deactivate`, ainsi que le rollback d'une activation armée puis échouée, appliquent l'ordre
+DB `OFF` → drain → variables `OFF` → déploiement exact → writer fence `OFF` → smoke V2 refusé.
 
 ### 4.3 Sécurité et vérité métier
 
@@ -349,16 +397,16 @@ Chaque objectif passe par quatre états seulement : `specified`, `implemented`, 
 `released`. Le passage d'état exige un lien vers un commit et une preuve ; le pourcentage estimé ne
 remplace jamais ce registre.
 
-| Objectif                      | État au 2026-07-29                                                                                                                                                                                                     | Prochaine preuve attendue                                                                                                                          |
-| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| O1 — vérité Git               | specified                                                                                                                                                                                                              | branche de sauvegarde + graphe rebasé + `main` poussé                                                                                              |
-| O2 — Factur-X/TVA             | implemented, PostgreSQL 17 et one-shot localement certifiés ; incompatibilité Bubblewrap/Railway prouvée et correction bornée `implemented` dans `SPEC_ARCHIVE_AUDIT_RAILWAY_STABILIZATION.md`                         | scanner Railway vide/B2C sans exécutable tiers, puis vraie paire Mustang/FNFE sous launcher Railway Landlock+seccomp + train 0/1 + checkout propre |
-| O3 — GPT Realtime             | implemented partiellement — isolation fournisseur, WebRTC `sendrecv`, chaîne auditée OpenAI TTS → Whisper Bob-managed privé → renderer et readiness fail-closed testés ; runtime natif fermé                           | image Whisper + round-trip certifiés sur staging, puis dispatcher/ACK natifs, barge-in audité AEC et QA device sans requête Mistral                |
+| Objectif                      | État au 2026-07-29                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Prochaine preuve attendue                                                                                                                                                                       |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| O1 — vérité Git               | specified                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | branche de sauvegarde + graphe rebasé + `main` poussé                                                                                                                                           |
+| O2 — Factur-X/TVA             | implemented, PostgreSQL 17 et one-shot localement certifiés ; incompatibilité Bubblewrap/Railway prouvée et correction bornée `implemented` dans `SPEC_ARCHIVE_AUDIT_RAILWAY_STABILIZATION.md`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | scanner Railway vide/B2C sans exécutable tiers, puis vraie paire Mustang/FNFE sous launcher Railway Landlock+seccomp + train 0/1 + checkout propre                                              |
+| O3 — GPT Realtime             | implemented partiellement — isolation fournisseur, WebRTC `sendrecv`, chaîne auditée OpenAI TTS → Whisper Bob-managed privé → renderer et readiness fail-closed testés ; runtime natif fermé                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | image Whisper + round-trip certifiés sur staging, puis dispatcher/ACK natifs, barge-in audité AEC et QA device sans requête Mistral                                                             |
 | O4 — mission continue         | `certified` sur staging pour M1-B — recovery `30334601843`, vraie mission WebRTC + ACK contexte/RLS `30335132334`, retour OFF ; M1-C client fusionné dans `main@e163f929`, non certifié device ; K1 fusionné par PR #26 dans `main@c1fd88de` ; K2 fusionné par PR #30 dans `main@9e62b472` ; M2-A-0 `implemented` dans `4c844111`, M2-A-1 fusionné par PR #33 dans `main@47ea5050`, M2-A-2 fusionné par PR #34 dans `main@cd6092d7` et M2-A-3 `implemented` jusqu’à `1c7f12c9`, avec suites complètes, récupération Prisma réelle avant/après `COMMIT`, PostgreSQL non-superuser, writer/reader N-1, revues adversariales GO et flags publics OFF tels que consignés dans la spec M2-A | M2-A-3 : CI puis gate Supabase staging `schema-only` exact-SHA, flags/keyring laissés fermés, eval du vrai modèle et QA iPhone/Android ; ne pas annoncer le devis vocal complet avant M2-B/M2-C |
-| O5 — Voice Trace              | implemented partiellement                                                                                                                                                                                              | corrélation E2E + dashboard p50/p95 + tests de confidentialité                                                                                     |
-| O6 — données réelles          | implemented partiellement                                                                                                                                                                                              | garde d'artefact + certification écran/API tenant vierge et peuplé                                                                                 |
-| O7 — release reproductible    | implemented — preuves historiques M1-B/archive/release staging `30351623978` et CI `main@83ef4afe` vertes ; accélération locale verte, revue adversariale GO, CI/mesure staging encore dues                            | PR unique : CI complète puis staging exact-SHA ≤ 35 min, merge et nettoyage ; aucune production                                                    |
-| O8 — Plateforme Agréée réelle | specified                                                                                                                                                                                                              | gate G-PA-01 + contrat/sandbox + premier flux légal réconcilié                                                                                     |
+| O5 — Voice Trace              | implemented partiellement                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | corrélation E2E + dashboard p50/p95 + tests de confidentialité                                                                                                                                  |
+| O6 — données réelles          | implemented partiellement                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | garde d'artefact + certification écran/API tenant vierge et peuplé                                                                                                                              |
+| O7 — release reproductible    | implemented — preuves historiques M1-B/archive/release staging `30351623978` et CI `main@83ef4afe` vertes ; accélération locale verte, revue adversariale GO, CI/mesure staging encore dues                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | PR unique : CI complète puis staging exact-SHA ≤ 35 min, merge et nettoyage ; aucune production                                                                                                 |
+| O8 — Plateforme Agréée réelle | specified                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | gate G-PA-01 + contrat/sandbox + premier flux légal réconcilié                                                                                                                                  |
 
 ## 8. Changement de cap
 
