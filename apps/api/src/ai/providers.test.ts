@@ -491,7 +491,7 @@ describe('OpenAI chat model runtime contract', () => {
                       operations: [{
                         kind: 'select_presented_choice',
                         ordinal: 1,
-                        has_unprocessed_request: false,
+                        unprocessed_current_utterance_remainder: null,
                       }],
                     }),
                   },
@@ -574,6 +574,10 @@ describe('OpenAI chat model runtime contract', () => {
 
     const body = JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string) as {
       readonly parallel_tool_calls?: unknown;
+      readonly messages?: ReadonlyArray<{
+        readonly role?: unknown;
+        readonly content?: unknown;
+      }>;
       readonly tools?: Array<{
         readonly function?: {
           readonly name?: unknown;
@@ -583,6 +587,18 @@ describe('OpenAI chat model runtime contract', () => {
     };
     const missionTool = body.tools?.find(
       (tool) => tool.function?.name === 'mettre_a_jour_mission_devis_v2',
+    );
+    expect(body.messages?.map((message) => message.role)).toEqual([
+      'system',
+      'user',
+      'user',
+    ]);
+    expect(body.messages?.[1]?.content).toContain(
+      '"schema":"bob.semantic-untrusted-context"',
+    );
+    expect(body.messages?.[1]?.content).not.toContain('currentUserUtterance');
+    expect(body.messages?.[2]?.content).toBe(
+      '{"schema":"bob.semantic-current-utterance","version":1,"currentUserUtterance":"Prends la première."}',
     );
     expect(body.tools?.map((tool) => tool.function?.name)).toEqual([
       'mettre_a_jour_mission_devis_v2',

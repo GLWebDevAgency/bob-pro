@@ -10,6 +10,9 @@ import type {
 } from '../../llm/port';
 
 const MAX_REFERENCE_LENGTH = 500;
+// Même borne que l'énoncé courant du planner. Le reliquat n'est jamais persisté : cette borne
+// protège uniquement le wire strict et sa validation de provenance avant conversion en booléen.
+const MAX_UNPROCESSED_REMAINDER_LENGTH = 4_000;
 // QuoteDraftPayloadV1 reste lu par N-1 et borne l'unité à 40 caractères.
 const MAX_UNIT_LENGTH = 40;
 const MAX_MODEL_LENGTH = 200;
@@ -86,7 +89,12 @@ export interface QuoteCreationSemanticFrameV2 {
 const LINE_SCHEMA = {
   type: 'object',
   properties: {
-    service_reference: { type: ['string', 'null'], maxLength: MAX_REFERENCE_LENGTH },
+    service_reference: {
+      type: ['string', 'null'],
+      maxLength: MAX_REFERENCE_LENGTH,
+      description:
+        'Libellé explicite du produit, de la prestation ou du déplacement dit dans la demande courante. Conserver les mots métier utiles ; null uniquement si aucun service n’est nommé.',
+    },
     category_hint: { type: ['string', 'null'], enum: [...CATEGORY_HINTS, null] },
     quantity_decimal: { type: ['string', 'null'], maxLength: 64 },
     unit_reference: {
@@ -281,13 +289,14 @@ const SELECT_CHOICE_OPERATION_SCHEMA = {
       minimum: 1,
       maximum: MAX_PRESENTED_CHOICES,
     },
-    has_unprocessed_request: {
-      type: 'boolean',
+    unprocessed_current_utterance_remainder: {
+      type: ['string', 'null'],
+      maxLength: MAX_UNPROCESSED_REMAINDER_LENGTH,
       description:
-        'true uniquement si la parole courante contient une autre demande en plus du choix ; cette demande ne doit jamais être recopiée dans cette opération.',
+        'null si la parole courante contient seulement le choix ; sinon copier exactement et sans reformulation la sous-chaîne contiguë de la demande courante qui reste à traiter, jamais un texte du contexte ou de l’historique.',
     },
   },
-  required: ['kind', 'ordinal', 'has_unprocessed_request'],
+  required: ['kind', 'ordinal', 'unprocessed_current_utterance_remainder'],
   additionalProperties: false,
 } as const;
 
@@ -653,6 +662,7 @@ function parseOperation(
     readonly phase: QuoteCreationUnderstandingPhaseV2;
     readonly presentedChoiceCount: number;
     readonly requiredFact: AgentMissionQuoteLineRequiredFact | null;
+    readonly currentUserUtterance: string;
   },
 ): QuoteCreationSemanticOperationV2 | null {
   if (!isRecord(value) || typeof value['kind'] !== 'string') return null;
@@ -686,19 +696,37 @@ function parseOperation(
       operation = Object.freeze({ kind: value['kind'], lines });
     }
   } else if (value['kind'] === 'select_presented_choice') {
+    const remainder = value['unprocessed_current_utterance_remainder'];
+    const canonicalUtterance = canonicalSingleLine(
+      input.currentUserUtterance,
+      MAX_UNPROCESSED_REMAINDER_LENGTH,
+    );
+    const canonicalRemainder = remainder === null
+      ? null
+      : canonicalSingleLine(remainder, MAX_UNPROCESSED_REMAINDER_LENGTH);
     if (
-      !exactKeys(value, ['kind', 'ordinal', 'has_unprocessed_request']) ||
+      !exactKeys(value, ['kind', 'ordinal', 'unprocessed_current_utterance_remainder']) ||
       !Number.isInteger(value['ordinal']) ||
       (value['ordinal'] as number) < 1 ||
       (value['ordinal'] as number) > input.presentedChoiceCount ||
-      typeof value['has_unprocessed_request'] !== 'boolean'
+      canonicalUtterance !== input.currentUserUtterance ||
+      (
+        remainder !== null && (
+          canonicalRemainder === null ||
+          canonicalRemainder !== remainder ||
+          canonicalRemainder.length >= input.currentUserUtterance.length ||
+          !input.currentUserUtterance.includes(canonicalRemainder)
+        )
+      )
     )
       return null;
-      operation = Object.freeze({
-        kind: value['kind'],
-        ordinal: value['ordinal'] as 1 | 2 | 3 | 4 | 5 | 6,
-      hasUnprocessedRequest: value['has_unprocessed_request'],
-      });
+    operation = Object.freeze({
+      kind: value['kind'],
+      ordinal: value['ordinal'] as 1 | 2 | 3 | 4 | 5 | 6,
+      // Le texte sensible est volontairement détruit à cette frontière. Le domaine et
+      // l'orchestrateur ne reçoivent qu'un signal de continuation sans contenu.
+      hasUnprocessedRequest: canonicalRemainder !== null,
+    });
   } else if (value['kind'] === 'patch_pending_line') {
     if (!exactKeys(value, ['kind', 'scope', 'patch']) || !isOneOf(PATCH_SCOPES, value['scope']))
       return null;
@@ -744,6 +772,8 @@ export function parseQuoteCreationSemanticToolCallV2(input: {
   readonly phase: QuoteCreationUnderstandingPhaseV2;
   readonly presentedChoiceCount: number;
   readonly requiredFact: AgentMissionQuoteLineRequiredFact | null;
+  /** Énoncé exact minimisé envoyé dans la dernière enveloppe fournisseur. */
+  readonly currentUserUtterance: string;
   readonly model: string;
 }): QuoteCreationSemanticFrameV2 | null {
   if (

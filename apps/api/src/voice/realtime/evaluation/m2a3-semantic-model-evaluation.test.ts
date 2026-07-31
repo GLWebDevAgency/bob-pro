@@ -29,9 +29,11 @@ function operationFor(caseId: string): Record<string, unknown> {
     return {
       kind: 'select_presented_choice',
       ordinal: caseId.startsWith('customer-choice') ? 2 : 1,
-      has_unprocessed_request:
+      unprocessed_current_utterance_remainder:
         caseId === 'customer-choice-compound-remainder' ||
-        caseId === 'catalogue-compound-remainder',
+        caseId === 'catalogue-compound-remainder'
+          ? 'puis ajoute deux heures de déplacement.'
+          : null,
     };
   }
   if (caseId === 'required-fact-elliptical') {

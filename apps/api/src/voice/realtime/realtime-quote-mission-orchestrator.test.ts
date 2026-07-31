@@ -36,6 +36,9 @@ const PROOF = Object.freeze({
 const PROOF_V2 = Object.freeze({ ...PROOF, protocolVersion: 2 });
 const SESSION_ID = '20000000-0000-4000-8000-000000000001';
 const TURN_ID = '10000000-0000-4000-8000-000000000001';
+const COMPOSITE_TRANSCRIPT =
+  'Prends le deuxième, puis ajoute deux heures de déplacement.';
+const COMPOSITE_REMAINDER = 'puis ajoute deux heures de déplacement.';
 const LINE_ARGUMENTS = Object.freeze({
   service_reference: 'Main-d’œuvre plomberie',
   category_hint: 'labor',
@@ -938,6 +941,13 @@ function inputV2(
   };
 }
 
+function compositeInputV2() {
+  return Object.freeze({
+    ...inputV2(),
+    transcript: COMPOSITE_TRANSCRIPT,
+  });
+}
+
 describe('RealtimeQuoteMissionOrchestrator', () => {
   it('persiste la mission et la référence client avant de rendre la navigation', async () => {
     const h = harness({
@@ -1115,12 +1125,12 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
       call: toolCallV2({
         kind: 'select_presented_choice',
         ordinal: 2,
-        has_unprocessed_request: true,
+        unprocessed_current_utterance_remainder: COMPOSITE_REMAINDER,
       }),
       current,
     });
 
-    const outcome = await h.orchestrator.run(inputV2());
+    const outcome = await h.orchestrator.run(compositeInputV2());
     expect(outcome).toMatchObject({
       status: 'handled',
       canonicalSpeech: expect.stringContaining(
@@ -1480,7 +1490,7 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
       call: toolCallV2({
         kind: 'select_presented_choice',
         ordinal: 2,
-        has_unprocessed_request: false,
+        unprocessed_current_utterance_remainder: null,
       }),
       current,
     });
@@ -1518,12 +1528,12 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
       call: toolCallV2({
         kind: 'select_presented_choice',
         ordinal: 2,
-        has_unprocessed_request: true,
+        unprocessed_current_utterance_remainder: COMPOSITE_REMAINDER,
       }),
       current,
     });
 
-    await expect(h.orchestrator.run(inputV2())).resolves.toEqual({
+    await expect(h.orchestrator.run(compositeInputV2())).resolves.toEqual({
       status: 'handled',
       canonicalSpeech:
         'Quel prix unitaire dois-je appliquer à cette ligne ? J’ai aussi entendu une autre demande dans cette phrase, mais je ne l’ai pas exécutée avec ce choix. Termine cette étape, puis redis-la pour que je la traite séparément.',
@@ -1545,7 +1555,7 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
       call: toolCallV2({
         kind: 'select_presented_choice',
         ordinal: 2,
-        has_unprocessed_request: true,
+        unprocessed_current_utterance_remainder: COMPOSITE_REMAINDER,
       }),
       current,
       catalogueChoiceFailure: 'throws',
@@ -1553,7 +1563,7 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
       currentPresentationAfterDecision: presentationForMission(afterDecision),
     });
 
-    await expect(h.orchestrator.run(inputV2())).resolves.toEqual({
+    await expect(h.orchestrator.run(compositeInputV2())).resolves.toEqual({
       status: 'handled',
       canonicalSpeech:
         'Quel prix unitaire dois-je appliquer à cette ligne ? J’ai aussi entendu une autre demande dans cette phrase, mais je ne l’ai pas exécutée avec ce choix. Termine cette étape, puis redis-la pour que je la traite séparément.',
@@ -1569,13 +1579,13 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
       call: toolCallV2({
         kind: 'select_presented_choice',
         ordinal: 2,
-        has_unprocessed_request: true,
+        unprocessed_current_utterance_remainder: COMPOSITE_REMAINDER,
         lines: [LINE_ARGUMENTS],
       }),
       current,
     });
 
-    await expect(h.orchestrator.run(inputV2())).resolves.toEqual({
+    await expect(h.orchestrator.run(compositeInputV2())).resolves.toEqual({
       status: 'failed',
       canonicalSpeech:
         'Je n’ai pas pu sécuriser cette demande. Rien n’a été exécuté. Reformule-la simplement.',
@@ -1592,7 +1602,7 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
       call: toolCallV2({
         kind: 'select_presented_choice',
         ordinal: 1,
-        has_unprocessed_request: false,
+        unprocessed_current_utterance_remainder: null,
       }),
       current,
       currentPresentation,
@@ -1613,7 +1623,7 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
       call: toolCallV2({
         kind: 'select_presented_choice',
         ordinal: 3,
-        has_unprocessed_request: false,
+        unprocessed_current_utterance_remainder: null,
       }),
       current,
       catalogueChoiceValue: {
@@ -1677,12 +1687,16 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
     expect(h.patchLineFromVoiceTurn).toHaveBeenCalledTimes(1);
     const plannerMessages =
       vi.mocked(h.model.complete).mock.calls[0]?.[0] ?? [];
-    const plannerContext = plannerMessages.at(-1)?.content ?? '';
+    expect(plannerMessages).toHaveLength(2);
+    const plannerContext = plannerMessages[0]?.content ?? '';
     expect(plannerContext).toContain('"label":"Main-d’œuvre plomberie"');
     expect(plannerContext).toContain('"quantityDecimal":"2"');
     expect(plannerContext).toContain('"unit":"heure"');
     expect(plannerContext).toContain('"unitPriceDecimal":null');
     expect(plannerContext).toContain('"vatRate":"20"');
+    expect(plannerMessages[1]?.content).toContain(
+      '"schema":"bob.semantic-current-utterance"',
+    );
     expect(outcome).toMatchObject({
       status: 'handled',
       speechPurpose: 'structured_choice',

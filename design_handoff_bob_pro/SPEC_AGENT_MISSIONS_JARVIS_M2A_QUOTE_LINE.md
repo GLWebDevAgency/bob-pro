@@ -1720,11 +1720,17 @@ intents et reçus preflight/certified.
       défaut runtime versionné, sans poser d'override Railway ni recopier un nom de modèle dans le
       workflow. Une valeur vide ou mal formée échoue fermée ; la preuve porte le modèle
       effectivement demandé et refuse tout modèle retourné incompatible. Le
-      fournisseur ne reçoit qu'une enveloppe JSON de rôle `user` : seul
-      `currentUserUtterance` porte la demande actuelle ; `recentTurns`, `uiContext` et les labels
-      sont redigés et restent des données non fiables, y compris lorsqu'une parole Bob mémorisée
-      reprend un label catalogue hostile. Le schéma mission est borné à la phase autoritaire, une
-      TVA absente reste nulle et une sélection ordinale ne peut transporter aucune ligne. Chaque
+      fournisseur reçoit exactement deux enveloppes JSON de rôle `user` dans la même complétion :
+      `bob.semantic-untrusted-context` d'abord, sans demande courante, puis le dernier message
+      minimal `bob.semantic-current-utterance`, qui ne porte que `currentUserUtterance` redigé.
+      Aucun message fournisseur `assistant` n'est émis. `recentTurns`, `uiContext` et les labels
+      restent des données non fiables, y compris lorsqu'une parole Bob mémorisée reprend un label
+      catalogue hostile. Le schéma mission est borné à la phase autoritaire, une TVA absente reste
+      nulle et une sélection ordinale ne peut transporter aucune ligne. Son éventuel
+      `unprocessed_current_utterance_remainder` doit être `null` ou une sous-chaîne exacte,
+      canonique et strictement plus courte de la demande courante redigée ; le parseur en dérive le
+      booléen interne puis jette le texte avant orchestration, journal et preuve. Toute provenance
+      depuis l'historique ou un label invalide la frame. Chaque
       cas du reçu prouve exactement un appel `complete` résolu, zéro `generate`, le modèle
       fournisseur observé même si le planner rejette la sortie, ainsi que des codes d'issue fermés
       sans transcript, prompt, argument, label ni identifiant métier. Le reçu n'est téléversé

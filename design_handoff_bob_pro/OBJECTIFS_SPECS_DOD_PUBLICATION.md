@@ -268,9 +268,10 @@ l'intégration.
       phase, une TVA absente reste nulle, un choix ordinal ne peut recopier une ligne du contexte
       et signale toute demande restante sans l'exécuter silencieusement ; le modèle fournisseur
       observé reste prouvé même lorsqu'une sortie est rejetée, avec sa source de configuration.
-- [ ] Le fournisseur reçoit un unique message `user` JSON : seule la parole courante porte une
-      demande ; historique Bob, contexte UI et labels tenant restent des données non fiables
-      redigées, jamais des tours `assistant`.
+- [ ] Le fournisseur reçoit exactement deux messages `user` JSON dans une seule complétion : le
+      premier contient l'historique Bob, le contexte UI et les labels tenant comme données non
+      fiables redigées ; le second contient uniquement la parole courante redigée. Aucun contenu
+      tenant n'est réinjecté comme tour `assistant`, et aucun retry ou second planner n'est ajouté.
 - [ ] Aucun parcours vocal public ne garde un writer historique concurrent ; chaque interaction
       annoncée est absorbée par un `mission kind` du moteur LLM unique ou explicitement fermée.
 - [ ] Devis, factures, clients, catalogue, documents, notifications, dépenses,

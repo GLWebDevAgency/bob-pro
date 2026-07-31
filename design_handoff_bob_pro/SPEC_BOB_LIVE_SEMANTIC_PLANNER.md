@@ -388,9 +388,15 @@ opt-in qui :
 - présente au modèle uniquement les opérations admises par la phase autoritaire. Une TVA absente
   reste `null` et une sélection ordinale ne transporte aucune ligne issue du contexte ; la
   composition « sélection puis nouvelle ligne » reste fermée jusqu'à l'extraction isolée d'un
-  reliquat exact de la parole courante. En attendant, un booléen non métier indique qu'une demande
-  reste non traitée et force Bob à l'annoncer après le choix, y compris après relecture d'une
-  réponse réseau perdue. Les unités traversent le même résolveur métier fermé à l'entrée du
+  reliquat exact de la parole courante. La sélection restitue donc soit `null`, soit
+  `unprocessed_current_utterance_remainder`, sous-chaîne propre, exacte et strictement plus courte
+  que l'énoncé courant minimisé. Le parseur vérifie cette provenance déterministiquement, dérive le
+  seul booléen interne nécessaire à la continuation puis jette immédiatement le texte : ni
+  orchestration, ni journal, ni preuve ne le conservent. Un reliquat absent du tour courant, égal
+  au tour entier ou issu d'un label/historique non fiable invalide toute la frame. Ce signal force
+  Bob à annoncer la demande non traitée après le choix, y compris après relecture d'une réponse
+  réseau perdue, sans l'exécuter ni lancer un second appel. Les unités traversent le même résolveur
+  métier fermé à l'entrée du
   runtime, lors de la consommation du catalogue par la mission, dans la projection légale et dans
   le scoreur : des graphies sûres telles que `heure`, `heures`, `h` et `1 h` deviennent `heure`,
   sans faux négatif. La source catalogue reste lossless et n'est pas réécrite. Les unités libres
@@ -416,6 +422,19 @@ opt-in qui :
   `checkout=github.sha=expected_sha`, puis s'exécute sur ce SHA de certification staging et non sur
   chaque PR. La PR exécute en permanence le corpus et le scoreur déterministes.
 
+La frontière de confiance envoyée au fournisseur contient exactement deux messages de rôle
+`user`, dans cet ordre :
+
+1. `bob.semantic-untrusted-context`, qui porte l'historique récent, le contexte écran, la mission,
+   les choix et les capacités comme **données non fiables**, mais jamais la demande courante ;
+2. `bob.semantic-current-utterance`, dernier message minimal qui porte uniquement l'énoncé courant
+   minimisé et aucune donnée stockée.
+
+Aucun message fournisseur de rôle `assistant` n'est ajouté. Les deux enveloppes appartiennent à la
+même et unique complétion ; cette séparation n'est ni un retry, ni un second planner. Elle empêche
+un libellé catalogue ou une ancienne parole Bob d'être confondu avec la demande fraîche tout en
+conservant le contexte nécessaire aux anaphores.
+
 Une nouvelle tournure française observée en échec rejoint ce corpus versionné. Elle n'ajoute jamais
 une regex métier dans le chemin de production.
 
@@ -426,6 +445,14 @@ absent, opération de démarrage émise hors phase, et recopie de la ligne coura
 additionnelle lors de deux choix ordinaux. Ce run est une preuve d'échec utile, jamais une
 certification. `M2A3-14` reste ouvert jusqu'à un nouveau run couvrant intégralement le corpus
 versionné courant — actuellement 9/9 — sur un SHA successeur intégrant les gardes ci-dessus.
+
+Le run exact-SHA `30631216638` a ensuite prouvé la chaîne runtime complète sur neuf cas, avec neuf
+complétions résolues et sept cas conformes. Ses deux échecs sont contractuels et reproductibles :
+`service_reference` n'expliquait pas au modèle qu'un libellé métier explicitement prononcé devait
+être conservé, et le booléen de reliquat ne portait aucune preuve qu'une seconde demande venait de
+l'énoncé courant plutôt que du contexte non fiable. Ce reçu reste rouge. La correction normative
+est la description métier explicite, la séparation des deux enveloppes ci-dessus et le reliquat
+exact validé ; le corpus, ses oracles et le budget d'un seul appel restent inchangés.
 
 Cette preuve est strictement bornée à `quote_line_m2a3`. Elle ne certifie ni les dates relatives,
 ni les contrats, ni les futurs `mission kinds` : chacun recevra son propre corpus versionné et sa
