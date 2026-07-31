@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { copyFile, mkdtemp, realpath, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import {
   assertRailwayM1BActive,
   assertRailwayM1BOff,
@@ -27,6 +32,41 @@ const MISSION_SECRET = Buffer.alloc(32, 7).toString('base64url');
 const SUBJECT_SECRET = Buffer.alloc(32, 8).toString('base64url');
 const PROOF_SECRET = Buffer.alloc(32, 9).toString('base64url');
 const RELEASE_SHA = 'a'.repeat(40);
+const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
+
+test('exécute le control plane Railway avant toute installation de dépendances', async (t) => {
+  const isolatedDirectory = await mkdtemp(join(tmpdir(), 'bob-m1b-railway-bootstrap-'));
+  t.after(() => rm(isolatedDirectory, { recursive: true, force: true }));
+
+  for (const filename of [
+    'agent-mission-m1b-staging-railway.mjs',
+    'manage-agent-mission-fingerprint-key-versions.mjs',
+  ]) {
+    await copyFile(join(SCRIPT_DIRECTORY, filename), join(isolatedDirectory, filename));
+  }
+
+  const railwayOperatorPath = await realpath(
+    join(isolatedDirectory, 'agent-mission-m1b-staging-railway.mjs'),
+  );
+  const result = spawnSync(
+    process.execPath,
+    [railwayOperatorPath, 'serving-deployment-id'],
+    {
+      cwd: isolatedDirectory,
+      encoding: 'utf8',
+      env: {
+        PATH: process.env.PATH ?? '',
+        ...previewEnvironment(),
+      },
+      input: JSON.stringify(railwayStatus()),
+      timeout: 5_000,
+    },
+  );
+
+  assert.equal(result.signal, null, result.stderr);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `${DEPLOYMENT_ID}\n`);
+});
 
 function environment(overrides = {}) {
   return {
