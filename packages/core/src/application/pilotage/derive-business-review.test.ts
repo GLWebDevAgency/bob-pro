@@ -419,3 +419,88 @@ describe('deriveBusinessReview — collection (PR-07)', () => {
     ]);
   });
 });
+
+// ── Jour MÉTIER des encaissements — receivedAt (Instant) bucketé sur le calendrier PARIS ──
+// `today` injecté par les appelants est le jour métier Paris (backend.service.ts
+// businessToday()) : tronquer receivedAt en jour UTC désynchronisait les deux horloges chaque
+// fin de mois entre minuit Paris et minuit UTC (CI run 30669253717 : pont-serveur ⑦ rouge à
+// 22:18 UTC le 31/07 = 00:18 Paris le 1er août). Horloges GELÉES : today et receivedAt sont
+// des littéraux explicites, aucun new Date() ambiant — parisDateOnly reçoit toujours l'instant.
+
+describe('deriveBusinessReview — jour métier des encaissements (bascule de mois Paris)', () => {
+  it("reproduit l'échec CI : encaissé à 22:18 UTC le 31/07 = 00:18 Paris le 1er août → mois 2026-08", () => {
+    const review = deriveBusinessReview(
+      baseInput({
+        today: '2026-08-01', // jour métier Paris au moment du run CI rouge
+        // 2026-07-31T22:18Z = 2026-08-01 00:18 à Paris (été, CEST UTC+2) : le mois métier a basculé.
+        payments: [{ amountCents: 120_000, receivedAt: '2026-07-31T22:18:00.000Z' }],
+      }),
+    );
+    // UN SEUL mois mouvementé : 2026-08 (jamais un point 2026-07 fabriqué par le jour UTC).
+    expect(review.series).toEqual([
+      { month: '2026-08', invoicedHtCents: 0, collectedTtcCents: 120_000 },
+    ]);
+    // Le mois courant (isopérimètre) voit le paiement : 120 000 c, pas 0.
+    expect(review.currentMonth.month).toBe('2026-08');
+    expect(review.currentMonth.collectedTtcCents).toBe(120_000);
+    // Et rien ne fuit dans l'isopérimètre du mois précédent (31 juillet UTC n'existe plus).
+    expect(review.currentMonth.previousCollectedTtcCents).toBe(0);
+  });
+
+  it("bord d'année en HIVER (CET UTC+1) : encaissé le 31/12 23:30 UTC = 1er janvier 00:30 Paris → 2027-01", () => {
+    const review = deriveBusinessReview(
+      baseInput({
+        today: '2027-01-01',
+        // 2026-12-31T23:30Z = 2027-01-01 00:30 à Paris (hiver, CET UTC+1) : l'année métier a basculé.
+        payments: [{ amountCents: 84_000, receivedAt: '2026-12-31T23:30:00.000Z' }],
+      }),
+    );
+    // Série : un unique point 2027-01 (aucun point 2026-12 fantôme).
+    expect(review.series).toEqual([
+      { month: '2027-01', invoicedHtCents: 0, collectedTtcCents: 84_000 },
+    ]);
+    expect(review.currentMonth.month).toBe('2027-01');
+    expect(review.currentMonth.collectedTtcCents).toBe(84_000);
+  });
+
+  it('non-régression : une DateOnly pure reste telle quelle (aucune projection de fuseau)', () => {
+    const review = deriveBusinessReview(
+      baseInput({
+        today: '2026-07-20',
+        payments: [{ amountCents: 50_000, receivedAt: '2026-07-15' }], // déjà un jour métier
+      }),
+    );
+    // '2026-07-15' → mois 2026-07, inchangé avant/après le correctif.
+    expect(review.series).toEqual([
+      { month: '2026-07', invoicedHtCents: 0, collectedTtcCents: 50_000 },
+    ]);
+    expect(review.currentMonth.collectedTtcCents).toBe(50_000);
+  });
+
+  it("non-régression : un instant en pleine journée (10:00 UTC = 12:00 Paris) reste dans son mois", () => {
+    const review = deriveBusinessReview(
+      baseInput({
+        today: '2026-07-20',
+        // Loin de minuit : jour UTC et jour Paris coïncident — le correctif ne change rien.
+        payments: [{ amountCents: 75_000, receivedAt: '2026-07-15T10:00:00.000Z' }],
+      }),
+    );
+    expect(review.series).toEqual([
+      { month: '2026-07', invoicedHtCents: 0, collectedTtcCents: 75_000 },
+    ]);
+    expect(review.currentMonth.collectedTtcCents).toBe(75_000);
+  });
+
+  it('fenêtre encaissé 90 j : le bord de fenêtre se juge au jour PARIS, pas au jour UTC', () => {
+    const review = deriveBusinessReview(
+      baseInput({
+        today: '2026-08-01', // dsoFloor = addDays(-90) = '2026-05-03', borne EXCLUSIVE
+        // 2026-05-03T22:30Z = 2026-05-04 00:30 à Paris (été) : jour métier 04/05 > 03/05 → DANS la fenêtre
+        // (le jour UTC 03/05 = la borne exclusive l'aurait exclu à tort).
+        payments: [{ amountCents: 33_000, receivedAt: '2026-05-03T22:30:00.000Z' }],
+      }),
+    );
+    // collectedTtc90dCents est mesuré même sans facturation (le taux, lui, reste null assumé).
+    expect(review.collection.collectedTtc90dCents).toBe(33_000);
+  });
+});
