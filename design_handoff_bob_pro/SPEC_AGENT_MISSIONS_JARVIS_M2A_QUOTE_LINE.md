@@ -1801,11 +1801,44 @@ armé qu'après la preuve initiale d'un état entièrement `OFF`, afin qu'un sim
 état préexistant ne puisse jamais désactiver un rollout sain.
 
 La même preuve initiale capture deux fois, autour de la readiness exacte, l'identifiant du seul
-déploiement normal effectivement servi. Le rollback utilise cet identifiant comme autorité et
-redéploie cet artefact capturé : il ne dépend donc ni du `latestDeployment` Railway, qui peut être
-`FAILED`, ni d'un checkout plus récent. Le job d'activation porte explicitement `always()` afin
-qu'une annulation GitHub exécute d'abord la coupure DB inline ; un job de rollback indépendant
-réalise ensuite la convergence runtime et la preuve OFF.
+déploiement normal effectivement servi afin d'interdire une activation sur une baseline qui change
+pendant la readiness. Cet identifiant ne devient pas une autorité de rollback et ne sort pas de
+l'étape ; le rollback relit l'identité réellement servie après la coupure DB. Aucun de ces
+identifiants ne doit être passé à `deploymentRedeploy`. Railway documente qu'un redeploy reprend le
+code et la configuration de build/deploy du déploiement source ; le comportement précis des
+variables de la mutation GraphQL ciblée a été établi par le run staging `30658006015` : il a
+redéployé avec succès l'artefact
+`42ac3029-fd46-4912-9c71-881cf8cf0733`, mais a perdu le master M2-A explicitement remis à `false`
+juste avant ; il n'est ni un reçu OFF ni une autorisation d'activation.
+
+L'absence du master laissée par ce snapshot vaut bien OFF au boot, mais n'est pas la baseline
+canonique exigée avant activation. Le cleanup possède donc un état de reprise borné : master M2-A
+absent ou `false`, aucun autre champ V1/M2-A ni owner, aucun patch Railway en attente. Il peut
+uniquement ajouter le master explicite `false` sans remplacer la collection ni retransmettre ses
+secrets, avec double lecture anti-concurrence, relecture exacte complète et récupération d'ACK
+perdu ; toute autre forme échoue fermée.
+
+Le rollback reconstruit le SHA de release normal exact déjà prouvé par l'activation. Une
+désactivation ultérieure observe d'abord le SHA effectivement servi, vérifie son ownership s'il
+est actif, puis crée après la coupure DB un second checkout détaché exactement sur ce SHA ; le
+checkout de contrôle reste pour sa part lié à `expected_sha == github.sha` sur `main`. Avant
+l'upload, le job prouve `git rev-parse HEAD == sourceReleaseSha` dans le checkout source et y écrit
+uniquement la metadata de release canonique pour ce même SHA. La preuve d'identité du déploiement
+source refuse aussi tout `latestDeployment` concurrent en construction ou en déploiement ; un
+`latestDeployment` distinct n'est toléré que s'il porte un échec terminal stable et aucune instance
+`RUNNING`. Les deux chemins utilisent
+`railway up <checkout-source> --path-as-root` uniquement après la restauration atomique des
+variables OFF et attendent l'identifiant du nouveau déploiement jusqu'à `SUCCESS`. Ils relisent
+ensuite la topologie Railway jusqu'à prouver que ce même identifiant est l'unique déploiement
+`SUCCESS` réellement servi par une unique instance `RUNNING` ; un simple succès de build ne vaut
+jamais bascule runtime. Cette construction fraîche est nécessaire pour injecter la collection de
+variables courante ; tout
+`deploymentRedeploy`, `deploymentRollback` ou upload depuis un checkout non prouvé est interdit
+dans ce train. L'identifiant source, le SHA source et l'action
+`exact-source-rebuild`/`captured-baseline-source-rebuild` restent scellés dans le reçu. Le job
+d'activation porte explicitement `always()` afin qu'une annulation GitHub exécute d'abord la
+coupure DB inline ; un job de rollback indépendant réalise ensuite la convergence runtime et la
+preuve OFF.
 
 Les mutations et lectures de flags certifient l'identité Supabase staging dans le même processus,
 sur un snapshot PostgreSQL repeatable-read borné. La désactivation et le rollback installent
@@ -1832,7 +1865,8 @@ ce run n'est ni un reçu `OFF` ni une autorisation d'activation.
 - [ ] le canary authentifié obtient `bam2`, protocole `2`, ACK bootstrap, lecture capability puis
       hangup ; une capability nulle ou V1 échoue ;
 - [ ] le chemin d'échec remet d'abord le flag DB `OFF`, retire uniquement le bloc Railway possédé
-      puis prouve l'état fermé ;
+      puis reconstruit le checkout du SHA servi avec la collection OFF courante et prouve l'état
+      fermé ; aucun API/CLI Railway qui restaure un snapshot historique de variables n'est appelé ;
 - [x] le control plane Railway nécessaire avant l'installation des dépendances s'importe sans
       `node_modules` et Prisma n'est résolu que par le point d'entrée DB explicite ;
 - [ ] le reçu non-PII lie décision, SHA, versions de flags, déploiement et résultat du canary.
