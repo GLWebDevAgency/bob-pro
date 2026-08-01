@@ -72,6 +72,8 @@ import {
   planEntitlements,
   resolveAutonomyEntitlement,
   runDiagnostic,
+  businessDayOf,
+  parisDateOnly,
   deriveFiscalCalendar,
   deriveVatPosition,
   deriveAgedBalance,
@@ -2519,13 +2521,16 @@ export class LocalBobClient implements BobClient {
     await this.ready;
     const company = seedCompany();
     const types = [...new Set(seedCustomers().map((c) => c.type))];
-    const today = this.clock.today();
-    // E6 : recettes ENCAISSÉES de l'année civile — la surveillance des seuils de
-    // franchise 293 B lit du RÉEL (paiements datés), jamais un statut décoratif.
+    // Année civile 293 B au calendrier MÉTIER Paris des deux côtés, comme les deux jumeaux
+    // serveur (backend.service getDiagnostic, DiagnosticAssessmentService) : borne dérivée de
+    // l'INSTANT de l'horloge (parisDateOnly, pas le jour UTC de l'appareil) ET jour des
+    // encaissements projeté via businessDayOf — sinon la fenêtre 23:00–00:00 UTC du 31/12
+    // classe l'encaissement du Nouvel An dans l'année précédente.
+    const today = parisDateOnly(this.clock.now());
     const year = today.slice(0, 4);
     const payments = await this.payments.listByCompany(this.companyId);
     const annualEncaissedCents = payments
-      .filter((p) => p.receivedAt.slice(0, 4) === year)
+      .filter((p) => businessDayOf(p.receivedAt).slice(0, 4) === year)
       .reduce((sum, p) => sum + p.amount, 0);
     return ok(
       runDiagnostic({
