@@ -365,6 +365,20 @@ describe('MATRICE FLAGS V1 — verrouillage anti-drift (scope mobile, eas.json)'
       ).not.toMatch(/^https?:\/\//u);
     }
   });
+
+  it('la refonte visuelle ne s’active JAMAIS au profil production', () => {
+    // Activation fondateur du 01/08 : EXPO_PUBLIC_MOBILE_TABS_EXPERIMENT_V1='1' au profil
+    // PREVIEW seulement, pour observer la nouvelle tab bar sur staging. La lecture est
+    // fail-closed (bob-tab-bar-flag.ts : tout sauf '1'/'true' vaut OFF) — mais ce test
+    // verrouille la moitié CONFIGURATION : la variable ne doit jamais apparaître truthy au
+    // profil production tant que PERF-13 n'a pas rendu son verdict sur appareil réel.
+    const production = eas.build?.production?.env ?? {};
+    const raw = production['EXPO_PUBLIC_MOBILE_TABS_EXPERIMENT_V1'];
+    expect(
+      raw === undefined || !['1', 'true'].includes(raw.trim().toLowerCase()),
+      `EXPO_PUBLIC_MOBILE_TABS_EXPERIMENT_V1=${String(raw)} au profil production — la refonte ne part pas en prod sans verdict PERF-13`,
+    ).toBe(true);
+  });
 });
 
 describe('MATRICE FLAGS V1 — verrouillage anti-drift (scope ci)', () => {
