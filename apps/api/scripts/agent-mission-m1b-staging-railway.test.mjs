@@ -17,8 +17,6 @@ import {
   parseRailwayM1BEnvironment,
   parseRailwayServingDeploymentId,
   parseRailwayUpDeploymentId,
-  redeployCapturedRailwayM1BBaseline,
-  redeployExactRailwayM1BDeployment,
   runRailwayM1BCommand,
   waitForRailwayM1BDeployment,
 } from './agent-mission-m1b-staging-railway.mjs';
@@ -48,20 +46,16 @@ test('exécute le control plane Railway avant toute installation de dépendances
   const railwayOperatorPath = await realpath(
     join(isolatedDirectory, 'agent-mission-m1b-staging-railway.mjs'),
   );
-  const result = spawnSync(
-    process.execPath,
-    [railwayOperatorPath, 'serving-deployment-id'],
-    {
-      cwd: isolatedDirectory,
-      encoding: 'utf8',
-      env: {
-        PATH: process.env.PATH ?? '',
-        ...previewEnvironment(),
-      },
-      input: JSON.stringify(railwayStatus()),
-      timeout: 5_000,
+  const result = spawnSync(process.execPath, [railwayOperatorPath, 'serving-deployment-id'], {
+    cwd: isolatedDirectory,
+    encoding: 'utf8',
+    env: {
+      PATH: process.env.PATH ?? '',
+      ...previewEnvironment(),
     },
-  );
+    input: JSON.stringify(railwayStatus()),
+    timeout: 5_000,
+  });
 
   assert.equal(result.signal, null, result.stderr);
   assert.equal(result.status, 0, result.stderr);
@@ -450,6 +444,74 @@ test('preview refuse bloc partiel, owner étranger et baseline M2-A absente', as
   assert.throws(() => assertRailwayM1BPreflight(partial, config), /must be absent/u);
 });
 
+test('cleanup preview réconcilie une source effectivement OFF vers la baseline false explicite', async () => {
+  const absent = railwayState(bobLiveVariables());
+  const canonical = railwayState(previewOffVariables());
+  const calls = [];
+  const result = await runRailwayM1BCommand('deactivate', previewEnvironment(), {
+    graphql: async (_config, query, variables) => {
+      calls.push({ query, variables });
+      if (query.includes('query AgentMissionM1BState')) {
+        const reads = calls.filter((call) => call.query.includes('query AgentMissionM1BState'));
+        return reads.length <= 2 ? absent : canonical;
+      }
+      return { variableCollectionUpsert: true };
+    },
+  });
+  assert.deepEqual(result, {
+    command: 'deactivate',
+    state: 'off',
+    changed: true,
+    acknowledgement: 'received',
+  });
+  const mutation = calls.find((call) => call.query.includes('mutation AgentMissionM1BVariables'));
+  assert.equal(mutation.variables.input.replace, false);
+  assert.equal(mutation.variables.input.skipDeploys, true);
+  assert.deepEqual(mutation.variables.input.variables, {
+    BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED: 'false',
+  });
+
+  await assert.doesNotReject(
+    runRailwayM1BCommand('assert-rebuildable-off-source', previewEnvironment(), {
+      graphql: async () => absent,
+    }),
+  );
+  await assert.rejects(
+    runRailwayM1BCommand('assert-rebuildable-off-source', previewEnvironment(), {
+      graphql: async () =>
+        railwayState({
+          ...bobLiveVariables(),
+          BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED: 'true',
+        }),
+    }),
+    /owned preview variable/u,
+  );
+});
+
+test('cleanup preview récupère un ACK perdu après réconciliation absent vers false explicite', async () => {
+  const absent = railwayState(bobLiveVariables());
+  const canonical = railwayState(previewOffVariables());
+  let reads = 0;
+  let mutations = 0;
+  const result = await runRailwayM1BCommand('deactivate', previewEnvironment(), {
+    graphql: async (_config, query) => {
+      if (query.includes('query AgentMissionM1BState')) {
+        reads += 1;
+        return reads <= 2 ? absent : canonical;
+      }
+      mutations += 1;
+      throw new TypeError('response lost after explicit OFF commit');
+    },
+  });
+  assert.deepEqual(result, {
+    command: 'deactivate',
+    state: 'off',
+    changed: true,
+    acknowledgement: 'recovered',
+  });
+  assert.equal(mutations, 1);
+});
+
 test('cleanup au rerun reconstruit la collection sans le bloc possédé par le run stable', async () => {
   const activeVariables = {
     ...bobLiveVariables(),
@@ -673,7 +735,7 @@ test('parse uniquement le deploymentId exact de railway up', () => {
   assert.throws(() => parseRailwayUpDeploymentId('not-json'), /invalid JSON/u);
 });
 
-function railwayStatus(deploymentOverrides = {}) {
+function railwayStatus(deploymentOverrides = {}, latestOverrides = {}) {
   const deployment = {
     id: DEPLOYMENT_ID,
     status: 'SUCCESS',
@@ -694,7 +756,7 @@ function railwayStatus(deploymentOverrides = {}) {
                   node: {
                     serviceId: SERVICE_ID,
                     activeDeployments: [deployment],
-                    latestDeployment: { ...deployment, canRedeploy: true },
+                    latestDeployment: { ...deployment, canRedeploy: true, ...latestOverrides },
                   },
                 },
               ],
@@ -709,6 +771,45 @@ function railwayStatus(deploymentOverrides = {}) {
 test('identifie un unique déploiement réellement servant depuis railway status', () => {
   const config = parseRailwayM1BEnvironment(previewEnvironment());
   assert.equal(parseRailwayServingDeploymentId(railwayStatus(), config), DEPLOYMENT_ID);
+  assert.equal(
+    parseRailwayServingDeploymentId(
+      railwayStatus(
+        {},
+        {
+          id: '66666666-6666-4666-8666-666666666666',
+          status: 'FAILED',
+          instances: [{ id: '55555555-5555-4555-8555-555555555555', status: 'CRASHED' }],
+        },
+      ),
+      config,
+    ),
+    DEPLOYMENT_ID,
+  );
+  assert.throws(
+    () =>
+      parseRailwayServingDeploymentId(
+        railwayStatus({}, { id: '66666666-6666-4666-8666-666666666666', status: 'FAILED' }),
+        config,
+      ),
+    /latest deployment is not a stable terminal failure/u,
+  );
+  for (const status of ['BUILDING', 'DEPLOYING', 'INITIALIZING', 'QUEUED', 'WAITING']) {
+    assert.throws(
+      () =>
+        parseRailwayServingDeploymentId(
+          railwayStatus(
+            {},
+            {
+              id: '66666666-6666-4666-8666-666666666666',
+              status,
+              instances: [{ id: '55555555-5555-4555-8555-555555555555', status: 'DEPLOYING' }],
+            },
+          ),
+          config,
+        ),
+      /latest deployment is not a stable terminal failure/u,
+    );
+  }
   for (const mutation of [
     { status: 'FAILED' },
     { deploymentStopped: true },
@@ -716,163 +817,9 @@ test('identifie un unique déploiement réellement servant depuis railway status
   ]) {
     assert.throws(
       () => parseRailwayServingDeploymentId(railwayStatus(mutation), config),
-      /one exact redeployable serving deployment/u,
+      /one exact serving deployment/u,
     );
   }
-});
-
-test('redéploie uniquement l’ID servant exact et exige un nouvel ID Railway', async () => {
-  const nextDeploymentId = '66666666-6666-4666-8666-666666666666';
-  const calls = [];
-  const graphql = async (_config, query, variables) => {
-    calls.push({ query, variables });
-    if (query.includes('query AgentMissionM1BDeployment')) {
-      return {
-        deployment: {
-          id: DEPLOYMENT_ID,
-          projectId: PROJECT_ID,
-          environmentId: ENVIRONMENT_ID,
-          serviceId: SERVICE_ID,
-          status: 'SUCCESS',
-          deploymentStopped: false,
-          instances: [{ id: '55555555-5555-4555-8555-555555555555', status: 'RUNNING' }],
-        },
-      };
-    }
-    if (query.includes('query AgentMissionServingDeployment')) {
-      return { environment: railwayStatus().environments.edges[0].node };
-    }
-    return { deploymentRedeploy: { id: nextDeploymentId } };
-  };
-  assert.deepEqual(
-    await redeployExactRailwayM1BDeployment(DEPLOYMENT_ID, previewEnvironment(), { graphql }),
-    { sourceDeploymentId: DEPLOYMENT_ID, deploymentId: nextDeploymentId },
-  );
-  assert.deepEqual(
-    calls.map((call) => call.variables),
-    [
-      { id: DEPLOYMENT_ID },
-      { projectId: PROJECT_ID, environmentId: ENVIRONMENT_ID },
-      { id: DEPLOYMENT_ID },
-    ],
-  );
-
-  await assert.rejects(
-    redeployExactRailwayM1BDeployment(DEPLOYMENT_ID, previewEnvironment(), {
-      graphql: async (_config, query) => {
-        if (query.includes('query AgentMissionM1BDeployment')) {
-          return graphql(_config, query, { id: DEPLOYMENT_ID });
-        }
-        if (query.includes('query AgentMissionServingDeployment')) {
-          return { environment: railwayStatus().environments.edges[0].node };
-        }
-        return { deploymentRedeploy: { id: DEPLOYMENT_ID } };
-      },
-    }),
-    /distinct exact-source redeployment/u,
-  );
-});
-
-test('refuse une course de déploiement et ne rejoue jamais une mutation ambiguë', async () => {
-  const source = {
-    deployment: {
-      id: DEPLOYMENT_ID,
-      projectId: PROJECT_ID,
-      environmentId: ENVIRONMENT_ID,
-      serviceId: SERVICE_ID,
-      status: 'SUCCESS',
-      deploymentStopped: false,
-      instances: [{ id: '55555555-5555-4555-8555-555555555555', status: 'RUNNING' }],
-    },
-  };
-  const changedId = '77777777-7777-4777-8777-777777777777';
-  let mutationCalls = 0;
-  await assert.rejects(
-    redeployExactRailwayM1BDeployment(DEPLOYMENT_ID, previewEnvironment(), {
-      graphql: async (_config, query) => {
-        if (query.includes('query AgentMissionM1BDeployment')) return source;
-        if (query.includes('query AgentMissionServingDeployment')) {
-          return {
-            environment: railwayStatus({ id: changedId }).environments.edges[0].node,
-          };
-        }
-        mutationCalls += 1;
-        return { deploymentRedeploy: { id: changedId } };
-      },
-    }),
-    /changed before exact-source/u,
-  );
-  assert.equal(mutationCalls, 0);
-
-  await assert.rejects(
-    redeployExactRailwayM1BDeployment(DEPLOYMENT_ID, previewEnvironment(), {
-      graphql: async (_config, query) => {
-        if (query.includes('query AgentMissionM1BDeployment')) return source;
-        if (query.includes('query AgentMissionServingDeployment')) {
-          return { environment: railwayStatus().environments.edges[0].node };
-        }
-        mutationCalls += 1;
-        throw new TypeError('redeploy response lost');
-      },
-    }),
-    /redeploy response lost/u,
-  );
-  assert.equal(mutationCalls, 1);
-});
-
-test('rollback redéploie le baseline capturé même si un nouveau latest a échoué', async () => {
-  const nextDeploymentId = '66666666-6666-4666-8666-666666666666';
-  let mutationCalls = 0;
-  const source = {
-    deployment: {
-      id: DEPLOYMENT_ID,
-      projectId: PROJECT_ID,
-      environmentId: ENVIRONMENT_ID,
-      serviceId: SERVICE_ID,
-      status: 'SUCCESS',
-      deploymentStopped: true,
-      canRedeploy: true,
-      instances: [{ id: '55555555-5555-4555-8555-555555555555', status: 'EXITED' }],
-    },
-  };
-  const result = await redeployCapturedRailwayM1BBaseline(DEPLOYMENT_ID, previewEnvironment(), {
-    graphql: async (_config, query, variables) => {
-      assert.deepEqual(variables, { id: DEPLOYMENT_ID });
-      if (query.includes('query AgentMissionM1BDeployment')) return source;
-      mutationCalls += 1;
-      return { deploymentRedeploy: { id: nextDeploymentId } };
-    },
-  });
-  assert.deepEqual(result, {
-    sourceDeploymentId: DEPLOYMENT_ID,
-    deploymentId: nextDeploymentId,
-  });
-  assert.equal(mutationCalls, 1);
-
-  await assert.rejects(
-    redeployCapturedRailwayM1BBaseline(DEPLOYMENT_ID, previewEnvironment(), {
-      graphql: async (_config, query) => {
-        if (query.includes('query AgentMissionM1BDeployment')) {
-          return { deployment: { ...source.deployment, canRedeploy: false } };
-        }
-        throw new Error('mutation must not run');
-      },
-    }),
-    /captured baseline is not an exact redeployable/u,
-  );
-
-  mutationCalls = 0;
-  await assert.rejects(
-    redeployCapturedRailwayM1BBaseline(DEPLOYMENT_ID, previewEnvironment(), {
-      graphql: async (_config, query) => {
-        if (query.includes('query AgentMissionM1BDeployment')) return source;
-        mutationCalls += 1;
-        throw new TypeError('redeploy response lost');
-      },
-    }),
-    /redeploy response lost/u,
-  );
-  assert.equal(mutationCalls, 1);
 });
 
 test('attend le deployment ID exact et échoue fermé sur identité ou état terminal', async () => {

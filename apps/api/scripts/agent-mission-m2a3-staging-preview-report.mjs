@@ -255,7 +255,7 @@ function parseDeactivation(environment, active, releaseSha, deploymentId) {
     sourceReleaseSha !== releaseSha ||
     !SHA.test(sourceReleaseSha) ||
     !['active-owned', 'already-off'].includes(sourceRuntimeState) ||
-    !['captured-baseline-redeploy', 'exact-serving-redeploy'].includes(deploymentAction)
+    !['captured-baseline-source-rebuild', 'exact-source-rebuild'].includes(deploymentAction)
   ) {
     fail('deactivation source provenance is invalid');
   }
@@ -502,9 +502,12 @@ export function validateM2A3StagingPreviewReport(value, expectedSha) {
         (report.deactivation.sourceRuntimeState === 'active-owned'
           ? report.deactivation.sourceOwnedReleaseSha !== report.releaseSha
           : report.deactivation.sourceOwnedReleaseSha !== null) ||
-        !['captured-baseline-redeploy', 'exact-serving-redeploy'].includes(
-          report.deactivation.deploymentAction,
-        )) ||
+        ![
+          'captured-baseline-redeploy',
+          'exact-serving-redeploy',
+          'captured-baseline-source-rebuild',
+          'exact-source-rebuild',
+        ].includes(report.deactivation.deploymentAction)) ||
     !exactObject(report.runtimeMasters, ['legacyV1', 'm2a']) ||
     report.runtimeMasters.legacyV1 !== (active ? 'on' : 'off') ||
     report.runtimeMasters.m2a !== (active ? 'on' : 'off') ||

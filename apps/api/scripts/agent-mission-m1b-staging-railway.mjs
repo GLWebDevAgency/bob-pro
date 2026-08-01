@@ -27,6 +27,12 @@ const TRANSIENT_DEPLOYMENT_STATES = new Set([
   'QUEUED',
   'WAITING',
 ]);
+const SAFE_NON_SERVING_LATEST_DEPLOYMENT_STATUSES = new Set([
+  'CRASHED',
+  'FAILED',
+  'REMOVED',
+  'SKIPPED',
+]);
 
 export const M1B_RAILWAY_RUNTIME_VARIABLES = Object.freeze([
   'BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED',
@@ -102,53 +108,9 @@ query AgentMissionM1BDeployment($id: String!) {
     serviceId
     status
     deploymentStopped
-    canRedeploy
     instances {
       id
       status
-    }
-  }
-}
-`;
-
-const RAILWAY_DEPLOYMENT_REDEPLOY = `
-mutation DeploymentRedeploy($id: String!) {
-  deploymentRedeploy(id: $id) {
-    id
-  }
-}
-`;
-
-const RAILWAY_SERVING_DEPLOYMENT_QUERY = `
-query AgentMissionServingDeployment($projectId: String!, $environmentId: String!) {
-  environment(id: $environmentId, projectId: $projectId) {
-    id
-    name
-    serviceInstances {
-      edges {
-        node {
-          serviceId
-          activeDeployments {
-            id
-            status
-            deploymentStopped
-            instances {
-              id
-              status
-            }
-          }
-          latestDeployment {
-            id
-            status
-            deploymentStopped
-            canRedeploy
-            instances {
-              id
-              status
-            }
-          }
-        }
-      }
     }
   }
 }
@@ -487,6 +449,32 @@ export function assertRailwayM1BOff(state, config = { profile: PROFILE_CERTIFICA
   assertProfileOff(state, config);
 }
 
+export function assertRailwayM2A3RebuildableOffSource(state, config) {
+  if (config.profile !== PROFILE_M2A3_PREVIEW) {
+    fail('rebuildable OFF source is reserved to the persistent M2-A preview');
+  }
+  assertRestorable(state);
+  if (state.hasPendingEnvironmentPatch) {
+    fail('Railway staging contains pending changes while rebuilding the OFF baseline');
+  }
+  const variables = state.variables;
+  if (
+    variables.BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED !== undefined &&
+    variables.BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED !== 'false'
+  ) {
+    fail('the rebuildable M2-A source is not effectively OFF');
+  }
+  for (const name of M2A3_RAILWAY_VARIABLES) {
+    if (name === 'BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED') continue;
+    if (Object.hasOwn(variables, name)) {
+      fail('the rebuildable M2-A source contains an owned preview variable');
+    }
+  }
+  if (Object.hasOwn(variables, M1B_RAILWAY_CERTIFICATION_OWNER)) {
+    fail('the rebuildable M2-A source contains a certification owner');
+  }
+}
+
 function activationVariables(config) {
   if (config.profile === PROFILE_M2A3_PREVIEW) {
     return {
@@ -727,8 +715,46 @@ export async function runRailwayM1BCommand(command, environment = process.env, d
         : M1B_RAILWAY_VARIABLES
     ).filter((name) => Object.hasOwn(before.variables, name));
     if (profileNames.length === 0) {
-      assertRailwayM1BOff(before, config);
-      return { command, state: 'off', changed: false };
+      try {
+        assertRailwayM1BOff(before, config);
+        return { command, state: 'off', changed: false };
+      } catch (error) {
+        if (config.profile !== PROFILE_M2A3_PREVIEW) throw error;
+      }
+      assertRailwayM2A3RebuildableOffSource(before, config);
+      const restored = restoredVariables(before, config);
+      const confirmed = await readState(config, dependencies);
+      assertRailwayM2A3RebuildableOffSource(confirmed, config);
+      if (!exactVariables(before.variables, confirmed.variables)) {
+        fail('Railway variables changed concurrently before OFF baseline reconciliation');
+      }
+      let mutationError = null;
+      try {
+        await replaceVariables(
+          config,
+          { BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED: 'false' },
+          false,
+          dependencies,
+        );
+      } catch (error) {
+        mutationError = error;
+      }
+      const after = await readState(config, dependencies);
+      try {
+        assertRailwayM1BOff(after, config);
+        if (!exactVariables(after.variables, restored)) {
+          fail('Railway OFF baseline reconciliation changed unrelated variables');
+        }
+      } catch (verificationError) {
+        if (mutationError !== null) throw mutationError;
+        throw verificationError;
+      }
+      return {
+        command,
+        state: 'off',
+        changed: true,
+        acknowledgement: mutationError === null ? 'received' : 'recovered',
+      };
     }
     // Cleanup authority comes from the exact marker persisted atomically with
     // the M1-B variables. A complete-looking block owned by another run is
@@ -802,8 +828,13 @@ export async function runRailwayM1BCommand(command, environment = process.env, d
     assertRailwayM1BOff(state, config);
     return { command, state: 'off' };
   }
+  if (command === 'assert-rebuildable-off-source') {
+    const state = await readState(config, dependencies);
+    assertRailwayM2A3RebuildableOffSource(state, config);
+    return { command, state: 'off' };
+  }
   fail(
-    'command must be preflight, activate, deactivate, inspect-owned-preview, assert-active or assert-off',
+    'command must be preflight, activate, deactivate, inspect-owned-preview, assert-active, assert-off or assert-rebuildable-off-source',
   );
 }
 
@@ -852,119 +883,40 @@ export function parseRailwayServingDeploymentId(value, config) {
     !plainObject(active[0]) ||
     !plainObject(latest) ||
     !UUID.test(active[0].id ?? '') ||
-    active[0].id !== latest.id ||
+    !UUID.test(latest.id ?? '') ||
+    typeof latest.status !== 'string' ||
+    typeof latest.deploymentStopped !== 'boolean' ||
+    !Array.isArray(latest.instances) ||
     active[0].status !== 'SUCCESS' ||
     active[0].deploymentStopped !== false ||
-    latest.canRedeploy !== true ||
-    latest.status !== 'SUCCESS' ||
-    latest.deploymentStopped !== false ||
     !Array.isArray(active[0].instances) ||
     active[0].instances.length !== 1 ||
     active[0].instances[0]?.status !== 'RUNNING'
   ) {
-    fail('railway status did not prove one exact redeployable serving deployment');
+    fail('railway status did not prove one exact serving deployment');
+  }
+  if (latest.id === active[0].id) {
+    if (
+      latest.status !== 'SUCCESS' ||
+      latest.deploymentStopped !== false ||
+      latest.instances.length !== 1 ||
+      latest.instances[0]?.status !== 'RUNNING'
+    ) {
+      fail('railway latest deployment disagrees with the serving deployment');
+    }
+  } else if (
+    !SAFE_NON_SERVING_LATEST_DEPLOYMENT_STATUSES.has(latest.status) ||
+    latest.instances.some(
+      (instance) =>
+        !plainObject(instance) ||
+        !UUID.test(instance.id ?? '') ||
+        typeof instance.status !== 'string' ||
+        instance.status === 'RUNNING',
+    )
+  ) {
+    fail('railway latest deployment is not a stable terminal failure');
   }
   return active[0].id;
-}
-
-function parseRailwayServingDeploymentQuery(value, config) {
-  const environment = value?.environment;
-  return parseRailwayServingDeploymentId(
-    {
-      environments: {
-        edges: [{ node: environment }],
-      },
-    },
-    config,
-  );
-}
-
-export async function redeployExactRailwayM1BDeployment(
-  sourceDeploymentId,
-  environment = process.env,
-  dependencies = {},
-) {
-  if (!UUID.test(sourceDeploymentId ?? '')) fail('source deploymentId must be a UUID');
-  const config = parseRailwayM1BEnvironment(environment);
-  const graphql = dependencies.graphql ?? railwayGraphql;
-  const sourceData = await graphql(
-    config,
-    RAILWAY_DEPLOYMENT_QUERY,
-    { id: sourceDeploymentId },
-    dependencies,
-  );
-  const source = plainObject(sourceData.deployment) ? sourceData.deployment : null;
-  if (
-    source?.id !== sourceDeploymentId ||
-    source.projectId !== config.projectId ||
-    source.environmentId !== config.environmentId ||
-    source.serviceId !== config.serviceId ||
-    source.status !== 'SUCCESS' ||
-    source.deploymentStopped !== false ||
-    !Array.isArray(source.instances) ||
-    source.instances.length !== 1 ||
-    source.instances[0]?.status !== 'RUNNING'
-  ) {
-    fail('source deployment is not the exact serving staging deployment');
-  }
-  const currentData = await graphql(
-    config,
-    RAILWAY_SERVING_DEPLOYMENT_QUERY,
-    { projectId: config.projectId, environmentId: config.environmentId },
-    dependencies,
-  );
-  if (parseRailwayServingDeploymentQuery(currentData, config) !== sourceDeploymentId) {
-    fail('the serving deployment changed before exact-source redeployment');
-  }
-  const redeployData = await graphql(
-    config,
-    RAILWAY_DEPLOYMENT_REDEPLOY,
-    { id: sourceDeploymentId },
-    dependencies.graphql === undefined ? { ...dependencies, graphqlAttempts: 1 } : dependencies,
-  );
-  const deploymentId = redeployData?.deploymentRedeploy?.id;
-  if (!UUID.test(deploymentId ?? '') || deploymentId === sourceDeploymentId) {
-    fail('Railway did not create a distinct exact-source redeployment');
-  }
-  return { sourceDeploymentId, deploymentId };
-}
-
-export async function redeployCapturedRailwayM1BBaseline(
-  sourceDeploymentId,
-  environment = process.env,
-  dependencies = {},
-) {
-  if (!UUID.test(sourceDeploymentId ?? '')) fail('source deploymentId must be a UUID');
-  const config = parseRailwayM1BEnvironment(environment);
-  const graphql = dependencies.graphql ?? railwayGraphql;
-  const sourceData = await graphql(
-    config,
-    RAILWAY_DEPLOYMENT_QUERY,
-    { id: sourceDeploymentId },
-    dependencies,
-  );
-  const source = plainObject(sourceData.deployment) ? sourceData.deployment : null;
-  if (
-    source?.id !== sourceDeploymentId ||
-    source.projectId !== config.projectId ||
-    source.environmentId !== config.environmentId ||
-    source.serviceId !== config.serviceId ||
-    source.status !== 'SUCCESS' ||
-    source.canRedeploy !== true
-  ) {
-    fail('captured baseline is not an exact redeployable successful staging deployment');
-  }
-  const redeployData = await graphql(
-    config,
-    RAILWAY_DEPLOYMENT_REDEPLOY,
-    { id: sourceDeploymentId },
-    dependencies.graphql === undefined ? { ...dependencies, graphqlAttempts: 1 } : dependencies,
-  );
-  const deploymentId = redeployData?.deploymentRedeploy?.id;
-  if (!UUID.test(deploymentId ?? '') || deploymentId === sourceDeploymentId) {
-    fail('Railway did not create a distinct captured-baseline redeployment');
-  }
-  return { sourceDeploymentId, deploymentId };
 }
 
 export async function waitForRailwayM1BDeployment(
@@ -1024,16 +976,6 @@ async function main() {
   if (command === 'serving-deployment-id') {
     const config = parseRailwayM1BEnvironment();
     process.stdout.write(`${parseRailwayServingDeploymentId(await readStdin(), config)}\n`);
-    return;
-  }
-  if (command === 'redeploy-exact') {
-    const result = await redeployExactRailwayM1BDeployment(argument);
-    process.stdout.write(`${result.deploymentId}\n`);
-    return;
-  }
-  if (command === 'redeploy-captured-baseline') {
-    const result = await redeployCapturedRailwayM1BBaseline(argument);
-    process.stdout.write(`${result.deploymentId}\n`);
     return;
   }
   if (command === 'wait-deployment') {

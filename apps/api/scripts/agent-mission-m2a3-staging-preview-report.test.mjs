@@ -101,7 +101,7 @@ function environment(overrides = {}) {
     BOB_M2A3_PREVIEW_SOURCE_RELEASE_SHA: SHA,
     BOB_M2A3_PREVIEW_SOURCE_RUNTIME_STATE: active ? '' : 'active-owned',
     BOB_M2A3_PREVIEW_SOURCE_OWNED_RELEASE_SHA: active ? '' : SHA,
-    BOB_M2A3_PREVIEW_DEPLOYMENT_ACTION: active ? '' : 'exact-serving-redeploy',
+    BOB_M2A3_PREVIEW_DEPLOYMENT_ACTION: active ? '' : 'exact-source-rebuild',
     BOB_M2A3_PREVIEW_FLAG_OBSERVATION: flagReceipt(
       active ? 'assert-active' : 'assert-off',
       active ? 9 : 10,
@@ -202,17 +202,32 @@ test('construit la preuve OFF uniquement depuis une désactivation live vérifi�
     sourceReleaseSha: SHA,
     sourceRuntimeState: 'active-owned',
     sourceOwnedReleaseSha: SHA,
-    deploymentAction: 'exact-serving-redeploy',
+    deploymentAction: 'exact-source-rebuild',
   });
   assert.equal(validateM2A3StagingPreviewReport(report, SHA), report);
   const rollbackReport = buildM2A3StagingPreviewReport(
     environment({
       BOB_M2A3_PREVIEW_MODE: 'deactivate',
-      BOB_M2A3_PREVIEW_DEPLOYMENT_ACTION: 'captured-baseline-redeploy',
+      BOB_M2A3_PREVIEW_DEPLOYMENT_ACTION: 'captured-baseline-source-rebuild',
     }),
   );
-  assert.equal(rollbackReport.deactivation.deploymentAction, 'captured-baseline-redeploy');
+  assert.equal(rollbackReport.deactivation.deploymentAction, 'captured-baseline-source-rebuild');
   assert.equal(validateM2A3StagingPreviewReport(rollbackReport, SHA), rollbackReport);
+  for (const historicalAction of ['exact-serving-redeploy', 'captured-baseline-redeploy']) {
+    const historicalReport = structuredClone(report);
+    historicalReport.deactivation.deploymentAction = historicalAction;
+    assert.equal(validateM2A3StagingPreviewReport(historicalReport, SHA), historicalReport);
+    assert.throws(
+      () =>
+        buildM2A3StagingPreviewReport(
+          environment({
+            BOB_M2A3_PREVIEW_MODE: 'deactivate',
+            BOB_M2A3_PREVIEW_DEPLOYMENT_ACTION: historicalAction,
+          }),
+        ),
+      /deactivation source provenance is invalid/u,
+    );
+  }
 });
 
 test('refuse le mauvais SHA, les temps non canoniques et toute clé supplémentaire', () => {

@@ -134,12 +134,12 @@ jobs:
       deployment_id: ${{ steps.deploy_active.outputs.deployment_id }}
       rollback_required: ${{ steps.arm_rollback.outputs.required || 'false' }}
       capacity_restore_required: ${{ steps.arm_capacity_restore.outputs.required || 'false' }}
-      baseline_deployment_id: ${{ steps.baseline_runtime.outputs.deployment_id }}
       baseline_release_sha: ${{ steps.baseline_runtime.outputs.release_sha }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
       - name: Validate the immutable staging-only activation request
         id: initialize
@@ -393,12 +393,20 @@ jobs:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           BOB_M1B_STAGING_HMAC_KEYRING: ${{ secrets.BOB_M1B_STAGING_HMAC_KEYRING }}
         run: |
+          set -euo pipefail
+          expected_deployment_id="${{ steps.deploy_active.outputs.deployment_id }}"
+          status_file="$(mktemp)"
           topology=false
           for attempt in $(seq 1 12); do
             if timeout 20s railway status --project "$RAILWAY_PROJECT_ID" \
-              --environment "$RAILWAY_ENVIRONMENT_ID" --json \
-              | node apps/api/scripts/certify-railway-single-replica.mjs \
-                  staging "$RAILWAY_API_SERVICE_ID"
+              --environment "$RAILWAY_ENVIRONMENT_ID" --json > "$status_file" \
+              && node apps/api/scripts/certify-railway-single-replica.mjs \
+                staging "$RAILWAY_API_SERVICE_ID" < "$status_file" \
+              && serving_deployment_id="$(
+                node apps/api/scripts/agent-mission-m1b-staging-railway.mjs \
+                  serving-deployment-id < "$status_file"
+              )" \
+              && test "$serving_deployment_id" = "$expected_deployment_id"
             then
               topology=true
               break
@@ -469,20 +477,30 @@ jobs:
           BOB_M2A3_PREVIEW_STARTED_AT: ${{ steps.initialize.outputs.started_at }}
         run: |
           set -euo pipefail
+          expected_deployment_id="${{ steps.deploy_active.outputs.deployment_id }}"
+          status_file="$(mktemp)"
           topology_observation=''
+          serving_exact=false
           for attempt in $(seq 1 12); do
-            if topology_observation="$(
-              timeout 20s railway status --project "$RAILWAY_PROJECT_ID" \
-                --environment "$RAILWAY_ENVIRONMENT_ID" --json \
-                | node apps/api/scripts/certify-railway-single-replica.mjs \
-                    staging "$RAILWAY_API_SERVICE_ID"
-            )"
+            if timeout 20s railway status --project "$RAILWAY_PROJECT_ID" \
+              --environment "$RAILWAY_ENVIRONMENT_ID" --json > "$status_file" \
+              && topology_observation="$(
+                node apps/api/scripts/certify-railway-single-replica.mjs \
+                  staging "$RAILWAY_API_SERVICE_ID" < "$status_file"
+              )" \
+              && serving_deployment_id="$(
+                node apps/api/scripts/agent-mission-m1b-staging-railway.mjs \
+                  serving-deployment-id < "$status_file"
+              )" \
+              && test "$serving_deployment_id" = "$expected_deployment_id"
             then
+              serving_exact=true
               break
             fi
+            topology_observation=''
             sleep 5
           done
-          test -n "$topology_observation"
+          test "$serving_exact" = true
           readiness_observation="$(node apps/api/scripts/agent-mission-m1b-staging-readiness.mjs)"
           runtime_observation="$(
             node apps/api/scripts/agent-mission-m1b-staging-railway.mjs assert-active
@@ -561,6 +579,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
       - name: Validate and timestamp the exact-SHA fail-safe request
         id: initialize
@@ -611,12 +630,31 @@ jobs:
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           BOB_M1B_STAGING_HMAC_KEYRING: ${{ secrets.BOB_M1B_STAGING_HMAC_KEYRING }}
-          BASELINE_DEPLOYMENT_ID: ${{ needs.activate.outputs.baseline_deployment_id }}
           BASELINE_RELEASE_SHA: ${{ needs.activate.outputs.baseline_release_sha }}
         run: |
           set -euo pipefail
-          [[ "$BASELINE_DEPLOYMENT_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$ ]]
           [[ "$BASELINE_RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          status_file="$(mktemp)"
+          source_deployment_id=''
+          for attempt in $(seq 1 12); do
+            if timeout 20s railway status --project "$RAILWAY_PROJECT_ID" \
+              --environment "$RAILWAY_ENVIRONMENT_ID" --json > "$status_file" \
+              && source_deployment_id="$(
+                node apps/api/scripts/agent-mission-m1b-staging-railway.mjs \
+                  serving-deployment-id < "$status_file"
+              )"
+            then
+              break
+            fi
+            sleep 5
+          done
+          test -n "$source_deployment_id"
+          readiness_observation="$(
+            node apps/api/scripts/agent-mission-m1b-staging-readiness.mjs observe
+          )"
+          served_release_sha="${readiness_observation##*:}"
+          test "$served_release_sha" = "$BASELINE_RELEASE_SHA"
+          git merge-base --is-ancestor "$served_release_sha" "$GITHUB_SHA"
           runtime_state=''
           owned_release_sha=''
           if owned_observation="$(
@@ -631,15 +669,23 @@ jobs:
             test "$owned_release_sha" = "$BASELINE_RELEASE_SHA"
             runtime_state=active-owned
           else
-            node apps/api/scripts/agent-mission-m1b-staging-railway.mjs assert-off
+            node apps/api/scripts/agent-mission-m1b-staging-railway.mjs \
+              assert-rebuildable-off-source
             runtime_state=already-off
           fi
           printf '%s\n' \
-            "deployment_id=$BASELINE_DEPLOYMENT_ID" \
-            "release_sha=$BASELINE_RELEASE_SHA" \
+            "deployment_id=$source_deployment_id" \
+            "release_sha=$served_release_sha" \
             "runtime_state=$runtime_state" \
             "owned_release_sha=$owned_release_sha" \
             >> "$GITHUB_OUTPUT"
+      - name: Checkout the exact rollback source after DB safety
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ steps.source_runtime.outputs.release_sha }}
+          path: .m2a3-serving-source
+          fetch-depth: 1
+          persist-credentials: false
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 9.12.0
@@ -672,15 +718,36 @@ jobs:
         run: |
           node apps/api/scripts/agent-mission-m1b-staging-railway.mjs deactivate
           node apps/api/scripts/agent-mission-m1b-staging-railway.mjs assert-off
-      - name: Redeploy the captured normal-release baseline with Mission V2 disabled
+      - name: Rebuild the captured normal-release source with current OFF variables
         id: deploy_off
         timeout-minutes: 60
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           BOB_M1B_STAGING_HMAC_KEYRING: ${{ secrets.BOB_M1B_STAGING_HMAC_KEYRING }}
         run: |
-          deployment_id="$(node apps/api/scripts/agent-mission-m1b-staging-railway.mjs \
-            redeploy-captured-baseline "${{ steps.source_runtime.outputs.deployment_id }}")"
+          set -euo pipefail
+          source_root="$GITHUB_WORKSPACE/.m2a3-serving-source"
+          source_release_sha="${{ steps.source_runtime.outputs.release_sha }}"
+          test "$(git -C "$source_root" rev-parse HEAD)" = "$source_release_sha"
+          test -z "$(git -C "$source_root" status --short)"
+          node "$source_root/apps/api/scripts/write-release-metadata.mjs" \
+            "$source_release_sha" staging
+          test "$(git -C "$source_root" status --short)" = "?? .bob-release.json"
+          node apps/api/scripts/agent-mission-m1b-staging-railway.mjs assert-off
+          status_file="$(mktemp)"
+          timeout 20s railway status --project "$RAILWAY_PROJECT_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" --json > "$status_file"
+          current_deployment_id="$(
+            node apps/api/scripts/agent-mission-m1b-staging-railway.mjs \
+              serving-deployment-id < "$status_file"
+          )"
+          test "$current_deployment_id" = "${{ steps.source_runtime.outputs.deployment_id }}"
+          deployment_id="$(
+            railway up "$source_root" --path-as-root \
+              --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+              --environment "$RAILWAY_ENVIRONMENT_ID" --detach --json \
+              | node apps/api/scripts/agent-mission-m1b-staging-railway.mjs deployment-id
+          )"
           echo "deployment_id=$deployment_id" >> "$GITHUB_OUTPUT"
           node apps/api/scripts/agent-mission-m1b-staging-railway.mjs \
             wait-deployment "$deployment_id"
@@ -705,23 +772,33 @@ jobs:
           BOB_M2A3_PREVIEW_SOURCE_RELEASE_SHA: ${{ steps.source_runtime.outputs.release_sha }}
           BOB_M2A3_PREVIEW_SOURCE_RUNTIME_STATE: ${{ steps.source_runtime.outputs.runtime_state }}
           BOB_M2A3_PREVIEW_SOURCE_OWNED_RELEASE_SHA: ${{ steps.source_runtime.outputs.owned_release_sha }}
-          BOB_M2A3_PREVIEW_DEPLOYMENT_ACTION: captured-baseline-redeploy
+          BOB_M2A3_PREVIEW_DEPLOYMENT_ACTION: captured-baseline-source-rebuild
         run: |
           set -euo pipefail
+          expected_deployment_id="${{ steps.deploy_off.outputs.deployment_id }}"
+          status_file="$(mktemp)"
           topology_observation=''
+          serving_exact=false
           for attempt in $(seq 1 12); do
-            if topology_observation="$(
-              timeout 20s railway status --project "$RAILWAY_PROJECT_ID" \
-                --environment "$RAILWAY_ENVIRONMENT_ID" --json \
-                | node apps/api/scripts/certify-railway-single-replica.mjs \
-                    staging "$RAILWAY_API_SERVICE_ID"
-            )"
+            if timeout 20s railway status --project "$RAILWAY_PROJECT_ID" \
+              --environment "$RAILWAY_ENVIRONMENT_ID" --json > "$status_file" \
+              && topology_observation="$(
+                node apps/api/scripts/certify-railway-single-replica.mjs \
+                  staging "$RAILWAY_API_SERVICE_ID" < "$status_file"
+              )" \
+              && serving_deployment_id="$(
+                node apps/api/scripts/agent-mission-m1b-staging-railway.mjs \
+                  serving-deployment-id < "$status_file"
+              )" \
+              && test "$serving_deployment_id" = "$expected_deployment_id"
             then
+              serving_exact=true
               break
             fi
+            topology_observation=''
             sleep 5
           done
-          test -n "$topology_observation"
+          test "$serving_exact" = true
           readiness_observation="$(node apps/api/scripts/agent-mission-m1b-staging-readiness.mjs)"
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
@@ -798,6 +875,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
       - name: Validate and timestamp the exact-SHA fail-safe request
         id: initialize
@@ -843,7 +921,7 @@ jobs:
           fi
           echo "safe=true" >> "$GITHUB_OUTPUT"
           echo "canonical=$canonical" >> "$GITHUB_OUTPUT"
-      - name: Bind deactivation to the exact artifact currently serving after DB safety
+      - name: Bind deactivation to the exact source currently serving after DB safety
         id: source_runtime
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
@@ -869,6 +947,7 @@ jobs:
             node apps/api/scripts/agent-mission-m1b-staging-readiness.mjs observe
           )"
           served_release_sha="${readiness_observation##*:}"
+          git merge-base --is-ancestor "$served_release_sha" "$GITHUB_SHA"
           runtime_state=''
           owned_release_sha=''
           if owned_observation="$(
@@ -883,7 +962,8 @@ jobs:
             test "$owned_release_sha" = "$served_release_sha"
             runtime_state=active-owned
           else
-            node apps/api/scripts/agent-mission-m1b-staging-railway.mjs assert-off
+            node apps/api/scripts/agent-mission-m1b-staging-railway.mjs \
+              assert-rebuildable-off-source
             runtime_state=already-off
           fi
           printf '%s\n' \
@@ -892,6 +972,13 @@ jobs:
             "runtime_state=$runtime_state" \
             "owned_release_sha=$owned_release_sha" \
             >> "$GITHUB_OUTPUT"
+      - name: Checkout the exact serving source after DB safety
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ steps.source_runtime.outputs.release_sha }}
+          path: .m2a3-serving-source
+          fetch-depth: 1
+          persist-credentials: false
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 9.12.0
@@ -924,15 +1011,36 @@ jobs:
         run: |
           node apps/api/scripts/agent-mission-m1b-staging-railway.mjs deactivate
           node apps/api/scripts/agent-mission-m1b-staging-railway.mjs assert-off
-      - name: Redeploy the exact serving artifact with Mission V2 disabled
+      - name: Rebuild the exact serving source with current OFF variables
         id: deploy_off
         timeout-minutes: 60
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           BOB_M1B_STAGING_HMAC_KEYRING: ${{ secrets.BOB_M1B_STAGING_HMAC_KEYRING }}
         run: |
-          deployment_id="$(node apps/api/scripts/agent-mission-m1b-staging-railway.mjs \
-            redeploy-exact "${{ steps.source_runtime.outputs.deployment_id }}")"
+          set -euo pipefail
+          source_root="$GITHUB_WORKSPACE/.m2a3-serving-source"
+          source_release_sha="${{ steps.source_runtime.outputs.release_sha }}"
+          test "$(git -C "$source_root" rev-parse HEAD)" = "$source_release_sha"
+          test -z "$(git -C "$source_root" status --short)"
+          node "$source_root/apps/api/scripts/write-release-metadata.mjs" \
+            "$source_release_sha" staging
+          test "$(git -C "$source_root" status --short)" = "?? .bob-release.json"
+          node apps/api/scripts/agent-mission-m1b-staging-railway.mjs assert-off
+          status_file="$(mktemp)"
+          timeout 20s railway status --project "$RAILWAY_PROJECT_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" --json > "$status_file"
+          current_deployment_id="$(
+            node apps/api/scripts/agent-mission-m1b-staging-railway.mjs \
+              serving-deployment-id < "$status_file"
+          )"
+          test "$current_deployment_id" = "${{ steps.source_runtime.outputs.deployment_id }}"
+          deployment_id="$(
+            railway up "$source_root" --path-as-root \
+              --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+              --environment "$RAILWAY_ENVIRONMENT_ID" --detach --json \
+              | node apps/api/scripts/agent-mission-m1b-staging-railway.mjs deployment-id
+          )"
           echo "deployment_id=$deployment_id" >> "$GITHUB_OUTPUT"
           node apps/api/scripts/agent-mission-m1b-staging-railway.mjs \
             wait-deployment "$deployment_id"
@@ -957,22 +1065,33 @@ jobs:
           BOB_M2A3_PREVIEW_SOURCE_RELEASE_SHA: ${{ steps.source_runtime.outputs.release_sha }}
           BOB_M2A3_PREVIEW_SOURCE_RUNTIME_STATE: ${{ steps.source_runtime.outputs.runtime_state }}
           BOB_M2A3_PREVIEW_SOURCE_OWNED_RELEASE_SHA: ${{ steps.source_runtime.outputs.owned_release_sha }}
-          BOB_M2A3_PREVIEW_DEPLOYMENT_ACTION: exact-serving-redeploy
+          BOB_M2A3_PREVIEW_DEPLOYMENT_ACTION: exact-source-rebuild
         run: |
           set -euo pipefail
+          expected_deployment_id="${{ steps.deploy_off.outputs.deployment_id }}"
+          status_file="$(mktemp)"
           topology_observation=''
+          serving_exact=false
           for attempt in $(seq 1 12); do
-            if topology_observation="$(
-              timeout 20s railway status --project "$RAILWAY_PROJECT_ID" \
-                --environment "$RAILWAY_ENVIRONMENT_ID" --json \
-                | node apps/api/scripts/certify-railway-single-replica.mjs \
-                    staging "$RAILWAY_API_SERVICE_ID"
-            )"; then
+            if timeout 20s railway status --project "$RAILWAY_PROJECT_ID" \
+              --environment "$RAILWAY_ENVIRONMENT_ID" --json > "$status_file" \
+              && topology_observation="$(
+                node apps/api/scripts/certify-railway-single-replica.mjs \
+                  staging "$RAILWAY_API_SERVICE_ID" < "$status_file"
+              )" \
+              && serving_deployment_id="$(
+                node apps/api/scripts/agent-mission-m1b-staging-railway.mjs \
+                  serving-deployment-id < "$status_file"
+              )" \
+              && test "$serving_deployment_id" = "$expected_deployment_id"
+            then
+              serving_exact=true
               break
             fi
+            topology_observation=''
             sleep 5
           done
-          test -n "$topology_observation"
+          test "$serving_exact" = true
           readiness_observation="$(node apps/api/scripts/agent-mission-m1b-staging-readiness.mjs)"
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \

@@ -43,7 +43,12 @@ test('le preview est staging-only, manuel/reutilisable et serialise avec les rel
 
 test('activation exige le SHA de main deja livre par une release staging normale', () => {
   assert.equal(occurrences(workflow, /ref: \$\{\{ github\.sha \}\}/gu), 3);
-  assert.equal(occurrences(workflow, /persist-credentials: false/gu), 3);
+  assert.equal(occurrences(workflow, /persist-credentials: false/gu), 5);
+  assert.equal(occurrences(workflow, /path: \.m2a3-serving-source/gu), 2);
+  assert.equal(
+    occurrences(workflow, /ref: \$\{\{ steps\.source_runtime\.outputs\.release_sha \}\}/gu),
+    2,
+  );
   assert.equal(occurrences(workflow, /test "\$EXPECTED_SHA" = "\$GITHUB_SHA"/gu), 3);
   const activation = job('activate');
   assert.match(
@@ -60,10 +65,7 @@ test('activation exige le SHA de main deja livre par une release staging normale
     'Require the normally released exact SHA and a fully OFF baseline',
   );
   assert.match(activation, /id: baseline_runtime/u);
-  assert.match(
-    activation,
-    /baseline_deployment_id: \$\{\{ steps\.baseline_runtime\.outputs\.deployment_id \}\}/u,
-  );
+  assert.doesNotMatch(activation, /baseline_deployment_id:/u);
   assert.match(
     activation,
     /baseline_release_sha: \$\{\{ steps\.baseline_runtime\.outputs\.release_sha \}\}/u,
@@ -126,7 +128,7 @@ test('rollback coupe DB avant build, restaure la capacite et recertifie le deplo
   const install = rollback.indexOf('pnpm install --frozen-lockfile');
   const close = rollback.indexOf('staging-release.mjs predeploy');
   const deployOff = rollback.indexOf(
-    'Redeploy the captured normal-release baseline with Mission V2 disabled',
+    'Rebuild the captured normal-release source with current OFF variables',
   );
   const topology = rollback.indexOf('certify-railway-single-replica.mjs', deployOff);
   const offSmoke = rollback.indexOf('staging-smoke.mjs preview-v2-off');
@@ -141,17 +143,25 @@ test('rollback coupe DB avant build, restaure la capacite et recertifie le deplo
     /if: \$\{\{ always\(\) && steps\.database_safety\.outputs\.safe == 'true'/u,
   );
   assert.doesNotMatch(job('activate'), /staging-railway\.mjs deactivate/u);
-  assert.match(
-    rollback,
-    /BASELINE_DEPLOYMENT_ID: \$\{\{ needs\.activate\.outputs\.baseline_deployment_id \}\}/u,
-  );
+  assert.doesNotMatch(rollback, /BASELINE_DEPLOYMENT_ID/u);
   assert.match(
     rollback,
     /BASELINE_RELEASE_SHA: \$\{\{ needs\.activate\.outputs\.baseline_release_sha \}\}/u,
   );
-  assert.match(rollback, /redeploy-captured-baseline/u);
-  assert.doesNotMatch(rollback, /staging-readiness\.mjs observe/u);
-  assert.doesNotMatch(rollback.slice(flagOff, install), /railway status/u);
+  assert.match(rollback, /staging-readiness\.mjs observe/u);
+  assert.match(rollback, /assert-rebuildable-off-source/u);
+  assert.match(rollback, /git merge-base --is-ancestor "\$served_release_sha" "\$GITHUB_SHA"/u);
+  assert.match(rollback, /git -C "\$source_root" rev-parse HEAD/u);
+  assert.match(rollback, /status --short\)" = "\?\? \.bob-release\.json"/u);
+  assert.match(
+    rollback,
+    /staging-railway\.mjs assert-off[\s\S]*?railway up "\$source_root" --path-as-root/u,
+  );
+  assert.match(
+    rollback,
+    /test "\$current_deployment_id" = "\$\{\{ steps\.source_runtime\.outputs\.deployment_id \}\}"/u,
+  );
+  assert.match(rollback, /BOB_M2A3_PREVIEW_DEPLOYMENT_ACTION: captured-baseline-source-rebuild/u);
 });
 
 test('desactivation ne depend pas des autorisations ON et coupe avant readiness/build', () => {
@@ -160,7 +170,7 @@ test('desactivation ne depend pas des autorisations ON et coupe avant readiness/
   const postgres = deactivate.indexOf('postgresql-client-16');
   const install = deactivate.indexOf('pnpm install --frozen-lockfile');
   const deployOff = deactivate.indexOf(
-    'Redeploy the exact serving artifact with Mission V2 disabled',
+    'Rebuild the exact serving source with current OFF variables',
   );
   const readiness = deactivate.indexOf('staging-readiness.mjs', deployOff);
   const topology = deactivate.indexOf('certify-railway-single-replica.mjs', deployOff);
@@ -175,13 +185,21 @@ test('desactivation ne depend pas des autorisations ON et coupe avant readiness/
   assert.match(deactivate, /test "\$GITHUB_REF" = refs\/heads\/main/u);
   assert.match(deactivate, /serving-deployment-id/u);
   assert.match(deactivate, /staging-readiness\.mjs observe/u);
+  assert.match(deactivate, /assert-rebuildable-off-source/u);
   assert.match(deactivate, /inspect-owned-preview/u);
   assert.match(deactivate, /test "\$owned_release_sha" = "\$served_release_sha"/u);
+  assert.match(deactivate, /git merge-base --is-ancestor "\$served_release_sha" "\$GITHUB_SHA"/u);
+  assert.match(deactivate, /git -C "\$source_root" rev-parse HEAD/u);
+  assert.match(deactivate, /status --short\)" = "\?\? \.bob-release\.json"/u);
   assert.match(
     deactivate,
-    /redeploy-exact "\$\{\{ steps\.source_runtime\.outputs\.deployment_id \}\}"/u,
+    /staging-railway\.mjs assert-off[\s\S]*?railway up "\$source_root" --path-as-root/u,
   );
-  assert.doesNotMatch(deactivate, /railway up/u);
+  assert.match(
+    deactivate,
+    /test "\$current_deployment_id" = "\$\{\{ steps\.source_runtime\.outputs\.deployment_id \}\}"/u,
+  );
+  assert.match(deactivate, /BOB_M2A3_PREVIEW_DEPLOYMENT_ACTION: exact-source-rebuild/u);
   assert.match(deactivate, /staging-preview-report\.mjs write/u);
   assert.match(deactivate, /staging-preview-report\.mjs verify/u);
   assert.match(deactivate, /Preserve the live-observed OFF receipt/u);
@@ -193,18 +211,28 @@ test('desactivation ne depend pas des autorisations ON et coupe avant readiness/
 });
 
 test('trois deploiements attendent leur ID et chaque etat deploye recertifie la topologie', () => {
-  assert.equal(occurrences(workflow, /staging-railway\.mjs deployment-id/gu), 1);
-  assert.equal(occurrences(workflow, /redeploy-exact/gu), 1);
-  assert.equal(occurrences(workflow, /redeploy-captured-baseline/gu), 1);
+  assert.equal(occurrences(workflow, /staging-railway\.mjs deployment-id/gu), 3);
   assert.equal(occurrences(workflow, /wait-deployment "\$deployment_id"/gu), 3);
-  assert.equal(occurrences(workflow, /railway up/gu), 1);
+  assert.equal(occurrences(workflow, /railway up/gu), 3);
+  assert.doesNotMatch(workflow, /deploymentRedeploy|redeploy-exact|redeploy-captured-baseline/u);
   assert.ok(occurrences(workflow, /certify-railway-single-replica\.mjs/gu) >= 5);
+  assert.equal(occurrences(workflow, /expected_deployment_id="\$\{\{ steps\.deploy_/gu), 4);
+  assert.equal(
+    occurrences(workflow, /test "\$serving_deployment_id" = "\$expected_deployment_id"/gu),
+    4,
+  );
 });
 
 test('chaque Railway CLI epingle projet, environnement et service sans relink', () => {
   assert.equal(
-    occurrences(workflow, /railway (?:run|up|status)/gu),
-    occurrences(workflow, /railway (?:run|up|status) --project "\$RAILWAY_PROJECT_ID"/gu),
+    occurrences(workflow, /railway (?:run|status)/gu),
+    occurrences(workflow, /railway (?:run|status) --project "\$RAILWAY_PROJECT_ID"/gu),
+  );
+  assert.equal(occurrences(workflow, /railway up/gu), 3);
+  assert.equal(occurrences(workflow, /--path-as-root/gu), 2);
+  assert.equal(
+    occurrences(workflow, /railway up[\s\S]{0,220}--project "\$RAILWAY_PROJECT_ID"/gu),
+    3,
   );
   assert.doesNotMatch(workflow, /--environment production/u);
   assert.doesNotMatch(workflow, /TARGET_ENVIRONMENT_NAME/u);
