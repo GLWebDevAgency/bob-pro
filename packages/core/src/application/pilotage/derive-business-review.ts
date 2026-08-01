@@ -25,7 +25,7 @@
  * le lettrage daté des paiements — on ne simule pas), run-rate annualisé, score composite.
  */
 
-import { type DateOnly, addDays, parisDateOnly } from '../../shared-kernel/time';
+import { type DateOnly, addDays, businessDayOf } from '../../shared-kernel/time';
 import { type VatRegime } from '../../domain/company/company';
 import { type ExpenseCategory } from '../../domain/expense/expense';
 import {
@@ -47,7 +47,7 @@ export interface BusinessReviewEntryData {
 
 export interface BusinessReviewPaymentData {
   amountCents: number;
-  /** Instant ou DateOnly — seul le jour MÉTIER Europe/Paris compte (receivedDayOf : un instant
+  /** Instant ou DateOnly — seul le jour MÉTIER Europe/Paris compte (businessDayOf : un instant
    *  est projeté via parisDateOnly, une date est prise telle quelle). */
   receivedAt: string;
 }
@@ -253,18 +253,18 @@ const monthOf = (date: string): string => date.slice(0, 7);
 const dayOf = (date: string): number => Number(date.slice(8, 10));
 
 /**
- * Jour MÉTIER d'un encaissement — LE convertisseur unique des trois usages de receivedAt
- * (série mensuelle, mois courant/isopérimètre, encaissé 90 j). `receivedAt` est un Instant
- * (clock.now() à l'enregistrement, register-payment.ts) : le tronquer en jour UTC le
- * désynchronise de `today`, qui est le jour PARIS injecté par les appelants
- * (backend.service.ts businessToday()) — un paiement encaissé entre 00:00 et ~02:00 heure de
- * Paris le 1er basculerait dans le mois PRÉCÉDENT, faussant séries, comparatifs et l'assiette
- * URSSAF du micro (et rougissant la CI en fin de mois, 22:00–00:00 UTC l'été / 23:00–00:00 l'hiver).
- * parisDateOnly (DST-safe) projette l'instant sur le calendrier français ; une DateOnly pure
- * (pas de 'T') est déjà un jour métier et reste telle quelle.
+ * Jour MÉTIER d'un encaissement, pour les trois usages de receivedAt (série mensuelle, mois
+ * courant/isopérimètre, encaissé 90 j). `receivedAt` est un Instant (clock.now() à
+ * l'enregistrement, register-payment.ts) : le tronquer en jour UTC le désynchronise de `today`,
+ * qui est le jour PARIS injecté par les appelants (backend.service.ts businessToday()) — un
+ * paiement encaissé entre 00:00 et ~02:00 heure de Paris le 1er basculerait dans le mois
+ * PRÉCÉDENT, faussant séries, comparatifs et l'assiette URSSAF du micro (et rougissant la CI en
+ * fin de mois, 22:00–00:00 UTC l'été / 23:00–00:00 l'hiver). Le convertisseur vit dans le
+ * shared-kernel (`businessDayOf`, ex-receivedDayOf né ici au train 1) : même règle pour
+ * l'assiette URSSAF, les seuils 293 B et la guidance de versement — plus jamais une troncature
+ * UTC locale. Les tests « jour métier des encaissements » de ce fichier restent ses témoins
+ * d'intégration (bascule de mois/année + témoin DST hiver).
  */
-const receivedDayOf = (receivedAt: string): DateOnly =>
-  receivedAt.includes('T') ? parisDateOnly(receivedAt) : receivedAt;
 
 function previousMonthOf(month: string): string {
   const year = Number(month.slice(0, 4));
@@ -320,7 +320,7 @@ export function deriveBusinessReview(input: BusinessReviewInput): BusinessReview
   }
   const collectedByMonth = new Map<string, number>();
   for (const payment of input.payments) {
-    const month = monthOf(receivedDayOf(payment.receivedAt));
+    const month = monthOf(businessDayOf(payment.receivedAt));
     collectedByMonth.set(month, (collectedByMonth.get(month) ?? 0) + payment.amountCents);
   }
 
@@ -360,7 +360,7 @@ export function deriveBusinessReview(input: BusinessReviewInput): BusinessReview
   let curCollected = 0;
   let prevCollectedIso = 0;
   for (const payment of input.payments) {
-    const day = receivedDayOf(payment.receivedAt);
+    const day = businessDayOf(payment.receivedAt);
     const month = monthOf(day);
     if (month === currentMonth && day <= today) curCollected += payment.amountCents;
     else if (month === prevMonth && dayOf(day) <= prevCutoffDay) prevCollectedIso += payment.amountCents;
@@ -544,7 +544,7 @@ export function deriveBusinessReview(input: BusinessReviewInput): BusinessReview
   // Encaissé TTC sur la MÊME fenêtre 90 j que le facturé du DSO (dsoFloor exclusif → today).
   let collectedTtc90d = 0;
   for (const payment of input.payments) {
-    const day = receivedDayOf(payment.receivedAt);
+    const day = businessDayOf(payment.receivedAt);
     if (day > dsoFloor && day <= today) collectedTtc90d += payment.amountCents;
   }
   // Mêmes gates d'honnêteté temporelle que le DSO : moins de 90 j d'historique de facturation →

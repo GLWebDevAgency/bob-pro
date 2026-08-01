@@ -46,6 +46,24 @@ export function parisDateOnly(at: Instant | Date = new Date()): DateOnly {
   return `${get('year')}-${get('month')}-${get('day')}`;
 }
 
+/**
+ * Jour MÉTIER d'un fait daté, quel que soit son format de stockage : un Instant (présence d'un
+ * 'T') est projeté sur le calendrier Europe/Paris via `parisDateOnly` (DST-safe) ; une DateOnly
+ * pure est DÉJÀ un jour métier et reste telle quelle.
+ *
+ * LE convertisseur unique à traverser avant toute comparaison d'un horodatage stocké
+ * (`receivedAt`, `terminatedAt`…) avec un jour/mois/année/trimestre du calendrier métier
+ * (`businessToday`, bornes de période URSSAF, année civile 293 B…). Le tronquer en jour UTC
+ * (`slice(0, 10)`) désynchronise les deux calendriers dans la fenêtre 22:00–00:00 UTC l'été /
+ * 23:00–00:00 l'hiver : un encaissement de 00:00–~02:00 heure de Paris bascule dans la période
+ * PRÉCÉDENTE — série mensuelle du pilotage (bug CI du 31/07/2026 22:18Z), assiette URSSAF du
+ * micro, seuils de franchise 293 B dans la nuit du Nouvel An. Et un offset figé (+2 h toute
+ * l'année) serait faux deux fois par an — d'où parisDateOnly, jamais d'arithmétique d'offset.
+ */
+export function businessDayOf(at: Instant | DateOnly): DateOnly {
+  return at.includes('T') ? parisDateOnly(at) : at;
+}
+
 /** Valide une DateOnly "YYYY-MM-DD" en rejetant les dates calendaires impossibles (round-trip UTC). */
 export function isValidDateOnly(s: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
