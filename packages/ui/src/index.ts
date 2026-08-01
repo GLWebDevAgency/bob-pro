@@ -66,6 +66,29 @@ export * from './components/quick-action';
 export * from './components/inner-screen-header';
 // Lot 0 — BackHeader canonique (promotion du screen-header local d'apps/mobile).
 export * from './components/back-header';
+// Lot 0 — barres sticky (fusion StickyCtaBar/StickyActionBar) + rangée retour sticky.
+export * from './components/sticky-action-bar';
+export {
+  STICKY_FLOATING_ACCENT_WIDTH,
+  STICKY_FLOATING_MIN_HEIGHT,
+  stickyBarContainerStyle,
+  stickyFloatingContainerStyle,
+  stickyFloatingPillStyle,
+  type StickyActionBarVariant,
+  type StickyBarPalette,
+} from './components/sticky-action-bar.logic';
+export * from './components/sticky-back-row';
+export {
+  STICKY_BACK_ROW_MIN_TARGET,
+  stickyBackRowContainerStyle,
+} from './components/sticky-back-row.logic';
+// Lot 0 — bandeau d'état pastel + encre foncée AA (résorbe 6 duplications).
+export * from './components/status-strip';
+export {
+  statusStripColors,
+  type StatusStripColors,
+  type StatusStripPalette,
+} from './components/status-strip.logic';
 export * from './components/hero-money-card';
 export * from './components/money-row';
 export * from './components/segmented-control';
