@@ -31,6 +31,12 @@ const CONTEXT_STALE_ATTEMPTS = 10;
 const FINAL_EVIDENCE_ATTEMPTS = 12;
 const REALTIME_BOOTSTRAP_MAX_ATTEMPTS = 2;
 const MAX_RESPONSE_BYTES = 128 * 1024;
+const M2A3_STAGING_PROFILE = 'm2a3-preview';
+const M2A3_TIME_ZONE_CLAIMS = Object.freeze([
+  'bob_time_zone',
+  'bob_time_zone_confirmed_at',
+  'bob_time_zone_company_id',
+]);
 
 function fail(message) {
   throw new Error(`agent-mission-m1b-staging-smoke:${message}`);
@@ -117,7 +123,7 @@ function decodeBase64UrlJson(segment, name) {
   }
 }
 
-export function validateM1BStagingAccessToken(token, config, now = Date.now()) {
+function validatedM1BStagingAccessTokenPayload(token, config, now = Date.now()) {
   if (
     typeof token !== 'string' ||
     token.length < 32 ||
@@ -140,6 +146,11 @@ export function validateM1BStagingAccessToken(token, config, now = Date.now()) {
   ) {
     fail('Supabase JWT identity or expiry does not match the dedicated account');
   }
+  return payload;
+}
+
+export function validateM1BStagingAccessToken(token, config, now = Date.now()) {
+  validatedM1BStagingAccessTokenPayload(token, config, now);
   return token;
 }
 
@@ -202,6 +213,112 @@ export async function authenticateM1BStagingAccount(config, dependencies = {}) {
   return Object.freeze({
     accessToken: validateM1BStagingAccessToken(body.access_token, config),
   });
+}
+
+async function authenticateThroughConfiguredAdapter(config, dependencies) {
+  const authentication =
+    typeof dependencies.authenticate === 'function'
+      ? await dependencies.authenticate(config)
+      : await authenticateM1BStagingAccount(config, dependencies);
+  if (record(authentication) === null || typeof authentication.accessToken !== 'string') {
+    fail('staging authentication adapter returned no access token');
+  }
+  return validateM1BStagingAccessToken(
+    authentication.accessToken,
+    config,
+    dependencies.now?.() ?? Date.now(),
+  );
+}
+
+async function configuredM2A3StagingTimeZone(environment, dependencies) {
+  if (environment.BOB_AGENT_MISSION_STAGING_PROFILE !== M2A3_STAGING_PROFILE) {
+    fail('Mission V2 time-zone preparation is restricted to the staging preview profile');
+  }
+  const requested = required(environment, 'BOB_M2A3_STAGING_TIME_ZONE', { maximum: 64 });
+  const parseIanaTimeZone = await ianaTimeZoneParser(dependencies);
+  const canonical = parseIanaTimeZone(requested);
+  if (canonical === null || canonical !== requested) {
+    fail('BOB_M2A3_STAGING_TIME_ZONE must be a canonical IANA time zone');
+  }
+  return canonical;
+}
+
+async function inspectM2A3StagingTimeZoneAuthority(
+  accessToken,
+  config,
+  expectedTimeZone,
+  dependencies,
+) {
+  const payload = validatedM1BStagingAccessTokenPayload(
+    accessToken,
+    config,
+    dependencies.now?.() ?? Date.now(),
+  );
+  const metadata = record(payload.app_metadata);
+  const allClaimsAbsent = M2A3_TIME_ZONE_CLAIMS.every((claim) => metadata?.[claim] === undefined);
+  if (allClaimsAbsent) return Object.freeze({ state: 'absent' });
+  const deriveConfirmedTimeZone = await confirmedTimeZoneDeriver(dependencies);
+  const authority = deriveConfirmedTimeZone({
+    timeZone: metadata?.bob_time_zone,
+    confirmedAt: metadata?.bob_time_zone_confirmed_at,
+    boundCompanyId: metadata?.bob_time_zone_company_id,
+    currentCompanyId: config.companyId,
+  });
+  if (record(authority) === null) {
+    fail('the dedicated account carries an invalid confirmed time-zone authority');
+  }
+  if (authority.timeZone !== expectedTimeZone) {
+    fail('the dedicated account time zone differs from the staging canary configuration');
+  }
+  return Object.freeze({
+    state: 'confirmed',
+    timeZone: authority.timeZone,
+    confirmedAt: authority.confirmedAt,
+  });
+}
+
+async function authenticateM2A3StagingAccount(config, environment, dependencies) {
+  const expectedTimeZone = await configuredM2A3StagingTimeZone(environment, dependencies);
+  let accessToken = await authenticateThroughConfiguredAdapter(config, dependencies);
+  let authority = await inspectM2A3StagingTimeZoneAuthority(
+    accessToken,
+    config,
+    expectedTimeZone,
+    dependencies,
+  );
+  let provisioned = false;
+  if (authority.state === 'absent') {
+    const client = await createRuntimeClient(config, accessToken, dependencies);
+    const confirmation = expectSuccess(
+      await client.confirmConversationTimeZone(expectedTimeZone),
+      'confirmConversationTimeZone',
+    );
+    if (
+      record(confirmation) === null ||
+      confirmation.timeZone !== expectedTimeZone ||
+      confirmation.requiresSessionRefresh !== true ||
+      typeof confirmation.confirmedAt !== 'string' ||
+      !Number.isFinite(Date.parse(confirmation.confirmedAt)) ||
+      new Date(confirmation.confirmedAt).toISOString() !== confirmation.confirmedAt
+    ) {
+      fail('time-zone confirmation returned an invalid receipt');
+    }
+    accessToken = await authenticateThroughConfiguredAdapter(config, dependencies);
+    authority = await inspectM2A3StagingTimeZoneAuthority(
+      accessToken,
+      config,
+      expectedTimeZone,
+      dependencies,
+    );
+    if (authority.state !== 'confirmed' || authority.confirmedAt !== confirmation.confirmedAt) {
+      fail('time-zone confirmation was not present in the refreshed signed session');
+    }
+    provisioned = true;
+  }
+  if (authority.state !== 'confirmed') {
+    fail('the dedicated account has no confirmed time-zone authority');
+  }
+  return Object.freeze({ accessToken, provisioned });
 }
 
 const OPERATION_ERROR_CLASSES = new Set([
@@ -319,20 +436,15 @@ async function readAuthenticatedApiJson(config, accessToken, path, dependencies,
  * Le workflow l'exécute avant toute étape coûteuse afin qu'un compte mal provisionné ne soit
  * découvert ni après un build, ni après un déploiement. Le résultat n'expose aucun identifiant.
  */
-export async function preflightM1BStagingAccount(environment = process.env, dependencies = {}) {
+async function preflightStagingAccount(environment, dependencies, requireM2A3TimeZone) {
   const config = parseM1BStagingSmokeEnvironment(environment);
-  const authentication =
-    typeof dependencies.authenticate === 'function'
-      ? await dependencies.authenticate(config)
-      : await authenticateM1BStagingAccount(config, dependencies);
-  if (record(authentication) === null || typeof authentication.accessToken !== 'string') {
-    fail('staging authentication adapter returned no access token');
-  }
-  const accessToken = validateM1BStagingAccessToken(
-    authentication.accessToken,
-    config,
-    dependencies.now?.() ?? Date.now(),
-  );
+  const authentication = requireM2A3TimeZone
+    ? await authenticateM2A3StagingAccount(config, environment, dependencies)
+    : Object.freeze({
+        accessToken: await authenticateThroughConfiguredAdapter(config, dependencies),
+        provisioned: false,
+      });
+  const { accessToken } = authentication;
   const company = await readAuthenticatedApiJson(
     config,
     accessToken,
@@ -353,12 +465,26 @@ export async function preflightM1BStagingAccount(environment = process.env, depe
     ),
   );
   return Object.freeze({
-    mode: 'preflight',
+    mode: requireM2A3TimeZone ? 'preflight-v2' : 'preflight',
     passed: true,
     account: 'eligible',
+    ...(requireM2A3TimeZone
+      ? {
+          timeZoneAuthority: 'confirmed',
+          timeZoneProvisioned: authentication.provisioned,
+        }
+      : {}),
     transport: realtime.transport,
     speechDelivery: realtime.speechDelivery,
   });
+}
+
+export async function preflightM1BStagingAccount(environment = process.env, dependencies = {}) {
+  return preflightStagingAccount(environment, dependencies, false);
+}
+
+export async function preflightM2A3StagingAccount(environment = process.env, dependencies = {}) {
+  return preflightStagingAccount(environment, dependencies, true);
 }
 
 function expectCall(call, config, sessionHandle) {
@@ -657,7 +783,12 @@ async function cancelQuoteWithResponseLossRecovery(
 async function importRuntimeDependencies() {
   const [
     { HttpBobClient, isRealtimeBootstrapTimeoutError },
-    { createEmptyQuoteDraftPayload, isMeaningfulQuoteDraftPayload },
+    {
+      createEmptyQuoteDraftPayload,
+      deriveConfirmedTimeZone,
+      isMeaningfulQuoteDraftPayload,
+      parseIanaTimeZone,
+    },
   ] = await Promise.all([
     import(new URL('../../../packages/api-client/dist/index.js', import.meta.url)),
     import(new URL('../../../packages/core/dist/index.js', import.meta.url)),
@@ -666,15 +797,19 @@ async function importRuntimeDependencies() {
     typeof HttpBobClient !== 'function' ||
     typeof isRealtimeBootstrapTimeoutError !== 'function' ||
     typeof createEmptyQuoteDraftPayload !== 'function' ||
-    typeof isMeaningfulQuoteDraftPayload !== 'function'
+    typeof deriveConfirmedTimeZone !== 'function' ||
+    typeof isMeaningfulQuoteDraftPayload !== 'function' ||
+    typeof parseIanaTimeZone !== 'function'
   ) {
     fail('built Bob runtime dependencies are unavailable');
   }
   return {
     HttpBobClient,
     createEmptyQuoteDraftPayload,
+    deriveConfirmedTimeZone,
     isRealtimeBootstrapTimeoutError,
     isMeaningfulQuoteDraftPayload,
+    parseIanaTimeZone,
   };
 }
 
@@ -709,6 +844,20 @@ async function realtimeBootstrapTimeoutPredicate(dependencies) {
     return dependencies.isRealtimeBootstrapTimeoutError;
   }
   return (await importRuntimeDependencies()).isRealtimeBootstrapTimeoutError;
+}
+
+async function confirmedTimeZoneDeriver(dependencies) {
+  if (typeof dependencies.deriveConfirmedTimeZone === 'function') {
+    return dependencies.deriveConfirmedTimeZone;
+  }
+  return (await importRuntimeDependencies()).deriveConfirmedTimeZone;
+}
+
+async function ianaTimeZoneParser(dependencies) {
+  if (typeof dependencies.parseIanaTimeZone === 'function') {
+    return dependencies.parseIanaTimeZone;
+  }
+  return (await importRuntimeDependencies()).parseIanaTimeZone;
 }
 
 export async function createM1BChromiumPeer(speechDelivery) {
@@ -871,20 +1020,15 @@ async function createPeer(config, dependencies) {
   return peer;
 }
 
-async function authenticateAndPrepare(environment, dependencies, { requireClean = true } = {}) {
+async function authenticateAndPrepare(
+  environment,
+  dependencies,
+  { requireClean = true, requireM2A3TimeZone = false } = {},
+) {
   const config = parseM1BStagingSmokeEnvironment(environment);
-  const authentication =
-    typeof dependencies.authenticate === 'function'
-      ? await dependencies.authenticate(config)
-      : await authenticateM1BStagingAccount(config, dependencies);
-  if (record(authentication) === null || typeof authentication.accessToken !== 'string') {
-    fail('staging authentication adapter returned no access token');
-  }
-  const accessToken = validateM1BStagingAccessToken(
-    authentication.accessToken,
-    config,
-    dependencies.now?.() ?? Date.now(),
-  );
+  const { accessToken } = requireM2A3TimeZone
+    ? await authenticateM2A3StagingAccount(config, environment, dependencies)
+    : { accessToken: await authenticateThroughConfiguredAdapter(config, dependencies) };
   const client = await createRuntimeClient(config, accessToken, dependencies);
   const company = expectSuccess(await client.getCompanyMe(), 'getCompanyMe');
   if (record(company) === null || company.id !== config.companyId) {
@@ -1642,7 +1786,9 @@ export async function runM1BPositiveStagingSmoke(environment = process.env, depe
 }
 
 export async function runM2A3PreviewStagingSmoke(environment = process.env, dependencies = {}) {
-  const prepared = await authenticateAndPrepare(environment, dependencies);
+  const prepared = await authenticateAndPrepare(environment, dependencies, {
+    requireM2A3TimeZone: true,
+  });
   const { client, isMeaningfulQuoteDraftPayload, isRealtimeBootstrapTimeoutError } = prepared;
   const existingDraft = expectSuccess(await client.getQuoteDraft(), 'getQuoteDraft');
   expectCleanDraft(existingDraft, isMeaningfulQuoteDraftPayload);
@@ -1713,7 +1859,9 @@ export async function runM2A3PreviewStagingSmoke(environment = process.env, depe
 }
 
 export async function runM2A3PreviewOffStagingSmoke(environment = process.env, dependencies = {}) {
-  const prepared = await authenticateAndPrepare(environment, dependencies);
+  const prepared = await authenticateAndPrepare(environment, dependencies, {
+    requireM2A3TimeZone: true,
+  });
   const { client, isMeaningfulQuoteDraftPayload, isRealtimeBootstrapTimeoutError } = prepared;
   const existingDraft = expectSuccess(await client.getQuoteDraft(), 'getQuoteDraft');
   expectCleanDraft(existingDraft, isMeaningfulQuoteDraftPayload);
@@ -1767,6 +1915,9 @@ export async function runM1BStagingSmoke(command, environment = process.env, dep
   if (command === 'preflight') {
     return preflightM1BStagingAccount(environment, dependencies);
   }
+  if (command === 'preflight-v2') {
+    return preflightM2A3StagingAccount(environment, dependencies);
+  }
   if (command === 'negative') {
     return runM1BNegativeStagingSmoke(environment, dependencies);
   }
@@ -1782,7 +1933,9 @@ export async function runM1BStagingSmoke(command, environment = process.env, dep
   if (command === 'preview-v2-off') {
     return runM2A3PreviewOffStagingSmoke(environment, dependencies);
   }
-  fail('expected command preflight, negative, positive, recovery, preview-v2 or preview-v2-off');
+  fail(
+    'expected command preflight, preflight-v2, negative, positive, recovery, preview-v2 or preview-v2-off',
+  );
 }
 
 async function main() {

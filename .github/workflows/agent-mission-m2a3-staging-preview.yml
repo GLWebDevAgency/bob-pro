@@ -117,6 +117,7 @@ env:
   BOB_M2A3_STAGING_INITIATOR: ${{ github.actor }}
   BOB_M2A3_STAGING_REPOSITORY: ${{ github.repository }}
   BOB_M2A3_STAGING_USER_ID: ${{ vars.BOB_M1B_STAGING_USER_ID }}
+  BOB_M2A3_STAGING_TIME_ZONE: ${{ vars.BOB_M2A3_STAGING_TIME_ZONE }}
   BOB_M2A3_STAGING_FOUNDER_AUTH_DATE: ${{ inputs.founder_authorization_date }}
   BOB_M2A3_STAGING_FOUNDER_AUTH_CHANNEL: ${{ inputs.founder_authorization_channel }}
   BOB_M2A3_STAGING_FOUNDER_AUTH_REF: ${{ inputs.founder_authorization_ref }}
@@ -171,6 +172,7 @@ jobs:
             'BOB_M1B_STAGING_DATABASE_NAME', 'BOB_M2A3_STAGING_FOUNDER_AUTH_DATE',
             'BOB_M2A3_STAGING_RUN_ATTEMPT', 'BOB_M2A3_STAGING_INITIATOR',
             'BOB_M2A3_STAGING_REPOSITORY', 'NORMAL_STAGING_RELEASE_RUN_ID',
+            'BOB_M2A3_STAGING_TIME_ZONE',
             'BOB_M2A3_STAGING_FOUNDER_AUTH_CHANNEL', 'BOB_M2A3_STAGING_FOUNDER_AUTH_REF',
             'BOB_M2A3_STAGING_CLAUDE_COUNTERSIGN_REF', 'BOB_M2A3_STAGING_GPT_COUNTERSIGN_REF',
             'RAILWAY_TOKEN', 'BOB_M1B_STAGING_HMAC_KEYRING',
@@ -199,6 +201,20 @@ jobs:
             if (url.protocol !== 'https:' || url.origin !== value) {
               throw new Error(`${name} must be an exact HTTPS origin`);
             }
+          }
+          const stagingTimeZone = process.env.BOB_M2A3_STAGING_TIME_ZONE;
+          let canonicalTimeZone = '';
+          try {
+            canonicalTimeZone = new Intl.DateTimeFormat('en-US', {
+              timeZone: stagingTimeZone,
+            }).resolvedOptions().timeZone;
+          } catch {}
+          if (
+            typeof stagingTimeZone !== 'string'
+            || !/^[A-Za-z][A-Za-z0-9_+-]*(?:\/[A-Za-z0-9_+-]+)*$/.test(stagingTimeZone)
+            || canonicalTimeZone !== stagingTimeZone
+          ) {
+            throw new Error('BOB_M2A3_STAGING_TIME_ZONE must be a canonical IANA time zone');
           }
           const decisionPath =
             'design_handoff_bob_pro/DECISION_M2A3_STAGING_PREVIEW_20260731.md';
@@ -291,7 +307,7 @@ jobs:
             apps/api/scripts/agent-mission-m1b-staging-release-safety.test.mjs \
             apps/api/scripts/release-flag-ops.test.mjs
           node apps/api/scripts/write-release-metadata.mjs "$GITHUB_SHA" staging
-          node apps/api/scripts/agent-mission-m1b-staging-smoke.mjs preflight
+          node apps/api/scripts/agent-mission-m1b-staging-smoke.mjs preflight-v2
       - name: Require the normally released exact SHA and a fully OFF baseline
         id: baseline_runtime
         env:
