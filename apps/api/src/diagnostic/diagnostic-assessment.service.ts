@@ -7,6 +7,7 @@ import {
   appNotFound,
   appUnavailable,
   buildDiagnosticAssessmentView,
+  businessDayOf,
   canonicalDiagnosticSourceMaterial,
   diagnosticAssessmentSaveInput,
   diagnosticQuestions,
@@ -58,9 +59,13 @@ export class DiagnosticAssessmentService {
     ]);
     const today = parisDateOnly();
     const customerTypes = [...new Set(customers.map((customer) => customer.type))];
+    // Année civile 293 B au calendrier MÉTIER Paris des deux côtés : borne (parisDateOnly) ET
+    // jour de l'encaissement (receivedAt est un Instant, projeté via businessDayOf) — la
+    // troncature UTC classait un encaissement de la nuit du Nouvel An (23:00–00:00 UTC le 31/12)
+    // dans l'année précédente, et le diagnostic PERSISTANT figeait la valeur erronée.
     const currentYear = today.slice(0, 4);
     const annualEncaissedCents = payments
-      .filter((payment) => payment.receivedAt.slice(0, 4) === currentYear)
+      .filter((payment) => businessDayOf(payment.receivedAt).slice(0, 4) === currentYear)
       .reduce((sum, payment) => sum + payment.amount, 0);
     const facts = runDiagnostic({
       country: 'FR',

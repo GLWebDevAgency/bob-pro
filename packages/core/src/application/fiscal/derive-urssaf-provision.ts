@@ -1,4 +1,4 @@
-import { type DateOnly } from '../../shared-kernel/time';
+import { businessDayOf, type DateOnly } from '../../shared-kernel/time';
 import { type Trade } from '../../domain/company/company';
 import {
   acreWindow,
@@ -53,6 +53,8 @@ import { type FiscalConfidence, type UrssafPeriodicity } from './derive-fiscal-c
 
 /** Encaissement daté (PaymentView/socle E3) : DateOnly ou ISO complet, seul le jour compte. */
 export interface UrssafPaymentData {
+  /** Instant ou DateOnly — seul le jour MÉTIER Europe/Paris compte (businessDayOf : un instant
+   *  est projeté via parisDateOnly, une date est prise telle quelle). */
   receivedAt: string;
   /** Centimes — négatif = remboursement/avoir décaissé (déduit du CA de la période). */
   amountCents: number;
@@ -227,15 +229,19 @@ export function deriveUrssafProvision(input: DeriveUrssafProvisionInput): Urssaf
       ? resolveAcreSocialPct(declarationYear, category, input.dateCreation)
       : null;
 
-  // CA encaissé de la période : seul le JOUR compte (receivedAt DateOnly ou ISO complet),
-  // remboursements (négatifs) déduits, plancher 0 — on ne déclare pas un CA négatif. Sous ACRE,
-  // chaque encaissement est classé selon SA date vs la fenêtre (art. D.131-6-3 CSS) : dans la
-  // fenêtre → taux réduit, hors fenêtre → taux plein. Plancher 0 par bucket (prudent).
+  // CA encaissé de la période : seul le jour MÉTIER Europe/Paris compte (receivedAt DateOnly ou
+  // Instant projeté via businessDayOf — les bornes period.start/end et la fenêtre ACRE sont des
+  // jours civils dérivés d'asOf métier Paris : une troncature UTC classerait un encaissement de
+  // 00:00–~02:00 Paris le 1er dans le trimestre/mois de déclaration PRÉCÉDENT, et au mauvais taux
+  // ACRE en bordure de fenêtre). Remboursements (négatifs) déduits, plancher 0 — on ne déclare
+  // pas un CA négatif. Sous ACRE, chaque encaissement est classé selon SA date vs la fenêtre
+  // (art. D.131-6-3 CSS) : dans la fenêtre → taux réduit, hors fenêtre → taux plein. Plancher 0
+  // par bucket (prudent).
   let net = 0;
   let acreNet = 0;
   let fullNet = 0;
   for (const payment of input.payments) {
-    const day = payment.receivedAt.slice(0, 10);
+    const day = businessDayOf(payment.receivedAt);
     if (day < period.start || day > period.end) continue;
     net += payment.amountCents;
     if (acreApplied && window != null && day >= window.start && day <= window.end) {
