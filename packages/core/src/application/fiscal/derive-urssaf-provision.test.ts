@@ -334,3 +334,72 @@ describe('deriveUrssafProvision — ACRE (C-EXP5d)', () => {
     expect(p.ratePct).toBe(21.2);
   });
 });
+
+describe('deriveUrssafProvision — jour métier des encaissements (bascule de période Paris)', () => {
+  it("bascule de TRIMESTRE en été : encaissé le 31/03 22:30 UTC = 1er avril 00:30 Paris (CEST +2) → dans le T2", () => {
+    // L'heure d'été 2026 démarre le dernier dimanche de mars = 29/03 à 02:00 : le 31/03 est DÉJÀ
+    // en CEST (UTC+2). 2026-03-31T22:30Z + 2 h = 2026-04-01T00:30 Paris → jour métier 2026-04-01,
+    // borne period.start du T2. Le jour UTC (2026-03-31) l'aurait rejeté dans le T1 — un
+    // encaissement de la nuit du 1er avril manquerait à l'assiette de la déclaration du T2.
+    const p = deriveUrssafProvision({
+      payments: [pay('2026-03-31T22:30:00.000Z', 300_000)],
+      asOf: '2026-04-15', // T2 2026 : du 2026-04-01 au 2026-06-30
+      periodicity: 'quarterly',
+      trade: 'plombier',
+    });
+    expect(p.periodLabel).toBe('T2 2026');
+    expect(p.encaissedCents).toBe(300_000); // compté dans le T2, pas 0
+    expect(p.provisionCents).toBe(63_600); // 3 000 € × 21,2 % (BIC prestations 2026)
+  });
+
+  it("TÉMOIN DST hiver : encaissé le 31/12 22:30 UTC = 23:30 Paris (CET +1) → encore dans le T4", () => {
+    // L'heure d'hiver court depuis le 25/10/2026 : 22:30Z + 1 h = 23:30 le 31/12 — le jour métier
+    // est ENCORE 2026-12-31, borne period.end du T4 (incluse). Un calcul DST-naïf à offset d'été
+    // figé (+2 h toute l'année) fabriquerait 2027-01-01 00:30 → hors période → assiette à 0.
+    // Ce littéral est le témoin qui tue ce mutant (le jour UTC brut, lui, donne aussi le 31/12 :
+    // c'est le test de bascule d'été ci-dessus qui le condamne).
+    const p = deriveUrssafProvision({
+      payments: [pay('2026-12-31T22:30:00.000Z', 150_000)],
+      asOf: '2026-12-15', // T4 2026 : du 2026-10-01 au 2026-12-31
+      periodicity: 'quarterly',
+      trade: 'plombier',
+    });
+    expect(p.periodLabel).toBe('T4 2026');
+    expect(p.encaissedCents).toBe(150_000); // encore dans le T4
+    expect(p.provisionCents).toBe(31_800); // 1 500 € × 21,2 %
+  });
+
+  it('non-régression : un instant de pleine journée (10:00 UTC = 12:00 Paris) reste dans son trimestre', () => {
+    // Loin de minuit, jour UTC et jour Paris coïncident — le correctif ne change rien.
+    const p = deriveUrssafProvision({
+      payments: [pay('2026-05-20T10:00:00.000Z', 100_000)],
+      asOf: '2026-05-25', // T2 2026
+      periodicity: 'quarterly',
+      trade: 'plombier',
+    });
+    expect(p.encaissedCents).toBe(100_000);
+    expect(p.provisionCents).toBe(21_200); // 1 000 € × 21,2 %
+  });
+
+  it("bordure de fenêtre ACRE : encaissé le 14/05 22:30 UTC = 15/05 00:30 Paris = 1er jour de la fenêtre → taux réduit", () => {
+    // Création (= ouverture de fenêtre ACRE) le 15/05/2026 ; fenêtre = [2026-05-15 .. 2027-03-31]
+    // (T2 2026 + 3 trimestres civils → fin T1 2027). Mai est en CEST (UTC+2) :
+    // 2026-05-14T22:30Z + 2 h = 2026-05-15T00:30 Paris → jour métier 2026-05-15 = window.start →
+    // classé au taux réduit ACRE 10,6 % (création avant la marche du 1/7/2026). Le jour UTC
+    // (2026-05-14) l'aurait classé HORS fenêtre → taux plein 21,2 % : provision doublée à tort
+    // (42 400 c au lieu de 21 200 c) — le taux suit la date d'encaissement (art. D.131-6-3 CSS).
+    const p = deriveUrssafProvision({
+      payments: [pay('2026-05-14T22:30:00.000Z', 200_000)],
+      asOf: '2026-05-20', // T2 2026 (chevauche la fenêtre : ACRE applicable)
+      periodicity: 'quarterly',
+      trade: 'plombier',
+      dateCreation: '2026-05-15',
+      acre: true,
+    });
+    expect(p.acreApplied).toBe(true);
+    expect(p.acreWindowEnd).toBe('2027-03-31');
+    expect(p.encaissedCents).toBe(200_000);
+    expect(p.socialCents).toBe(21_200); // 2 000 € × 10,6 % (ACRE) — PAS 42 400 (plein)
+    expect(p.provisionCents).toBe(21_200);
+  });
+});
