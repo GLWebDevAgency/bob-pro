@@ -102,6 +102,22 @@ describe('ErrorNotice — rendu des deux faces', () => {
     expect(opened).toContain('Corrélation'); // libellé de la DetailRow corrélation
   });
 
+  it('(d) face SOMBRE (Lot 0) : matière danger sombre du kit ; le défaut reste la face claire', () => {
+    // Défaut (light) : fond pastel historique #FBEAE8, jamais la matière sombre.
+    const { renderer: light } = renderNotice();
+    const lightTree = tree(light);
+    expect(lightTree).toContain('#FBEAE8'); // semantic.dangerBg
+    expect(lightTree).not.toContain('#351312');
+
+    // appearance="dark" : surfaceTint.dark.danger — flat #351312, border #622825, ink #FADDD9.
+    const { renderer: dark } = renderNotice({ appearance: 'dark' });
+    const darkTree = tree(dark);
+    expect(darkTree).toContain('#351312');
+    expect(darkTree).toContain('#622825');
+    expect(darkTree).toContain('#FADDD9');
+    expect(darkTree).not.toContain('#FBEAE8');
+  });
+
   it('(c) le bouton Partager compose un rapport SANS PII (code + corrélation + kind + heure)', () => {
     const { renderer, onShareReport } = renderNotice();
 

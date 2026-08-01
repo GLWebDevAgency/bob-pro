@@ -38,6 +38,9 @@ export function useStatusBadgePalette(): StatusBadgePalette {
     particulierBg: semantic.particulierBg,
     success: semantic.success,
     successBg: semantic.successBg,
+    // Lot 0 — variant 'ai' : mêmes teintes que le Badge legacy tone 'ai' (migration au pixel).
+    ai: semantic.ai,
+    aiBg: semantic.aiBg,
   };
 }
 

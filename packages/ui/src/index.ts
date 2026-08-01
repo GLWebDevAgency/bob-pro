@@ -19,7 +19,12 @@ export * from './components/bob-surface';
 export { bobSurfaceColors } from './components/bob-surface.logic';
 export * from './components/button';
 export * from './components/status-badge';
-export { statusBadgeColors } from './components/status-badge.logic';
+export {
+  STATUS_BADGE_VARIANT_BY_LEGACY_TONE,
+  statusBadgeColors,
+  statusBadgeVariantForLegacyTone,
+  type LegacyBadgeTone,
+} from './components/status-badge.logic';
 export * from './components/avatar';
 export * from './components/card';
 export * from './components/skeleton';
@@ -41,10 +46,14 @@ export * from './components/section-header';
 export * from './components/money-text';
 export * from './components/error-notice';
 export {
+  errorNoticeDarkFace,
   errorNoticeReportText,
   resolveErrorNoticeCopy,
+  type ErrorNoticeDarkFace,
   type ErrorNoticeFacts,
 } from './components/error-notice.logic';
+// Grammaire d'erreur (Lot 0) — la feuille d'échec de mutation appelable au support.
+export * from './components/error-sheet';
 
 // Accueil
 export * from './components/app-header-navy';
@@ -71,6 +80,11 @@ export * from './components/fab';
 export * from './components/sheet';
 export * from './components/question-sheet';
 export * from './components/toast';
+export {
+  toastToneAccent,
+  type ToastToneAccent,
+  type ToastTonePalette,
+} from './components/toast.logic';
 
 // Flux (réserve C03 — devis C21)
 export * from './components/stepper';

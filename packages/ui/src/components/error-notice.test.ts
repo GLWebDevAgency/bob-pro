@@ -2,11 +2,24 @@ import { describe, expect, it } from 'vitest';
 import {
   ERROR_NOTICE_HIT_TARGET,
   errorNoticeAccessibilitySummary,
+  errorNoticeDarkFace,
   errorNoticeReportText,
   resolveErrorNoticeCopy,
   shortCorrelation,
   shortTime,
 } from './error-notice.logic';
+
+describe('ErrorNotice — face sombre (Lot 0, plan DA 01/08)', () => {
+  it('reprend la matière danger SOMBRE du kit en littéraux (surfaceTint.dark.danger, encres déjà certifiées AA)', () => {
+    expect(errorNoticeDarkFace()).toEqual({
+      border: '#622825',
+      bg: '#351312',
+      ink: '#FADDD9',
+      inkMuted: '#E5A9A2',
+      chipBg: '#481B19',
+    });
+  });
+});
 
 describe('ErrorNotice — logique des deux faces', () => {
   it('résout le chrome dans les 3 personnalités (jamais de chaîne vide)', () => {

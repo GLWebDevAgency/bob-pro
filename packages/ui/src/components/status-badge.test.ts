@@ -4,8 +4,11 @@ import {
   BADGE_RADIUS,
   CHIP_HEIGHT,
   CHIP_HIT_SLOP,
+  STATUS_BADGE_VARIANT_BY_LEGACY_TONE,
   chipColors,
   statusBadgeColors,
+  statusBadgeVariantForLegacyTone,
+  type LegacyBadgeTone,
   type StatusBadgePalette,
 } from './status-badge.logic';
 
@@ -24,6 +27,8 @@ const palette: StatusBadgePalette = {
   particulierBg: semantic.particulierBg,
   success: semantic.success,
   successBg: semantic.successBg,
+  ai: semantic.ai,
+  aiBg: semantic.aiBg,
 };
 
 describe('statusBadgeColors — redlines §7', () => {
@@ -89,6 +94,41 @@ describe('statusBadgeColors — variante additive `neutral` (P1 §1.5)', () => {
     expect(statusBadgeColors('b2g', palette)).toEqual({ fg: semantic.b2g, bg: semantic.b2gBg });
     expect(statusBadgeColors('particulier', palette)).toEqual({ fg: semantic.particulier, bg: semantic.particulierBg });
     expect(statusBadgeColors('success', palette)).toEqual({ fg: semantic.success, bg: semantic.successBg });
+  });
+});
+
+describe('statusBadgeColors — variante additive `ai` (Lot 0, plan DA 01/08)', () => {
+  it("la voix de Bob → semantic.ai sur aiBg — les MÊMES teintes que le Badge legacy tone 'ai' (littéraux)", () => {
+    // Badge legacy (src/components/ui index.tsx l.202) : ai = { bg: '#F1EBFA', fg: '#4338CA' }.
+    expect(statusBadgeColors('ai', palette)).toEqual({ fg: '#4338CA', bg: '#F1EBFA' });
+  });
+});
+
+describe('table BadgeTone legacy → StatusBadgeVariant (Lot 0 — FIGÉE avant toute migration)', () => {
+  it('couvre les 7 tones du Badge legacy, identité sur les 6 partagés et ai → ai', () => {
+    expect(STATUS_BADGE_VARIANT_BY_LEGACY_TONE).toEqual({
+      b2b: 'b2b',
+      b2g: 'b2g',
+      particulier: 'particulier',
+      success: 'success',
+      warning: 'warning',
+      danger: 'danger',
+      ai: 'ai',
+    });
+  });
+
+  it('chaque tone legacy résout une variante qui REND des couleurs (aucun trou de mapping)', () => {
+    const tones: LegacyBadgeTone[] = ['b2b', 'b2g', 'particulier', 'success', 'warning', 'danger', 'ai'];
+    for (const tone of tones) {
+      const variant = statusBadgeVariantForLegacyTone(tone);
+      const colors = statusBadgeColors(variant, palette);
+      expect(colors.fg, `fg de ${tone}`).toMatch(/^#/);
+      expect(colors.bg, `bg de ${tone}`).toMatch(/^#/);
+    }
+  });
+
+  it('la table est gelée (Object.freeze) — personne ne la « corrige » en douce pendant une migration', () => {
+    expect(Object.isFrozen(STATUS_BADGE_VARIANT_BY_LEGACY_TONE)).toBe(true);
   });
 });
 

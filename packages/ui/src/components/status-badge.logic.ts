@@ -5,7 +5,9 @@
  */
 
 /** Les 5 variantes des redlines §7 + `warning` (état « à justifier », ambre doux)
- * + `neutral` (P1 §1.5 — états SORTIS du flux : Résilié, Annulée, Retirée, Échu). */
+ * + `neutral` (P1 §1.5 — états SORTIS du flux : Résilié, Annulée, Retirée, Échu)
+ * + `ai` (Lot 0, arbitrage BADGE « LE SOLDE MENT » — c'est BOB qui pédagogise :
+ *   l'indigo est le canal EXCLUSIF de Bob, warning reste réservé à l'actionnable). */
 export type StatusBadgeVariant =
   | 'danger'
   | 'warning'
@@ -13,7 +15,8 @@ export type StatusBadgeVariant =
   | 'b2g'
   | 'particulier'
   | 'success'
-  | 'neutral';
+  | 'neutral'
+  | 'ai';
 
 /** Sous-ensemble de tokens nécessaires (injecté depuis useTheme). */
 export interface StatusBadgePalette {
@@ -38,6 +41,10 @@ export interface StatusBadgePalette {
   /** semantic.success — payé / à jour */
   success: string;
   successBg: string;
+  /** semantic.ai — la voix de Bob (Lot 0) : mêmes teintes que le Badge legacy tone 'ai'
+   *  (fg semantic.ai sur aiBg) pour une migration au pixel. */
+  ai: string;
+  aiBg: string;
 }
 
 export interface StatusBadgeColors {
@@ -76,7 +83,43 @@ export function statusBadgeColors(
       return { fg: p.success, bg: p.successBg };
     case 'neutral':
       return { fg: p.neutralInk, bg: p.neutralBg };
+    case 'ai':
+      return { fg: p.ai, bg: p.aiBg };
   }
+}
+
+/**
+ * TABLE DE CORRESPONDANCE OFFICIELLE BadgeTone legacy → StatusBadgeVariant (Lot 0 —
+ * FIGÉE AVANT toute migration, testée unitairement). Les 7 tones du Badge de
+ * `src/components/ui` (index.tsx l.183) trouvent chacun leur variante kit : identité
+ * sur les 6 tones partagés, et `'ai' → 'ai'` — le tone qui n'avait AUCUN équivalent
+ * kit avant ce lot (ventes/DocumentActions). Sans cette table, chaque extinction
+ * legacy (lots 1-3) improviserait sa propre équivalence.
+ */
+export type LegacyBadgeTone =
+  | 'b2b'
+  | 'b2g'
+  | 'particulier'
+  | 'success'
+  | 'warning'
+  | 'danger'
+  | 'ai';
+
+export const STATUS_BADGE_VARIANT_BY_LEGACY_TONE: Readonly<
+  Record<LegacyBadgeTone, StatusBadgeVariant>
+> = Object.freeze({
+  b2b: 'b2b',
+  b2g: 'b2g',
+  particulier: 'particulier',
+  success: 'success',
+  warning: 'warning',
+  danger: 'danger',
+  ai: 'ai',
+});
+
+/** Variante kit d'un tone legacy — pure, exhaustive par construction (Record fermé). */
+export function statusBadgeVariantForLegacyTone(tone: LegacyBadgeTone): StatusBadgeVariant {
+  return STATUS_BADGE_VARIANT_BY_LEGACY_TONE[tone];
 }
 
 /** Sous-ensemble de tokens du Chip filtre (injecté depuis useTheme). */
