@@ -5,6 +5,17 @@
 **Objectifs :** O4, O5, O6, O7  
 **Spec canonique :** `SPEC_AGENT_MISSIONS_JARVIS_M2A_QUOTE_LINE.md`, §15.1.1 et §17.1
 
+> **⚠️ ADDENDUM 01/08/2026 — DOCUMENT HISTORIQUE, BLOQUANTS 1 ET 2 SOLDÉS.** Ce handoff décrit
+> la base `cd6092d7` (pré-PR #35). Depuis, le raccordement mobile V2 est livré et mergé sur
+> `main` (PR #35, merge `1f75c829` du 31/07 ; PR #36 operator-fix ; spec M2-A-3 `implemented`
+> au SHA `3bc46493`). Sur `main`, l'autorité de demande est `realtime-session.ts` (start frais
+> audité → protocole 2 ; reprises V1/V2 explicites) et `webrtc-realtime-transport.ts` VÉRIFIE
+> un protocole injecté — l'affirmation « le transport demande encore le protocole 1 » ne décrit
+> plus le code. Reprendre les bloquants 1-2 à la lettre RE-IMPLÉMENTERAIT une lane déjà mergée
+> et recréerait les writers concurrents interdits par le contrat binaire (clause 2). Restent
+> réellement ouverts : M2A3-13 (appareils physiques), le reçu OFF canonique du drill
+> deactivate M2A3-PREVIEW, et le test terrain de l'APK `2df4816d`.
+
 ## Point de reprise exact
 
 - Worktree d'écriture : `/private/tmp/bob-m2a3`

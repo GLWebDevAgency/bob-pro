@@ -361,6 +361,10 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     expect(external.receivedNegotiation).toBe(NEGOTIATION);
     expect(external.receivedAgentMissionProtocolVersion)
       .toBe(REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION);
+    // LITTÉRAL délibéré : un start frais audité demande EXACTEMENT 2 au transport. Comparer
+    // uniquement à la constante laisserait survivre le mutant qui muterait la constante
+    // elle-même ou le repli `?? M2A` de startInternal vers la constante V1.
+    expect(external.receivedAgentMissionProtocolVersion).toBe(2);
   });
 
   it('conserve OpenAI natif sans capability Mission et transmet explicitement null', async () => {

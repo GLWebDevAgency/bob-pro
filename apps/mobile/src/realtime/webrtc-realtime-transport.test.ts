@@ -874,6 +874,76 @@ describe('RealtimeWebRtcTransport — courses et autorite serveur', () => {
     expect(bobClient.hangupRealtimeVoiceCall).toHaveBeenCalledOnce();
   });
 
+  /**
+   * « Signature B » côté client — l'incident terrain de référence : une session tuée < 1 s
+   * après le SDP par un client V1 servi `null/null`. Ces deux cas transforment ce scénario en
+   * échec NOMMÉ observé avant toute trame : un seul DELETE, jamais une boucle muette, jamais
+   * un second bootstrap rétrogradé.
+   */
+  it('signature B : demande V1 servie null/null → échec nommé avant toute trame, un seul hangup', async () => {
+    const stream = new FakeStream();
+    const harness = runtimeHarness(async () => stream);
+    const bobClient = client(RECEIVE_ONLY_SDP, realtimeConfig, null);
+    const value = transport(
+      bobClient,
+      harness,
+      realtimeConfig,
+      REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
+    );
+
+    await expect(value.connect()).rejects.toMatchObject({
+      reason: 'agent_mission_negotiation_failed',
+    });
+
+    // La demande wire a été formulée UNE fois, en 1 LITTÉRAL (le mutant de constante meurt ici).
+    expect(
+      vi.mocked(bobClient.createRealtimeVoiceCall).mock.calls.map(
+        ([input]) => (input as { agentMissionProtocolVersion?: number | null })
+          .agentMissionProtocolVersion,
+      ),
+    ).toEqual([1]);
+    // Fermeture AVANT toute trame : answer jamais posée, canal muet, micro local détruit coupé.
+    expect(harness.peers[0]?.setRemoteDescriptionCalls).toBe(0);
+    expect(harness.peers[0]?.channel.sent).toEqual([]);
+    expect(stream.track.enabled).toBe(false);
+    expect(stream.track.stopCalls).toBe(1);
+    expect(stream.releaseArguments).toEqual([true]);
+    // UN SEUL DELETE serveur : l'échec est propre et définitif pour ce handle.
+    expect(bobClient.hangupRealtimeVoiceCall).toHaveBeenCalledOnce();
+    expect(value.state).toMatchObject({
+      phase: 'closed',
+      fallbackReason: 'agent_mission_negotiation_failed',
+    });
+  });
+
+  it('signature B : demande V2 servie null/null → échec nommé SANS second bootstrap rétrogradé en 1', async () => {
+    const stream = new FakeStream();
+    const harness = runtimeHarness(async () => stream);
+    const bobClient = client(RECEIVE_ONLY_SDP, realtimeConfig, null);
+    const value = transport(bobClient, harness);
+
+    await expect(value.connect()).rejects.toMatchObject({
+      reason: 'agent_mission_negotiation_failed',
+    });
+
+    // EXACTEMENT un bootstrap, demandé en 2 LITTÉRAL — jamais une retentative en 1 : c'est la
+    // rétrogradation silencieuse que §15.1.1 interdit (« jamais retrogradé en V1 »).
+    expect(
+      vi.mocked(bobClient.createRealtimeVoiceCall).mock.calls.map(
+        ([input]) => (input as { agentMissionProtocolVersion?: number | null })
+          .agentMissionProtocolVersion,
+      ),
+    ).toEqual([2]);
+    expect(harness.peers[0]?.setRemoteDescriptionCalls).toBe(0);
+    expect(harness.peers[0]?.channel.sent).toEqual([]);
+    expect(stream.track.enabled).toBe(false);
+    expect(bobClient.hangupRealtimeVoiceCall).toHaveBeenCalledOnce();
+    expect(value.state).toMatchObject({
+      phase: 'closed',
+      fallbackReason: 'agent_mission_negotiation_failed',
+    });
+  });
+
   it('après perte de réponse bootstrap, clôt le handle demandé et réserve un nouvel UUID au retry utilisateur', async () => {
     const bobClient = client();
     bobClient.createRealtimeVoiceCall = vi.fn(async () => ({
