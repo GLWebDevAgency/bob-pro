@@ -87,6 +87,27 @@ test('activation exige le SHA de main deja livre par une release staging normale
   assert.match(activation.slice(inlineSafety), /emergency-kill[\s\S]*?assert-effective-safe/u);
 });
 
+test('le canary V2 prouve son fuseau signé avant toute mutation sans affaiblir le drill OFF', () => {
+  const activation = job('activate');
+  assert.match(
+    workflow,
+    /BOB_M2A3_STAGING_TIME_ZONE: \$\{\{ vars\.BOB_M2A3_STAGING_TIME_ZONE \}\}/u,
+  );
+  assert.match(activation, /'BOB_M2A3_STAGING_TIME_ZONE'/u);
+  assert.match(activation, /canonicalTimeZone !== stagingTimeZone/u);
+  const preflight = activation.indexOf('staging-smoke.mjs preflight-v2');
+  const baseline = activation.indexOf(
+    'Require the normally released exact SHA and a fully OFF baseline',
+  );
+  const firstMutation = activation.indexOf(
+    'agent-mission-m2a3-staging-preview-flag-railway.mjs enable-canary',
+  );
+  assert.ok(preflight >= 0 && baseline > preflight && firstMutation > baseline);
+  assert.equal(occurrences(activation, /staging-smoke\.mjs preflight-v2\b/gu), 1);
+  assert.equal(occurrences(job('rollback-activation'), /staging-smoke\.mjs preview-v2-off\b/gu), 1);
+  assert.equal(occurrences(job('deactivate'), /staging-smoke\.mjs preview-v2-off\b/gu), 1);
+});
+
 test('activation prouve canary WebRTC V2 puis zero override avant le global ON', () => {
   const activation = job('activate');
   const canaryFlag = activation.indexOf(

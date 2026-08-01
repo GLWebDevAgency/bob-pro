@@ -1788,6 +1788,14 @@ Implémentation opérateur :
   stable, SHA exact et restauration explicite de `BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED=false` ;
 - smoke réel `preview-v2`/`preview-v2-off`, lecture seule de la mission, ACK bootstrap, application
   SDP, hangup et preuve finale d'absence de brouillon/mission/lease ;
+- le compte technique canary porte un fuseau IANA explicitement configuré dans l'environnement
+  GitHub `staging`. Le préflight V2 relit d'abord l'autorité temporelle depuis le JWT signé et
+  lié au tenant. Si les trois claims sont entièrement absents, il effectue une seule confirmation
+  idempotente par le même endpoint métier que le mobile, se réauthentifie puis exige un JWT frais
+  portant exactement le fuseau configuré et l'instant confirmé. Un bloc partiel, invalide,
+  cross-tenant ou différent de la configuration échoue fermé sans réparation silencieuse. Cette
+  précondition est prouvée avant la première mutation d'activation et rejouée par les canaries
+  OFF/ON ; un refus HTTP de bootstrap n'est jamais assimilé à une preuve du flag OFF ;
 - reçu strict non-PII `bob.agent-mission.m2a3.staging-preview-evidence@3`, construit depuis les
   observations live (et jamais depuis le mode demandé), qui lie aussi la release staging normale
   réussie du même SHA, les versions exactes des flags M2-A/V1, la décision et ses contre-signatures
