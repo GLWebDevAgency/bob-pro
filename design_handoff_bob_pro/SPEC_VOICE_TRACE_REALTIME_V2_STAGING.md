@@ -222,6 +222,25 @@ sous le mutex `railway-api-staging` existant, certifie le SHA exact de l'unique 
 10. en échec, retire d'abord tout le bloc VoiceTrace puis rebuild exact-source OFF avec les
     variables courantes.
 
+La capture production certifie un **profil fermé**, jamais une forme partielle inventée :
+
+- profil historique actuellement servi : `ready=true`, release `sha/environment` toutes deux
+  `NULL`, fence archive B2C `v1`, nouvelles fences absentes et VoiceTrace absent ;
+- profil courant : environnement `production`, SHA de 40 caractères, trois fences
+  archive/admission/bootstrap en `v1`, VoiceTrace absent ou explicitement `off`.
+
+Les deux profils exigent la source IP Railway attendue. Aucun profil hybride n'est accepté. Les
+clés des objets racine, `release`, `network`, `dependencies` et `capabilities` sont des allowlists
+exactes : une clé inconnue ou manquante est un refus jusqu'à l'introduction explicite d'un nouveau
+profil. Le profil historique n'a pas de bloc `dependencies` ; le profil courant en exige exactement
+un, avec `bobLiveSpeechAudit` borné à `ready|not_applicable`. Le snapshot calcule le digest d'une
+enveloppe de sécurité canonique (profil, release, dépendance Bob Live, fences connues et état
+VoiceTrace), volontairement indépendante du compteur métier volatil `customers`, lui-même validé
+comme entier positif ou nul. Le même profil et le même digest doivent être retrouvés après
+l'opération staging. Une évolution production concurrente fait donc échouer le reçu fermé ; elle
+n'est jamais normalisée en succès. Les assertions staging restent, elles, obligatoirement liées à
+`environment=staging`, au SHA exact et au contrat de capacités courant complet.
+
 Avant ce rollout, toute désactivation ou reprise M2-A rend d'abord l'autorité DB canonique `OFF`,
 puis exécute `predeploy`, `postdeploy` et `restore-capacity` depuis le checkout exact du SHA
 effectivement servi. Les migrations présentes uniquement dans le SHA de contrôle ne doivent ni
@@ -249,6 +268,9 @@ qu'après `--include-content` explicite ; sa sortie n'est jamais archivée par l
 - [ ] Migration, writer N-1 réel, Prisma, typecheck, lint, build et tests ciblés sont verts.
 - [ ] Avec une migration en attente uniquement sur le SHA de contrôle, rollback/désactivation
       utilisent les trois phases du SHA servi ; toute dérive de ce SHA échoue fermée.
+- [ ] Le snapshot production accepte exactement le profil historique complet ou le profil courant
+      complet, refuse tout hybride ainsi que VoiceTrace actif, puis retrouve la même enveloppe de
+      sécurité après le drill ; les assertions staging restent exact-SHA et contrat courant strict.
 - [ ] Workflow OFF → ON → OFF → ON vert sur staging exact-SHA ; production inchangée avant/après.
 
 ## 8. Definition of Done

@@ -105,7 +105,9 @@ test('le seul recu certifie vient apres la preuve production finale et porte tou
   const staging = job('staging-drill');
   const after = job('production-after');
   assert.doesNotMatch(staging, /upload-artifact/u);
-  const snapshot = after.indexOf('Prove production stayed public, inactive and byte-stable');
+  const snapshot = after.indexOf(
+    'Prove production stayed public, inactive and security-envelope stable',
+  );
   const stagingVerdict = after.indexOf('Require the certified final staging state');
   const receipt = after.indexOf('Write the final non-PII exact-SHA receipt');
   const archive = after.indexOf('Preserve the certified non-PII staging receipt');

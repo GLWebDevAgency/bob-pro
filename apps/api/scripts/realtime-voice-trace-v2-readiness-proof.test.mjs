@@ -23,42 +23,141 @@ function payload(environment, trace) {
   };
 }
 
-test('snapshot production refuse active, accepte absent ou OFF et reste déterministe', () => {
+function legacyProductionPayload() {
+  return {
+    ready: true,
+    customers: 0,
+    capabilities: { documentArchiveB2cHttpFence: 'v1' },
+    release: { sha: null, environment: null },
+    network: { clientIpSource: 'railway-x-real-ip' },
+  };
+}
+
+const PRODUCTION_EXPECTED = {
+  environment: 'production',
+  trace: 'inactive',
+  sha: null,
+};
+
+test('snapshot production accepte les profils courant et historique complets', () => {
   const first = certifyRealtimeVoiceTraceV2ReadinessPayload(payload('production', 'off'), {
-    environment: 'production',
-    trace: 'inactive',
-    sha: null,
+    ...PRODUCTION_EXPECTED,
   });
   const second = certifyRealtimeVoiceTraceV2ReadinessPayload(
     {
       ...payload('production', 'off'),
       customers: 999,
     },
-    {
-      environment: 'production',
-      trace: 'inactive',
-      sha: null,
-    },
+    PRODUCTION_EXPECTED,
   );
   assert.equal(first.digest, second.digest);
   const withoutCapability = payload('production', 'off');
   delete withoutCapability.capabilities.realtimeVoiceTraceV2;
-  const absent = certifyRealtimeVoiceTraceV2ReadinessPayload(withoutCapability, {
-    environment: 'production',
-    trace: 'inactive',
-    sha: null,
-  });
+  const absent = certifyRealtimeVoiceTraceV2ReadinessPayload(
+    withoutCapability,
+    PRODUCTION_EXPECTED,
+  );
   assert.equal(absent.state, 'absent');
   assert.notEqual(absent.digest, first.digest);
+
+  const legacy = certifyRealtimeVoiceTraceV2ReadinessPayload(
+    legacyProductionPayload(),
+    PRODUCTION_EXPECTED,
+  );
+  const legacyWithVolatileCount = certifyRealtimeVoiceTraceV2ReadinessPayload(
+    { ...legacyProductionPayload(), customers: 999 },
+    PRODUCTION_EXPECTED,
+  );
+  assert.equal(legacy.state, 'absent');
+  assert.equal(legacy.environment, 'production');
+  assert.equal(legacy.digest, legacyWithVolatileCount.digest);
+  assert.notEqual(legacy.digest, absent.digest);
+});
+
+test('snapshot production refuse actif et toute forme historique/courante hybride', () => {
   assert.throws(
     () =>
-      certifyRealtimeVoiceTraceV2ReadinessPayload(payload('production', 'active'), {
-        environment: 'production',
-        trace: 'inactive',
-        sha: null,
-      }),
+      certifyRealtimeVoiceTraceV2ReadinessPayload(
+        payload('production', 'active'),
+        PRODUCTION_EXPECTED,
+      ),
     /does not match/u,
   );
+
+  const hybrids = [
+    { ...legacyProductionPayload(), release: { sha: SHA, environment: null } },
+    {
+      ...legacyProductionPayload(),
+      capabilities: {
+        ...legacyProductionPayload().capabilities,
+        realtimeAdmissionCancellationFence: 'v1',
+      },
+    },
+    {
+      ...legacyProductionPayload(),
+      capabilities: {
+        ...legacyProductionPayload().capabilities,
+        agentMissionBootstrapReceipt: 'v1',
+      },
+    },
+    {
+      ...legacyProductionPayload(),
+      capabilities: {
+        ...legacyProductionPayload().capabilities,
+        realtimeVoiceTraceV2: 'off',
+      },
+    },
+    {
+      ...payload('production', 'off'),
+      capabilities: {
+        ...payload('production', 'off').capabilities,
+        agentMissionBootstrapReceipt: undefined,
+      },
+    },
+    {
+      ...legacyProductionPayload(),
+      capabilities: {
+        ...legacyProductionPayload().capabilities,
+        futureMutationFence: 'active',
+      },
+    },
+    {
+      ...legacyProductionPayload(),
+      dependencies: { bobLiveSpeechAudit: 'ready' },
+    },
+    {
+      ...payload('production', 'off'),
+      dependencies: { bobLiveSpeechAudit: 'unavailable' },
+    },
+    {
+      ...payload('production', 'off'),
+      dependencies: { bobLiveSpeechAudit: { state: 'ready' } },
+    },
+    {
+      ...payload('production', 'off'),
+      capabilities: {
+        ...payload('production', 'off').capabilities,
+        futureMutationFence: 'active',
+      },
+    },
+    { ...payload('production', 'off'), futureEnvelope: 'v1' },
+    {
+      ...payload('production', 'off'),
+      release: { ...payload('production', 'off').release, generation: 2 },
+    },
+    {
+      ...payload('production', 'off'),
+      network: { ...payload('production', 'off').network, proxy: 'unknown' },
+    },
+    { ...payload('production', 'off'), customers: -1 },
+    { ...payload('production', 'off'), customers: 1.5 },
+  ];
+  for (const hybrid of hybrids) {
+    assert.throws(
+      () => certifyRealtimeVoiceTraceV2ReadinessPayload(hybrid, PRODUCTION_EXPECTED),
+      /does not match/u,
+    );
+  }
 });
 
 test('staging lie ON/OFF au SHA exact sans secret ni mutation', async () => {
@@ -95,6 +194,56 @@ test('staging lie ON/OFF au SHA exact sans secret ni mutation', async () => {
   );
 });
 
+test('staging refuse SHA, environnement, fences et enveloppes divergents', () => {
+  const valid = payload('staging', 'off');
+  const mutations = [
+    { ...valid, release: { ...valid.release, sha: 'b'.repeat(40) } },
+    { ...valid, release: { ...valid.release, environment: 'production' } },
+    {
+      ...valid,
+      capabilities: Object.fromEntries(
+        Object.entries(valid.capabilities).filter(([key]) => key !== 'documentArchiveB2cHttpFence'),
+      ),
+    },
+    {
+      ...valid,
+      capabilities: Object.fromEntries(
+        Object.entries(valid.capabilities).filter(
+          ([key]) => key !== 'realtimeAdmissionCancellationFence',
+        ),
+      ),
+    },
+    {
+      ...valid,
+      capabilities: { ...valid.capabilities, agentMissionBootstrapReceipt: 'v2' },
+    },
+    {
+      ...valid,
+      capabilities: Object.fromEntries(
+        Object.entries(valid.capabilities).filter(([key]) => key !== 'realtimeVoiceTraceV2'),
+      ),
+    },
+    { ...valid, capabilities: { ...valid.capabilities, realtimeVoiceTraceV2: 'active' } },
+    { ...valid, capabilities: { ...valid.capabilities, futureMutationFence: 'active' } },
+    { ...valid, dependencies: { bobLiveSpeechAudit: 'unavailable' } },
+    { ...valid, ready: false },
+    { ...valid, network: { clientIpSource: 'x-forwarded-for' } },
+    { ...valid, customers: -1 },
+    { ...valid, futureEnvelope: 'v1' },
+  ];
+  for (const mutation of mutations) {
+    assert.throws(
+      () =>
+        certifyRealtimeVoiceTraceV2ReadinessPayload(mutation, {
+          environment: 'staging',
+          trace: 'off',
+          sha: SHA,
+        }),
+      /does not match/u,
+    );
+  }
+});
+
 test('preuve publique refuse URL authentifiée, environnement et SHA divergents', async () => {
   await assert.rejects(
     runRealtimeVoiceTraceV2ReadinessProof(
@@ -110,6 +259,16 @@ test('preuve publique refuse URL authentifiée, environnement et SHA divergents'
         environment: 'production',
         trace: 'inactive',
         sha: null,
+      }),
+    /does not match/u,
+  );
+
+  assert.throws(
+    () =>
+      certifyRealtimeVoiceTraceV2ReadinessPayload(legacyProductionPayload(), {
+        environment: 'staging',
+        trace: 'off',
+        sha: SHA,
       }),
     /does not match/u,
   );
