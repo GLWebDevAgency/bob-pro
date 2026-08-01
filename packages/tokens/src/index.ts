@@ -45,8 +45,16 @@ export const semantic = {
   success: '#0E7C5A',
   successBg: '#EAF2EC',
   successOnDark: '#6EE7B7', // payé, à jour
+  /** Encre AA sur successBg (6,99:1, index.test.ts) — texte des bandeaux d'état pastel
+   *  (StatusStrip, checklist transmission, facture/[id]) ; même vert profond que
+   *  surfaceTint.light.success.ink : une seule encre verte foncée dans le système. */
+  successInk: '#0E5C44',
   warning: '#C77A12',
   warningBg: '#FBF0DF', // en attente, échéance
+  /** Encre AA sur warningBg (5,25:1, index.test.ts) — patron pieceDetail.creditInk
+   *  GÉNÉRALISÉ (même valeur) : texte ambre foncé des bandeaux d'état pastel là où
+   *  semantic.warning (2,99:1) ne passe pas le petit texte. */
+  warningInk: '#8A5A12',
   danger: '#C8463C',
   dangerBg: '#FBEAE8',
   dangerVivid: '#E5544B', // retard, impayé
@@ -145,6 +153,36 @@ export const type = {
   label: { family: 'text', size: 13, weight: 600 },
   eyebrow: { family: 'text', size: 12, weight: 700, tracking: 0.4, uppercase: true }, // sur-titre
   meta: { family: 'text', size: 12, weight: 600 }, // légendes
+  // ── Crans ajoutés au Lot 0 (plan DA 01/08 — AUCUNE demi-taille tokenisée) ──
+  /** Titre de feuille/sheet — remplace les 8 recompositions inline
+   *  `font('pageTitle') + fontSize 20` (même famille/graisse/tracking que pageTitle). */
+  sheetTitle: { family: 'display', size: 20, weight: 700, tracking: -0.5 },
+  /** Titre d'étape de wizard (facture/new, devis/new après restitution) — remplace les
+   *  recompositions `font('screenH1') + fontSize 24` (même tracking que screenH1). */
+  wizardTitle: { family: 'display', size: 24, weight: 700, tracking: -0.4 },
+  /** Montant héros d'écran de pilotage (pilotage 26→27, depenses 27) — entre bigNum 21 et
+   *  heroNum 42 ; consommé via le variant héros de MoneyText (tabular-nums côté composant). */
+  moneyHero: { family: 'display', size: 27, weight: 800 },
+} as const;
+
+// ----------------------------------------------------------------------------
+// ESPACEMENT — rôles nommés (Lot 0, plan DA 01/08). La gouttière canonique est 20
+// (celle d'InnerScreenHeader) : les écrans à 18 migrent lot par lot, jamais en
+// passe globale. Remplace les littéraux 10/11/13/14/18/20/22 des 5 lots.
+// ----------------------------------------------------------------------------
+export const spacing = {
+  /** Gouttière horizontale d'écran — bord gauche unique du titre aux cartes. */
+  gutter: 20,
+  /** Espace entre deux SECTIONS d'un écran (SectionHeader → carte suivante). */
+  sectionGap: 20,
+  /** Espace entre deux cartes/rangées d'une même liste. */
+  itemGap: 12,
+  /** Rythme vertical INTERNE d'une carte (entre ses lignes de contenu). */
+  intraGap: 14,
+  /** Padding interne standard d'une carte. */
+  cardPad: 16,
+  /** Padding interne d'une carte héros (matière, chiffre en avant). */
+  heroPad: 20,
 } as const;
 
 // ----------------------------------------------------------------------------

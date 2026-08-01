@@ -43,7 +43,9 @@ export const neutrals = {
 // ----------------------------------------------------------------------------
 export const semantic = {
   success:    '#0E7C5A', successBg:  '#EAF2EC', successOnDark: '#6EE7B7', // payé, à jour
+  successInk: '#0E5C44',                                                 // encre AA sur successBg (Lot 0)
   warning:    '#C77A12', warningBg:  '#FBF0DF',                          // en attente, échéance
+  warningInk: '#8A5A12',                                                 // encre AA sur warningBg (patron creditInk, Lot 0)
   danger:     '#C8463C', dangerBg:   '#FBEAE8', dangerVivid:  '#E5544B', // retard, impayé
   b2b:        '#1B3A63', b2bBg:      '#E6EDF6',                          // entreprise
   b2g:        '#4338CA', b2gBg:      '#EDEAFE',                          // public (Chorus Pro)
@@ -96,6 +98,15 @@ export const type = {
   label:     { family: 'text',    size: 13,   weight: 600 },
   eyebrow:   { family: 'text',    size: 12,   weight: 700, tracking: 0.4, uppercase: true }, // sur-titre
   meta:      { family: 'text',    size: 12,   weight: 600 },                 // légendes
+  // Crans Lot 0 (plan DA 01/08) — aucune demi-taille tokenisée
+  sheetTitle:  { family: 'display', size: 20, weight: 700, tracking: -0.5 }, // titre de feuille
+  wizardTitle: { family: 'display', size: 24, weight: 700, tracking: -0.4 }, // titre d'étape wizard
+  moneyHero:   { family: 'display', size: 27, weight: 800 },                 // montant héros pilotage/dépenses
+} as const;
+
+// Rôles d'espacement nommés (Lot 0) — gouttière canonique 20 (InnerScreenHeader)
+export const spacing = {
+  gutter: 20, sectionGap: 20, itemGap: 12, intraGap: 14, cardPad: 16, heroPad: 20,
 } as const;
 
 // ----------------------------------------------------------------------------

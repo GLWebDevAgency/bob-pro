@@ -7,6 +7,8 @@ import {
   neutrals,
   radius,
   resolveColorRole,
+  semantic,
+  spacing,
   surfaceTint,
   themes,
   toCssVars,
@@ -151,5 +153,62 @@ describe('tokens', () => {
       .toBeGreaterThanOrEqual(WCAG_AA_NORMAL_TEXT);
     expect(contrastRatio(css['--bob-color-text-muted'] ?? '', css['--bob-control-segmented-track'] ?? ''))
       .toBeGreaterThanOrEqual(WCAG_AA_NORMAL_TEXT);
+  });
+});
+
+describe('Lot 0 — échelle spacing (plan DA 01/08)', () => {
+  it('fige les rôles d’espacement, gouttière canonique 20 (celle d’InnerScreenHeader)', () => {
+    expect(spacing).toEqual({
+      gutter: 20,
+      sectionGap: 20,
+      itemGap: 12,
+      intraGap: 14,
+      cardPad: 16,
+      heroPad: 20,
+    });
+  });
+});
+
+describe('Lot 0 — crans typographiques (plan DA 01/08)', () => {
+  it('sheetTitle = pageTitle ramené à 20 (mêmes famille/graisse/tracking : les 8 recompositions inline deviennent un cran)', () => {
+    expect(type.sheetTitle).toEqual({ family: 'display', size: 20, weight: 700, tracking: -0.5 });
+    expect(type.sheetTitle.tracking).toBe(type.pageTitle.tracking);
+  });
+
+  it('wizardTitle = screenH1 ramené à 24 (mêmes famille/graisse/tracking que les recompositions de facture/new)', () => {
+    expect(type.wizardTitle).toEqual({ family: 'display', size: 24, weight: 700, tracking: -0.4 });
+    expect(type.wizardTitle.tracking).toBe(type.screenH1.tracking);
+  });
+
+  it('moneyHero = 27/800 display, entre bigNum (21) et heroNum (42)', () => {
+    expect(type.moneyHero).toEqual({ family: 'display', size: 27, weight: 800 });
+    expect(type.moneyHero.size).toBeGreaterThan(type.bigNum.size);
+    expect(type.moneyHero.size).toBeLessThan(type.heroNum.size);
+  });
+
+  it('aucune demi-taille tokenisée (arbitrage TYPO) : les 3 crans nouveaux sont entiers', () => {
+    for (const key of ['sheetTitle', 'wizardTitle', 'moneyHero'] as const) {
+      expect(Number.isInteger(type[key].size), `${key} = ${type[key].size}`).toBe(true);
+    }
+  });
+});
+
+describe('Lot 0 — encres AA sur fond pastel (plan DA 01/08)', () => {
+  it('successInk certifiée AA sur successBg — 6,99:1 ≥ 4,5 (calcul WCAG du fichier)', () => {
+    // Calcul à la main via relativeLuminance : L(#0E5C44)=0.0847… ; L(#EAF2EC)=0.8730… ;
+    // (0.873+0.05)/(0.0847+0.05) = 6.992 (arrondi 3 décimales).
+    expect(Number(contrastRatio(semantic.successInk, semantic.successBg).toFixed(3))).toBe(6.992);
+  });
+
+  it('warningInk (= patron pieceDetail.creditInk) certifiée AA sur warningBg — 5,25:1 ≥ 4,5', () => {
+    // L(#8A5A12)=0.1220… ; L(#FBF0DF)=0.8768… ; (0.8768+0.05)/(0.1220+0.05) = 5.246.
+    expect(Number(contrastRatio(semantic.warningInk, semantic.warningBg).toFixed(3))).toBe(5.246);
+  });
+
+  it('les encres foncées corrigent bien un manque réel : warning nu est SOUS le seuil petit texte', () => {
+    // semantic.warning (#C77A12) sur warningBg = 2.995 < 4.5 — c'est la raison d'être de warningInk.
+    expect(contrastRatio(semantic.warning, semantic.warningBg)).toBeLessThan(WCAG_AA_NORMAL_TEXT);
+    expect(contrastRatio(semantic.warningInk, semantic.warningBg)).toBeGreaterThanOrEqual(WCAG_AA_NORMAL_TEXT);
+    expect(contrastRatio(semantic.successInk, semantic.successBg)).toBeGreaterThanOrEqual(WCAG_AA_NORMAL_TEXT);
   });
 });
