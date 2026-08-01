@@ -18,6 +18,7 @@ const certifierPath = fileURLToPath(
 const topologyWorkflowPath = fileURLToPath(
   new URL('../../../.github/workflows/railway-topology-drift.yml', import.meta.url),
 );
+const SERVICE_ID = '742e8318-c67b-47fc-8479-a1d52ce55b2f';
 
 function captureError(callback) {
   let captured;
@@ -82,7 +83,7 @@ function fixture(
               edges: [
                 {
                   node: {
-                    serviceId: 'service-id',
+                    serviceId: SERVICE_ID,
                     serviceName: 'bob-pro-api',
                     activeDeployments,
                     latestDeployment: {
@@ -104,20 +105,23 @@ function fixture(
 }
 
 test('certifie exactement un replica dans une seule région', () => {
-  assert.deepEqual(certifySingleRailwayReplica(fixture(), 'production', 'bob-pro-api'), {
+  const expected = {
     environment: 'production',
     service: 'bob-pro-api',
+    serviceId: SERVICE_ID,
     replicas: 1,
-  });
+  };
+  assert.deepEqual(certifySingleRailwayReplica(fixture(), 'production', 'bob-pro-api'), expected);
+  assert.deepEqual(certifySingleRailwayReplica(fixture(), 'production', SERVICE_ID), expected);
 });
 
 test('refuse plusieurs replicas ou plusieurs régions', () => {
   assert.throws(
-    () => certifySingleRailwayReplica(fixture([2]), 'production', 'service-id'),
+    () => certifySingleRailwayReplica(fixture([2]), 'production', SERVICE_ID),
     /exactement un replica/u,
   );
   assert.throws(
-    () => certifySingleRailwayReplica(fixture([1, 0]), 'production', 'service-id'),
+    () => certifySingleRailwayReplica(fixture([1, 0]), 'production', SERVICE_ID),
     /exactement un replica/u,
   );
 });
@@ -260,6 +264,19 @@ test('échoue fermé si la forme Railway attendue disparaît', () => {
     () => certifySingleRailwayReplica(missingActiveManifest, 'production', 'bob-pro-api'),
     /activeDeployments\[0\]\.meta\.serviceManifest\.deploy absent/u,
   );
+  const invalidServiceIdentity = fixture();
+  invalidServiceIdentity.environments.edges[0].node.serviceInstances.edges[0].node.serviceId =
+    'bob-pro-api';
+  assert.throws(
+    () => certifySingleRailwayReplica(invalidServiceIdentity, 'production', 'bob-pro-api'),
+    /identité du service absente ou invalide/u,
+  );
+  const missingServiceIdentity = fixture();
+  delete missingServiceIdentity.environments.edges[0].node.serviceInstances.edges[0].node.serviceId;
+  assert.throws(
+    () => certifySingleRailwayReplica(missingServiceIdentity, 'production', 'bob-pro-api'),
+    /identité du service absente ou invalide/u,
+  );
 });
 
 test('classe une topologie dangereuse comme dérive avec un code de sortie dédié', () => {
@@ -301,7 +318,7 @@ test('le point d’entrée CLI expose réellement les verdicts succès, indispon
 
   const success = run(fixture());
   assert.equal(success.status, 0, success.stderr);
-  assert.match(success.stdout, /railway-single-replica-ok:production:bob-pro-api/u);
+  assert.equal(success.stdout, `railway-single-replica-ok:production:${SERVICE_ID}\n`);
 
   const unavailable = run({});
   assert.equal(unavailable.status, RAILWAY_TOPOLOGY_UNAVAILABLE_EXIT_CODE);
@@ -347,7 +364,10 @@ test('le workflow ne fabrique jamais de marqueur orphelin et ne spamme pas les i
   assert.match(workflow, /FAILURE_KIND="\$\{FAILURE_KIND:-unavailable\}"/u);
   // La récupération referme aussi les incidents historiques à marqueur vide.
   assert.match(workflow, /legacy-empty/u);
-  assert.match(workflow, new RegExp('bob-pro:\\$INCIDENT_LABEL:\\$TARGET_ENVIRONMENT_NAME: -->', 'u'));
+  assert.match(
+    workflow,
+    new RegExp('bob-pro:\\$INCIDENT_LABEL:\\$TARGET_ENVIRONMENT_NAME: -->', 'u'),
+  );
   // L'issue ouverte EST l'état : aucun commentaire de relance à chaque tick.
   assert.doesNotMatch(workflow, /échoue encore/u);
 });

@@ -1800,6 +1800,11 @@ Implémentation opérateur :
   observations live (et jamais depuis le mode demandé), qui lie aussi la release staging normale
   réussie du même SHA, les versions exactes des flags M2-A/V1, la décision et ses contre-signatures
   vérifiées par empreinte, ainsi que la provenance du déploiement exact lors d'une désactivation ;
+- l'observation de topologie intégrée à ce reçu doit être émise par le certifieur Railway qui vient
+  de prouver le mono-réplica et doit lier l'UUID `serviceId` réellement certifié, identique à la
+  cible `RAILWAY_API_SERVICE_ID`, jamais le nom d'affichage du service. Un test de contrat traverse
+  la sortie CLI réelle du certifieur puis le writer/verifier du reçu ; le nom `bob-pro-api`, l'UUID
+  d'un autre service, un UUID inventé ou une topologie non certifiée sont refusés fermés.
 
 Ordre binaire d'activation : release staging **normale** complète du SHA sur `main`, avec reçu
 GitHub non expiré et masters `OFF` → readiness exacte

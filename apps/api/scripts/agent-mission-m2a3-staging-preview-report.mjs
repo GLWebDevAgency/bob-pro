@@ -304,8 +304,12 @@ function parseReadinessObservation(environment, releaseSha) {
 
 function parseTopologyObservation(environment) {
   const receipt = required(environment, 'BOB_M2A3_PREVIEW_TOPOLOGY_OBSERVATION', 200);
-  const match = /^railway-single-replica-ok:staging:([0-9a-f-]{36})$/iu.exec(receipt);
-  if (match === null || !UUID.test(match[1]))
+  const expectedServiceId = required(environment, 'RAILWAY_API_SERVICE_ID', 36);
+  if (!UUID.test(expectedServiceId) || expectedServiceId !== expectedServiceId.toLowerCase()) {
+    fail('configured Railway service id is invalid');
+  }
+  const match = /^railway-single-replica-ok:staging:([0-9a-f-]{36})$/u.exec(receipt);
+  if (match === null || !UUID.test(match[1]) || match[1] !== expectedServiceId)
     fail('topology observation is not single-replica staging');
   return 'single-replica';
 }
