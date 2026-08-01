@@ -523,7 +523,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Prove production stayed public, inactive and byte-stable
+      - name: Prove production stayed public, inactive and security-envelope stable
         id: snapshot
         env:
           BEFORE_DIGEST: ${{ needs.production-before.outputs.digest }}

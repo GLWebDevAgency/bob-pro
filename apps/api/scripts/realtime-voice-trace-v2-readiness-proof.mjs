@@ -7,9 +7,56 @@ const MAX_BODY_BYTES = 131_072;
 const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_ATTEMPTS = 3;
 const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+const LEGACY_ROOT_KEYS = ['capabilities', 'customers', 'network', 'ready', 'release'];
+const CURRENT_ROOT_KEYS = [
+  'capabilities',
+  'customers',
+  'dependencies',
+  'network',
+  'ready',
+  'release',
+];
+const RELEASE_KEYS = ['environment', 'sha'];
+const NETWORK_KEYS = ['clientIpSource'];
+const DEPENDENCY_KEYS = ['bobLiveSpeechAudit'];
+const LEGACY_CAPABILITY_KEYS = ['documentArchiveB2cHttpFence'];
+const CURRENT_CAPABILITY_KEYS = [
+  'agentMissionBootstrapReceipt',
+  'documentArchiveB2cHttpFence',
+  'realtimeAdmissionCancellationFence',
+];
+const CURRENT_TRACE_CAPABILITY_KEYS = [...CURRENT_CAPABILITY_KEYS, 'realtimeVoiceTraceV2'];
+const BOB_LIVE_SPEECH_AUDIT_STATES = new Set(['not_applicable', 'ready']);
 
 function fail(message) {
   throw new Error(`realtime-voice-trace-v2-readiness-proof:${message}`);
+}
+
+function isPlainRecord(value) {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function hasExactKeys(value, expectedKeys) {
+  if (!isPlainRecord(value)) return false;
+  const actualKeys = Object.keys(value).sort();
+  return (
+    actualKeys.length === expectedKeys.length &&
+    actualKeys.every((key, index) => key === expectedKeys[index])
+  );
+}
+
+function hasValidCurrentEnvelopeShape(payload) {
+  return (
+    hasExactKeys(payload, CURRENT_ROOT_KEYS) &&
+    Number.isSafeInteger(payload.customers) &&
+    payload.customers >= 0 &&
+    hasExactKeys(payload.release, RELEASE_KEYS) &&
+    hasExactKeys(payload.network, NETWORK_KEYS) &&
+    hasExactKeys(payload.dependencies, DEPENDENCY_KEYS) &&
+    BOB_LIVE_SPEECH_AUDIT_STATES.has(payload.dependencies.bobLiveSpeechAudit)
+  );
 }
 
 function parseOrigin(value) {
@@ -96,25 +143,66 @@ async function fetchReadiness(url, fetchImpl, dependencies) {
 
 export function certifyRealtimeVoiceTraceV2ReadinessPayload(payload, expected) {
   const observedTrace = payload?.capabilities?.realtimeVoiceTraceV2;
-  const traceMatches =
-    expected.trace === 'inactive'
-      ? observedTrace === undefined || observedTrace === 'off'
-      : observedTrace === expected.trace;
+  const isProductionSnapshot =
+    expected.environment === 'production' && expected.trace === 'inactive' && expected.sha === null;
+  const hasLegacyEnvelopeShape =
+    hasExactKeys(payload, LEGACY_ROOT_KEYS) &&
+    Number.isSafeInteger(payload.customers) &&
+    payload.customers >= 0 &&
+    hasExactKeys(payload.release, RELEASE_KEYS) &&
+    hasExactKeys(payload.network, NETWORK_KEYS) &&
+    hasExactKeys(payload.capabilities, LEGACY_CAPABILITY_KEYS);
+  const hasCurrentCapabilitiesWithoutTrace = hasExactKeys(
+    payload?.capabilities,
+    CURRENT_CAPABILITY_KEYS,
+  );
+  const hasCurrentCapabilitiesWithTrace = hasExactKeys(
+    payload?.capabilities,
+    CURRENT_TRACE_CAPABILITY_KEYS,
+  );
+  const isLegacyProduction =
+    isProductionSnapshot &&
+    hasLegacyEnvelopeShape &&
+    payload?.release?.environment === null &&
+    payload?.release?.sha === null &&
+    payload?.capabilities?.documentArchiveB2cHttpFence === 'v1' &&
+    observedTrace === undefined;
+  const isCurrentProduction =
+    isProductionSnapshot &&
+    hasValidCurrentEnvelopeShape(payload) &&
+    payload?.release?.environment === 'production' &&
+    SHA.test(payload?.release?.sha ?? '') &&
+    payload?.capabilities?.documentArchiveB2cHttpFence === 'v1' &&
+    payload?.capabilities?.realtimeAdmissionCancellationFence === 'v1' &&
+    payload?.capabilities?.agentMissionBootstrapReceipt === 'v1' &&
+    (hasCurrentCapabilitiesWithoutTrace ||
+      (hasCurrentCapabilitiesWithTrace && observedTrace === 'off'));
+  const productionProfile = isLegacyProduction ? 'legacy' : isCurrentProduction ? 'current' : null;
+  const isStrictStagingAssertion =
+    expected.environment === 'staging' &&
+    (expected.trace === 'active' || expected.trace === 'off') &&
+    SHA.test(expected.sha ?? '');
+  const stagingMatches =
+    isStrictStagingAssertion &&
+    hasValidCurrentEnvelopeShape(payload) &&
+    hasCurrentCapabilitiesWithTrace &&
+    payload?.release?.environment === 'staging' &&
+    SHA.test(payload?.release?.sha ?? '') &&
+    payload.release.sha === expected.sha &&
+    payload?.capabilities?.documentArchiveB2cHttpFence === 'v1' &&
+    payload?.capabilities?.realtimeAdmissionCancellationFence === 'v1' &&
+    payload?.capabilities?.agentMissionBootstrapReceipt === 'v1' &&
+    observedTrace === expected.trace;
   if (
     payload?.ready !== true ||
-    payload.release?.environment !== expected.environment ||
-    !SHA.test(payload.release?.sha ?? '') ||
-    (expected.sha !== null && payload.release.sha !== expected.sha) ||
-    payload.capabilities?.documentArchiveB2cHttpFence !== 'v1' ||
-    payload.capabilities?.realtimeAdmissionCancellationFence !== 'v1' ||
-    payload.capabilities?.agentMissionBootstrapReceipt !== 'v1' ||
-    !traceMatches ||
+    (productionProfile === null && !stagingMatches) ||
     payload.network?.clientIpSource !== 'railway-x-real-ip'
   ) {
     fail('readiness capability contract does not match');
   }
   const canonical = {
     ready: true,
+    profile: productionProfile ?? 'current',
     release: {
       sha: payload.release.sha,
       environment: payload.release.environment,
@@ -132,7 +220,7 @@ export function certifyRealtimeVoiceTraceV2ReadinessPayload(payload, expected) {
   };
   return Object.freeze({
     digest: createHash('sha256').update(JSON.stringify(canonical)).digest('hex'),
-    state: expected.trace === 'inactive' ? (observedTrace ?? 'absent') : expected.trace,
+    state: isProductionSnapshot ? (observedTrace ?? 'absent') : expected.trace,
     environment: expected.environment,
   });
 }
