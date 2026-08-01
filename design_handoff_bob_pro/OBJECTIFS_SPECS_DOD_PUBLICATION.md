@@ -189,6 +189,10 @@ le mutex `railway-api-staging`, cible un environnement GitHub littéral `staging
 chemin production et ne déclenche aucun cleanup après une activation réussie. Son mode
 `deactivate`, ainsi que le rollback d'une activation armée puis échouée, appliquent l'ordre
 DB `OFF` → drain → variables `OFF` → déploiement exact → writer fence `OFF` → smoke V2 refusé.
+Le drain, la certification post-déploiement et la restauration de capacité de ces deux chemins
+s'exécutent depuis le checkout exact de la source effectivement servie. Le SHA de contrôle peut
+donc contenir des migrations expand encore en attente sans bloquer une désactivation ; assouplir
+la preuve stricte des checksums ou accepter ces migrations dans la source servie reste interdit.
 
 ### 4.3 Sécurité et vérité métier
 
