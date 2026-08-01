@@ -63,6 +63,11 @@ export type RealtimeTransportEvent =
   | { type: 'connectivity'; state: 'connected' | 'disconnected' }
   | { type: 'user_transcript'; text: string; final: boolean }
   | { type: 'bob_transcript'; text: string; final: boolean }
+  /** Annonce contractuelle reçue du bootstrap réel, avant READY et avant ouverture du micro. */
+  | {
+      type: 'diagnostic_trace_disclosure';
+      disclosure: import('@bob/api-client').RealtimeVoiceDiagnosticTraceDisclosure;
+    }
   /**
    * Preuve transport autoritative que le commit a été accepté/corrélé (ACK provider ou
    * `turn_started` serveur). Une fin VAD, une annulation ou READY ne l'émettent jamais.

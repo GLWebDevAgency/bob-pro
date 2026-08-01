@@ -84,6 +84,8 @@ DECLARE
     'realtime_voice_usage_events',
     'realtime_voice_usage_daily',
     'voice_traces',
+    'realtime_voice_trace_events',
+    'realtime_voice_trace_access_audits',
     'cabinets',
     'cabinet_members',
     'cabinet_admin_guards',
@@ -1873,6 +1875,99 @@ DROP POLICY IF EXISTS tenant_isolation ON voice_traces;
 CREATE POLICY tenant_isolation ON voice_traces
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+-- Voice Trace Realtime V2 : le runtime écrit et ne relit que le digest de son propre sujet.
+-- Maintenance, readiness et lecteur sont trois owners NOLOGIN séparés ; aucune policy DELETE
+-- n'est accordée au rôle applicatif et aucune lecture opérateur n'évite l'audit atomique.
+DROP POLICY IF EXISTS realtime_voice_trace_owner_all ON realtime_voice_trace_events;
+DROP POLICY IF EXISTS realtime_voice_trace_subject_select ON realtime_voice_trace_events;
+DROP POLICY IF EXISTS realtime_voice_trace_subject_insert ON realtime_voice_trace_events;
+DROP POLICY IF EXISTS realtime_voice_trace_subject_delete ON realtime_voice_trace_events;
+DROP POLICY IF EXISTS realtime_voice_trace_reader_select ON realtime_voice_trace_events;
+DROP POLICY IF EXISTS realtime_voice_trace_readiness_select ON realtime_voice_trace_events;
+DROP POLICY IF EXISTS realtime_voice_trace_maintenance_select ON realtime_voice_trace_events;
+DROP POLICY IF EXISTS realtime_voice_trace_maintenance_lock ON realtime_voice_trace_events;
+DROP POLICY IF EXISTS realtime_voice_trace_eraser_delete ON realtime_voice_trace_events;
+DROP POLICY IF EXISTS realtime_voice_trace_reaper_delete ON realtime_voice_trace_events;
+DROP POLICY IF EXISTS realtime_voice_trace_maintenance_delete ON realtime_voice_trace_events;
+CREATE POLICY realtime_voice_trace_owner_all ON realtime_voice_trace_events FOR ALL
+  USING (
+    current_user = pg_catalog.pg_get_userbyid((
+      SELECT relation.relowner FROM pg_catalog.pg_class AS relation
+       WHERE relation.oid = 'public.realtime_voice_trace_events'::regclass
+    ))
+  )
+  WITH CHECK (
+    current_user = pg_catalog.pg_get_userbyid((
+      SELECT relation.relowner FROM pg_catalog.pg_class AS relation
+       WHERE relation.oid = 'public.realtime_voice_trace_events'::regclass
+    ))
+  );
+CREATE POLICY realtime_voice_trace_subject_select ON realtime_voice_trace_events
+  FOR SELECT USING (
+    "companyId" = NULLIF(current_setting('app.current_company_id', TRUE), '')
+    AND "userId" = NULLIF(current_setting('app.current_user_id', TRUE), '')::uuid
+  );
+CREATE POLICY realtime_voice_trace_subject_insert ON realtime_voice_trace_events
+  FOR INSERT WITH CHECK (
+    "companyId" = NULLIF(current_setting('app.current_company_id', TRUE), '')
+    AND "userId" = NULLIF(current_setting('app.current_user_id', TRUE), '')::uuid
+  );
+CREATE POLICY realtime_voice_trace_reader_select ON realtime_voice_trace_events
+  FOR SELECT USING (current_user = 'bob_realtime_voice_trace_reader');
+CREATE POLICY realtime_voice_trace_readiness_select ON realtime_voice_trace_events
+  FOR SELECT USING (current_user = 'bob_realtime_voice_trace_key_readiness');
+CREATE POLICY realtime_voice_trace_maintenance_select ON realtime_voice_trace_events
+  FOR SELECT USING (current_user = 'bob_realtime_voice_trace_maintenance');
+CREATE POLICY realtime_voice_trace_maintenance_lock ON realtime_voice_trace_events
+  FOR UPDATE USING (current_user = 'bob_realtime_voice_trace_maintenance')
+  WITH CHECK (FALSE);
+CREATE POLICY realtime_voice_trace_maintenance_delete ON realtime_voice_trace_events
+  FOR DELETE USING (current_user = 'bob_realtime_voice_trace_maintenance');
+
+DROP POLICY IF EXISTS realtime_voice_trace_access_owner_all
+  ON realtime_voice_trace_access_audits;
+DROP POLICY IF EXISTS realtime_voice_trace_access_reader_insert
+  ON realtime_voice_trace_access_audits;
+DROP POLICY IF EXISTS realtime_voice_trace_access_readiness_select
+  ON realtime_voice_trace_access_audits;
+DROP POLICY IF EXISTS realtime_voice_trace_access_maintenance_select
+  ON realtime_voice_trace_access_audits;
+DROP POLICY IF EXISTS realtime_voice_trace_access_maintenance_lock
+  ON realtime_voice_trace_access_audits;
+DROP POLICY IF EXISTS realtime_voice_trace_access_eraser_delete
+  ON realtime_voice_trace_access_audits;
+DROP POLICY IF EXISTS realtime_voice_trace_access_reaper_delete
+  ON realtime_voice_trace_access_audits;
+DROP POLICY IF EXISTS realtime_voice_trace_access_maintenance_delete
+  ON realtime_voice_trace_access_audits;
+CREATE POLICY realtime_voice_trace_access_owner_all
+  ON realtime_voice_trace_access_audits FOR ALL
+  USING (
+    current_user = pg_catalog.pg_get_userbyid((
+      SELECT relation.relowner FROM pg_catalog.pg_class AS relation
+       WHERE relation.oid = 'public.realtime_voice_trace_access_audits'::regclass
+    ))
+  )
+  WITH CHECK (
+    current_user = pg_catalog.pg_get_userbyid((
+      SELECT relation.relowner FROM pg_catalog.pg_class AS relation
+       WHERE relation.oid = 'public.realtime_voice_trace_access_audits'::regclass
+    ))
+  );
+CREATE POLICY realtime_voice_trace_access_reader_insert
+  ON realtime_voice_trace_access_audits FOR INSERT
+  WITH CHECK (current_user = 'bob_realtime_voice_trace_reader');
+CREATE POLICY realtime_voice_trace_access_maintenance_select
+  ON realtime_voice_trace_access_audits FOR SELECT
+  USING (current_user = 'bob_realtime_voice_trace_maintenance');
+CREATE POLICY realtime_voice_trace_access_maintenance_lock
+  ON realtime_voice_trace_access_audits FOR UPDATE
+  USING (current_user = 'bob_realtime_voice_trace_maintenance')
+  WITH CHECK (FALSE);
+CREATE POLICY realtime_voice_trace_access_maintenance_delete
+  ON realtime_voice_trace_access_audits FOR DELETE
+  USING (current_user = 'bob_realtime_voice_trace_maintenance');
 
 DROP POLICY IF EXISTS tenant_isolation ON accounting_accounts;
 CREATE POLICY tenant_isolation ON accounting_accounts

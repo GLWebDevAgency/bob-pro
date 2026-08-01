@@ -287,6 +287,36 @@ jobs:
         run: >-
           pnpm --filter @bob/api exec vitest run
           src/voice/realtime/realtime-voice-usage.prisma.postgres.test.ts
+      - name: Provision the staging-only Realtime Voice Trace reader
+        run: |
+          psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+            -v app_role="$APP_DATABASE_ROLE" \
+            -v release_env=staging \
+            -f apps/api/prisma/realtime-voice-trace-authority-provision.sql
+          psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+            -v app_role="$APP_DATABASE_ROLE" \
+            -v release_env=staging \
+            -f apps/api/prisma/realtime-voice-trace-release-cert.sql
+      - name: Certify Realtime Voice Trace V2 behavior on PostgreSQL
+        env:
+          RUN_POSTGRES_REALTIME_VOICE_TRACE_V2_CERT: 'true'
+          REALTIME_VOICE_TRACE_V2_CERT_DATABASE_KIND: ephemeral
+          PRISMA_TRANSACTION_TIMEOUT_MS: '30000'
+        run: >-
+          pnpm --filter @bob/api exec vitest run
+          --testTimeout=120000
+          src/persistence/prisma/realtime-voice-trace.postgres.test.ts
+      - name: Revoke the staging-only Realtime Voice Trace reader
+        if: ${{ always() && steps.release_schema.outcome == 'success' }}
+        run: |
+          psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+            -v app_role="$APP_DATABASE_ROLE" \
+            -v release_env=development \
+            -f apps/api/prisma/realtime-voice-trace-authority-provision.sql
+          psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+            -v app_role="$APP_DATABASE_ROLE" \
+            -v release_env=development \
+            -f apps/api/prisma/realtime-voice-trace-release-cert.sql
       - name: Close shared Bob Live capacity after PostgreSQL certificates
         if: ${{ always() && steps.release_schema.outcome == 'success' }}
         run: |

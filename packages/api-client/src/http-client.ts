@@ -1593,10 +1593,30 @@ function invalidRealtimeSpeechInput<T>(
   });
 }
 
+function decodeRealtimeVoiceDiagnosticTraceDisclosure(
+  value: unknown,
+): import('./client').RealtimeVoiceDiagnosticTraceDisclosure | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['enabled', 'retentionDays', 'purpose']) ||
+    value.enabled !== true ||
+    value.retentionDays !== 30 ||
+    value.purpose !== 'staging_quality'
+  ) {
+    return null;
+  }
+  return {
+    enabled: true,
+    retentionDays: 30,
+    purpose: 'staging_quality',
+  };
+}
+
 function decodeRealtimeVoiceConfig(value: unknown): RealtimeVoiceConfig | null {
   if (!isRecord(value)) return null;
   const hasAvailabilityReason = Object.hasOwn(value, 'availabilityReason');
   const hasProtocol = Object.hasOwn(value, 'protocol');
+  const hasDiagnosticTrace = Object.hasOwn(value, 'diagnosticTrace');
   const commonKeys = [
     'available',
     'transport',
@@ -1612,6 +1632,7 @@ function decodeRealtimeVoiceConfig(value: unknown): RealtimeVoiceConfig | null {
       ...commonKeys,
       ...(hasAvailabilityReason ? ['availabilityReason'] : []),
       ...(hasProtocol ? ['protocol'] : []),
+      ...(hasDiagnosticTrace ? ['diagnosticTrace'] : []),
     ]) ||
     typeof value.available !== 'boolean' ||
     (value.transport !== 'webrtc' && value.transport !== 'mistral-pcm') ||
@@ -1640,6 +1661,10 @@ function decodeRealtimeVoiceConfig(value: unknown): RealtimeVoiceConfig | null {
       value.availabilityReason !== 'entitlement_unavailable')
   )
     return null;
+  const diagnosticTrace = hasDiagnosticTrace
+    ? decodeRealtimeVoiceDiagnosticTraceDisclosure(value.diagnosticTrace)
+    : null;
+  if (hasDiagnosticTrace && diagnosticTrace === null) return null;
   const availabilityReason =
     value.availabilityReason === 'disabled' ||
     value.availabilityReason === 'not_entitled' ||
@@ -1661,6 +1686,7 @@ function decodeRealtimeVoiceConfig(value: unknown): RealtimeVoiceConfig | null {
     configVersion: value.configVersion,
     requiresDevelopmentBuild: true,
     maxSessionSeconds: value.maxSessionSeconds,
+    ...(diagnosticTrace === null ? {} : { diagnosticTrace }),
   } as const;
   if (value.transport === 'webrtc') {
     return value.speechDelivery === 'openai-native-webrtc-v1'
@@ -1763,6 +1789,7 @@ function decodeRealtimeVoiceCall(
   const currentWire = expectedConfigVersion === REALTIME_CONFIG_VERSION_CURRENT;
   if (!legacyWire && !currentWire) return null;
   const hasSpeechDelivery = Object.hasOwn(value, 'speechDelivery');
+  const hasDiagnosticTrace = Object.hasOwn(value, 'diagnosticTrace');
   const commonKeys = [
     'transport',
     'sessionHandle',
@@ -1807,6 +1834,14 @@ function decodeRealtimeVoiceCall(
     ? [...commonKeys, 'speechDelivery'] as const
     : commonKeys;
   const wireCommonKeys = [...wireCommonKeysBase, ...agentMissionWireKeys] as const;
+  const diagnosticTrace = hasDiagnosticTrace
+    ? decodeRealtimeVoiceDiagnosticTraceDisclosure(value.diagnosticTrace)
+    : null;
+  if (hasDiagnosticTrace && diagnosticTrace === null) return null;
+  const wireCommonKeysWithDiagnostic = [
+    ...wireCommonKeys,
+    ...(hasDiagnosticTrace ? ['diagnosticTrace'] : []),
+  ] as const;
 
   const common = {
     sessionHandle: value.sessionHandle,
@@ -1815,13 +1850,14 @@ function decodeRealtimeVoiceCall(
     voice: value.voice,
     configVersion: value.configVersion,
     maxSessionSeconds: value.maxSessionSeconds,
+    ...(diagnosticTrace === null ? {} : { diagnosticTrace }),
   } as const;
 
   if (value.transport === 'webrtc') {
     if (value.speechDelivery === 'openai-native-webrtc-v1') {
       if (
         !currentWire ||
-        !hasExactKeys(value, [...wireCommonKeys, 'answerSdp']) ||
+        !hasExactKeys(value, [...wireCommonKeysWithDiagnostic, 'answerSdp']) ||
         typeof value.answerSdp !== 'string' ||
         value.answerSdp.length < 16 ||
         value.answerSdp.length > 256 * 1024 ||
@@ -1836,7 +1872,7 @@ function decodeRealtimeVoiceCall(
       }, agentMissionBinding);
     }
     if (
-      !hasExactKeys(value, [...wireCommonKeys, 'speechSourcePolicy', 'answerSdp']) ||
+      !hasExactKeys(value, [...wireCommonKeysWithDiagnostic, 'speechSourcePolicy', 'answerSdp']) ||
       typeof value.answerSdp !== 'string' ||
       value.answerSdp.length < 16 ||
       value.answerSdp.length > 256 * 1024 ||
@@ -1874,7 +1910,7 @@ function decodeRealtimeVoiceCall(
     if (value.protocol === 'bob.mistral-pcm.v2') {
       if (
         !hasExactKeys(value, [
-          ...wireCommonKeys,
+          ...wireCommonKeysWithDiagnostic,
           'speechSourcePolicy',
           'websocketUrl',
           'companyId',
@@ -1920,7 +1956,7 @@ function decodeRealtimeVoiceCall(
     }
     if (
       !hasExactKeys(value, [
-        ...wireCommonKeys,
+        ...wireCommonKeysWithDiagnostic,
         'speechSourcePolicy',
         'websocketUrl',
         'companyId',

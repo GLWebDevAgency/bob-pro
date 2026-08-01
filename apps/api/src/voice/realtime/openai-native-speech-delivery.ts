@@ -17,6 +17,13 @@ export const OPENAI_NATIVE_SPEECH_DELIVERY_MAX_TTL_MS = 5 * 60 * 1_000;
 export const OPENAI_NATIVE_SPEECH_STOPPED_EVENT_TO_FIRST_INBOUND_RTP_MAX_MS = 60_000;
 export const OPENAI_NATIVE_BARGE_IN_MAX_MS = 10_000;
 export const OPENAI_NATIVE_BARGE_IN_MAX_PENDING = 16;
+export const OPENAI_NATIVE_SPEECH_SCENARIO_IDS = [
+  'generic_retry_v1',
+  'generic_help_v1',
+  'generic_unknown_v1',
+] as const;
+
+export type OpenAiNativeSpeechScenarioId = (typeof OPENAI_NATIVE_SPEECH_SCENARIO_IDS)[number];
 
 const POSTGRES_INT_MAX = 2_147_483_647;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -110,7 +117,7 @@ export interface OpenAiNativeSpeechDeliveryPreparation {
   readonly sidebandOwnerEpoch: number;
   readonly sidebandOwnerTokenHmac: string;
   readonly speechPolicyVersion: typeof OPENAI_NATIVE_SPEECH_POLICY_VERSION;
-  readonly speechScenarioId: 'generic_help_v1' | 'generic_unknown_v1';
+  readonly speechScenarioId: OpenAiNativeSpeechScenarioId;
   /** Version du format de normalisation/dérivation, indépendante de la version de clé. */
   readonly proofFormatVersion: typeof OPENAI_NATIVE_SPEECH_PROOF_FORMAT_VERSION;
   /** Version de clé de preuve ; indépendante de la version de machine et du contrôle. */
@@ -552,15 +559,15 @@ function assertPreparation(
     || !isUuid(input.turnId)
     || !isSafeIntegerBetween(input.contextRevision, 1, POSTGRES_INT_MAX)
     || !isHmac(input.contextDigest)
-    || !isSafeIntegerBetween(input.sidebandOwnerEpoch, 1, POSTGRES_INT_MAX)
-    || !isHmac(input.sidebandOwnerTokenHmac)
-    || input.speechPolicyVersion !== OPENAI_NATIVE_SPEECH_POLICY_VERSION
-    || (input.speechScenarioId !== 'generic_help_v1'
-      && input.speechScenarioId !== 'generic_unknown_v1')
-    || input.proofFormatVersion !== OPENAI_NATIVE_SPEECH_PROOF_FORMAT_VERSION
-    || !isSafeIntegerBetween(input.proofKeyVersion, 1, POSTGRES_INT_MAX)
-    || !isHmac(input.canonicalSpeechHmac)
-    || !isHmac(input.factsHmac)
+    || !isSafeIntegerBetween(input.sidebandOwnerEpoch, 1, POSTGRES_INT_MAX) ||
+    !isHmac(input.sidebandOwnerTokenHmac) ||
+    input.speechPolicyVersion !== OPENAI_NATIVE_SPEECH_POLICY_VERSION ||
+    !OPENAI_NATIVE_SPEECH_SCENARIO_IDS.some(
+      (scenarioId) => input.speechScenarioId === scenarioId,
+    ) ||
+    input.proofFormatVersion !== OPENAI_NATIVE_SPEECH_PROOF_FORMAT_VERSION ||
+    !isSafeIntegerBetween(input.proofKeyVersion, 1, POSTGRES_INT_MAX) ||
+    !isHmac(input.canonicalSpeechHmac) || !isHmac(input.factsHmac)
     || !isHmac(input.requestNonceHmac)
     || input.provider !== 'openai'
     || !SAFE_PROVIDER_VALUE.test(input.model)

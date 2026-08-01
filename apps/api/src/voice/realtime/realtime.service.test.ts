@@ -143,7 +143,12 @@ const TEST_SPEECH_SOURCE_POLICY = {
   }),
 };
 
-function sidebandStub(options: { terminateAfterAttach?: boolean } = {}): RealtimeSidebandControl {
+function sidebandStub(
+  options: {
+    terminateAfterAttach?: boolean;
+    detachedSettle?: (outcome: 'confirmed' | 'provider_failed' | 'unconfirmed') => void;
+  } = {},
+): RealtimeSidebandControl {
   const sessions = new Map<string, NonNullable<Parameters<RealtimeSidebandControl['attach']>[0]['lifecycle']>>();
   return {
     attach: vi.fn(async (input) => {
@@ -164,7 +169,10 @@ function sidebandStub(options: { terminateAfterAttach?: boolean } = {}): Realtim
       if (!lifecycle) return 'not_found' as const;
       lifecycle.fenceAfterDurableTerminationClaim();
       sessions.delete(sessionHandle);
-      return 'detached' as const;
+      return {
+        status: 'detached' as const,
+        settle: options.detachedSettle ?? vi.fn(),
+      };
     }),
     closeSession: vi.fn(async ({ sessionHandle }) => {
       const lifecycle = sessions.get(sessionHandle);
@@ -311,6 +319,60 @@ function negotiationResult(
 }
 
 describe('RealtimeVoiceService', () => {
+  it.each([
+    {
+      name: 'confirme la clôture après le hangup fournisseur',
+      providerFails: false,
+      expectedResult: { ok: true, value: { ended: true } },
+      expectedSettlement: 'confirmed' as const,
+    },
+    {
+      name: 'journalise l’échec avant la clôture si le fournisseur ne raccroche pas',
+      providerFails: true,
+      expectedResult: {
+        ok: false,
+        error: { kind: 'unavailable', service: 'bob-live-hangup', retryAfterSeconds: 10 },
+      },
+      expectedSettlement: 'provider_failed' as const,
+    },
+  ])('$name', async ({ providerFails, expectedResult, expectedSettlement }) => {
+    const settle = vi.fn<(outcome: 'confirmed' | 'provider_failed' | 'unconfirmed') => void>();
+    const provider: OpenAiRealtimeCallProvider = {
+      createCall: successfulProviderCreate(`rtc_hangup_trace_${providerFails ? 'fail' : 'ok'}`),
+      hangupCall: vi.fn(async () => {
+        if (providerFails) throw new Error('provider_hangup_failed');
+      }),
+    };
+    const service = new RealtimeVoiceService(
+      SETTINGS,
+      provider,
+      admission(),
+      sidebandStub({ detachedSettle: settle }),
+      new Metrics(),
+      loggerStub(),
+      undefined,
+      entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
+    );
+    const created = await runAsPrincipal(() =>
+      service.createCall({
+        ...AUDITED_BOOTSTRAP_BINDING,
+        sdp: OFFER_SDP,
+      }),
+    );
+    if (!created.ok) throw new Error('Realtime session fixture unavailable.');
+
+    await expect(
+      runAsPrincipal(() => service.hangup(created.value.sessionHandle)),
+    ).resolves.toEqual(expectedResult);
+    expect(provider.hangupCall).toHaveBeenCalledOnce();
+    expect(settle).toHaveBeenCalledOnce();
+    expect(settle).toHaveBeenCalledWith(expectedSettlement);
+  });
+
   it('acquitte le bootstrap Mission avec l’identité dérivée et une métrique bornée', async () => {
     const capability = `bam1_${Buffer.alloc(32, 7).toString('base64url')}`;
     const acknowledgeAgentMissionBootstrap = vi
@@ -2186,6 +2248,7 @@ describe('RealtimeVoiceService', () => {
   });
 
   it('ne déclare jamais terminé un hangup local encore confié au reaper', async () => {
+    const settle = vi.fn<(outcome: 'confirmed' | 'provider_failed' | 'unconfirmed') => void>();
     const provider: OpenAiRealtimeCallProvider = {
       createCall: vi.fn(),
       hangupCall: vi.fn(async () => undefined),
@@ -2199,7 +2262,10 @@ describe('RealtimeVoiceService', () => {
       })),
       consumeAgentControl: vi.fn(async () => ({ status: 'not_found' as const })),
       closeForPrincipal: vi.fn(async () => undefined),
-      fenceAndDetachSession: vi.fn(() => 'not_found' as const),
+      fenceAndDetachSession: vi.fn(() => ({
+        status: 'detached' as const,
+        settle,
+      })),
       closeSession: vi.fn(async () => 'pending_reaper' as const),
     };
     const metrics = new Metrics();
@@ -2232,6 +2298,8 @@ describe('RealtimeVoiceService', () => {
       },
     });
     expect(provider.hangupCall).not.toHaveBeenCalled();
+    expect(settle).toHaveBeenCalledOnce();
+    expect(settle).toHaveBeenCalledWith('unconfirmed');
     const providerErrors = await metrics.bobLiveProviderErrors.get();
     expect(providerErrors.values).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -2374,7 +2442,7 @@ describe('RealtimeVoiceService', () => {
       closeForPrincipal: vi.fn(async () => undefined),
       fenceAndDetachSession: vi.fn(() => {
         lifecycle?.fenceAfterDurableTerminationClaim();
-        return 'detached' as const;
+        return { status: 'detached' as const, settle: vi.fn() };
       }),
       closeSession: vi.fn(async () => {
         if (!lifecycle) return 'not_found' as const;

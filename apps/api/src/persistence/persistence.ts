@@ -65,6 +65,7 @@ import type { RealtimeSidebandOwnerPort } from '../voice/realtime/realtime-sideb
 import type { RealtimeSpeechDeliveryRepositoryPort } from '../voice/realtime/realtime-speech-delivery.repository';
 import type { RealtimeSpeechArtifactRepositoryPort } from '../voice/realtime/realtime-speech-publisher';
 import type { RealtimeVoiceUsageRepositoryPort } from '../voice/realtime/realtime-voice-usage';
+import type { RealtimeVoiceTraceAuthorities } from '../voice/realtime/realtime-voice-trace.repository';
 import type { OpenAiNativeSpeechMaintenancePort } from '../voice/realtime/openai-native-speech-maintenance';
 import type { OpenAiNativeSpeechDeliveryRepositoryPort } from '../voice/realtime/openai-native-speech-delivery';
 import type {
@@ -202,6 +203,8 @@ export interface Persistence {
   createRealtimeSidebandOwner(): RealtimeSidebandOwnerPort;
   createRealtimeSpeechArtifactRepository(): RealtimeSpeechArtifactRepositoryPort;
   createRealtimeVoiceUsageRepository(): RealtimeVoiceUsageRepositoryPort;
+  /** Autorité PostgreSQL du journal diagnostic V2 ; null sur tout adapter non certifiable. */
+  createRealtimeVoiceTraceAuthorities(): RealtimeVoiceTraceAuthorities | null;
   createRealtimeControlRepository(): RealtimeControlRepositoryPort;
   /** État request-time durable d'une restitution audio OpenAI native. */
   createOpenAiNativeSpeechDeliveryRepository(): OpenAiNativeSpeechDeliveryRepositoryPort;

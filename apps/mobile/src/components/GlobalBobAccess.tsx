@@ -31,6 +31,7 @@ import {
   isBobEntryRoute,
 } from './global-bob-access-session-policy';
 import { ConversationTimeZoneSheet } from './ConversationTimeZoneSheet';
+import { RealtimeDiagnosticTraceSheet } from './RealtimeDiagnosticTraceSheet';
 import { useBobOverlayMetrics } from './use-bob-aware-scroll-insets';
 
 const SIZE = GLOBAL_BOB_ACCESS_SIZE;
@@ -139,16 +140,24 @@ export function GlobalBobAccess() {
     return () => clearTimeout(timer);
   }, [iosAnnouncement]);
 
-  const timeZoneSheet = (
-    <ConversationTimeZoneSheet
-      state={session.timeZoneConfirmation}
-      onConfirm={(timeZone) => void session.confirmConversationTimeZone(timeZone)}
-      onRedetect={session.redetectConversationTimeZone}
-      onCancel={session.cancelTimeZoneConfirmation}
-    />
+  const sessionDecisionSheets = (
+    <>
+      <RealtimeDiagnosticTraceSheet
+        disclosure={session.diagnosticTrace}
+        confirmationPending={session.diagnosticTraceConfirmationPending}
+        onConfirm={session.confirmDiagnosticTrace}
+        onCancel={session.cancelDiagnosticTrace}
+      />
+      <ConversationTimeZoneSheet
+        state={session.diagnosticTraceConfirmationPending ? null : session.timeZoneConfirmation}
+        onConfirm={(timeZone) => void session.confirmConversationTimeZone(timeZone)}
+        onRedetect={session.redetectConversationTimeZone}
+        onCancel={session.cancelTimeZoneConfirmation}
+      />
+    </>
   );
 
-  if (!visible) return timeZoneSheet;
+  if (!visible) return sessionDecisionSheets;
 
   // Bob possède un ancrage spatial stable : toujours à gauche, après la safe-area. Une session
   // qui démarre ne déplace donc plus l'orbe d'un bord à l'autre et la carte s'ouvre sur le même axe.
@@ -170,7 +179,7 @@ export function GlobalBobAccess() {
   if (entitlementUnavailable) {
     return (
       <>
-        {timeZoneSheet}
+        {sessionDecisionSheets}
         <View
           pointerEvents="box-none"
           style={{
@@ -208,7 +217,7 @@ export function GlobalBobAccess() {
 
   return (
     <>
-      {timeZoneSheet}
+      {sessionDecisionSheets}
       <View
         pointerEvents="box-none"
         style={{

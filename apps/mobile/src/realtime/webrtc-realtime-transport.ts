@@ -549,6 +549,24 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
       ) {
         throw new RealtimeTransportError('bootstrap_failed');
       }
+      const negotiatedDiagnosticTrace = config.diagnosticTrace ?? null;
+      const bootstrappedDiagnosticTrace = bootstrap.value.diagnosticTrace ?? null;
+      if (
+        (negotiatedDiagnosticTrace === null) !== (bootstrappedDiagnosticTrace === null) ||
+        (negotiatedDiagnosticTrace !== null &&
+          bootstrappedDiagnosticTrace !== null &&
+          (negotiatedDiagnosticTrace.enabled !== bootstrappedDiagnosticTrace.enabled ||
+            negotiatedDiagnosticTrace.retentionDays !== bootstrappedDiagnosticTrace.retentionDays ||
+            negotiatedDiagnosticTrace.purpose !== bootstrappedDiagnosticTrace.purpose))
+      ) {
+        throw new RealtimeTransportError('bootstrap_failed');
+      }
+      if (bootstrappedDiagnosticTrace !== null) {
+        this.emit({
+          type: 'diagnostic_trace_disclosure',
+          disclosure: bootstrappedDiagnosticTrace,
+        });
+      }
       this.speechSourcePolicy = bootstrap.value.speechDelivery === 'audited-signed-url-v1'
         ? bootstrap.value.speechSourcePolicy
         : null;

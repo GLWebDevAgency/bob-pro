@@ -78,6 +78,7 @@ import type {
   OpenAiNativeKeyVersionAuthorityPort,
   OpenAiNativeProofKeyRingAdmission,
 } from '../voice/realtime/openai-native-proof-key-version';
+import type { RealtimeVoiceTraceAuthorities } from '../voice/realtime/realtime-voice-trace.repository';
 import {
   InMemoryCompanyRepository,
   InMemoryCustomerRepository,
@@ -186,6 +187,10 @@ export class InMemoryPersistence implements Persistence {
   }
   createRealtimeGlobalCapacityInspector(): RealtimeGlobalCapacityInspector {
     return new DisabledRealtimeGlobalCapacityInspector();
+  }
+  createRealtimeVoiceTraceAuthorities(): RealtimeVoiceTraceAuthorities | null {
+    // Une mémoire de test ne peut attester ni FORCE RLS, ni append-only, ni purge globale.
+    return null;
   }
   createRealtimeSpeechDeliveryRepository(): RealtimeSpeechDeliveryRepositoryPort {
     return new DisabledRealtimeSpeechDeliveryRepository();

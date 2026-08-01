@@ -34,6 +34,10 @@ import type {
 } from './realtime-sideband-owner';
 import type { RealtimeSpeechPublisherInput } from './realtime-speech-publisher';
 import type { RealtimeVoiceUsageWriterPort } from './realtime-voice-usage';
+import type {
+  RealtimeVoiceTraceRecordInput,
+  RealtimeVoiceTraceRecorder,
+} from './realtime-voice-trace';
 import type { OpenAiRealtimeCallProvider, RealtimeVoiceSettings } from './realtime.types';
 
 const SESSION = '00000000-0000-4000-8000-000000000001';
@@ -372,6 +376,7 @@ async function attach(
       signal: AbortSignal;
     }) => Promise<unknown>;
     contextCurrent?: boolean;
+    trace?: RealtimeVoiceTraceRecorder;
   } = {},
 ): Promise<void> {
   await value.manager.attach({
@@ -385,6 +390,7 @@ async function attach(
     session: value.settings.speechDelivery === 'openai-native-webrtc-v1'
       ? buildOpenAiNativeRealtimeSessionConfig(value.settings)
       : buildOpenAiRealtimeSessionConfig(value.settings),
+    ...(options.trace === undefined ? {} : { trace: options.trace }),
     lifecycle: {
       activate: vi.fn(async () => undefined),
       fenceAfterDurableTerminationClaim: vi.fn(),
@@ -416,7 +422,33 @@ async function attach(
   });
 }
 
-function finalTranscript(socket: FakeSocket, itemId: string, transcript = 'Explique cet écran.'): void {
+function traceProbe() {
+  const events: RealtimeVoiceTraceRecordInput[] = [];
+  const recorder: RealtimeVoiceTraceRecorder = {
+    bindSession: vi.fn(() => true),
+    bindOwner: vi.fn(() => true),
+    record: vi.fn((event) => events.push(event)),
+  };
+  return { events, recorder };
+}
+
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+  readonly reject: (reason: unknown) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
+function finalTranscript(
+  socket: FakeSocket,
+  itemId: string, transcript = 'Explique cet écran.'): void {
   socket.providerEvent({ type: 'input_audio_buffer.committed', item_id: itemId });
   socket.providerEvent({
     type: 'conversation.item.input_audio_transcription.completed',
@@ -461,7 +493,11 @@ function nativeMetadata(socket: FakeSocket): Record<string, unknown> {
   return response.metadata as Record<string, unknown>;
 }
 
-function emitNativeSuccessfulResponse(socket: FakeSocket, stoppedFirst = false): void {
+function emitNativeSuccessfulResponse(
+  socket: FakeSocket,
+  stoppedFirst = false,
+  canonicalSpeech = OPENAI_NATIVE_ELIGIBLE_SPEECH_V1.generic_help_v1,
+): void {
   const metadata = nativeMetadata(socket);
   socket.providerEvent({
     type: 'response.created',
@@ -495,7 +531,7 @@ function emitNativeSuccessfulResponse(socket: FakeSocket, stoppedFirst = false):
     item_id: NATIVE_ITEM,
     output_index: 0,
     content_index: 0,
-    transcript: OPENAI_NATIVE_ELIGIBLE_SPEECH_V1.generic_help_v1,
+    transcript: canonicalSpeech,
   });
   const stopped = {
     type: 'output_audio_buffer.stopped',
@@ -515,7 +551,7 @@ function emitNativeSuccessfulResponse(socket: FakeSocket, stoppedFirst = false):
         status: 'completed',
         content: [{
           type: 'output_audio',
-          transcript: OPENAI_NATIVE_ELIGIBLE_SPEECH_V1.generic_help_v1,
+              transcript: canonicalSpeech,
         }],
       }],
       usage: {
@@ -1166,23 +1202,240 @@ describe('RealtimeSidebandManager — cutover sortie auditée', () => {
 
   it('détache localement sous claim durable sans terminer provider ni lease', async () => {
     const value = harness();
-    await attach(value);
+    const trace = traceProbe();
+    await attach(value, { trace: trace.recorder });
 
-    expect(value.manager.fenceAndDetachSession({
+    const detached = value.manager.fenceAndDetachSession({
       userId: 'user-1',
       companyId: 'company-1',
       sessionHandle: SESSION,
-    })).toBe('detached');
+      reason: 'user',
+    });
+    expect(detached).not.toBe('not_found');
+    if (detached !== 'not_found') {
+      expect(detached.status).toBe('detached');
+      detached.settle('provider_failed');
+      detached.settle('confirmed');
+    }
+
+    expect(trace.events.slice(-2)).toEqual([
+      expect.objectContaining({
+        eventKind: 'provider_failed',
+        stage: 'session',
+        outcome: 'failed',
+        failureClass: 'hangup_failed',
+      }),
+      expect.objectContaining({
+        eventKind: 'session_closed',
+        outcome: 'closed',
+        sessionCloseReason: 'user',
+      }),
+    ]);
 
     expect(value.terminate).not.toHaveBeenCalled();
     expect(value.provider.hangupCall).not.toHaveBeenCalled();
     expect(value.sockets[0]?.socket.terminated).toBe(true);
     await vi.waitFor(() => expect(value.owner.release).toHaveBeenCalledWith(OWNER));
-    expect(value.manager.fenceAndDetachSession({
+    expect(
+      value.manager.fenceAndDetachSession({
+        userId: 'user-1',
+        companyId: 'company-1',
+        sessionHandle: SESSION,
+        reason: 'user',
+      }),
+    ).toBe('not_found');
+  });
+
+  it('conserve un observer one-shot si le reaper devient owner avant le détachement HTTP', async () => {
+    const value = harness();
+    const trace = traceProbe();
+    value.terminate.mockResolvedValueOnce('pending_reaper');
+    await attach(value, { trace: trace.recorder });
+
+    await expect(
+      value.manager.closeSession({
+        userId: 'user-1',
+        companyId: 'company-1',
+        sessionHandle: SESSION,
+      }),
+    ).resolves.toBe('pending_reaper');
+    expect(trace.events.some((event) => event.eventKind === 'session_closed')).toBe(false);
+
+    const retained = value.manager.fenceAndDetachSession({
       userId: 'user-1',
       companyId: 'company-1',
       sessionHandle: SESSION,
-    })).toBe('not_found');
+      reason: 'user',
+    });
+    expect(retained).not.toBe('not_found');
+    if (retained !== 'not_found') retained.settle('provider_failed');
+    expect(trace.events.slice(-2)).toEqual([
+      expect.objectContaining({
+        eventKind: 'provider_failed',
+        stage: 'session',
+        failureClass: 'hangup_failed',
+      }),
+      expect.objectContaining({
+        eventKind: 'session_closed',
+        sessionCloseReason: 'user',
+      }),
+    ]);
+    expect(
+      value.manager.fenceAndDetachSession({
+        userId: 'user-1',
+        companyId: 'company-1',
+        sessionHandle: SESSION,
+        reason: 'user',
+      }),
+    ).toBe('not_found');
+  });
+
+  it('expire sans faux terminal un observer retenu que le claim HTTP ne récupère jamais', async () => {
+    vi.useFakeTimers();
+    const value = harness();
+    const trace = traceProbe();
+    value.terminate.mockResolvedValueOnce('pending_reaper');
+    await attach(value, { trace: trace.recorder });
+
+    await expect(
+      value.manager.closeSession({
+        userId: 'user-1',
+        companyId: 'company-1',
+        sessionHandle: SESSION,
+      }),
+    ).resolves.toBe('pending_reaper');
+    await vi.advanceTimersByTimeAsync(60_001);
+
+    expect(
+      value.manager.fenceAndDetachSession({
+        userId: 'user-1',
+        companyId: 'company-1',
+        sessionHandle: SESSION,
+        reason: 'user',
+      }),
+    ).toBe('not_found');
+    expect(trace.events.some((event) => event.eventKind === 'session_closed')).toBe(false);
+    await value.manager.onApplicationShutdown();
+  });
+
+  it('ne laisse pas l’ancien timer supprimer un observer plus récent du même principal', async () => {
+    vi.useFakeTimers();
+    const value = harness();
+    const firstTrace = traceProbe();
+    value.terminate.mockResolvedValueOnce('pending_reaper');
+    await attach(value, { trace: firstTrace.recorder });
+    await expect(
+      value.manager.closeSession({
+        userId: 'user-1',
+        companyId: 'company-1',
+        sessionHandle: SESSION,
+      }),
+    ).resolves.toBe('pending_reaper');
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    const secondTrace = traceProbe();
+    value.terminate.mockResolvedValueOnce('pending_reaper');
+    await attach(value, { trace: secondTrace.recorder });
+    await expect(
+      value.manager.closeSession({
+        userId: 'user-1',
+        companyId: 'company-1',
+        sessionHandle: SESSION,
+      }),
+    ).resolves.toBe('pending_reaper');
+
+    await vi.advanceTimersByTimeAsync(30_001);
+    const retained = value.manager.fenceAndDetachSession({
+      userId: 'user-1',
+      companyId: 'company-1',
+      sessionHandle: SESSION,
+      reason: 'user',
+    });
+    expect(retained).not.toBe('not_found');
+    if (retained !== 'not_found') retained.settle('confirmed');
+    expect(secondTrace.events.filter((event) => event.eventKind === 'session_closed')).toHaveLength(
+      1,
+    );
+    expect(firstTrace.events.some((event) => event.eventKind === 'session_closed')).toBe(false);
+    await value.manager.onApplicationShutdown();
+  });
+
+  it('purge les observers retenus au shutdown sans inventer de confirmation provider', async () => {
+    const value = harness();
+    const trace = traceProbe();
+    value.terminate.mockResolvedValueOnce('pending_reaper');
+    await attach(value, { trace: trace.recorder });
+    await expect(
+      value.manager.closeSession({
+        userId: 'user-1',
+        companyId: 'company-1',
+        sessionHandle: SESSION,
+      }),
+    ).resolves.toBe('pending_reaper');
+
+    await value.manager.onApplicationShutdown();
+    expect(
+      value.manager.fenceAndDetachSession({
+        userId: 'user-1',
+        companyId: 'company-1',
+        sessionHandle: SESSION,
+        reason: 'kill_switch',
+      }),
+    ).toBe('not_found');
+    expect(trace.events.some((event) => event.eventKind === 'session_closed')).toBe(false);
+  });
+
+  it.each([
+    { name: 'confirmation', providerFails: false },
+    { name: 'échec fournisseur', providerFails: true },
+  ])('solde après $name la course close interne / claim HTTP', async ({ providerFails }) => {
+    const value = harness();
+    const trace = traceProbe();
+    const providerOutcome = deferred<'confirmed'>();
+    value.terminate.mockImplementationOnce(() => providerOutcome.promise);
+    await attach(value, { trace: trace.recorder });
+
+    const closing = value.manager.closeSession({
+      userId: 'user-1',
+      companyId: 'company-1',
+      sessionHandle: SESSION,
+    });
+    await vi.waitFor(() => expect(value.terminate).toHaveBeenCalledOnce());
+    const detached = value.manager.fenceAndDetachSession({
+      userId: 'user-1',
+      companyId: 'company-1',
+      sessionHandle: SESSION,
+      reason: 'user',
+    });
+    expect(detached).not.toBe('not_found');
+    if (detached !== 'not_found') detached.settle('unconfirmed');
+    expect(trace.events.some((event) => event.eventKind === 'session_closed')).toBe(false);
+
+    if (providerFails) {
+      providerOutcome.reject(new Error('provider_hangup_failed'));
+      await expect(closing).rejects.toThrow('provider_hangup_failed');
+      expect(trace.events.slice(-2)).toEqual([
+        expect.objectContaining({
+          eventKind: 'provider_failed',
+          failureClass: 'hangup_failed',
+        }),
+        expect.objectContaining({
+          eventKind: 'session_closed',
+          sessionCloseReason: 'user',
+        }),
+      ]);
+    } else {
+      providerOutcome.resolve('confirmed');
+      await expect(closing).resolves.toBe('confirmed');
+      expect(trace.events.filter((event) => event.eventKind === 'provider_failed')).toEqual([]);
+      expect(trace.events.at(-1)).toEqual(
+        expect.objectContaining({
+          eventKind: 'session_closed',
+          sessionCloseReason: 'user',
+        }),
+      );
+    }
+    expect(trace.events.filter((event) => event.eventKind === 'session_closed')).toHaveLength(1);
   });
 
   it('échoue fermé si l’owner durable est occupé ou absent', async () => {
@@ -1314,6 +1567,61 @@ describe('RealtimeSidebandManager — sortie OpenAI native sous autorité durabl
     expect(value.publish).not.toHaveBeenCalled();
   });
 
+  it('demande de répéter après un échec STT natif sans fermer la session', async () => {
+    const value = harness({ settings: NATIVE_SETTINGS });
+    const trace = traceProbe();
+    const nextTurn = vi.fn(async () => ({ status: 'aborted' as const }));
+    await attach(value, { trace: trace.recorder, turn: nextTurn });
+    const socket = value.sockets[0]!.socket;
+    const retryTurnId = deriveRealtimeTurnId(SESSION, 'native-input-stt-failed');
+
+    socket.providerEvent({
+      type: 'conversation.item.input_audio_transcription.failed',
+      item_id: 'native-input-stt-failed',
+    });
+
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
+    const response = nativeResponseCreate(socket).response as Record<string, unknown>;
+    expect(response.instructions).toContain(OPENAI_NATIVE_ELIGIBLE_SPEECH_V1.generic_retry_v1);
+    expect(trace.events).toContainEqual(
+      expect.objectContaining({
+        eventKind: 'provider_failed',
+        stage: 'transcription',
+        outcome: 'failed',
+        failureClass: 'transcription_failed',
+      }),
+    );
+    expect(value.terminate).not.toHaveBeenCalled();
+
+    emitNativeSuccessfulResponse(socket, false, OPENAI_NATIVE_ELIGIBLE_SPEECH_V1.generic_retry_v1);
+    await vi.waitFor(() =>
+      expect(value.nativeRepository?.states.get(NATIVE_DELIVERY)?.phase).toBe('completed'),
+    );
+    await persistNativeAcknowledgement(value, { turnId: retryTurnId });
+    acknowledgeNativeSpeech(value, { turnId: retryTurnId });
+    await vi.waitFor(() =>
+      expect(value.nativeRepository?.states.get(NATIVE_DELIVERY)?.phase).toBe('delivered'),
+    );
+    expect(trace.events).toContainEqual(
+      expect.objectContaining({
+        eventKind: 'turn_speech_delivered',
+        turnId: retryTurnId,
+        stage: 'speech_delivery',
+        outcome: 'delivered',
+      }),
+    );
+
+    finalTranscript(socket, 'native-input-after-stt-retry', 'Aide-moi maintenant.');
+    await vi.waitFor(() => expect(nextTurn).toHaveBeenCalledOnce());
+    expect(nextTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        transcript: 'Aide-moi maintenant.',
+      }),
+    );
+    expect(value.terminate).not.toHaveBeenCalled();
+    await value.manager.onApplicationShutdown();
+  });
+
   it('annule sans dispatch une preuve préparée devenue obsolète pendant le changement de contexte', async () => {
     const value = harness({ settings: NATIVE_SETTINGS });
     const repository = value.nativeRepository!;
@@ -1345,6 +1653,57 @@ describe('RealtimeSidebandManager — sortie OpenAI native sous autorité durabl
     await vi.waitFor(() => expect(repository.states.get(NATIVE_DELIVERY)?.phase).toBe('cancelled'));
     expect(socket.sent.map((entry) => JSON.parse(entry).type)).toEqual(['session.update']);
     expect(value.terminate).not.toHaveBeenCalled();
+  });
+
+  it('trace le barge-in pendant la préparation native et interdit toute livraison tardive', async () => {
+    const value = harness({ settings: NATIVE_SETTINGS });
+    const repository = value.nativeRepository!;
+    const originalPrepare = repository.prepare.bind(repository);
+    let releasePrepare!: () => void;
+    const prepare = vi.spyOn(repository, 'prepare').mockImplementation(
+      (state) =>
+        new Promise((resolve) => {
+          releasePrepare = () => {
+            void originalPrepare(state).then(resolve);
+          };
+        }),
+    );
+    const trace = traceProbe();
+    await attach(value, { turn: async () => nativeReadyOutcome(), trace: trace.recorder });
+    const socket = value.sockets[0]!.socket;
+    const turnId = deriveRealtimeTurnId(SESSION, 'native-input-prepare-barge');
+
+    finalTranscript(socket, 'native-input-prepare-barge', 'Aide-moi.');
+    await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
+    socket.providerEvent({ type: 'input_audio_buffer.speech_started' });
+    releasePrepare();
+
+    await vi.waitFor(() => expect(repository.states.get(NATIVE_DELIVERY)?.phase).toBe('cancelled'));
+    expect(trace.events).toContainEqual(
+      expect.objectContaining({
+        eventKind: 'turn_interrupted',
+        turnId,
+        stage: 'speech_prepare',
+        outcome: 'cancelled',
+        interruptionReason: 'barge_in',
+      }),
+    );
+    expect(
+      trace.events.filter(
+        (event) => event.eventKind === 'turn_interrupted' && event.turnId === turnId,
+      ),
+    ).toHaveLength(1);
+    const interruptedIndex = trace.events.findIndex(
+      (event) => event.eventKind === 'turn_interrupted' && event.turnId === turnId,
+    );
+    expect(trace.events.slice(interruptedIndex + 1)).not.toContainEqual(
+      expect.objectContaining({ eventKind: 'turn_speech_ready', turnId }),
+    );
+    expect(trace.events.slice(interruptedIndex + 1)).not.toContainEqual(
+      expect.objectContaining({ eventKind: 'turn_speech_delivered', turnId }),
+    );
+    expect(socket.sent.map((entry) => JSON.parse(entry).type)).toEqual(['session.update']);
+    await value.manager.onApplicationShutdown();
   });
 
   it('traite le barge-in comme une interruption mobile sans doubler cancel et clear côté serveur', async () => {

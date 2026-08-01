@@ -1,0 +1,570 @@
+name: Realtime Voice Trace V2 Staging
+
+permissions:
+  actions: read
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact main revision already released normally on staging
+        required: true
+        type: string
+      normal_staging_release_run_id:
+        description: Successful normal staging release run for the exact SHA
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      expected_sha:
+        description: Exact main revision already released normally on staging
+        required: true
+        type: string
+      normal_staging_release_run_id:
+        description: Successful normal staging release run for the exact SHA
+        required: true
+        type: string
+
+concurrency:
+  group: railway-api-staging
+  cancel-in-progress: false
+
+jobs:
+  production-before:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production
+    outputs:
+      digest: ${{ steps.snapshot.outputs.digest }}
+    env:
+      API_BASE_URL: ${{ vars.API_BASE_URL }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Prove the immutable request before observing production
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$EXPECTED_SHA" = "$GITHUB_SHA"
+          [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{40}$ ]]
+      - name: Snapshot public production readiness without credentials
+        id: snapshot
+        run: |
+          set -euo pipefail
+          digest="$(node apps/api/scripts/realtime-voice-trace-v2-readiness-proof.mjs snapshot-production)"
+          [[ "$digest" =~ ^[a-f0-9]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+  staging-drill:
+    needs: production-before
+    if: ${{ always() && needs.production-before.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    environment: staging
+    outputs:
+      rollback_required: ${{ steps.arm_rollback.outputs.required || 'false' }}
+      final_deployment_id: ${{ steps.drill.outputs.final_deployment_id }}
+      canary_event_count: ${{ steps.drill.outputs.canary_event_count }}
+      encrypted_content_events: ${{ steps.drill.outputs.encrypted_content_events }}
+      cleanup_events_removed: ${{ steps.drill.outputs.cleanup_events_removed }}
+      cleanup_audits_removed: ${{ steps.drill.outputs.cleanup_audits_removed }}
+      cleanup_final_events: ${{ steps.drill.outputs.cleanup_final_events }}
+      cleanup_final_audits: ${{ steps.drill.outputs.cleanup_final_audits }}
+    env:
+      API_BASE_URL: ${{ vars.API_BASE_URL }}
+      SUPABASE_URL: https://${{ vars.BOB_M1B_STAGING_SUPABASE_PROJECT_REF }}.supabase.co
+      RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+      RAILWAY_ENVIRONMENT_ID: ${{ vars.RAILWAY_ENVIRONMENT_ID }}
+      RAILWAY_API_SERVICE_ID: ${{ vars.RAILWAY_API_SERVICE_ID }}
+      BOB_M1B_RELEASE_SHA: ${{ github.sha }}
+      BOB_M1B_STAGING_USER_ID: ${{ vars.BOB_M1B_STAGING_USER_ID }}
+      BOB_M1B_STAGING_COMPANY_ID: ${{ vars.BOB_M1B_STAGING_COMPANY_ID }}
+      BOB_M1B_STAGING_HMAC_KEY_VERSION: ${{ vars.BOB_M1B_STAGING_HMAC_KEY_VERSION }}
+      BOB_M1B_STAGING_RUN_ID: ${{ github.run_id }}
+      BOB_M1B_STAGING_SUPABASE_PROJECT_REF: ${{ vars.BOB_M1B_STAGING_SUPABASE_PROJECT_REF }}
+      BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER: ${{ vars.BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER }}
+      BOB_M1B_STAGING_DATABASE_OID: ${{ vars.BOB_M1B_STAGING_DATABASE_OID }}
+      BOB_M1B_STAGING_DATABASE_NAME: ${{ vars.BOB_M1B_STAGING_DATABASE_NAME }}
+      BOB_M2A3_STAGING_TIME_ZONE: ${{ vars.BOB_M2A3_STAGING_TIME_ZONE }}
+      BOB_REALTIME_VOICE_TRACE_V2_RELEASE_SHA: ${{ inputs.expected_sha }}
+      BOB_REALTIME_VOICE_TRACE_V2_RUN_ID: ${{ github.run_id }}
+      BOB_REALTIME_VOICE_TRACE_V2_SUBJECTS: ${{ format('{0}:{1}', vars.BOB_M1B_STAGING_COMPANY_ID, vars.BOB_M1B_STAGING_USER_ID) }}
+      BOB_REALTIME_VOICE_TRACE_V2_ENCRYPTION_CURRENT_VERSION: ${{ vars.BOB_REALTIME_VOICE_TRACE_V2_STAGING_ENCRYPTION_CURRENT_VERSION }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate staging target and normal exact-SHA release receipt
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          NORMAL_STAGING_RELEASE_RUN_ID: ${{ inputs.normal_staging_release_run_id }}
+          EXPECTED_SERVICE: ${{ vars.RAILWAY_API_SERVICE }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$EXPECTED_SHA" = "$GITHUB_SHA"
+          test -n "$EXPECTED_SERVICE"
+          [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$NORMAL_STAGING_RELEASE_RUN_ID" =~ ^[1-9][0-9]{0,19}$ ]]
+          run_receipt="$(mktemp)"
+          artifacts_receipt="$(mktemp)"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$NORMAL_STAGING_RELEASE_RUN_ID" > "$run_receipt"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$NORMAL_STAGING_RELEASE_RUN_ID/artifacts?per_page=100" > "$artifacts_receipt"
+          NORMAL_RELEASE_RECEIPT="$run_receipt" NORMAL_RELEASE_ARTIFACTS="$artifacts_receipt" node <<'NODE'
+          const fs = require('node:fs');
+          const run = JSON.parse(fs.readFileSync(process.env.NORMAL_RELEASE_RECEIPT, 'utf8'));
+          const artifacts = JSON.parse(fs.readFileSync(process.env.NORMAL_RELEASE_ARTIFACTS, 'utf8'));
+          const expectedRunId = process.env.NORMAL_STAGING_RELEASE_RUN_ID;
+          const expectedArtifact = `api-release-receipt-staging-${process.env.GITHUB_SHA}`;
+          const matches = Array.isArray(artifacts?.artifacts)
+            ? artifacts.artifacts.filter((artifact) => artifact?.name === expectedArtifact)
+            : [];
+          if (
+            String(run?.id) !== expectedRunId ||
+            run?.name !== 'Railway API Release' ||
+            run?.path !== '.github/workflows/railway-api.yml' ||
+            run?.event !== 'workflow_dispatch' ||
+            run?.head_branch !== 'main' ||
+            run?.head_sha !== process.env.GITHUB_SHA ||
+            run?.conclusion !== 'success' ||
+            matches.length !== 1 ||
+            matches[0]?.expired !== false ||
+            String(matches[0]?.workflow_run?.id) !== expectedRunId
+          ) {
+            throw new Error('the exact SHA lacks one successful normal staging release receipt');
+          }
+          NODE
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - name: Build the exact artifact and generate ephemeral non-PII audio
+        env:
+          BOB_M1B_STAGING_SUPABASE_ANON_KEY: ${{ secrets.BOB_M1B_STAGING_SUPABASE_ANON_KEY }}
+          BOB_M1B_STAGING_ACCOUNT_EMAIL: ${{ secrets.BOB_M1B_STAGING_ACCOUNT_EMAIL }}
+          BOB_M1B_STAGING_ACCOUNT_PASSWORD: ${{ secrets.BOB_M1B_STAGING_ACCOUNT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-16 espeak-ng
+          test "$(psql --version | awk '{print $3}' | cut -d. -f1)" = 16
+          pnpm install --frozen-lockfile
+          pnpm --filter "@bob/api..." build
+          pnpm --filter "@bob/api-client..." build
+          pnpm --filter @bob/web exec playwright install --with-deps chromium
+          sh apps/api/scripts/install-railway-cli.sh
+          node --test \
+            apps/api/scripts/agent-mission-m1b-staging-smoke.test.mjs \
+            apps/api/scripts/realtime-voice-trace-v2-readiness-proof.test.mjs \
+            apps/api/scripts/realtime-voice-trace-v2-staging-evidence.test.mjs \
+            apps/api/scripts/realtime-voice-trace-v2-staging-railway.test.mjs
+          audio_file="$(mktemp --suffix=.wav)"
+          session_file="$(mktemp)"
+          chmod 600 "$audio_file" "$session_file"
+          espeak-ng -v fr -s 145 -w "$audio_file" "Je souhaite créer un nouveau client"
+          test -s "$audio_file"
+          printf '%s\n' \
+            "BOB_REALTIME_VOICE_TRACE_V2_CANARY_AUDIO_FILE=$audio_file" \
+            "BOB_REALTIME_VOICE_TRACE_V2_CANARY_SESSION_FILE=$session_file" \
+            >> "$GITHUB_ENV"
+          node apps/api/scripts/agent-mission-m1b-staging-smoke.mjs preflight-v2
+      - name: Prove exact-SHA OFF baseline and its zero-trace canary
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          BOB_REALTIME_VOICE_TRACE_V2_ENCRYPTION_KEYRING: ${{ secrets.BOB_REALTIME_VOICE_TRACE_V2_STAGING_ENCRYPTION_KEYRING }}
+          BOB_M1B_STAGING_SUPABASE_ANON_KEY: ${{ secrets.BOB_M1B_STAGING_SUPABASE_ANON_KEY }}
+          BOB_M1B_STAGING_ACCOUNT_EMAIL: ${{ secrets.BOB_M1B_STAGING_ACCOUNT_EMAIL }}
+          BOB_M1B_STAGING_ACCOUNT_PASSWORD: ${{ secrets.BOB_M1B_STAGING_ACCOUNT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          node apps/api/scripts/realtime-voice-trace-v2-staging-railway.mjs preflight
+          node apps/api/scripts/realtime-voice-trace-v2-readiness-proof.mjs assert-staging-off
+          status_file="$(mktemp)"
+          timeout 20s railway status --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENVIRONMENT_ID" --json > "$status_file"
+          node apps/api/scripts/certify-railway-single-replica.mjs staging "$RAILWAY_API_SERVICE_ID" < "$status_file"
+          served_id="$(node apps/api/scripts/agent-mission-m1b-staging-railway.mjs serving-deployment-id < "$status_file")"
+          test -n "$served_id"
+          node apps/api/scripts/agent-mission-m1b-staging-smoke.mjs voice-trace-v2-off
+          session_handle="$(tr -d '\r\n' < "$BOB_REALTIME_VOICE_TRACE_V2_CANARY_SESSION_FILE")"
+          [[ "$session_handle" =~ ^[0-9a-f-]{36}$ ]]
+          echo "::add-mask::$session_handle"
+          railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+            env CABINET_RELEASE_ENV=staging \
+              BOB_REALTIME_VOICE_TRACE_V2_RUN_ID="$GITHUB_RUN_ID" \
+              BOB_REALTIME_VOICE_TRACE_V2_CANARY_SESSION_HANDLE="$session_handle" \
+              node apps/api/scripts/realtime-voice-trace-v2-staging-evidence.mjs verify-off
+          railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+            env CABINET_RELEASE_ENV=staging BOB_REALTIME_VOICE_TRACE_V2_RUN_ID="$GITHUB_RUN_ID" \
+              node apps/api/scripts/realtime-voice-trace-v2-staging-evidence.mjs cleanup
+          railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+            env CABINET_RELEASE_ENV=staging BOB_REALTIME_VOICE_TRACE_V2_RUN_ID="$GITHUB_RUN_ID" \
+              node apps/api/scripts/realtime-voice-trace-v2-staging-evidence.mjs verify-clean
+      - name: Arm OFF rollback before the first mutation
+        id: arm_rollback
+        run: echo "required=true" >> "$GITHUB_OUTPUT"
+      - name: Execute three close-deploy-open cycles with a real canary at every state
+        id: drill
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          BOB_REALTIME_VOICE_TRACE_V2_ENCRYPTION_KEYRING: ${{ secrets.BOB_REALTIME_VOICE_TRACE_V2_STAGING_ENCRYPTION_KEYRING }}
+          BOB_M1B_STAGING_HMAC_KEYRING: ${{ secrets.BOB_M1B_STAGING_HMAC_KEYRING }}
+          BOB_M1B_STAGING_SUPABASE_ANON_KEY: ${{ secrets.BOB_M1B_STAGING_SUPABASE_ANON_KEY }}
+          BOB_M1B_STAGING_ACCOUNT_EMAIL: ${{ secrets.BOB_M1B_STAGING_ACCOUNT_EMAIL }}
+          BOB_M1B_STAGING_ACCOUNT_PASSWORD: ${{ secrets.BOB_M1B_STAGING_ACCOUNT_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          DEPLOYED_ID=''
+
+          deploy_exact() {
+            local expected_state="$1"
+            node apps/api/scripts/write-release-metadata.mjs "$GITHUB_SHA" staging
+            local deployment_id
+            deployment_id="$(
+              railway up --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+                --environment "$RAILWAY_ENVIRONMENT_ID" --detach --json \
+                | node apps/api/scripts/agent-mission-m1b-staging-railway.mjs deployment-id
+            )"
+            node apps/api/scripts/agent-mission-m1b-staging-railway.mjs wait-deployment "$deployment_id" >&2
+            local status_file serving_id
+            status_file="$(mktemp)"
+            serving_id=''
+            for attempt in $(seq 1 12); do
+              if timeout 20s railway status --project "$RAILWAY_PROJECT_ID" \
+                --environment "$RAILWAY_ENVIRONMENT_ID" --json > "$status_file" \
+                && node apps/api/scripts/certify-railway-single-replica.mjs \
+                  staging "$RAILWAY_API_SERVICE_ID" < "$status_file" >&2 \
+                && serving_id="$(node apps/api/scripts/agent-mission-m1b-staging-railway.mjs serving-deployment-id < "$status_file")" \
+                && test "$serving_id" = "$deployment_id"
+              then
+                break
+              fi
+              serving_id=''
+              sleep 5
+            done
+            test "$serving_id" = "$deployment_id"
+            node apps/api/scripts/realtime-voice-trace-v2-readiness-proof.mjs \
+              "assert-staging-$expected_state" >&2
+            DEPLOYED_ID="$deployment_id"
+          }
+
+          remote_evidence() {
+            local command="$1"
+            local session_handle="${2:-}"
+            local raw_file remote_status normalized_status
+            raw_file="$(mktemp)"
+            remote_status=0
+            if test -n "$session_handle"; then
+              railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+                --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+                env CABINET_RELEASE_ENV=staging \
+                  BOB_REALTIME_VOICE_TRACE_V2_RUN_ID="$GITHUB_RUN_ID" \
+                  BOB_REALTIME_VOICE_TRACE_V2_CANARY_SESSION_HANDLE="$session_handle" \
+                  node apps/api/scripts/realtime-voice-trace-v2-staging-evidence.mjs "$command" \
+                > "$raw_file" || remote_status=$?
+            else
+              railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+                --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+                env CABINET_RELEASE_ENV=staging \
+                  BOB_REALTIME_VOICE_TRACE_V2_RUN_ID="$GITHUB_RUN_ID" \
+                  node apps/api/scripts/realtime-voice-trace-v2-staging-evidence.mjs "$command" \
+                > "$raw_file" || remote_status=$?
+            fi
+            if test "$remote_status" -ne 0; then
+              rm -f "$raw_file"
+              return "$remote_status"
+            fi
+            normalized_status=0
+            node apps/api/scripts/realtime-voice-trace-v2-receipt.mjs \
+              normalize-evidence "$command" < "$raw_file" || normalized_status=$?
+            rm -f "$raw_file"
+            return "$normalized_status"
+          }
+
+          canary_and_cleanup() {
+            local state="$1"
+            local emit_receipt_outputs="${2:-false}"
+            : > "$BOB_REALTIME_VOICE_TRACE_V2_CANARY_SESSION_FILE"
+            set +e
+            node apps/api/scripts/agent-mission-m1b-staging-smoke.mjs "voice-trace-v2-$state"
+            local smoke_status=$?
+            set -e
+            if test "$smoke_status" -ne 0; then
+              remote_evidence cleanup || true
+              remote_evidence verify-clean || true
+              return "$smoke_status"
+            fi
+            local session_handle
+            session_handle="$(tr -d '\r\n' < "$BOB_REALTIME_VOICE_TRACE_V2_CANARY_SESSION_FILE")"
+            [[ "$session_handle" =~ ^[0-9a-f-]{36}$ ]]
+            echo "::add-mask::$session_handle"
+            local evidence_status=0 cleanup_status=0 clean_status=0
+            local evidence_json='' cleanup_json='' clean_json=''
+            evidence_json="$(remote_evidence "verify-$state" "$session_handle")" || evidence_status=$?
+            cleanup_json="$(remote_evidence cleanup)" || cleanup_status=$?
+            clean_json="$(remote_evidence verify-clean)" || clean_status=$?
+            test "$evidence_status" -eq 0
+            test "$cleanup_status" -eq 0
+            test "$clean_status" -eq 0
+            if test "$emit_receipt_outputs" = true; then
+              test "$state" = on
+              ON_EVIDENCE_JSON="$evidence_json" \
+                CLEANUP_EVIDENCE_JSON="$cleanup_json" \
+                CLEAN_EVIDENCE_JSON="$clean_json" \
+                node apps/api/scripts/realtime-voice-trace-v2-receipt.mjs emit-staging-outputs \
+                  >> "$GITHUB_OUTPUT"
+            fi
+          }
+
+          transition_and_canary() {
+            local operation="$1"
+            local state="$2"
+            local emit_receipt_outputs="${3:-false}"
+            echo "capacity_restore_required=true" >> "$GITHUB_OUTPUT"
+            railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+              --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+              env CABINET_RELEASE_ENV=staging \
+                node apps/api/scripts/agent-mission-m1b-staging-release.mjs predeploy
+            node apps/api/scripts/realtime-voice-trace-v2-staging-railway.mjs "$operation"
+            if test "$state" = on; then
+              node apps/api/scripts/realtime-voice-trace-v2-staging-railway.mjs assert-active
+            else
+              node apps/api/scripts/realtime-voice-trace-v2-staging-railway.mjs assert-off
+            fi
+            deploy_exact "$state"
+            railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+              --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+              env CABINET_RELEASE_ENV=staging \
+                node apps/api/scripts/agent-mission-m1b-staging-release.mjs postdeploy
+            echo "capacity_restore_required=false" >> "$GITHUB_OUTPUT"
+            canary_and_cleanup "$state" "$emit_receipt_outputs"
+          }
+
+          transition_and_canary activate on
+          first_on_deployment="$DEPLOYED_ID"
+
+          transition_and_canary deactivate off
+          off_deployment="$DEPLOYED_ID"
+
+          transition_and_canary activate on true
+          final_on_deployment="$DEPLOYED_ID"
+
+          test -n "$first_on_deployment"
+          test -n "$off_deployment"
+          test -n "$final_on_deployment"
+          echo "final_deployment_id=$final_on_deployment" >> "$GITHUB_OUTPUT"
+      - name: Reprove final ON after the last canary
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          BOB_M1B_STAGING_HMAC_KEYRING: ${{ secrets.BOB_M1B_STAGING_HMAC_KEYRING }}
+        run: |
+          set -euo pipefail
+          node apps/api/scripts/realtime-voice-trace-v2-staging-railway.mjs assert-active
+          node apps/api/scripts/realtime-voice-trace-v2-readiness-proof.mjs assert-staging-on
+      - name: Force a cancellation-safe closed and staged-OFF state inline
+        if: ${{ always() && steps.arm_rollback.outputs.required == 'true' && (failure() || cancelled()) }}
+        timeout-minutes: 25
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          BOB_REALTIME_VOICE_TRACE_V2_ENCRYPTION_KEYRING: ${{ secrets.BOB_REALTIME_VOICE_TRACE_V2_STAGING_ENCRYPTION_KEYRING }}
+          BOB_M1B_STAGING_HMAC_KEYRING: ${{ secrets.BOB_M1B_STAGING_HMAC_KEYRING }}
+        run: |
+          set -euo pipefail
+          railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+            node apps/api/scripts/agent-mission-m1b-staging-database.mjs
+          railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+            env CABINET_RELEASE_ENV=staging \
+              node apps/api/scripts/agent-mission-m1b-staging-release.mjs predeploy
+          node apps/api/scripts/realtime-voice-trace-v2-staging-railway.mjs force-off
+          node apps/api/scripts/realtime-voice-trace-v2-staging-railway.mjs assert-off
+
+  rollback-off:
+    needs: staging-drill
+    if: ${{ always() && needs.staging-drill.result != 'success' && needs.staging-drill.outputs.rollback_required == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: staging
+    env:
+      API_BASE_URL: ${{ vars.API_BASE_URL }}
+      SUPABASE_URL: https://${{ vars.BOB_M1B_STAGING_SUPABASE_PROJECT_REF }}.supabase.co
+      RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+      RAILWAY_ENVIRONMENT_ID: ${{ vars.RAILWAY_ENVIRONMENT_ID }}
+      RAILWAY_API_SERVICE_ID: ${{ vars.RAILWAY_API_SERVICE_ID }}
+      BOB_M1B_STAGING_USER_ID: ${{ vars.BOB_M1B_STAGING_USER_ID }}
+      BOB_M1B_STAGING_COMPANY_ID: ${{ vars.BOB_M1B_STAGING_COMPANY_ID }}
+      BOB_M1B_STAGING_HMAC_KEY_VERSION: ${{ vars.BOB_M1B_STAGING_HMAC_KEY_VERSION }}
+      BOB_M1B_STAGING_RUN_ID: ${{ github.run_id }}
+      BOB_M1B_RELEASE_SHA: ${{ github.sha }}
+      BOB_M1B_STAGING_SUPABASE_PROJECT_REF: ${{ vars.BOB_M1B_STAGING_SUPABASE_PROJECT_REF }}
+      BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER: ${{ vars.BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER }}
+      BOB_M1B_STAGING_DATABASE_OID: ${{ vars.BOB_M1B_STAGING_DATABASE_OID }}
+      BOB_M1B_STAGING_DATABASE_NAME: ${{ vars.BOB_M1B_STAGING_DATABASE_NAME }}
+      BOB_REALTIME_VOICE_TRACE_V2_RELEASE_SHA: ${{ inputs.expected_sha }}
+      BOB_REALTIME_VOICE_TRACE_V2_RUN_ID: ${{ github.run_id }}
+      BOB_REALTIME_VOICE_TRACE_V2_SUBJECTS: ${{ format('{0}:{1}', vars.BOB_M1B_STAGING_COMPANY_ID, vars.BOB_M1B_STAGING_USER_ID) }}
+      BOB_REALTIME_VOICE_TRACE_V2_ENCRYPTION_CURRENT_VERSION: ${{ vars.BOB_REALTIME_VOICE_TRACE_V2_STAGING_ENCRYPTION_CURRENT_VERSION }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.18.0
+      - name: Install only the pinned safety control plane
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-16
+          sh apps/api/scripts/install-railway-cli.sh
+      - name: Prove staging, close admission, then force the owned trace block OFF
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          BOB_REALTIME_VOICE_TRACE_V2_ENCRYPTION_KEYRING: ${{ secrets.BOB_REALTIME_VOICE_TRACE_V2_STAGING_ENCRYPTION_KEYRING }}
+          BOB_M1B_STAGING_HMAC_KEYRING: ${{ secrets.BOB_M1B_STAGING_HMAC_KEYRING }}
+        run: |
+          set -euo pipefail
+          railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+            node apps/api/scripts/agent-mission-m1b-staging-database.mjs
+          railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+            env CABINET_RELEASE_ENV=staging \
+              node apps/api/scripts/agent-mission-m1b-staging-release.mjs predeploy
+          node apps/api/scripts/realtime-voice-trace-v2-staging-railway.mjs force-off
+          node apps/api/scripts/realtime-voice-trace-v2-staging-railway.mjs assert-off
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 9.12.0
+      - name: Install exact application dependencies only after safety is closed
+        run: pnpm install --frozen-lockfile --filter "@bob/api..."
+      - name: Clean the canary and rebuild the exact OFF runtime
+        id: deploy_safe_off
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          set -euo pipefail
+          railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+            env CABINET_RELEASE_ENV=staging BOB_REALTIME_VOICE_TRACE_V2_RUN_ID="$GITHUB_RUN_ID" \
+              node apps/api/scripts/realtime-voice-trace-v2-staging-evidence.mjs cleanup
+          railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+            env CABINET_RELEASE_ENV=staging BOB_REALTIME_VOICE_TRACE_V2_RUN_ID="$GITHUB_RUN_ID" \
+              node apps/api/scripts/realtime-voice-trace-v2-staging-evidence.mjs verify-clean
+          node apps/api/scripts/write-release-metadata.mjs "$GITHUB_SHA" staging
+          deployment_id="$(
+            railway up --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+              --environment "$RAILWAY_ENVIRONMENT_ID" --detach --json \
+              | node apps/api/scripts/agent-mission-m1b-staging-railway.mjs deployment-id
+          )"
+          node apps/api/scripts/agent-mission-m1b-staging-railway.mjs wait-deployment "$deployment_id"
+          status_file="$(mktemp)"
+          serving_id=''
+          for attempt in $(seq 1 12); do
+            if timeout 20s railway status --project "$RAILWAY_PROJECT_ID" \
+              --environment "$RAILWAY_ENVIRONMENT_ID" --json > "$status_file" \
+              && node apps/api/scripts/certify-railway-single-replica.mjs \
+                staging "$RAILWAY_API_SERVICE_ID" < "$status_file" \
+              && serving_id="$(node apps/api/scripts/agent-mission-m1b-staging-railway.mjs serving-deployment-id < "$status_file")" \
+              && test "$serving_id" = "$deployment_id"
+            then
+              break
+            fi
+            serving_id=''
+            sleep 5
+          done
+          test "$serving_id" = "$deployment_id"
+          node apps/api/scripts/realtime-voice-trace-v2-readiness-proof.mjs assert-staging-off
+          echo "safe=true" >> "$GITHUB_OUTPUT"
+      - name: Restore capacity only after exact OFF readiness
+        if: ${{ always() && steps.deploy_safe_off.outputs.safe == 'true' }}
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          BOB_M1B_STAGING_HMAC_KEYRING: ${{ secrets.BOB_M1B_STAGING_HMAC_KEYRING }}
+        run: |
+          set -euo pipefail
+          railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+            env CABINET_RELEASE_ENV=staging \
+              node apps/api/scripts/agent-mission-m1b-staging-release.mjs restore-capacity
+
+  production-after:
+    needs:
+      - production-before
+      - staging-drill
+      - rollback-off
+    if: ${{ always() && needs.production-before.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    env:
+      API_BASE_URL: ${{ vars.API_BASE_URL }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Prove production stayed public, inactive and byte-stable
+        id: snapshot
+        env:
+          BEFORE_DIGEST: ${{ needs.production-before.outputs.digest }}
+        run: |
+          set -euo pipefail
+          after_digest="$(node apps/api/scripts/realtime-voice-trace-v2-readiness-proof.mjs snapshot-production)"
+          [[ "$after_digest" =~ ^[a-f0-9]{64}$ ]]
+          test "$after_digest" = "$BEFORE_DIGEST"
+          echo "digest=$after_digest" >> "$GITHUB_OUTPUT"
+      - name: Require the certified final staging state
+        env:
+          STAGING_RESULT: ${{ needs.staging-drill.result }}
+          ROLLBACK_RESULT: ${{ needs.rollback-off.result }}
+        run: |
+          set -euo pipefail
+          test "$STAGING_RESULT" = success
+          test "$ROLLBACK_RESULT" = skipped
+      - name: Write the final non-PII exact-SHA receipt
+        env:
+          NORMAL_STAGING_RELEASE_RUN_ID: ${{ inputs.normal_staging_release_run_id }}
+          FINAL_DEPLOYMENT_ID: ${{ needs.staging-drill.outputs.final_deployment_id }}
+          PRODUCTION_BEFORE_DIGEST: ${{ needs.production-before.outputs.digest }}
+          PRODUCTION_AFTER_DIGEST: ${{ steps.snapshot.outputs.digest }}
+          STAGING_RESULT: ${{ needs.staging-drill.result }}
+          ROLLBACK_RESULT: ${{ needs.rollback-off.result }}
+          CANARY_EVENT_COUNT: ${{ needs.staging-drill.outputs.canary_event_count }}
+          ENCRYPTED_CONTENT_EVENTS: ${{ needs.staging-drill.outputs.encrypted_content_events }}
+          CLEANUP_EVENTS_REMOVED: ${{ needs.staging-drill.outputs.cleanup_events_removed }}
+          CLEANUP_AUDITS_REMOVED: ${{ needs.staging-drill.outputs.cleanup_audits_removed }}
+          CLEANUP_FINAL_EVENTS: ${{ needs.staging-drill.outputs.cleanup_final_events }}
+          CLEANUP_FINAL_AUDITS: ${{ needs.staging-drill.outputs.cleanup_final_audits }}
+        run: |
+          set -euo pipefail
+          mkdir -p .release-evidence/realtime-voice-trace-v2
+          node apps/api/scripts/realtime-voice-trace-v2-receipt.mjs final-receipt \
+            > .release-evidence/realtime-voice-trace-v2/receipt.json
+          test -s .release-evidence/realtime-voice-trace-v2/receipt.json
+      - name: Preserve the certified non-PII staging receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: realtime-voice-trace-v2-staging-${{ github.sha }}
+          path: .release-evidence/realtime-voice-trace-v2/receipt.json
+          if-no-files-found: error
+          retention-days: 90

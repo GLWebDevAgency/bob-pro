@@ -32,6 +32,7 @@ import type {
   RealtimeQuoteMissionOrchestratorPort,
   RealtimeQuoteMissionPreparedTurn,
 } from './realtime-quote-mission-orchestrator';
+import type { RealtimeVoiceTraceRecorder } from './realtime-voice-trace';
 
 const MAX_CANONICAL_SPEECH_CHARS = 2_400;
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -55,6 +56,8 @@ export interface RealtimeAgentTurnInput {
   readonly agentMissionAuthority?: RealtimeQuoteMissionAuthority;
   /** Fence durable lu au début du tour, puis relu juste avant toute publication. */
   readonly contextFence: RealtimeAgentContextFence;
+  /** Observateur staging non autoritaire ; ses pannes ne modifient jamais le résultat du tour. */
+  readonly trace?: RealtimeVoiceTraceRecorder;
   readonly signal: AbortSignal;
 }
 
@@ -116,6 +119,64 @@ export interface RealtimeBobAgentExecutor {
 
 export interface RealtimeSemanticPlannerPort {
   plan(input: RealtimeSemanticPlannerInput): Promise<RealtimeSemanticPlannerResult>;
+}
+
+function traceSemanticPlan(
+  trace: RealtimeVoiceTraceRecorder | undefined,
+  turnId: string,
+  planning: RealtimeSemanticPlannerResult,
+): void {
+  if (trace === undefined) return;
+  const common = {
+    eventKind: 'turn_semantic_plan' as const,
+    turnId,
+    stage: 'planner' as const,
+    durationMs: planning.plannerDurationMs,
+  };
+  if (planning.status === 'mission_frame') {
+    trace.record({
+      ...common,
+      outcome: 'ready',
+      plannerDisposition: 'mission_frame',
+      plannerAuthority: 'mission',
+      plannerModel: planning.frame.model,
+      missionKind: QUOTE_CREATION_MISSION_KIND_V1,
+    });
+    return;
+  }
+  if (planning.status === 'rejected') {
+    trace.record({
+      ...common,
+      outcome: 'rejected',
+      failureClass: 'planner_rejected',
+      plannerDisposition: 'rejected',
+      plannerAuthority: 'none',
+    });
+    return;
+  }
+  if (planning.status === 'out_of_scope') {
+    trace.record({
+      ...common,
+      outcome: 'ready',
+      plannerDisposition: 'out_of_scope',
+      plannerAuthority: 'none',
+      plannerModel: planning.plan.model,
+    });
+    return;
+  }
+  const stepCount = planning.plan.steps.length;
+  planning.plan.steps.forEach((step, plannerStepIndex) => {
+    trace.record({
+      ...common,
+      outcome: 'ready',
+      plannerDisposition: 'global_plan',
+      plannerAuthority: 'global',
+      plannerModel: planning.plan.model,
+      plannerStepIndex,
+      plannerStepCount: stepCount,
+      plannerIntent: step.intent,
+    });
+  });
 }
 
 interface ContextSnapshotLike {
@@ -336,6 +397,13 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
     }
 
     if (this.semanticPlanner === null) {
+      input.trace?.record({
+        eventKind: 'provider_failed',
+        turnId: input.turnId,
+        stage: 'planner',
+        outcome: 'unavailable',
+        failureClass: 'planner_unavailable',
+      });
       return {
         status: 'failed',
         canonicalSpeech: 'Je ne peux pas joindre le planificateur sécurisé. Rien n’a été exécuté.',
@@ -364,6 +432,13 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
         ),
       );
       if (!preparedHost.ok) {
+        input.trace?.record({
+          eventKind: 'provider_failed',
+          turnId: input.turnId,
+          stage: 'planner',
+          outcome: 'unavailable',
+          failureClass: 'planner_unavailable',
+        });
         return {
           status: 'failed',
           canonicalSpeech: 'Je ne peux pas vérifier mes capacités. Rien n’a été exécuté.',
@@ -372,6 +447,13 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
       hostManifest = preparedHost.value;
     } catch {
       if (input.signal.aborted) return { status: 'aborted' };
+      input.trace?.record({
+        eventKind: 'provider_failed',
+        turnId: input.turnId,
+        stage: 'planner',
+        outcome: 'unavailable',
+        failureClass: 'planner_unavailable',
+      });
       return {
         status: 'failed',
         canonicalSpeech: 'Je ne peux pas vérifier mes capacités. Rien n’a été exécuté.',
@@ -419,12 +501,20 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
       );
     } catch {
       if (input.signal.aborted) return { status: 'aborted' };
+      input.trace?.record({
+        eventKind: 'provider_failed',
+        turnId: input.turnId,
+        stage: 'planner',
+        outcome: 'unavailable',
+        failureClass: 'planner_unavailable',
+      });
       return {
         status: 'failed',
         canonicalSpeech: 'Je rencontre un souci temporaire. Rien n’a été exécuté.',
       };
     }
     if (input.signal.aborted) return { status: 'aborted' };
+    traceSemanticPlan(input.trace, input.turnId, planning);
     if (planning.status === 'rejected') {
       return { status: 'failed', canonicalSpeech: SEMANTIC_PLANNER_FAILURE };
     }

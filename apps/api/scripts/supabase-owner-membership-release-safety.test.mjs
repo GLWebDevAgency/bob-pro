@@ -152,7 +152,7 @@ test('le rejeu des grants runtime laisse chaque objet transféré à son provisi
   );
   assert.match(
     grantBlock,
-    /relation\.relname <> 'realtime_global_capacity'[\s\S]*?relation\.relowner = \(/u,
+    /relation\.relname NOT IN \(\s*'realtime_global_capacity',\s*'realtime_voice_trace_events',\s*'realtime_voice_trace_access_audits'\s*\)[\s\S]*?relation\.relowner = \(/u,
   );
   assert.match(
     grantBlock,

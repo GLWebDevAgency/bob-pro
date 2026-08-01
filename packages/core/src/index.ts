@@ -334,4 +334,5 @@ export * from './application/fiscal/derive-owner-pay-guidance';
 // Minimisation de la télémétrie de plantage (B4 observabilité — politique partagée API + mobile)
 export * from './observability/telemetry-scrubbing';
 export * from './observability/voice-trace';
+export * from './observability/realtime-voice-trace';
 export * from './observability/crash-reporting-region';

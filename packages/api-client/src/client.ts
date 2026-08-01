@@ -511,6 +511,13 @@ export interface VoiceSynthesisResult {
   model: string;
 }
 
+/** Transparence du journal de qualité staging. Strictement absent hors sujet autorisé. */
+export interface RealtimeVoiceDiagnosticTraceDisclosure {
+  readonly enabled: true;
+  readonly retentionDays: 30;
+  readonly purpose: 'staging_quality';
+}
+
 interface RealtimeVoiceConfigCommon {
   available: boolean;
   availabilityReason?: 'disabled' | 'not_entitled' | 'entitlement_unavailable';
@@ -519,6 +526,7 @@ interface RealtimeVoiceConfigCommon {
   configVersion: string;
   requiresDevelopmentBuild: true;
   maxSessionSeconds: number;
+  diagnosticTrace?: RealtimeVoiceDiagnosticTraceDisclosure;
 }
 
 export interface RealtimeVoiceNativeWebRtcConfig extends RealtimeVoiceConfigCommon {
@@ -559,6 +567,7 @@ interface RealtimeVoiceCallCommon {
   voice: 'marin' | 'cedar';
   configVersion: string;
   maxSessionSeconds: number;
+  diagnosticTrace?: RealtimeVoiceDiagnosticTraceDisclosure;
   /**
    * Capability volatile liée à cette session Realtime.
    *

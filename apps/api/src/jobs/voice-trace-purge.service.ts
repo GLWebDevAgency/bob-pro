@@ -4,6 +4,7 @@ import { isVoiceTraceEnabled } from '../config/env';
 import { AppLogger } from '../observability/logger';
 import type { Persistence } from '../persistence/persistence';
 import { PERSISTENCE } from '../persistence/persistence-token';
+import type { RealtimeVoiceTraceRetention } from '../voice/realtime/realtime-voice-trace.repository';
 import { ScheduledTenantDirectory } from './tenant-directory';
 
 /**
@@ -13,6 +14,7 @@ import { ScheduledTenantDirectory } from './tenant-directory';
  */
 export const VOICE_TRACE_PURGE_LIMIT_PER_TENANT = 500;
 export const VOICE_TRACE_PURGE_MAX_TENANTS = 100;
+export const REALTIME_VOICE_TRACE_V2_PURGE_LIMIT = 500;
 const ONE_HOUR_MS = 60 * 60 * 1_000;
 
 /**
@@ -39,6 +41,9 @@ export interface VoiceTracePurgeSummary {
   readonly skipped: boolean;
   readonly tenants: number;
   readonly purged: number;
+  readonly realtimeV2Purged: number;
+  readonly realtimeV2Due: number;
+  readonly realtimeV2OldestExpiredAt: string | null;
   readonly failures: number;
 }
 
@@ -60,6 +65,7 @@ export interface VoiceTracePurgeSummary {
 @Injectable()
 export class VoiceTracePurgeService {
   private running = false;
+  private readonly realtimeV2Retention: RealtimeVoiceTraceRetention | null;
 
   constructor(
     @Inject(PERSISTENCE) private readonly p: Persistence,
@@ -68,7 +74,9 @@ export class VoiceTracePurgeService {
     // @Optional() OBLIGATOIRE : cf. VoiceTraceRecorder — un paramètre fonction non optionnel
     // ferait échouer la résolution Nest au boot.
     @Optional() private readonly now: () => Date = () => new Date(),
-  ) {}
+  ) {
+    this.realtimeV2Retention = p.createRealtimeVoiceTraceAuthorities()?.retention ?? null;
+  }
 
   @Cron(CronExpression.EVERY_HOUR)
   scheduled(): void {
@@ -88,14 +96,44 @@ export class VoiceTracePurgeService {
     // Le flag éteint, plus rien ne s'écrit — mais le stock déjà écrit doit CONTINUER d'expirer.
     // On ne balaie donc pas seulement quand le traçage est actif : on refuse seulement de faire
     // tourner ce cron sur une base qui n'a jamais rien tracé et n'en tracera pas.
-    if (this.running) return { skipped: true, tenants: 0, purged: 0, failures: 0 };
+    if (this.running) {
+      return {
+        skipped: true,
+        tenants: 0,
+        purged: 0,
+        realtimeV2Purged: 0,
+        realtimeV2Due: 0,
+        realtimeV2OldestExpiredAt: null,
+        failures: 0,
+      };
+    }
     this.running = true;
     const now = this.now();
     const before = now.toISOString();
     let tenants = 0;
     let purged = 0;
+    let realtimeV2Purged = 0;
+    let realtimeV2Due = 0;
+    let realtimeV2OldestExpiredAt: string | null = null;
     let failures = 0;
     try {
+      // V2 est un journal global protégé par une autorité NOLOGIN. Il ne dépend donc pas de la
+      // page des tenants V1. Le flag OFF arrête les écritures, jamais la disparition du stock déjà
+      // conservé. Un échec V2 ne doit pas figer les purges tenantées historiques.
+      if (this.realtimeV2Retention !== null) {
+        try {
+          realtimeV2Purged = await this.realtimeV2Retention.purgeExpired(
+            REALTIME_VOICE_TRACE_V2_PURGE_LIMIT,
+          );
+          purged += realtimeV2Purged;
+          const lag = await this.realtimeV2Retention.inspectLag();
+          realtimeV2Due = lag.due;
+          realtimeV2OldestExpiredAt = lag.oldestExpiredAt;
+        } catch {
+          failures += 1;
+          this.logger.warn('Purge du journal Realtime Voice Trace V2 impossible.', 'VoiceTrace');
+        }
+      }
       const companyIds = selectVoiceTracePurgeTenantBatch(
         await this.tenants.listCompanyIds(),
         now,
@@ -116,7 +154,15 @@ export class VoiceTracePurgeService {
           this.logger.warn(`Purge des traces vocales impossible (${companyId}).`, 'VoiceTrace');
         }
       }
-      return { skipped: false, tenants, purged, failures };
+      return {
+        skipped: false,
+        tenants,
+        purged,
+        realtimeV2Purged,
+        realtimeV2Due,
+        realtimeV2OldestExpiredAt,
+        failures,
+      };
     } finally {
       this.running = false;
     }

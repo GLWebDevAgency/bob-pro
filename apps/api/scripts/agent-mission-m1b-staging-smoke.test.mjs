@@ -11,6 +11,7 @@ import {
   runM1BRecoveryStagingSmoke,
   runM2A3PreviewOffStagingSmoke,
   runM2A3PreviewStagingSmoke,
+  runRealtimeVoiceTraceV2StagingSmoke,
   validateM1BStagingAccessToken,
 } from './agent-mission-m1b-staging-smoke.mjs';
 
@@ -39,6 +40,8 @@ function environment(overrides = {}) {
     BOB_M1B_STAGING_COMPANY_ID: COMPANY_ID,
     BOB_AGENT_MISSION_STAGING_PROFILE: 'm2a3-preview',
     BOB_M2A3_STAGING_TIME_ZONE: 'Europe/Paris',
+    BOB_REALTIME_VOICE_TRACE_V2_CANARY_AUDIO_FILE: '/tmp/voice-trace-v2-canary.wav',
+    BOB_REALTIME_VOICE_TRACE_V2_CANARY_SESSION_FILE: '/tmp/voice-trace-v2-session',
     ...overrides,
   };
 }
@@ -310,6 +313,15 @@ function fakeDependencies(options = {}) {
           model: 'gpt-realtime',
           voice: 'marin',
           maxSessionSeconds: 600,
+          ...(options.diagnosticTrace === true
+            ? {
+                diagnosticTrace: {
+                  enabled: true,
+                  retentionDays: 30,
+                  purpose: 'staging_quality',
+                },
+              }
+            : {}),
         },
       };
     },
@@ -350,6 +362,15 @@ function fakeDependencies(options = {}) {
         speechDelivery: options.speechDelivery ?? 'openai-native-webrtc-v1',
         answerSdp: ANSWER_SDP,
         hardExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+        ...(options.diagnosticTrace === true
+          ? {
+              diagnosticTrace: {
+                enabled: true,
+                retentionDays: 30,
+                purpose: 'staging_quality',
+              },
+            }
+          : {}),
       };
       Object.defineProperty(call, 'agentMissionSession', {
         value: options.agentMissionOff === true ? null : missionSession,
@@ -367,6 +388,25 @@ function fakeDependencies(options = {}) {
         },
       };
     },
+    async getNextRealtimeVoiceSpeech() {
+      events.push('speech:poll');
+      return {
+        ok: true,
+        value: options.speechFeed ?? {
+          status: 'ready',
+          artifactId: '88888888-8888-4888-8888-888888888888',
+          turnId: '99999999-9999-4999-8999-999999999999',
+          sequence: 1,
+          contextRevision: 1,
+          contextDigest: CONTEXT_DIGEST,
+          audioUrl: 'https://audio-staging.bob.test/canary',
+          audioSha256: 'b'.repeat(64),
+          mimeType: 'audio/mpeg',
+          byteSize: 4_096,
+          durationMs: 1_200,
+        },
+      };
+    },
     async hangupRealtimeVoiceCall() {
       events.push('realtime:hangup');
       return options.hangupError
@@ -378,6 +418,13 @@ function fakeDependencies(options = {}) {
     offerSdp: OFFER_SDP,
     async applyAnswer(answer) {
       events.push(`peer:answer:${answer === ANSWER_SDP}`);
+    },
+    async playAudioFile(path) {
+      events.push(`peer:audio:${path}`);
+    },
+    async waitForProviderEvent(types) {
+      events.push(`peer:provider:${types.join(',')}`);
+      return 'response.done';
     },
     async close() {
       events.push('peer:close');
@@ -444,6 +491,9 @@ function fakeDependencies(options = {}) {
         ok: true,
         value: emptyQuoteDraftPayload(sessionId),
       }),
+      async writeCanarySessionFile(path, sessionHandle) {
+        events.push(`canary:file:${path}:${sessionHandle}`);
+      },
       certifyCleanEvidence() {
         events.push('evidence:clean');
         return { stage: 'clean', passed: true };
@@ -813,6 +863,97 @@ test('canary preview négocie V2, lit sans muter puis libère toute la session',
   ]);
   assert.equal(fake.state().mission, null);
   assert.equal(fake.state().draft, null);
+});
+
+test('canary Voice Trace ON traverse le vrai contrat audio jusqu’à speech ready sans faux delivered', async () => {
+  const fake = fakeDependencies({
+    diagnosticTrace: true,
+    speechDelivery: 'audited-signed-url-v1',
+  });
+  const result = await runRealtimeVoiceTraceV2StagingSmoke('on', environment(), fake.dependencies);
+
+  assert.deepEqual(result, {
+    mode: 'voice-trace-v2-on',
+    passed: true,
+    protocolVersion: 2,
+    diagnosticTrace: 'announced',
+    speechReady: true,
+    speechDelivered: false,
+    mutation: 'none',
+    cleanup: 'session_closed',
+    hangupAccepted: true,
+    bootstrapAttempts: 1,
+    recoveredTimeout: false,
+  });
+  assert.deepEqual(fake.events, [
+    'company:get',
+    'evidence:clean',
+    'draft:get',
+    'realtime:config',
+    'peer:create:1',
+    'realtime:create:2',
+    `canary:file:/tmp/voice-trace-v2-session:${SESSION_ID}`,
+    'peer:answer:true',
+    'context:update:1:/today',
+    'peer:audio:/tmp/voice-trace-v2-canary.wav',
+    'speech:poll',
+    'realtime:hangup',
+    'peer:close',
+    'mission:dispose',
+  ]);
+  const publicReceipt = JSON.stringify(result);
+  for (const forbidden of [USER_ID, COMPANY_ID, SESSION_ID, '/tmp/', 'audio-staging']) {
+    assert.equal(publicReceipt.includes(forbidden), false);
+  }
+});
+
+test('canary Voice Trace OFF ouvre et ferme V2 sans contexte, audio ni indicateur diagnostic', async () => {
+  const fake = fakeDependencies();
+  const result = await runRealtimeVoiceTraceV2StagingSmoke('off', environment(), fake.dependencies);
+
+  assert.equal(result.mode, 'voice-trace-v2-off');
+  assert.equal(result.diagnosticTrace, 'absent');
+  assert.equal(result.speechReady, false);
+  assert.equal(result.speechDelivered, false);
+  assert.equal(
+    fake.events.some((event) => event.startsWith('context:update:')),
+    false,
+  );
+  assert.equal(
+    fake.events.some((event) => event.startsWith('peer:audio:')),
+    false,
+  );
+  assert.equal(fake.events.includes('speech:poll'), false);
+  assert.equal(fake.events.includes('realtime:hangup'), true);
+  assert.equal(fake.events.includes('peer:close'), true);
+});
+
+test('canary Voice Trace refuse le disclosure avant bootstrap et ferme toute session déjà créée', async () => {
+  const persistenceFailure = fakeDependencies({ diagnosticTrace: true });
+  persistenceFailure.dependencies.writeCanarySessionFile = async () => {
+    throw new Error('session_file_unavailable');
+  };
+  await assert.rejects(
+    runRealtimeVoiceTraceV2StagingSmoke('on', environment(), persistenceFailure.dependencies),
+    /session_file_unavailable/u,
+  );
+  assert.equal(persistenceFailure.events.includes('realtime:hangup'), true);
+  assert.equal(persistenceFailure.events.includes('peer:close'), true);
+  assert.equal(persistenceFailure.events.includes('mission:dispose'), true);
+
+  const missingDisclosure = fakeDependencies();
+  await assert.rejects(
+    runRealtimeVoiceTraceV2StagingSmoke('on', environment(), missingDisclosure.dependencies),
+    /disclosure does not match/u,
+  );
+  assert.equal(
+    missingDisclosure.events.some((event) => event.startsWith('realtime:create:')),
+    false,
+  );
+  assert.equal(
+    missingDisclosure.events.some((event) => event.startsWith('peer:create:')),
+    false,
+  );
 });
 
 test('canary preview refuse V1/null et réconcilie le transport sans mutation', async () => {

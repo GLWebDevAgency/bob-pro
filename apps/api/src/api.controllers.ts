@@ -83,8 +83,12 @@ import {
   WithoutTenantPersistenceTransaction,
 } from './persistence/tenant-persistence.interceptor';
 import { clientIpSourceForRequest } from './config/client-ip';
-import { BOB_LIVE_RUNTIME_READINESS } from './voice/realtime/realtime.tokens';
+import {
+  BOB_LIVE_RUNTIME_READINESS,
+  REALTIME_VOICE_TRACE_V2,
+} from './voice/realtime/realtime.tokens';
 import type { BobLiveRuntimeReadinessPort } from './voice/realtime/realtime-readiness';
+import type { RealtimeVoiceTraceFactory } from './voice/realtime/realtime-voice-trace';
 
 function assertJsonObjectBody(value: unknown): asserts value is Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -2195,6 +2199,8 @@ export class HealthController {
     private readonly backend: BackendService,
     @Inject(BOB_LIVE_RUNTIME_READINESS)
     private readonly bobLiveReadiness: BobLiveRuntimeReadinessPort,
+    @Inject(REALTIME_VOICE_TRACE_V2)
+    private readonly realtimeVoiceTraceV2: RealtimeVoiceTraceFactory | null,
   ) {}
 
   @Get()
@@ -2233,6 +2239,10 @@ export class HealthController {
         // Le client V1 acquitte durablement le bootstrap avant de prendre le micro ou
         // d'exposer son handle. Sans ce marqueur, le pipeline interdit la réouverture.
         agentMissionBootstrapReceipt: 'v1' as const,
+        // Classe fermée non sensible : permet au drill staging de prouver ON/OFF et à la
+        // surveillance production de garantir que le diagnostic verbal y reste désactivé.
+        realtimeVoiceTraceV2:
+          this.realtimeVoiceTraceV2 === null ? ('off' as const) : ('active' as const),
       },
       release: readReleaseMetadata(),
       network: { clientIpSource: clientIpSourceForRequest(request) },

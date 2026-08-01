@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createRequire } from 'node:module';
 import { randomUUID as nodeRandomUUID } from 'node:crypto';
+import { open, readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import {
   certifyM1BActiveEvidence,
@@ -37,6 +38,7 @@ const M2A3_TIME_ZONE_CLAIMS = Object.freeze([
   'bob_time_zone_confirmed_at',
   'bob_time_zone_company_id',
 ]);
+const REALTIME_VOICE_TRACE_V2_SPEECH_ATTEMPTS = 18;
 
 function fail(message) {
   throw new Error(`agent-mission-m1b-staging-smoke:${message}`);
@@ -874,16 +876,26 @@ export async function createM1BChromiumPeer(speechDelivery) {
       async ({ nativeDownlink, timeoutMs }) => {
         const audio = new AudioContext();
         const oscillator = audio.createOscillator();
-        const gain = audio.createGain();
+        const keepaliveGain = audio.createGain();
         const destination = audio.createMediaStreamDestination();
-        gain.gain.value = 0;
-        oscillator.connect(gain);
-        gain.connect(destination);
+        keepaliveGain.gain.value = 0;
+        oscillator.connect(keepaliveGain);
+        keepaliveGain.connect(destination);
         oscillator.start();
         const track = destination.stream.getAudioTracks()[0];
         if (!track) throw new Error('synthetic_audio_track_missing');
         const peer = new RTCPeerConnection({ bundlePolicy: 'max-bundle' });
         const channel = peer.createDataChannel('oai-events', { ordered: true });
+        const providerEventTypes = [];
+        channel.addEventListener('message', (message) => {
+          try {
+            const event = JSON.parse(message.data);
+            if (typeof event?.type === 'string' && event.type.length <= 100) {
+              providerEventTypes.push(event.type);
+              if (providerEventTypes.length > 128) providerEventTypes.shift();
+            }
+          } catch {}
+        });
         peer.addTransceiver(track, {
           direction: nativeDownlink ? 'sendrecv' : 'sendonly',
           streams: [destination.stream],
@@ -891,10 +903,12 @@ export async function createM1BChromiumPeer(speechDelivery) {
         globalThis.__bobM1BPeer = {
           audio,
           oscillator,
+          keepaliveGain,
           destination,
           track,
           peer,
           channel,
+          providerEventTypes,
         };
         const offer = await peer.createOffer({
           offerToReceiveAudio: nativeDownlink,
@@ -960,6 +974,64 @@ export async function createM1BChromiumPeer(speechDelivery) {
             });
           },
           { answerSdp, timeoutMs: PEER_TIMEOUT_MS },
+        );
+      },
+      async playAudioFile(audioPath) {
+        const bytes = await readFile(audioPath);
+        if (bytes.byteLength < 256 || bytes.byteLength > 2_000_000) {
+          throw new Error('canary_audio_size_invalid');
+        }
+        await page.evaluate(
+          async ({ encoded, timeoutMs }) => {
+            const resources = globalThis.__bobM1BPeer;
+            if (!resources) throw new Error('peer_resources_missing');
+            const binary = atob(encoded);
+            const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+            const buffer = await resources.audio.decodeAudioData(bytes.buffer.slice(0));
+            const source = resources.audio.createBufferSource();
+            source.buffer = buffer;
+            source.connect(resources.destination);
+            await new Promise((resolve, reject) => {
+              const timeout = setTimeout(
+                () => reject(new Error('canary_audio_timeout')),
+                timeoutMs,
+              );
+              source.addEventListener(
+                'ended',
+                () => {
+                  clearTimeout(timeout);
+                  resolve();
+                },
+                { once: true },
+              );
+              source.start();
+            });
+          },
+          { encoded: bytes.toString('base64'), timeoutMs: PEER_TIMEOUT_MS },
+        );
+      },
+      async waitForProviderEvent(expectedTypes) {
+        if (
+          !Array.isArray(expectedTypes) ||
+          expectedTypes.length < 1 ||
+          expectedTypes.length > 8 ||
+          expectedTypes.some((value) => typeof value !== 'string' || value.length > 100)
+        ) {
+          throw new Error('provider_event_filter_invalid');
+        }
+        return page.evaluate(
+          async ({ expected, timeoutMs }) => {
+            const resources = globalThis.__bobM1BPeer;
+            if (!resources) throw new Error('peer_resources_missing');
+            const deadline = Date.now() + timeoutMs;
+            while (Date.now() < deadline) {
+              const match = resources.providerEventTypes.find((type) => expected.includes(type));
+              if (match) return match;
+              await new Promise((resolve) => setTimeout(resolve, 50));
+            }
+            throw new Error('provider_event_timeout');
+          },
+          { expected: expectedTypes, timeoutMs: PEER_TIMEOUT_MS },
         );
       },
       async close() {
@@ -1911,6 +1983,201 @@ export async function runM2A3PreviewOffStagingSmoke(environment = process.env, d
   });
 }
 
+function diagnosticTraceMatches(value) {
+  return (
+    record(value) !== null &&
+    value.enabled === true &&
+    value.retentionDays === 30 &&
+    value.purpose === 'staging_quality' &&
+    Object.keys(value).length === 3
+  );
+}
+
+async function persistRealtimeVoiceTraceCanarySession(sessionHandle, environment, dependencies) {
+  const path = required(environment, 'BOB_REALTIME_VOICE_TRACE_V2_CANARY_SESSION_FILE', {
+    maximum: 1_024,
+  });
+  if (typeof dependencies.writeCanarySessionFile === 'function') {
+    await dependencies.writeCanarySessionFile(path, sessionHandle);
+    return;
+  }
+  const file = await open(path, 'w', 0o600);
+  try {
+    await file.chmod(0o600);
+    await file.writeFile(sessionHandle, { encoding: 'utf8' });
+    await file.sync();
+  } finally {
+    await file.close();
+  }
+}
+
+async function waitForAuditedSpeechReady(client, sessionHandle, dependencies) {
+  const sleep =
+    dependencies.sleep ??
+    ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+  for (let attempt = 1; attempt <= REALTIME_VOICE_TRACE_V2_SPEECH_ATTEMPTS; attempt += 1) {
+    const speech = expectSuccess(
+      await client.getNextRealtimeVoiceSpeech(sessionHandle, {
+        afterSequence: 0,
+        waitMs: 2_500,
+      }),
+      'getNextRealtimeVoiceSpeech during Voice Trace V2 canary',
+    );
+    if (speech.status === 'ready') return;
+    if (speech.status === 'terminal') {
+      fail('Voice Trace V2 canary speech became terminal before ready');
+    }
+    if (attempt < REALTIME_VOICE_TRACE_V2_SPEECH_ATTEMPTS) await sleep(100);
+  }
+  fail('Voice Trace V2 canary speech did not become ready');
+}
+
+/**
+ * Canary O5 non-PII. Le WAV est généré à l'exécution par le workflow et n'est jamais archivé.
+ * Le mode ON exerce le vrai trajet audio WebRTC -> STT fournisseur -> cerveau -> speech ready.
+ * Il n'acquitte volontairement pas l'audio : seul un appareil réel peut produire delivered.
+ */
+export async function runRealtimeVoiceTraceV2StagingSmoke(
+  mode,
+  environment = process.env,
+  dependencies = {},
+) {
+  if (mode !== 'on' && mode !== 'off') fail('Voice Trace V2 canary mode must be on or off');
+  const prepared = await authenticateAndPrepare(environment, dependencies, {
+    requireM2A3TimeZone: true,
+  });
+  const { client, isMeaningfulQuoteDraftPayload, isRealtimeBootstrapTimeoutError } = prepared;
+  const existingDraft = expectSuccess(await client.getQuoteDraft(), 'getQuoteDraft');
+  expectCleanDraft(existingDraft, isMeaningfulQuoteDraftPayload);
+  if (existingDraft !== null) {
+    fail('the dedicated account already contains a quote draft before the Voice Trace V2 canary');
+  }
+  const config = expectConfig(
+    expectSuccess(await client.realtimeVoiceConfig(), 'realtimeVoiceConfig'),
+  );
+  const configHasDiagnosticTrace = Object.hasOwn(config, 'diagnosticTrace');
+  if (
+    (mode === 'on' &&
+      (!configHasDiagnosticTrace || !diagnosticTraceMatches(config.diagnosticTrace))) ||
+    (mode === 'off' && configHasDiagnosticTrace)
+  ) {
+    fail('Voice Trace V2 public configuration disclosure does not match the canary mode');
+  }
+  const bootstrap = await createRealtimeCallWithBoundedTimeoutRecovery(
+    client,
+    config,
+    environment,
+    dependencies,
+    isRealtimeBootstrapTimeoutError,
+    2,
+  );
+  const { call, peer, sessionHandle, attempts: bootstrapAttempts, recoveredTimeout } = bootstrap;
+  const missionSession = call.agentMissionSession;
+  let primaryError = null;
+  let cleanupError = null;
+  let speechReady = false;
+  try {
+    await persistRealtimeVoiceTraceCanarySession(sessionHandle, environment, dependencies);
+    if (
+      record(missionSession) === null ||
+      missionSession.protocolVersion !== 2 ||
+      missionSession.realtimeSessionId !== sessionHandle ||
+      missionSession.disposed !== false
+    ) {
+      fail('Voice Trace V2 canary did not negotiate Mission V2 on the exact session');
+    }
+    const hasDiagnosticTrace = Object.hasOwn(call, 'diagnosticTrace');
+    if (
+      (mode === 'on' && (!hasDiagnosticTrace || !diagnosticTraceMatches(call.diagnosticTrace))) ||
+      (mode === 'off' && hasDiagnosticTrace)
+    ) {
+      fail('Voice Trace V2 disclosure does not match the requested canary mode');
+    }
+    if (
+      mode === 'on' &&
+      JSON.stringify(call.diagnosticTrace) !== JSON.stringify(config.diagnosticTrace)
+    ) {
+      fail('Voice Trace V2 disclosure drifted between public config and bootstrap');
+    }
+    await peer.applyAnswer(call.answerSdp);
+    if (mode === 'on') {
+      const context = expectSuccess(
+        await client.updateRealtimeVoiceContext(sessionHandle, {
+          version: 1,
+          revision: 1,
+          context: {
+            screen: {
+              name: '/today',
+              instanceId: 'today:voice-trace-v2-canary',
+            },
+            entities: [],
+            capabilities: ['screen.read'],
+          },
+        }),
+        'updateRealtimeVoiceContext during Voice Trace V2 canary',
+      );
+      if (
+        context.revision !== 1 ||
+        typeof context.contextDigest !== 'string' ||
+        !/^[a-f0-9]{64}$/u.test(context.contextDigest)
+      ) {
+        fail('Voice Trace V2 canary context fence was not acknowledged exactly');
+      }
+      if (typeof peer.playAudioFile !== 'function') {
+        fail('Voice Trace V2 canary peer cannot inject runtime audio');
+      }
+      await peer.playAudioFile(
+        required(environment, 'BOB_REALTIME_VOICE_TRACE_V2_CANARY_AUDIO_FILE', {
+          maximum: 1_024,
+        }),
+      );
+      if (config.speechDelivery === 'audited-signed-url-v1') {
+        await waitForAuditedSpeechReady(client, sessionHandle, dependencies);
+      } else {
+        if (typeof peer.waitForProviderEvent !== 'function') {
+          fail('Voice Trace V2 native canary cannot observe the provider response');
+        }
+        await peer.waitForProviderEvent(['response.done']);
+      }
+      speechReady = true;
+    }
+  } catch (error) {
+    primaryError = error;
+  }
+  let hangupAccepted = false;
+  try {
+    hangupAccepted = await hangupAndClose(
+      client,
+      peer,
+      sessionHandle,
+      record(missionSession) === null ? null : missionSession,
+    );
+  } catch (error) {
+    cleanupError = error;
+  }
+  if (primaryError !== null && cleanupError !== null) {
+    throw new AggregateError(
+      [primaryError, cleanupError],
+      'Voice Trace V2 canary operation and cleanup both failed',
+    );
+  }
+  if (primaryError !== null) throw primaryError;
+  if (cleanupError !== null) throw cleanupError;
+  return Object.freeze({
+    mode: `voice-trace-v2-${mode}`,
+    passed: true,
+    protocolVersion: 2,
+    diagnosticTrace: mode === 'on' ? 'announced' : 'absent',
+    speechReady,
+    speechDelivered: false,
+    mutation: 'none',
+    cleanup: 'session_closed',
+    hangupAccepted,
+    bootstrapAttempts,
+    recoveredTimeout,
+  });
+}
+
 export async function runM1BStagingSmoke(command, environment = process.env, dependencies = {}) {
   if (command === 'preflight') {
     return preflightM1BStagingAccount(environment, dependencies);
@@ -1933,8 +2200,14 @@ export async function runM1BStagingSmoke(command, environment = process.env, dep
   if (command === 'preview-v2-off') {
     return runM2A3PreviewOffStagingSmoke(environment, dependencies);
   }
+  if (command === 'voice-trace-v2-on') {
+    return runRealtimeVoiceTraceV2StagingSmoke('on', environment, dependencies);
+  }
+  if (command === 'voice-trace-v2-off') {
+    return runRealtimeVoiceTraceV2StagingSmoke('off', environment, dependencies);
+  }
   fail(
-    'expected command preflight, preflight-v2, negative, positive, recovery, preview-v2 or preview-v2-off',
+    'expected command preflight, preflight-v2, negative, positive, recovery, preview-v2, preview-v2-off, voice-trace-v2-on or voice-trace-v2-off',
   );
 }
 

@@ -36,6 +36,7 @@ describe('HealthController readiness contract', () => {
     const controller = new HealthController(
       backend as unknown as BackendService,
       bobLive satisfies BobLiveRuntimeReadinessPort,
+      null,
     );
 
     try {
@@ -51,6 +52,7 @@ describe('HealthController readiness contract', () => {
           documentArchiveB2cHttpFence: 'v1',
           realtimeAdmissionCancellationFence: 'v1',
           agentMissionBootstrapReceipt: 'v1',
+          realtimeVoiceTraceV2: 'off',
         },
         dependencies: { bobLiveSpeechAudit: 'not_applicable' },
         network: { clientIpSource: 'railway-x-real-ip' },
@@ -76,6 +78,7 @@ describe('HealthController readiness contract', () => {
     const controller = new HealthController(
       backend as unknown as BackendService,
       bobLive satisfies BobLiveRuntimeReadinessPort,
+      null,
     );
 
     let refusal: unknown;
@@ -106,6 +109,7 @@ describe('HealthController readiness contract', () => {
     const controller = new HealthController(
       backend as unknown as BackendService,
       bobLive as BobLiveRuntimeReadinessPort,
+      null,
     );
 
     await expect(controller.ready({})).rejects.toBeInstanceOf(HttpException);

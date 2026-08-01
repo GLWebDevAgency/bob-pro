@@ -10903,6 +10903,17 @@ export class BackendService {
         now,
       });
       if (!r.ok) return r;
+      const traceAuthorities = this.p.createRealtimeVoiceTraceAuthorities();
+      if (traceAuthorities) {
+        // Le flag peut être OFF alors que des traces antérieures existent encore. L'effacement
+        // reste donc branché en permanence et participe à CETTE transaction de clôture ; tout
+        // échec annule closedAt et interdit l'appel Supabase post-commit.
+        await traceAuthorities.eraser.eraseInCurrentTransaction({
+          companyId,
+          userId: principal.userId,
+          reason: 'account_closure',
+        });
+      }
       await this.p.devices.deleteAllForCompany(companyId);
       return r;
     });

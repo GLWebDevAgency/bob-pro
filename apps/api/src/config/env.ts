@@ -299,9 +299,143 @@ const schema = z.object({
   // consommateur (VoiceTraceRecorder) relit `process.env` à chaque tour : couper le flag arrête
   // l'écriture au tour suivant, sans redéploiement.
   VOICE_TRACE_ENABLED: z.enum(['true', 'false']).default('false'),
+  // GPT Realtime Voice Trace V2 — bloc staging-only et tout-ou-rien. Les identifiants de sujets
+  // sont une allowlist explicite ; le keyring chiffre les deux seuls champs textuels persistés.
+  VOICE_TRACE_REALTIME_V2_ENABLED: z.enum(['true', 'false']).default('false'),
+  VOICE_TRACE_REALTIME_V2_SUBJECTS: z.string().min(1).max(16_384).optional(),
+  VOICE_TRACE_REALTIME_V2_ENCRYPTION_KEYRING: z.string().min(1).max(16_384).optional(),
+  VOICE_TRACE_REALTIME_V2_ENCRYPTION_CURRENT_VERSION: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(2_147_483_647)
+    .optional(),
 });
 
 export type Env = z.infer<typeof schema>;
+
+export interface ResolvedRealtimeVoiceTraceV2Env {
+  readonly enabled: boolean;
+  readonly subjects: ReadonlySet<string>;
+  readonly currentEncryptionVersion: number | null;
+  readonly encryptionVersions: readonly number[];
+  encryptionSecret(version: number): Uint8Array | null;
+}
+
+const REALTIME_TRACE_SUBJECT =
+  /^([A-Za-z0-9-]{1,64}):([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/u;
+
+function parseRealtimeVoiceTraceSubjects(raw: string): ReadonlySet<string> {
+  const subjects = raw.split(',').map((entry) => entry.trim());
+  if (
+    subjects.length < 1 ||
+    subjects.length > 64 ||
+    subjects.some((entry) => !REALTIME_TRACE_SUBJECT.test(entry))
+  ) {
+    throw new Error(
+      'VOICE_TRACE_REALTIME_V2_SUBJECTS exige 1 à 64 couples companyId:userId canoniques.',
+    );
+  }
+  const unique = new Set(subjects);
+  if (unique.size !== subjects.length) {
+    throw new Error('VOICE_TRACE_REALTIME_V2_SUBJECTS contient un sujet dupliqué.');
+  }
+  return unique;
+}
+
+function parseRealtimeVoiceTraceEncryptionKeyring(raw: string): ReadonlyMap<number, Uint8Array> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(
+      'VOICE_TRACE_REALTIME_V2_ENCRYPTION_KEYRING doit être un objet JSON canonique.',
+    );
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error(
+      'VOICE_TRACE_REALTIME_V2_ENCRYPTION_KEYRING doit être un objet JSON canonique.',
+    );
+  }
+  const entries = Object.entries(parsed);
+  if (entries.length < 1 || entries.length > 8) {
+    throw new Error('VOICE_TRACE_REALTIME_V2_ENCRYPTION_KEYRING exige 1 à 8 versions.');
+  }
+  const keys = new Map<number, Uint8Array>();
+  const uniqueSecrets = new Set<string>();
+  for (const [rawVersion, rawSecret] of entries) {
+    const version = Number(rawVersion);
+    if (
+      !/^[1-9][0-9]{0,9}$/u.test(rawVersion) ||
+      !Number.isSafeInteger(version) ||
+      version > 2_147_483_647 ||
+      typeof rawSecret !== 'string' ||
+      !/^[A-Za-z0-9_-]{43}$/u.test(rawSecret) ||
+      uniqueSecrets.has(rawSecret)
+    ) {
+      throw new Error(
+        'VOICE_TRACE_REALTIME_V2_ENCRYPTION_KEYRING contient une version ou une clé invalide.',
+      );
+    }
+    const decoded = Buffer.from(rawSecret, 'base64url');
+    if (decoded.byteLength !== 32 || decoded.toString('base64url') !== rawSecret) {
+      throw new Error(
+        'VOICE_TRACE_REALTIME_V2_ENCRYPTION_KEYRING exige des clés base64url canoniques de 32 octets.',
+      );
+    }
+    keys.set(version, Uint8Array.from(decoded));
+    uniqueSecrets.add(rawSecret);
+  }
+  return keys;
+}
+
+export function resolveRealtimeVoiceTraceV2Env(env: Env): ResolvedRealtimeVoiceTraceV2Env {
+  const enabled = env.VOICE_TRACE_REALTIME_V2_ENABLED === 'true';
+  const configured = [
+    env.VOICE_TRACE_REALTIME_V2_SUBJECTS,
+    env.VOICE_TRACE_REALTIME_V2_ENCRYPTION_KEYRING,
+    env.VOICE_TRACE_REALTIME_V2_ENCRYPTION_CURRENT_VERSION,
+  ].filter((value) => value !== undefined).length;
+  if (!enabled) {
+    if (configured > 0) {
+      throw new Error(
+        'Le bloc VOICE_TRACE_REALTIME_V2_* doit être absent lorsque VOICE_TRACE_REALTIME_V2_ENABLED=false.',
+      );
+    }
+    return Object.freeze({
+      enabled: false,
+      subjects: new Set<string>(),
+      currentEncryptionVersion: null,
+      encryptionVersions: Object.freeze([]),
+      encryptionSecret: (_version: number) => null,
+    });
+  }
+  if (configured !== 3) {
+    throw new Error(
+      'VOICE_TRACE_REALTIME_V2_ENABLED=true exige le bloc VOICE_TRACE_REALTIME_V2_* complet.',
+    );
+  }
+  const subjects = parseRealtimeVoiceTraceSubjects(env.VOICE_TRACE_REALTIME_V2_SUBJECTS as string);
+  const secrets = parseRealtimeVoiceTraceEncryptionKeyring(
+    env.VOICE_TRACE_REALTIME_V2_ENCRYPTION_KEYRING as string,
+  );
+  const currentEncryptionVersion = env.VOICE_TRACE_REALTIME_V2_ENCRYPTION_CURRENT_VERSION as number;
+  if (!secrets.has(currentEncryptionVersion)) {
+    throw new Error(
+      'VOICE_TRACE_REALTIME_V2_ENCRYPTION_CURRENT_VERSION doit exister dans le keyring.',
+    );
+  }
+  return Object.freeze({
+    enabled: true,
+    subjects,
+    currentEncryptionVersion,
+    encryptionVersions: Object.freeze([...secrets.keys()].sort((left, right) => left - right)),
+    encryptionSecret: (version: number) => {
+      const secret = secrets.get(version);
+      return secret ? Uint8Array.from(secret) : null;
+    },
+  });
+}
 
 export type BobLiveProviderId = 'openai' | 'mistral';
 export type BobLiveAuditProviderId = 'openai' | 'local-whisper';
@@ -999,8 +1133,36 @@ export function loadEnv(): Env {
   }
   const bobLive = resolveBobLiveEnv(parsed.data);
   const agentMissionKeyRing = resolveAgentMissionHmacKeyRing(parsed.data);
+  const realtimeVoiceTraceV2 = resolveRealtimeVoiceTraceV2Env(parsed.data);
   const agentMissionsQuoteV1Enabled = parsed.data.BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED === 'true';
   const agentMissionsQuoteM2AEnabled = parsed.data.BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED === 'true';
+  if (realtimeVoiceTraceV2.enabled) {
+    if (parsed.data.CABINET_RELEASE_ENV !== 'staging') {
+      throw new Error(
+        'VOICE_TRACE_REALTIME_V2_ENABLED=true est réservé à CABINET_RELEASE_ENV=staging.',
+      );
+    }
+    if (!bobLive.enabled || bobLive.provider !== 'openai') {
+      throw new Error(
+        'VOICE_TRACE_REALTIME_V2_ENABLED=true exige Bob Live actif avec BOB_LIVE_PROVIDER=openai.',
+      );
+    }
+    if (!agentMissionsQuoteV1Enabled || !agentMissionsQuoteM2AEnabled) {
+      throw new Error(
+        'VOICE_TRACE_REALTIME_V2_ENABLED=true exige les masters AgentMission V1 et M2-A actifs.',
+      );
+    }
+    if (agentMissionKeyRing === null) {
+      throw new Error(
+        'VOICE_TRACE_REALTIME_V2_ENABLED=true exige le keyring HMAC AgentMission complet.',
+      );
+    }
+    if (parsed.data.VOICE_TRACE_ENABLED === 'true') {
+      throw new Error(
+        'VOICE_TRACE_ENABLED et VOICE_TRACE_REALTIME_V2_ENABLED ne peuvent pas être actifs ensemble.',
+      );
+    }
+  }
   if (agentMissionsQuoteM2AEnabled && parsed.data.CABINET_RELEASE_ENV !== 'staging') {
     throw new Error(
       'BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED=true est réservé à CABINET_RELEASE_ENV=staging.',
@@ -1134,6 +1296,15 @@ export function loadEnv(): Env {
         if (!secret) throw new Error(`Clé HMAC AgentMission ${version} indisponible.`);
         return secret;
       }) ?? [];
+    const realtimeTraceEncryptionSecrets = realtimeVoiceTraceV2.encryptionVersions.map(
+      (version) => {
+        const secret = realtimeVoiceTraceV2.encryptionSecret(version);
+        if (!secret) {
+          throw new Error(`Clé de chiffrement Voice Trace V2 ${version} indisponible.`);
+        }
+        return Buffer.from(secret).toString('base64url');
+      },
+    );
     const providerSecrets = [parsed.data.OPENAI_API_KEY, parsed.data.MISTRAL_API_KEY].filter(
       (secret): secret is string => typeof secret === 'string' && secret.length > 0,
     );
@@ -1142,6 +1313,7 @@ export function loadEnv(): Env {
       ...subjectHmacSecrets,
       ...proofSecrets,
       ...agentMissionSecrets,
+      ...realtimeTraceEncryptionSecrets,
       bobLive.controlEncryptionSecret,
       ...(parsed.data.BOB_LIVE_USAGE_HMAC_SECRET ? [parsed.data.BOB_LIVE_USAGE_HMAC_SECRET] : []),
       ...(bobLive.localAuditToken ? [bobLive.localAuditToken] : []),
@@ -1162,7 +1334,7 @@ export function loadEnv(): Env {
     ];
     if (new Set(dedicatedSecrets).size !== dedicatedSecrets.length) {
       throw new Error(
-        'Chaque clé fournisseur, Bob Live et AgentMission (identité, preuve, contrôle et audit) doit être dédiée.',
+        'Chaque clé fournisseur, Bob Live, AgentMission et Voice Trace V2 (identité, preuve, contrôle, audit et chiffrement) doit être dédiée.',
       );
     }
     if (parsed.data.SUPABASE_REALTIME_AUDIO_BUCKET === parsed.data.SUPABASE_STORAGE_BUCKET) {
