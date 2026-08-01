@@ -24,6 +24,18 @@ describe('resolveScanReadingMotion', () => {
     });
   });
 
+  it('tri-état (Lot 0) : unknown = STATIQUE durée 0 — jamais un balayage avant de savoir', () => {
+    expect(resolveScanReadingMotion('unknown')).toEqual({ mode: 'static', durationMs: 0 });
+  });
+
+  it('tri-état (Lot 0) : reduced = pulse, full = sweep — mêmes rendus que les booléens historiques', () => {
+    expect(resolveScanReadingMotion('reduced')).toEqual(resolveScanReadingMotion(true));
+    expect(resolveScanReadingMotion('full')).toEqual(resolveScanReadingMotion(false));
+    // Un booléen ne produit JAMAIS static : la signature historique est intacte.
+    expect(resolveScanReadingMotion(true).mode).toBe('pulse');
+    expect(resolveScanReadingMotion(false).mode).toBe('sweep');
+  });
+
   it('garde-fous terrain-first : la ligne reste dans la miniature et jamais invisible', () => {
     expect(SCAN_LINE_TRAVEL_TOP).toBeGreaterThan(0);
     expect(SCAN_LINE_TRAVEL_BOTTOM).toBeGreaterThan(SCAN_LINE_TRAVEL_TOP);

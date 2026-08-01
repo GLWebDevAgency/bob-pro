@@ -7,9 +7,41 @@
  *    44 pt) ou à l'appui long, partageable en un texte SANS PII composé ici.
  */
 import { t, type Personality } from '@bob/i18n';
+import { surfaceTint } from '@bob/tokens';
 
 /** Cible tactile minimale du bouton de repli (HIG iOS / WCAG 2.2 « Target Size » : ≥ 44 pt). */
 export const ERROR_NOTICE_HIT_TARGET = 44;
+
+/** Apparence du composant — `light` (défaut, rendu historique inchangé) ou `dark` (Lot 0). */
+export type ErrorNoticeAppearance = 'light' | 'dark';
+
+export interface ErrorNoticeDarkFace {
+  readonly border: string;
+  readonly bg: string;
+  /** Texte principal (message, valeurs de DetailRow, bouton Partager). */
+  readonly ink: string;
+  /** Texte secondaire (chip de code, libellés, chevron). */
+  readonly inkMuted: string;
+  /** Fond du chip de code et filet de séparation de la face développeur. */
+  readonly chipBg: string;
+}
+
+/**
+ * FACE SOMBRE (Lot 0, plan DA 01/08 — pour les panneaux on-dark du diagnostic) : la
+ * matière danger SOMBRE du kit (surfaceTint.dark.danger), dont les encres sont déjà
+ * certifiées AA sur flat ET raised (surface-tint, index.test.ts de @bob/tokens).
+ * Pure — testée en littéraux, sans React Native.
+ */
+export function errorNoticeDarkFace(): ErrorNoticeDarkFace {
+  const spec = surfaceTint.dark.danger;
+  return {
+    border: spec.border,
+    bg: spec.flat,
+    ink: spec.ink,
+    inkMuted: spec.inkMuted,
+    chipBg: spec.raised,
+  };
+}
 
 export interface ErrorNoticeFacts {
   /** Code court du registre fermé (`bobErrorCode` / `error.code`). */

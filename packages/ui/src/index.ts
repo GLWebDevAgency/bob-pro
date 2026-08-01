@@ -19,7 +19,12 @@ export * from './components/bob-surface';
 export { bobSurfaceColors } from './components/bob-surface.logic';
 export * from './components/button';
 export * from './components/status-badge';
-export { statusBadgeColors } from './components/status-badge.logic';
+export {
+  STATUS_BADGE_VARIANT_BY_LEGACY_TONE,
+  statusBadgeColors,
+  statusBadgeVariantForLegacyTone,
+  type LegacyBadgeTone,
+} from './components/status-badge.logic';
 export * from './components/avatar';
 export * from './components/card';
 export * from './components/skeleton';
@@ -41,10 +46,14 @@ export * from './components/section-header';
 export * from './components/money-text';
 export * from './components/error-notice';
 export {
+  errorNoticeDarkFace,
   errorNoticeReportText,
   resolveErrorNoticeCopy,
+  type ErrorNoticeDarkFace,
   type ErrorNoticeFacts,
 } from './components/error-notice.logic';
+// Grammaire d'erreur (Lot 0) — la feuille d'échec de mutation appelable au support.
+export * from './components/error-sheet';
 
 // Accueil
 export * from './components/app-header-navy';
@@ -55,6 +64,43 @@ export * from './components/quick-action';
 
 // Argent & Clients
 export * from './components/inner-screen-header';
+// Lot 0 — BackHeader canonique (promotion du screen-header local d'apps/mobile).
+export * from './components/back-header';
+// Lot 0 — barres sticky (fusion StickyCtaBar/StickyActionBar) + rangée retour sticky.
+export * from './components/sticky-action-bar';
+export {
+  STICKY_FLOATING_ACCENT_WIDTH,
+  STICKY_FLOATING_MIN_HEIGHT,
+  stickyBarContainerStyle,
+  stickyFloatingContainerStyle,
+  stickyFloatingPillStyle,
+  type StickyActionBarVariant,
+  type StickyBarPalette,
+} from './components/sticky-action-bar.logic';
+export * from './components/sticky-back-row';
+export {
+  STICKY_BACK_ROW_MIN_TARGET,
+  stickyBackRowContainerStyle,
+} from './components/sticky-back-row.logic';
+// Lot 0 — bandeau d'état pastel + encre foncée AA (résorbe 6 duplications).
+export * from './components/status-strip';
+export {
+  statusStripColors,
+  type StatusStripColors,
+  type StatusStripPalette,
+} from './components/status-strip.logic';
+// Lot 0 — champ de recherche (loupe + clear 44) et champs de formulaire à label visible.
+export * from './components/search-field';
+export { searchClearVisible } from './components/search-field.logic';
+export * from './components/form-field';
+export { applyDateMask, formFieldBorderColor } from './components/form-field.logic';
+// Lot 0 — bouton d'icône de header (squircle 44×44, radius 13 — l'arbitrage).
+export * from './components/header-icon-button';
+export {
+  HEADER_ICON_BUTTON_RADIUS,
+  HEADER_ICON_BUTTON_SIZE,
+  headerIconButtonStyle,
+} from './components/header-icon-button.logic';
 export * from './components/hero-money-card';
 export * from './components/money-row';
 export * from './components/segmented-control';
@@ -71,6 +117,11 @@ export * from './components/fab';
 export * from './components/sheet';
 export * from './components/question-sheet';
 export * from './components/toast';
+export {
+  toastToneAccent,
+  type ToastToneAccent,
+  type ToastTonePalette,
+} from './components/toast.logic';
 
 // Flux (réserve C03 — devis C21)
 export * from './components/stepper';
@@ -85,6 +136,14 @@ export {
   ProgressiveBlurBob,
   type ProgressiveBlurBobViewProps,
 } from './components/progressive-blur-bob';
+// Lot 0 — le voile de header : mécanisme UNIQUE décliné en variantes de montée.
+export * from './components/header-veil';
+export {
+  DEFAULT_HEADER_VEIL_HEIGHT,
+  headerVeilPreset,
+  type HeaderVeilPreset,
+  type HeaderVeilVariant,
+} from './components/header-veil.logic';
 export {
   defineBlurPort,
   isSealedBlurPort,

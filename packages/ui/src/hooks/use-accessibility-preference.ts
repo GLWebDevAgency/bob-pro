@@ -3,13 +3,13 @@
  * pour la même raison : `AccessibilityInfo` n'a AUCUNE variante synchrone. Au premier rendu, la
  * valeur n'est pas revenue.
  *
- * POURQUOI CES DEUX HOOKS EXISTENT À CÔTÉ DE `useReduceMotion`. Le hook livré rend un
- * `boolean` initialisé à `false` : pendant la fenêtre d'ignorance, il répond « pas de
- * réduction ». C'est un fail-OPEN, et c'est exactement l'effet que l'utilisateur a demandé à ne
- * pas subir (08 § Préférences d'accessibilité et premier rendu, règle A18). On ne CHANGE PAS le
- * hook livré : sept composants animés le consomment, et modifier son type les casserait tous —
- * ce serait un restyling, interdit. On AJOUTE donc la variante tri-état, que les nouveaux
- * composants consomment.
+ * POURQUOI CES DEUX HOOKS EXISTENT À CÔTÉ DE `useReduceMotion`. Depuis le Lot 0 (plan DA
+ * 01/08), le hook livré est FAIL-CLOSED lui aussi : pendant la fenêtre d'ignorance il répond
+ * `true` (réduit — aucune animation avant de savoir), en gardant sa signature `boolean` pour
+ * ses sept consommateurs. Ce qu'un `boolean` ne peut PAS dire, c'est la différence entre
+ * « réduit » et « pas encore su » : les cas fins qui rendent un état DIFFÉRENT pendant
+ * l'ignorance (tab bar, ligne de scan — statique pendant `unknown`, pulse en `reduced`)
+ * consomment la variante tri-état ci-dessous.
  *
  * LE LECTEUR D'ÉCRAN N'AVAIT AUCUN HOOK. Il en faut un, et il est structurant : un détecteur de
  * geste qui CONSOMME les touches d'exploration ne doit pas être monté tant qu'on ne sait pas si

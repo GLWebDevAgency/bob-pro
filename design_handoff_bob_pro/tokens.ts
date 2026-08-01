@@ -43,7 +43,9 @@ export const neutrals = {
 // ----------------------------------------------------------------------------
 export const semantic = {
   success:    '#0E7C5A', successBg:  '#EAF2EC', successOnDark: '#6EE7B7', // payé, à jour
+  successInk: '#0E5C44',                                                 // encre AA sur successBg (Lot 0)
   warning:    '#C77A12', warningBg:  '#FBF0DF',                          // en attente, échéance
+  warningInk: '#8A5A12',                                                 // encre AA sur warningBg (patron creditInk, Lot 0)
   danger:     '#C8463C', dangerBg:   '#FBEAE8', dangerVivid:  '#E5544B', // retard, impayé
   b2b:        '#1B3A63', b2bBg:      '#E6EDF6',                          // entreprise
   b2g:        '#4338CA', b2gBg:      '#EDEAFE',                          // public (Chorus Pro)
@@ -56,13 +58,13 @@ export const semantic = {
 //   d1/d2/d3 = rampe de dégradé (sombre→clair) ; ink/ink2 = aplats (CTA, puces, FAB)
 // ----------------------------------------------------------------------------
 export type ThemeName = 'marine' | 'foret' | 'graphite' | 'indigo';
-export interface BrandTheme { d1: string; d2: string; d3: string; ink: string; ink2: string; }
+export interface BrandTheme { d1: string; d2: string; d3: string; ink: string; ink2: string; accent: string; }
 
 export const themes: Record<ThemeName, BrandTheme> = {
-  marine:   { d1: '#0C2340', d2: '#122E52', d3: '#163763', ink: '#0C2340', ink2: '#1B3A63' },
-  foret:    { d1: '#0A3A2B', d2: '#0E5A43', d3: '#117A5A', ink: '#0C4A37', ink2: '#0E6B4F' },
-  graphite: { d1: '#15181E', d2: '#242A33', d3: '#36404E', ink: '#1B2028', ink2: '#2C333F' },
-  indigo:   { d1: '#272363', d2: '#3A36A0', d3: '#4F46E5', ink: '#312C8A', ink2: '#4338CA' },
+  marine:   { d1: '#0C2340', d2: '#122E52', d3: '#163763', ink: '#0C2340', ink2: '#1B3A63', accent: '#AECFFB' },
+  foret:    { d1: '#0A3A2B', d2: '#0E5A43', d3: '#117A5A', ink: '#0C4A37', ink2: '#0E6B4F', accent: '#AEFBE4' },
+  graphite: { d1: '#15181E', d2: '#242A33', d3: '#36404E', ink: '#1B2028', ink2: '#2C333F', accent: '#AECAFB' },
+  indigo:   { d1: '#272363', d2: '#3A36A0', d3: '#4F46E5', ink: '#312C8A', ink2: '#4338CA', accent: '#B7AEFB' },
 };
 export const defaultTheme: ThemeName = 'marine';
 
@@ -96,6 +98,15 @@ export const type = {
   label:     { family: 'text',    size: 13,   weight: 600 },
   eyebrow:   { family: 'text',    size: 12,   weight: 700, tracking: 0.4, uppercase: true }, // sur-titre
   meta:      { family: 'text',    size: 12,   weight: 600 },                 // légendes
+  // Crans Lot 0 (plan DA 01/08) — aucune demi-taille tokenisée
+  sheetTitle:  { family: 'display', size: 20, weight: 700, tracking: -0.5 }, // titre de feuille
+  wizardTitle: { family: 'display', size: 24, weight: 700, tracking: -0.4 }, // titre d'étape wizard
+  moneyHero:   { family: 'display', size: 27, weight: 800 },                 // montant héros pilotage/dépenses
+} as const;
+
+// Rôles d'espacement nommés (Lot 0) — gouttière canonique 20 (InnerScreenHeader)
+export const spacing = {
+  gutter: 20, sectionGap: 20, itemGap: 12, intraGap: 14, cardPad: 16, heroPad: 20,
 } as const;
 
 // ----------------------------------------------------------------------------
@@ -160,7 +171,8 @@ export const controls = {
 // VOILES & HALOS — usage sur navy (header, héros) + scrim (v1.2, redlines/dc.html)
 // ----------------------------------------------------------------------------
 export const overlays = {
-  white70: 'rgba(255,255,255,.7)',
+  white80: 'rgba(255,255,255,.8)', // corps AA on-dark (Lot 0)
+  white70: 'rgba(255,255,255,.7)', // détail on-dark
   white66: 'rgba(255,255,255,.66)', // sous-titre header navy
   white60: 'rgba(255,255,255,.6)',
   white50: 'rgba(255,255,255,.5)',
@@ -170,6 +182,8 @@ export const overlays = {
   white08: 'rgba(255,255,255,.08)', // séparateur sur navy
   white07: 'rgba(255,255,255,.07)',
   scrim: 'rgba(12,35,64,.45)', // voile des sheets
+  photoScrim: 'rgba(0,0,0,.92)', // visionneuse photo plein écran (Lot 0)
+  scrimChrome: '#FFFFFF', // chrome (fermer/supprimer) sur photoScrim
   successPill: 'rgba(52,211,153,.18)', // pill « sans risque » (texte = successOnDark)
   unreadDot: '#FF7A6B', // point non-lu de la cloche
   haloIndigo: ['rgba(67,56,202,.55)', 'rgba(67,56,202,0)'], // halo header top-right
@@ -211,7 +225,44 @@ export const vault = {
   monthReadyTop: '#F0F7F3', // carte « mois prêt » (dégradé 180°)
   monthReadyBottom: '#FBFEFC',
   monthReadyBorder: '#DCEDE3',
+  folderSteel: '#3B5B85', // dossier « Banque » — bleu acier (Lot 0)
+  folderSteelBg: '#E9EFF7',
+  folderTeal: '#0E6E73', // dossier « Comptable » — sarcelle (Lot 0)
+  folderTealBg: '#DFEFF0',
 } as const;
+
+// Teintes des dossiers du coffre (Lot 0) — 6 paires distinctes, ordre = contrat du hash
+export const vaultFolderTints = [
+  { tint: semantic.b2b, bg: semantic.b2bBg },                 // 0 — marine (Chantiers)
+  { tint: semantic.success, bg: semantic.successBg },         // 1 — vert (Achats)
+  { tint: semantic.particulier, bg: semantic.particulierBg }, // 2 — ambre (Assurances)
+  { tint: vault.aiDeep, bg: semantic.aiBg },                  // 3 — violet (Fiscal)
+  { tint: vault.folderSteel, bg: vault.folderSteelBg },       // 4 — acier (Banque)
+  { tint: vault.folderTeal, bg: vault.folderTealBg },         // 5 — sarcelle (Comptable)
+] as const;
+
+export const systemVaultFolderTintIndex = {
+  chantiers: 0, achats: 1, assurances: 2, fiscal: 3, banque: 4, comptable: 5,
+} as const;
+
+// Rôles dédiés (Lot 0) — fin du recyclage des tons de typologie client
+export const journal = {
+  ventes: { ink: semantic.b2b, bg: semantic.b2bBg },
+  achats: { ink: semantic.particulier, bg: semantic.particulierBg },
+  banque: { ink: semantic.success, bg: semantic.successBg },
+  od:     { ink: semantic.b2g, bg: semantic.b2gBg },
+} as const;
+
+export const expenseCategory = {
+  fournitures:    { ink: semantic.success, bg: semantic.successBg },
+  materiel:       { ink: semantic.b2b, bg: semantic.b2bBg },
+  carburant:      { ink: semantic.particulier, bg: semantic.particulierBg },
+  repas:          { ink: semantic.particulier, bg: semantic.particulierBg },
+  sous_traitance: { ink: semantic.b2g, bg: semantic.b2gBg },
+  autre:          { ink: semantic.b2g, bg: semantic.b2gBg },
+} as const;
+
+export const documentTile = { ink: neutrals.slate500, bg: neutrals.lineSoft } as const;
 
 export const vaultShadowNative = {
   scan: { shadowColor: '#0C2340', shadowOpacity: 0.2, shadowRadius: 24, shadowOffset: { width: 0, height: 10 }, elevation: 8 },
