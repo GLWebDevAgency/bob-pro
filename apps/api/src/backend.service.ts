@@ -37,6 +37,7 @@ import {
   type InvoiceArchivePdfPort,
   type NotificationEmailAttachment,
   SystemClock,
+  businessDayOf,
   parisDateOnly,
   deriveRelancePlan,
   buildQuoteRelance,
@@ -3937,7 +3938,10 @@ export class BackendService {
         // Même refus vocal que computePayout : jamais un conseil de versement sans solde observé.
         if (cashflowResult.value.bankingSource === 'none')
           return err(appUnavailable('cashflow-banking-source'));
-        // Mois civil URSSAF = calendrier MÉTIER Paris (cohérent avec l'écran Argent).
+        // Mois civil URSSAF = calendrier MÉTIER Paris DES DEUX CÔTÉS : borne (businessToday) ET
+        // jour des encaissements (receivedAt est un Instant, projeté via businessDayOf — la
+        // troncature UTC perdait les paiements de 00:00–~02:00 Paris le 1er du mois). Cohérent
+        // avec l'écran Argent et le hook mobile useOwnerPayGuidance : même mois, même chiffre.
         const today = this.businessToday();
         const month = today.slice(0, 7);
         const payments = await this.p.payments.listByCompany(this.companyId());
@@ -3945,7 +3949,7 @@ export class BackendService {
           encaissedCents: Math.max(
             0,
             payments
-              .filter((p) => p.receivedAt.slice(0, 7) === month)
+              .filter((p) => businessDayOf(p.receivedAt).slice(0, 7) === month)
               .reduce((sum, p) => sum + p.amount, 0),
           ),
           year: Number(today.slice(0, 4)),
@@ -7598,11 +7602,14 @@ export class BackendService {
     const today = this.businessToday();
     // E6 (PONT-SERVEUR v1) : recettes ENCAISSÉES de l'année civile courante — la surveillance des
     // seuils de franchise 293 B lit du RÉEL (paiements datés du tenant), jamais un statut
-    // décoratif. Les avoirs ne génèrent pas de paiement.
+    // décoratif. Les avoirs ne génèrent pas de paiement. Année MÉTIER Paris des deux côtés :
+    // borne (businessToday) ET jour de l'encaissement (businessDayOf) — la troncature UTC
+    // classait un encaissement de la nuit du Nouvel An (23:00–00:00 UTC le 31/12) dans l'année
+    // précédente, précisément celle dont le dépassement de seuil déclenche la sortie de franchise.
     const year = today.slice(0, 4);
     const payments = await this.p.payments.listByCompany(this.companyId());
     const annualEncaissedCents = payments
-      .filter((p) => p.receivedAt.slice(0, 4) === year)
+      .filter((p) => businessDayOf(p.receivedAt).slice(0, 4) === year)
       .reduce((sum, p) => sum + p.amount, 0);
     return ok(
       runDiagnostic({

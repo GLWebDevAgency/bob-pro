@@ -6,6 +6,7 @@ import {
   LEGACY_EXECUTION_AUTHORITY_CONTRACT_SHA256,
   LEGACY_EXECUTION_AUTHORITY_SCHEMA_VERSION,
   runtimeToolResultIntent,
+  type BobActions,
   type JournalEntry,
 } from '@bob/ai';
 import {
@@ -567,30 +568,31 @@ describe('PONT-SERVEUR v1 ④ — GET /company/me (fiche société du tenant, Co
   });
 });
 
-describe('PONT-SERVEUR v1 ⑤ — getDiagnostic : annualEncaissedCents RÉEL (vigie 293 B en prod, E6)', () => {
-  /** Tenant franchise en base : la surveillance des seuils doit lire les ENCAISSEMENTS réels. */
-  async function seedFranchiseTenant(p: InMemoryPersistence): Promise<Principal> {
-    const company = Company.of({
-      ...MERCIER_PROPS,
-      id: 'company-franchise',
-      name: 'Petit Plombier',
-      vatRegime: 'franchise',
-    });
-    if (!company.ok) throw new Error('fixture: company franchise invalide');
-    await p.companies.save(company.value);
-    await p.billingSettings.ensureForCompany(company.value.id);
-    const customer = Customer.of({
-      id: 'cust-franchise-1',
-      companyId: 'company-franchise',
-      type: 'b2c',
-      name: 'Mme Client',
-      address: { line1: '1 rue Basse', zip: '92310', city: 'Sèvres' },
-    });
-    if (!customer.ok) throw new Error('fixture: customer franchise invalide');
-    await p.customers.save(customer.value);
-    return { userId: 'u-franchise', companyId: 'company-franchise' };
-  }
+/** Tenant franchise en base : la surveillance des seuils doit lire les ENCAISSEMENTS réels.
+ * (Partagé : ⑤ getDiagnostic et getOwnerPayGuidance — même tenant micro/franchise réaliste.) */
+async function seedFranchiseTenant(p: InMemoryPersistence): Promise<Principal> {
+  const company = Company.of({
+    ...MERCIER_PROPS,
+    id: 'company-franchise',
+    name: 'Petit Plombier',
+    vatRegime: 'franchise',
+  });
+  if (!company.ok) throw new Error('fixture: company franchise invalide');
+  await p.companies.save(company.value);
+  await p.billingSettings.ensureForCompany(company.value.id);
+  const customer = Customer.of({
+    id: 'cust-franchise-1',
+    companyId: 'company-franchise',
+    type: 'b2c',
+    name: 'Mme Client',
+    address: { line1: '1 rue Basse', zip: '92310', city: 'Sèvres' },
+  });
+  if (!customer.ok) throw new Error('fixture: customer franchise invalide');
+  await p.customers.save(customer.value);
+  return { userId: 'u-franchise', companyId: 'company-franchise' };
+}
 
+describe('PONT-SERVEUR v1 ⑤ — getDiagnostic : annualEncaissedCents RÉEL (vigie 293 B en prod, E6)', () => {
   it('sans encaissement : item 293 B informatif (on n’invente pas une alerte sans donnée)', async () => {
     const { service, p } = makeService();
     const principal = await seedFranchiseTenant(p);
@@ -629,6 +631,153 @@ describe('PONT-SERVEUR v1 ⑤ — getDiagnostic : annualEncaissedCents RÉEL (vi
       expect(item?.severity).toBe('important');
       expect(item?.label).toContain('Seuil de franchise dépassé');
     });
+  });
+
+  describe('année MÉTIER Paris — bascule du Nouvel An (fenêtre 23:00–00:00 UTC du 31/12)', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** Flow réel 40 000 € encaissés à l'instant GELÉ, puis lecture du verdict 293 B. */
+    async function diagnosticAfterPaidFlow(frozenAt: string) {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date(frozenAt));
+      const { service, p } = makeService();
+      const principal = await seedFranchiseTenant(p);
+      return asPrincipal(principal, async () => {
+        const { invoiceId } = await issueFinalInvoice(service, {
+          customerId: 'cust-franchise-1',
+          unitPriceHT: 4_000_000, // 40 000 € HT, TVA 0 % (franchise) → 40 000 € TTC
+          vatRate: 0,
+        });
+        const paid = await service.registerPayment({
+          invoiceId,
+          amount: 4_000_000, // receivedAt = clock.now() = l'instant gelé
+          method: 'transfer',
+          idempotencyKey: null,
+        });
+        expect(paid.ok).toBe(true);
+        const r = await service.getDiagnostic();
+        expect(r.ok).toBe(true);
+        if (!r.ok) throw new Error('getDiagnostic KO');
+        return r.value.items.find((i) => i.id === 'tva-franchise');
+      });
+    }
+
+    it("encaissé le 31/12 23:30 UTC = 1er janvier 00:30 Paris (CET +1) : compté dans l'ANNÉE MÉTIER 2027 → seuil dépassé", async () => {
+      // Horloge gelée à 2026-12-31T23:30Z : businessToday() = 2027-01-01 → année 293 B = '2027'.
+      // Le paiement (receivedAt = même instant) a pour jour métier 2027-01-01 → année '2027' :
+      // les 40 000 € comptent dans l'année SURVEILLÉE → alerte. La troncature UTC (année '2026'
+      // ≠ '2027') l'aurait perdu → 0 € → item « ok » : précisément l'année dont le dépassement
+      // déclenche la sortie de franchise, fausse dans la nuit du Nouvel An.
+      const item = await diagnosticAfterPaidFlow('2026-12-31T23:30:00.000Z');
+      expect(item?.status).toBe('todo');
+      expect(item?.label).toContain('Seuil de franchise dépassé');
+    });
+
+    it("TÉMOIN DST : encaissé le 31/12 22:30 UTC = 23:30 Paris (CET +1, pas +2) : encore l'année 2026 → seuil dépassé", async () => {
+      // 22:30Z + 1 h = 23:30 le 31/12 : businessToday() = 2026-12-31 → année '2026', et le jour
+      // métier du paiement est ENCORE 2026-12-31 → compté. Un calcul DST-naïf à offset d'été figé
+      // (+2 h toute l'année) projetterait le paiement au 01/01/2027 (année '2027' ≠ '2026') →
+      // 0 € → « ok ». Le cas 23:30Z ci-dessus ne discrimine pas (+1 et +2 donnent tous deux le
+      // 01/01) : ce littéral-ci est le témoin qui tue ce mutant.
+      const item = await diagnosticAfterPaidFlow('2026-12-31T22:30:00.000Z');
+      expect(item?.status).toBe('todo');
+      expect(item?.label).toContain('Seuil de franchise dépassé');
+    });
+
+    it('non-régression pleine journée : encaissé le 15/06 10:00 UTC = 12:00 Paris → compté, seuil dépassé', async () => {
+      // Loin de minuit, année UTC et année Paris coïncident — le correctif ne change rien.
+      const item = await diagnosticAfterPaidFlow('2026-06-15T10:00:00.000Z');
+      expect(item?.status).toBe('todo');
+      expect(item?.label).toContain('Seuil de franchise dépassé');
+    });
+  });
+});
+
+describe('PONT-SERVEUR — getOwnerPayGuidance : mois MÉTIER Paris (action vocale, parité voix ↔ écran)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Actions hôte réelles du service (même accès privé que bob-expense-voice-actions.test.ts). */
+  function bobActions(service: BackendService): BobActions {
+    return (service as unknown as { buildBobActions(): BobActions }).buildBobActions();
+  }
+
+  /**
+   * Tenant micro COMPLET à l'instant GELÉ : profil fiscal confirmé (micro + BIC prestations),
+   * solde bancaire observé (bankingSource qualified), 1 200 € encaissés par le flow réel
+   * facture 0 % + paiement (receivedAt = instant gelé). Rend la guidance ET le payout affiché
+   * par l'écran (même scénario réaliste/30 j) pour asserter la parité au centime.
+   */
+  async function guidanceAfterPaidFlow(frozenAt: string) {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(frozenAt));
+    const { service, p } = makeService();
+    const principal = await seedFranchiseTenant(p);
+    return asPrincipal(principal, async () => {
+      const regime = await service.updateFiscalProfileField('taxRegime', 'micro');
+      expect(regime.ok).toBe(true);
+      const nature = await service.updateFiscalProfileField('activityNature', 'bic_service');
+      expect(nature.ok).toBe(true);
+      const balance = await service.recordManualBankBalance({
+        amountCents: 900_000, // 9 000 € observés — le payout prudent reste > provision (25 440 c)
+        observedAt: new Date().toISOString(),
+      });
+      expect(balance.ok).toBe(true);
+      const { invoiceId } = await issueFinalInvoice(service, {
+        customerId: 'cust-franchise-1',
+        unitPriceHT: 120_000, // 1 200 € HT, TVA 0 % (franchise) → 1 200 € TTC
+        vatRate: 0,
+      });
+      const paid = await service.registerPayment({
+        invoiceId,
+        amount: 120_000, // receivedAt = clock.now() = l'instant gelé
+        method: 'transfer',
+        idempotencyKey: null,
+      });
+      expect(paid.ok).toBe(true);
+      const cashflow = await service.getCashflow('realiste', 30);
+      expect(cashflow.ok).toBe(true);
+      if (!cashflow.ok) throw new Error('getCashflow KO');
+      const r = await bobActions(service).getOwnerPayGuidance?.();
+      expect(r?.ok).toBe(true);
+      if (!r?.ok) throw new Error('getOwnerPayGuidance KO');
+      return { guidance: r.value.guidance, payout: cashflow.value.payout };
+    });
+  }
+
+  it("bascule d'été en fin de mois : encaissé le 31/07 22:18 UTC = 1er août 00:18 Paris → compté dans le mois métier 2026-08", async () => {
+    // Horloge gelée à 2026-07-31T22:18Z : businessToday() = 2026-08-01 (CEST +2) → mois '2026-08'.
+    // Le paiement (receivedAt = même instant) a pour jour métier 2026-08-01 → compté :
+    // provision URSSAF du mois = 120 000 c × 21,2 % (BIC prestations 2026) = 25 440 c, et le
+    // retrait suggéré = payout − 25 440. La troncature UTC (mois '2026-07' ≠ '2026-08') aurait
+    // rendu une provision 0 → retrait = payout tout entier, trop haut — à la voix.
+    const { guidance, payout } = await guidanceAfterPaidFlow('2026-07-31T22:18:00.000Z');
+    expect(guidance.kind).toBe('micro_retrait_prudent');
+    expect(payout).toBeGreaterThan(25_440); // prémisse discriminante : payout − provision ≠ payout
+    expect(guidance.amountCents).toBe(payout - 25_440);
+    expect(guidance.params.ratePct).toBe('21,2');
+  });
+
+  it("TÉMOIN DST : encaissé le 31/12 22:30 UTC = 23:30 Paris (CET +1) → encore le mois métier 2026-12", async () => {
+    // 22:30Z + 1 h = 23:30 le 31/12 : businessToday() = 2026-12-31 → mois '2026-12', et le jour
+    // métier du paiement est ENCORE 2026-12-31 → compté (provision 25 440 c, taux 2026). Un
+    // offset d'été figé (+2 h) projetterait le paiement au 01/01 (mois '2027-01' ≠ '2026-12') →
+    // provision 0 → retrait = payout : ce littéral est le témoin qui tue ce mutant.
+    const { guidance, payout } = await guidanceAfterPaidFlow('2026-12-31T22:30:00.000Z');
+    expect(guidance.kind).toBe('micro_retrait_prudent');
+    expect(payout).toBeGreaterThan(25_440);
+    expect(guidance.amountCents).toBe(payout - 25_440);
+  });
+
+  it('non-régression pleine journée : encaissé le 15/06 10:00 UTC = 12:00 Paris → compté dans son mois', async () => {
+    // Loin de minuit, mois UTC et mois Paris coïncident — le correctif ne change rien.
+    const { guidance, payout } = await guidanceAfterPaidFlow('2026-06-15T10:00:00.000Z');
+    expect(guidance.kind).toBe('micro_retrait_prudent');
+    expect(payout).toBeGreaterThan(25_440);
+    expect(guidance.amountCents).toBe(payout - 25_440);
   });
 });
 
