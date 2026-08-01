@@ -6,7 +6,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import type { ReactNode } from 'react';
-import { themes, type ThemeName } from '@bob/tokens';
 import { ThemeProvider } from '../theme';
 import { StickyActionBar } from './sticky-action-bar';
 import { StickyBackRow } from './sticky-back-row';
@@ -87,13 +86,49 @@ describe('StickyActionBar — variante bar', () => {
 });
 
 describe('StickyActionBar — variante floating', () => {
-  it.each(Object.keys(themes) as ThemeName[])(
-    'aplat ink du thème %s + liseré accent + libellé (pilule 52/16, bottom 48)',
-    (themeName) => {
-      // ThemeProvider démarre sur marine ; on lit directement la valeur du thème visé en
-      // rendant la pilule DANS ce thème via storage simulé — plus simple : marine suffit
-      // pour l'aplat par défaut, les 4 inks sont couverts par la table themes ci-dessous.
-      expect(themes[themeName].ink).toMatch(/^#/);
+  // Encres attendues en LITTÉRAUX (recopiées de @bob/tokens à la main — si un thème change
+  // d'encre, ce test DOIT rougir et forcer la relecture de la pilule dans ce thème).
+  it.each([
+    ['marine', '#0C2340'],
+    ['foret', '#0C4A37'],
+    ['graphite', '#1B2028'],
+    ['indigo', '#312C8A'],
+  ] as const)(
+    'aplat ink du thème %s : la pilule floating est RENDUE dans ce thème (storage simulé)',
+    async (themeName, expectedInk) => {
+      // Le thème se charge depuis le storage async du ThemeProvider : on le simule puis on
+      // laisse l'effet se résoudre avant d'inspecter l'arbre — la pilule doit porter l'aplat
+      // ink DU thème, pas celui de marine par défaut.
+      const storage = {
+        read: () => Promise.resolve(JSON.stringify({ themeName })),
+        write: () => Promise.resolve(),
+      };
+      let renderer!: ReactTestRenderer;
+      await act(async () => {
+        renderer = create(
+          <ThemeProvider storage={storage}>
+            <StickyActionBar
+              variant="floating"
+              label="Relancer"
+              onPress={() => {}}
+              accentColor="#C8463C"
+              testID="floating-theme"
+            />
+          </ThemeProvider>,
+        );
+      });
+      // Le style de Pressable est une FONCTION (résolue par RN, pas par la doublure) — même
+      // patron que le cas marine ci-dessous : on l'invoque via l'instance.
+      const pressable = renderer.root.findByType('Pressable' as never);
+      const styles = (pressable.props as { style: (s: { pressed: boolean }) => unknown[] }).style({
+        pressed: false,
+      });
+      expect(styles[0]).toMatchObject({ backgroundColor: expectedInk });
+      // Témoin d'observation : le storage simulé a bien été lu — l'aplat marine par défaut ne
+      // doit subsister QUE pour marine (sinon ce test rendrait 4 fois la même pilule et ment).
+      if (themeName !== 'marine') {
+        expect((styles[0] as { backgroundColor: string }).backgroundColor).not.toBe('#0C2340');
+      }
     },
   );
 
