@@ -723,10 +723,15 @@ jobs:
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
-          railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
-            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-            env CABINET_RELEASE_ENV=staging \
-              node apps/api/scripts/agent-mission-m1b-staging-release.mjs predeploy
+          source_root="$GITHUB_WORKSPACE/.m2a3-serving-source"
+          test "$(git -C "$source_root" rev-parse HEAD)" = "${{ steps.source_runtime.outputs.release_sha }}"
+          (
+            cd "$source_root"
+            railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+              --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+              env CABINET_RELEASE_ENV=staging \
+                node apps/api/scripts/agent-mission-m1b-staging-release.mjs predeploy
+          )
       - name: Restore the explicit M2-A false Railway baseline
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
@@ -816,10 +821,15 @@ jobs:
           done
           test "$serving_exact" = true
           readiness_observation="$(node apps/api/scripts/agent-mission-m1b-staging-readiness.mjs)"
-          railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
-            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-            env CABINET_RELEASE_ENV=staging \
-              node apps/api/scripts/agent-mission-m1b-staging-release.mjs postdeploy
+          source_root="$GITHUB_WORKSPACE/.m2a3-serving-source"
+          test "$(git -C "$source_root" rev-parse HEAD)" = "${{ steps.source_runtime.outputs.release_sha }}"
+          (
+            cd "$source_root"
+            railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+              --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+              env CABINET_RELEASE_ENV=staging \
+                node apps/api/scripts/agent-mission-m1b-staging-release.mjs postdeploy
+          )
           runtime_observation="$(
             node apps/api/scripts/agent-mission-m1b-staging-railway.mjs assert-off
           )"
@@ -874,10 +884,15 @@ jobs:
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
-          railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
-            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-            env CABINET_RELEASE_ENV=staging \
-              node apps/api/scripts/agent-mission-m1b-staging-release.mjs restore-capacity
+          source_root="$GITHUB_WORKSPACE/.m2a3-serving-source"
+          test "$(git -C "$source_root" rev-parse HEAD)" = "${{ steps.source_runtime.outputs.release_sha }}"
+          (
+            cd "$source_root"
+            railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+              --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+              env CABINET_RELEASE_ENV=staging \
+                node apps/api/scripts/agent-mission-m1b-staging-release.mjs restore-capacity
+          )
 
   deactivate:
     if: ${{ inputs.mode == 'deactivate' }}
@@ -1016,10 +1031,15 @@ jobs:
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
-          railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
-            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-            env CABINET_RELEASE_ENV=staging \
-              node apps/api/scripts/agent-mission-m1b-staging-release.mjs predeploy
+          source_root="$GITHUB_WORKSPACE/.m2a3-serving-source"
+          test "$(git -C "$source_root" rev-parse HEAD)" = "${{ steps.source_runtime.outputs.release_sha }}"
+          (
+            cd "$source_root"
+            railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+              --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+              env CABINET_RELEASE_ENV=staging \
+                node apps/api/scripts/agent-mission-m1b-staging-release.mjs predeploy
+          )
       - name: Restore the explicit Railway OFF baseline
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
@@ -1109,10 +1129,15 @@ jobs:
           done
           test "$serving_exact" = true
           readiness_observation="$(node apps/api/scripts/agent-mission-m1b-staging-readiness.mjs)"
-          railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
-            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-            env CABINET_RELEASE_ENV=staging \
-              node apps/api/scripts/agent-mission-m1b-staging-release.mjs postdeploy
+          source_root="$GITHUB_WORKSPACE/.m2a3-serving-source"
+          test "$(git -C "$source_root" rev-parse HEAD)" = "${{ steps.source_runtime.outputs.release_sha }}"
+          (
+            cd "$source_root"
+            railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+              --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+              env CABINET_RELEASE_ENV=staging \
+                node apps/api/scripts/agent-mission-m1b-staging-release.mjs postdeploy
+          )
           runtime_observation="$(
             node apps/api/scripts/agent-mission-m1b-staging-railway.mjs assert-off
           )"
@@ -1167,10 +1192,15 @@ jobs:
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
-          railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
-            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-            env CABINET_RELEASE_ENV=staging \
-              node apps/api/scripts/agent-mission-m1b-staging-release.mjs restore-capacity
+          source_root="$GITHUB_WORKSPACE/.m2a3-serving-source"
+          test "$(git -C "$source_root" rev-parse HEAD)" = "${{ steps.source_runtime.outputs.release_sha }}"
+          (
+            cd "$source_root"
+            railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+              --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+              env CABINET_RELEASE_ENV=staging \
+                node apps/api/scripts/agent-mission-m1b-staging-release.mjs restore-capacity
+          )
       - name: Refuse to report canonical OFF when emergency kills remain armed
         if: ${{ always() && steps.database_safety.outputs.safe == 'true' }}
         env:

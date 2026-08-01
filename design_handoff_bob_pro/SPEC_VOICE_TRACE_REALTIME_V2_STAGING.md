@@ -222,6 +222,12 @@ sous le mutex `railway-api-staging` existant, certifie le SHA exact de l'unique 
 10. en échec, retire d'abord tout le bloc VoiceTrace puis rebuild exact-source OFF avec les
     variables courantes.
 
+Avant ce rollout, toute désactivation ou reprise M2-A rend d'abord l'autorité DB canonique `OFF`,
+puis exécute `predeploy`, `postdeploy` et `restore-capacity` depuis le checkout exact du SHA
+effectivement servi. Les migrations présentes uniquement dans le SHA de contrôle ne doivent ni
+bloquer cette sortie sûre, ni être tolérées par un mode permissif. Un checksum divergent ou une
+migration requise absente du SHA servi reste un refus fermé.
+
 Le lecteur de diagnostic refuse production, CI et stdin/stdout non-TTY. Le contenu n'apparaît
 qu'après `--include-content` explicite ; sa sortie n'est jamais archivée par le workflow.
 
@@ -241,6 +247,8 @@ qu'après `--include-content` explicite ; sa sortie n'est jamais archivée par l
 - [ ] Le lecteur TTY exige session+acteur+raison et produit un audit non verbal durable.
 - [ ] Le mobile preview annonce le traitement avant l'écoute ; production ne peut pas l'annoncer.
 - [ ] Migration, writer N-1 réel, Prisma, typecheck, lint, build et tests ciblés sont verts.
+- [ ] Avec une migration en attente uniquement sur le SHA de contrôle, rollback/désactivation
+      utilisent les trois phases du SHA servi ; toute dérive de ce SHA échoue fermée.
 - [ ] Workflow OFF → ON → OFF → ON vert sur staging exact-SHA ; production inchangée avant/après.
 
 ## 8. Definition of Done

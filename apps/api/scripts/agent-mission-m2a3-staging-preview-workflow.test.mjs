@@ -12,6 +12,10 @@ const railwayWorkflow = readFileSync(
   resolve(repositoryRoot, '.github/workflows/railway-api.yml'),
   'utf8',
 );
+const m1bReleaseScript = readFileSync(
+  resolve(repositoryRoot, 'apps/api/scripts/agent-mission-m1b-staging-release.mjs'),
+  'utf8',
+);
 
 function occurrences(source, pattern) {
   return source.match(pattern)?.length ?? 0;
@@ -26,6 +30,13 @@ function job(name) {
     .map(({ index }) => index)
     .find((index) => index > start + marker.length);
   return workflow.slice(start, following ?? workflow.length);
+}
+
+function servingSourceBoundReleasePhase(phase) {
+  return new RegExp(
+    String.raw`source_root="\$GITHUB_WORKSPACE/\.m2a3-serving-source"\n\s+test "\$\(git -C "\$source_root" rev-parse HEAD\)" = "\$\{\{ steps\.source_runtime\.outputs\.release_sha \}\}"\n\s+\(\n\s+cd "\$source_root"\n\s+railway run[\s\S]{1,500}?node apps/api/scripts/agent-mission-m1b-staging-release\.mjs ${phase}\n\s+\)`,
+    'u',
+  );
 }
 
 test('le preview est staging-only, manuel/reutilisable et serialise avec les releases', () => {
@@ -183,6 +194,26 @@ test('rollback coupe DB avant build, restaure la capacite et recertifie le deplo
     /test "\$current_deployment_id" = "\$\{\{ steps\.source_runtime\.outputs\.deployment_id \}\}"/u,
   );
   assert.match(rollback, /BOB_M2A3_PREVIEW_DEPLOYMENT_ACTION: captured-baseline-source-rebuild/u);
+});
+
+test('rollback et desactivation executent les trois phases strictes depuis le SHA servi', () => {
+  const activation = job('activate');
+  const rollback = job('rollback-activation');
+  const deactivate = job('deactivate');
+
+  for (const phase of ['predeploy', 'postdeploy', 'restore-capacity']) {
+    const sourceBoundPhase = servingSourceBoundReleasePhase(phase);
+    assert.match(rollback, sourceBoundPhase);
+    assert.match(deactivate, sourceBoundPhase);
+    assert.doesNotMatch(activation, sourceBoundPhase);
+  }
+
+  assert.match(
+    activation,
+    /node apps\/api\/scripts\/agent-mission-m1b-staging-release\.mjs predeploy/u,
+  );
+  assert.match(m1bReleaseScript, /allowPendingLocal: false/u);
+  assert.doesNotMatch(m1bReleaseScript, /allowPendingLocal: true/u);
 });
 
 test('desactivation ne depend pas des autorisations ON et coupe avant readiness/build', () => {
