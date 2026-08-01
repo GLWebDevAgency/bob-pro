@@ -113,13 +113,21 @@ export interface BrandTheme {
   d3: string;
   ink: string;
   ink2: string;
+  /**
+   * Accent clair ON-DARK du thème (Lot 0, arbitrage TONS RECYCLÉS) — icônes et détails posés
+   * sur la rampe d1/d2/d3 (diagnostic, panneaux sombres). `indigo.accent` REPREND la valeur
+   * de l'emprunt historique `vault.scanChipIcon` (#B7AEFB) : même pixel, rôle enfin dédié.
+   * Les 3 autres accents sont dérivés du MÊME patron (teinte de `ink2`, saturation ~91 % et
+   * luminosité ~83 % de #B7AEFB en HSL) — contraste ≥ 3:1 certifié sur d3 (index.test.ts).
+   */
+  accent: string;
 }
 
 export const themes: Record<ThemeName, BrandTheme> = {
-  marine: { d1: '#0C2340', d2: '#122E52', d3: '#163763', ink: '#0C2340', ink2: '#1B3A63' },
-  foret: { d1: '#0A3A2B', d2: '#0E5A43', d3: '#117A5A', ink: '#0C4A37', ink2: '#0E6B4F' },
-  graphite: { d1: '#15181E', d2: '#242A33', d3: '#36404E', ink: '#1B2028', ink2: '#2C333F' },
-  indigo: { d1: '#272363', d2: '#3A36A0', d3: '#4F46E5', ink: '#312C8A', ink2: '#4338CA' },
+  marine: { d1: '#0C2340', d2: '#122E52', d3: '#163763', ink: '#0C2340', ink2: '#1B3A63', accent: '#AECFFB' },
+  foret: { d1: '#0A3A2B', d2: '#0E5A43', d3: '#117A5A', ink: '#0C4A37', ink2: '#0E6B4F', accent: '#AEFBE4' },
+  graphite: { d1: '#15181E', d2: '#242A33', d3: '#36404E', ink: '#1B2028', ink2: '#2C333F', accent: '#AECAFB' },
+  indigo: { d1: '#272363', d2: '#3A36A0', d3: '#4F46E5', ink: '#312C8A', ink2: '#4338CA', accent: '#B7AEFB' },
 };
 export const defaultTheme: ThemeName = 'marine';
 
@@ -390,7 +398,10 @@ export const controls = {
 // VOILES & HALOS — usage sur navy (header, héros) + scrim (v1.2, redlines/dc.html)
 // ----------------------------------------------------------------------------
 export const overlays = {
-  white70: 'rgba(255,255,255,.7)',
+  /** Corps de texte AA on-dark (Lot 0) — la doctrine « corps ≥ white80, détail ≥ white70 » :
+   *  certifié ≥ 4,5:1 composé sur photoScrim et sur les rampes d1/d2 (index.test.ts). */
+  white80: 'rgba(255,255,255,.8)',
+  white70: 'rgba(255,255,255,.7)', // détail on-dark (plancher de la doctrine Lot 0)
   white66: 'rgba(255,255,255,.66)', // sous-titre header navy
   white60: 'rgba(255,255,255,.6)',
   white50: 'rgba(255,255,255,.5)',
@@ -400,6 +411,11 @@ export const overlays = {
   white08: 'rgba(255,255,255,.08)', // séparateur sur navy
   white07: 'rgba(255,255,255,.07)',
   scrim: 'rgba(12,35,64,.45)', // voile des sheets
+  /** Scrim de la visionneuse photo plein écran (Lot 0 — PhotoViewer) : noir ≈ .92, la valeur
+   *  déjà posée par chantier/[id] (rgba(0,0,0,0.92)) enfin tokenisée. */
+  photoScrim: 'rgba(0,0,0,.92)',
+  /** Chrome (fermer, supprimer) posé SUR photoScrim — blanc plein, jamais un gris. */
+  scrimChrome: '#FFFFFF',
   successPill: 'rgba(52,211,153,.18)', // pill « sans risque » (texte = successOnDark)
   unreadDot: '#FF7A6B', // point non-lu de la cloche
   haloIndigo: ['rgba(67,56,202,.55)', 'rgba(67,56,202,0)'], // halo header top-right
@@ -441,6 +457,121 @@ export const vault = {
   monthReadyTop: '#F0F7F3', // carte « mois prêt » (dégradé 180°)
   monthReadyBottom: '#FBFEFC',
   monthReadyBorder: '#DCEDE3',
+  // ── +2 teintes dossiers (Lot 0) — 6 teintes distinctes pour 6 dossiers système ──
+  folderSteel: '#3B5B85', // dossier « Banque » — bleu acier, 6,01:1 sur folderSteelBg
+  folderSteelBg: '#E9EFF7',
+  folderTeal: '#0E6E73', // dossier « Comptable » — sarcelle, 5,07:1 sur folderTealBg
+  folderTealBg: '#DFEFF0',
+} as const;
+
+// ----------------------------------------------------------------------------
+// TEINTES DES DOSSIERS DU COFFRE (Lot 0, plan DA 01/08) — la couleur-repère code
+// l'IDENTITÉ d'un dossier (retrouver « Assurances » d'un coup d'œil) et doit survivre
+// à la navigation. Avant : 4 paires pour 6 dossiers système (banque ≡ chantiers,
+// comptable ≡ achats). Désormais : 6 paires DISTINCTES + un hachage stable pour les
+// dossiers personnalisés.
+// ----------------------------------------------------------------------------
+export interface VaultFolderTint {
+  /** Teinte de l'icône/du libellé du dossier. */
+  readonly tint: string;
+  /** Fond pastel de la tuile. */
+  readonly bg: string;
+}
+
+/** Palette ORDONNÉE des 6 paires — l'ordre EST le contrat de `folderTintFor` (hash % 6). */
+export const vaultFolderTints: readonly [
+  VaultFolderTint,
+  VaultFolderTint,
+  VaultFolderTint,
+  VaultFolderTint,
+  VaultFolderTint,
+  VaultFolderTint,
+] = [
+  { tint: semantic.b2b, bg: semantic.b2bBg }, // 0 — marine (Chantiers)
+  { tint: semantic.success, bg: semantic.successBg }, // 1 — vert (Achats)
+  { tint: semantic.particulier, bg: semantic.particulierBg }, // 2 — ambre (Assurances)
+  { tint: vault.aiDeep, bg: semantic.aiBg }, // 3 — violet (Fiscal)
+  { tint: vault.folderSteel, bg: vault.folderSteelBg }, // 4 — acier (Banque, NOUVEAU)
+  { tint: vault.folderTeal, bg: vault.folderTealBg }, // 5 — sarcelle (Comptable, NOUVEAU)
+] as const;
+
+/** Index de teinte des 6 dossiers SYSTÈME — bijection sur la palette (6 identités distinctes). */
+export const systemVaultFolderTintIndex = {
+  chantiers: 0,
+  achats: 1,
+  assurances: 2,
+  fiscal: 3,
+  banque: 4,
+  comptable: 5,
+} as const;
+
+/**
+ * Hachage djb2-xor 32 bits d'un identifiant de dossier — STABLE par construction (aucune
+ * dépendance à l'ordre d'insertion ni au runtime) : le même dossier garde sa couleur d'une
+ * session à l'autre et d'un appareil à l'autre.
+ */
+function hashFolderId(folderId: string): number {
+  let hash = 5381;
+  for (let index = 0; index < folderId.length; index += 1) {
+    hash = ((hash * 33) ^ folderId.charCodeAt(index)) >>> 0;
+  }
+  return hash;
+}
+
+/**
+ * Teinte d'un dossier du coffre — PURE (testable par mutants) :
+ *  · dossier SYSTÈME → sa teinte dédiée (6 distinctes, `systemVaultFolderTintIndex`) ;
+ *  · dossier personnalisé → hachage stable sur la palette (`hashFolderId(id) % 6`).
+ */
+export function folderTintFor(folderId: string): VaultFolderTint {
+  const systemIndex =
+    systemVaultFolderTintIndex[folderId as keyof typeof systemVaultFolderTintIndex];
+  if (systemIndex !== undefined) return vaultFolderTints[systemIndex] as VaultFolderTint;
+  return vaultFolderTints[hashFolderId(folderId) % vaultFolderTints.length] as VaultFolderTint;
+}
+
+// ----------------------------------------------------------------------------
+// RÔLES DÉDIÉS — fin du recyclage des tons (Lot 0, arbitrage TONS RECYCLÉS).
+// Un rôle peut RÉFÉRENCER la même primitive qu'aujourd'hui (adoption iso-visuelle,
+// doctrine des rôles de couleur ci-dessus) : c'est le CONTRAT d'usage qui change,
+// et il permet l'évolution séparée sans re-négocier la typologie client.
+// ----------------------------------------------------------------------------
+/**
+ * Journaux comptables (comptabilite.tsx — JOURNAL_TONE recyclait la typologie client).
+ * Valeurs actuelles CONSERVÉES (adoption Lot 5 sans changement visuel). Honnêteté
+ * contraste : `achats` hérite du 2,99:1 de l'ambre sur pastel — usage ICÔNE/pastille
+ * uniquement, jamais du petit texte (l'évolution est désormais possible rôle par rôle).
+ */
+export const journal = {
+  ventes: { ink: semantic.b2b, bg: semantic.b2bBg },
+  achats: { ink: semantic.particulier, bg: semantic.particulierBg },
+  banque: { ink: semantic.success, bg: semantic.successBg },
+  od: { ink: semantic.b2g, bg: semantic.b2gBg }, // opérations diverses
+} as const;
+
+/**
+ * Catégories de dépense (depenses.tsx — CAT_TONE recyclait la typologie client).
+ * Mêmes clés que le domaine `ExpenseCategory` ; valeurs actuelles conservées
+ * (même réserve de contraste que `journal` pour carburant/repas — usage icône).
+ */
+export const expenseCategory = {
+  fournitures: { ink: semantic.success, bg: semantic.successBg },
+  materiel: { ink: semantic.b2b, bg: semantic.b2bBg },
+  carburant: { ink: semantic.particulier, bg: semantic.particulierBg },
+  repas: { ink: semantic.particulier, bg: semantic.particulierBg },
+  sous_traitance: { ink: semantic.b2g, bg: semantic.b2gBg },
+  autre: { ink: semantic.b2g, bg: semantic.b2gBg },
+} as const;
+
+/**
+ * Tuile « document » NEUTRE (recherche.tsx peignait la tuile documents en 'success' —
+ * le vert reste réservé à l'argent ; l'intérim 'b2g' est REFUSÉ par l'arbitrage).
+ * Mêmes primitives que le badge `neutral` (slate sur séparateur doux), contrat distinct :
+ * ici une famille de CONTENU (papier), pas un état sorti du flux. 4,96:1 (icône et texte).
+ */
+export const documentTile = {
+  ink: neutrals.slate500,
+  bg: neutrals.lineSoft,
 } as const;
 
 export const vaultShadowNative = {
