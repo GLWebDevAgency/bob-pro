@@ -117,7 +117,13 @@ describe('HttpBobClient — preuve bancaire persistée', () => {
 
     await expect(client.getLatestBankBalance()).resolves.toEqual({
       ok: false,
-      error: { kind: 'dependency', port: 'bank-balance-snapshot-repository', cause: 'unavailable' },
+      error: {
+        kind: 'dependency',
+        port: 'bank-balance-snapshot-repository',
+        cause: 'unavailable',
+        code: 'BOB-API-502',
+        correlationId: expect.stringMatching(/^[0-9a-f-]{8,64}$/),
+      },
     });
   });
 });

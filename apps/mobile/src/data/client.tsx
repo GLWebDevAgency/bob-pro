@@ -3,6 +3,7 @@ import { HttpBobClient, type BobClient } from '@bob/api-client';
 import { getAccessToken } from './supabase';
 import { useAuth } from './auth';
 import { companyIdFromAppMetadata } from './tenant-identity';
+import { reportApiFailure } from '../observability/api-failure-reporter';
 import {
   mobileDataEnvironmentFromProcess,
   resolveMobileDataMode,
@@ -24,6 +25,9 @@ function defaultClient(companyId: string, mode: MobileDataMode): BobClient {
     baseUrl: mode.apiUrl,
     companyId,
     getToken: getAccessToken,
+    // SPEC_SYSTEME_ERREUR §5 : chaque échec API alimente le journal local (écran « Diagnostic
+    // technique ») et, pour les seuls `dependency`, le canal de crash — sans PII.
+    onError: reportApiFailure,
   });
 }
 

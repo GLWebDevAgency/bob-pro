@@ -35,6 +35,15 @@ import {
 const PUBLIC_SENTRY_DSN = process.env.EXPO_PUBLIC_SENTRY_DSN;
 const PUBLIC_SENTRY_ENVIRONMENT = process.env.EXPO_PUBLIC_SENTRY_ENVIRONMENT;
 
+declare const __DEV__: boolean | undefined;
+
+/**
+ * Build de développement (Metro/dev-client) : le canal reste DORMANT même avec un DSN — le
+ * bruit d'un poste de dev ne doit jamais polluer la télémétrie terrain (SPEC_SYSTEME_ERREUR
+ * §5.3). Hors runtime React Native (tests node), `__DEV__` n'existe pas : traité comme prod.
+ */
+const IS_DEV_BUILD = typeof __DEV__ !== 'undefined' && __DEV__;
+
 export interface CrashReporterConfig {
   readonly dsn: string;
   readonly environment: string;
@@ -88,16 +97,21 @@ export function buildCrashReporterOptions(config: CrashReporterConfig): Record<s
 }
 
 /**
- * Résout la configuration, ou `null` — canal dormant — si le DSN est absent ou non conforme
- * à la région UE. Le refus est journalisé une seule fois pour ne pas rester invisible en QA,
- * mais ne remonte jamais en exception.
+ * Résout la configuration, ou `null` — canal dormant — si le DSN est absent, non conforme à la
+ * région UE, ou si le build est un build de DÉVELOPPEMENT. Le refus est journalisé une seule
+ * fois pour ne pas rester invisible en QA, mais ne remonte jamais en exception.
  */
 export function resolveCrashReporterConfig(
   dsn: string | undefined = PUBLIC_SENTRY_DSN,
   environment: string | undefined = PUBLIC_SENTRY_ENVIRONMENT,
+  isDevBuild: boolean = IS_DEV_BUILD,
 ): CrashReporterConfig | null {
   const trimmed = dsn?.trim();
   if (!trimmed) return null;
+  if (isDevBuild) {
+    console.warn('Crash reporting dormant : build de développement (__DEV__).');
+    return null;
+  }
   const reason = sentryDsnRejectionReason(trimmed);
   if (reason) {
     console.warn(`Crash reporting désactivé : EXPO_PUBLIC_SENTRY_DSN ${reason}.`);

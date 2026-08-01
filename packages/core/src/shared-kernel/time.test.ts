@@ -17,6 +17,14 @@ describe('parisDateOnly', () => {
     expect(parisDateOnly('2026-01-15T23:30:00.000Z')).toBe('2026-01-16');
   });
 
+  it("DISCRIMINE l'hiver de l'ete : 22:30Z en janvier reste la veille (23:30 CET, pas 00:30)", () => {
+    // 2026-01-15T22:30:00Z = 2026-01-15T23:30 a Paris (CET UTC+1) : encore l'ancien jour. Un
+    // calcul DST-naif a offset d'ete fige (+2 h toute l'annee) donnerait 2026-01-16T00:30 → le
+    // lendemain. Le cas hiver ci-dessus (23:30Z) ne voit pas la difference (+1 h et +2 h donnent
+    // tous deux le 16) : ce litteral-ci est le temoin qui tue ce mutant.
+    expect(parisDateOnly('2026-01-15T22:30:00.000Z')).toBe('2026-01-15');
+  });
+
   it('accepte un objet Date en plus d’un Instant ISO', () => {
     expect(parisDateOnly(new Date('2026-01-15T23:30:00.000Z'))).toBe('2026-01-16');
   });

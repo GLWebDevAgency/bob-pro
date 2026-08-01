@@ -73,7 +73,13 @@ describe('HttpBobClient — profil société persistant', () => {
 
     expect(result).toEqual({
       ok: false,
-      error: { kind: 'dependency', port: 'database', cause: 'unavailable' },
+      error: {
+        kind: 'dependency',
+        port: 'database',
+        cause: 'unavailable',
+        code: 'BOB-API-502',
+        correlationId: expect.stringMatching(/^[0-9a-f-]{8,64}$/),
+      },
     });
   });
 });
@@ -221,7 +227,12 @@ describe('HttpBobClient — identité légale (A6 capital, A2 médiateur conso)'
     const result = await client.updateCompanyLegal({ capitalSocialCents: 500000 });
     expect(result).toEqual({
       ok: false,
-      error: { kind: 'domain', error: { code: 'VALIDATION', field: 'capitalSocialCents' } },
+      error: {
+        kind: 'domain',
+        error: { code: 'VALIDATION', field: 'capitalSocialCents' },
+        code: 'BOB-API-422',
+        correlationId: expect.stringMatching(/^[0-9a-f-]{8,64}$/),
+      },
     });
   });
 });
@@ -431,6 +442,8 @@ describe('HttpBobClient — réglages facturation BDD', () => {
       error: {
         kind: 'dependency',
         port: 'api-contract',
+        code: 'BOB-API-502',
+        correlationId: expect.stringMatching(/^[0-9a-f-]{8,64}$/),
         cause: 'Réponse API invalide pour GET /company/billing-settings.',
       },
     });

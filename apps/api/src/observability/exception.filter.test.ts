@@ -1,7 +1,11 @@
 import { HttpException, HttpStatus, type ArgumentsHost } from '@nestjs/common';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AllExceptionsFilter, appErrorLogSummary } from './exception.filter';
-import { rootLogger } from './logger';
+import {
+  AllExceptionsFilter,
+  appErrorLogSummary,
+  withResponseCorrelation,
+} from './exception.filter';
+import { requestContext, rootLogger } from './logger';
 import type { ErrorReporter } from './error-reporter';
 
 function hostWith(res: unknown): ArgumentsHost {
@@ -94,21 +98,46 @@ describe('AllExceptionsFilter', () => {
     expect(reporter.captureException).toHaveBeenCalledTimes(1);
   });
 
-  it('ne logge pas un 4xx mais renvoie le corps intact', () => {
+  it("un 4xx AppError logge un « refus applicatif » en INFO (jamais warn/error/reporter) et rend le corps intact hors contexte", () => {
     const errorSpy = vi.spyOn(rootLogger, 'error').mockImplementation(() => undefined);
+    const warnSpy = vi.spyOn(rootLogger, 'warn').mockImplementation(() => undefined);
+    const infoSpy = vi.spyOn(rootLogger, 'info').mockImplementation(() => undefined);
     const reporter: ErrorReporter = { captureException: vi.fn() };
     const json = vi.fn();
     const res = { status: vi.fn(() => ({ json })) };
-    const body = { ok: false, error: { kind: 'validation', issues: [] } };
+    // Cas terrain SIRET : le 404/422 du lookup n'existait dans Railway que par son statut.
+    const body = { ok: false, error: { kind: 'not_found', entity: 'company', id: 'siret-x' } };
 
     new AllExceptionsFilter(reporter).catch(
-      new HttpException(body, HttpStatus.UNPROCESSABLE_ENTITY),
+      new HttpException(body, HttpStatus.NOT_FOUND),
       hostWith(res),
     );
 
     expect(errorSpy).not.toHaveBeenCalled();
+    expect(warnSpy).not.toHaveBeenCalled();
     expect(reporter.captureException).not.toHaveBeenCalled();
-    expect(res.status).toHaveBeenCalledWith(422);
+    expect(infoSpy).toHaveBeenCalledTimes(1);
+    const record = infoSpy.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(infoSpy.mock.calls[0]?.[1]).toBe('refus applicatif');
+    expect(record.status).toBe(404);
+    expect(record.appError).toEqual({ kind: 'not_found', entity: 'company' });
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(json).toHaveBeenCalledWith(body);
+  });
+
+  it('un 4xx SANS AppError (corps Nest natif) ne fabrique aucun refus applicatif', () => {
+    const infoSpy = vi.spyOn(rootLogger, 'info').mockImplementation(() => undefined);
+    const reporter: ErrorReporter = { captureException: vi.fn() };
+    const json = vi.fn();
+    const res = { status: vi.fn(() => ({ json })) };
+    const body = { statusCode: 400, message: 'Bad Request' };
+
+    new AllExceptionsFilter(reporter).catch(
+      new HttpException(body, HttpStatus.BAD_REQUEST),
+      hostWith(res),
+    );
+
+    expect(infoSpy).not.toHaveBeenCalled();
     expect(json).toHaveBeenCalledWith(body);
   });
 
@@ -125,5 +154,60 @@ describe('AllExceptionsFilter', () => {
     expect(String(record.err)).toContain('boom interne');
     expect(res.status).toHaveBeenCalledWith(500);
     expect(json).toHaveBeenCalledWith({ statusCode: 500, message: 'Internal server error' });
+  });
+});
+
+describe('corrélation dans le corps des réponses d’erreur (spec §3.2)', () => {
+  it('withResponseCorrelation : additif à la RACINE, jamais dans error, corps non-objet intact', () => {
+    expect(
+      withResponseCorrelation({ ok: false, error: { kind: 'not_found' } }, 'corr-1234'),
+    ).toEqual({ ok: false, error: { kind: 'not_found' }, correlationId: 'corr-1234' });
+    // Hors contexte de requête ('-') : rien à corréler, corps INTACT (rétro-compat).
+    const body = { ok: false, error: { kind: 'not_found' } };
+    expect(withResponseCorrelation(body, '-')).toBe(body);
+    expect(withResponseCorrelation('brut', 'corr-1234')).toBe('brut');
+  });
+
+  it('EN contexte de requête, un 4xx AppError sort avec correlationId racine + refus loggé corrélé', () => {
+    const infoSpy = vi.spyOn(rootLogger, 'info').mockImplementation(() => undefined);
+    const reporter: ErrorReporter = { captureException: vi.fn() };
+    const json = vi.fn();
+    const res = { status: vi.fn(() => ({ json })) };
+    const body = { ok: false, error: { kind: 'domain', error: { code: 'VALIDATION' } } };
+
+    requestContext.run({ correlationId: '98f73810-1111-4222-8333-444455556666' }, () => {
+      new AllExceptionsFilter(reporter).catch(
+        new HttpException(body, HttpStatus.UNPROCESSABLE_ENTITY),
+        hostWith(res),
+      );
+    });
+
+    expect(json).toHaveBeenCalledWith({
+      ...body,
+      correlationId: '98f73810-1111-4222-8333-444455556666',
+    });
+    const record = infoSpy.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(record.correlationId).toBe('98f73810-1111-4222-8333-444455556666');
+    // L'objet error du corps reste STRICTEMENT celui du domaine (clés exactes côté client).
+    const sent = json.mock.calls[0]?.[0] as { error: Record<string, unknown> };
+    expect(Object.keys(sent.error).sort()).toEqual(['error', 'kind']);
+  });
+
+  it('EN contexte, un 5xx dégradé (unavailable) sort corrélé lui aussi', () => {
+    vi.spyOn(rootLogger, 'warn').mockImplementation(() => undefined);
+    const reporter: ErrorReporter = { captureException: vi.fn() };
+    const json = vi.fn();
+    const res = { status: vi.fn(() => ({ json })) };
+    const body = { ok: false, error: { kind: 'unavailable', service: 'cashflow-banking-source' } };
+
+    requestContext.run({ correlationId: 'corr-503-degrade-1' }, () => {
+      new AllExceptionsFilter(reporter).catch(
+        new HttpException(body, HttpStatus.SERVICE_UNAVAILABLE),
+        hostWith(res),
+      );
+    });
+
+    expect(json).toHaveBeenCalledWith({ ...body, correlationId: 'corr-503-degrade-1' });
+    expect(reporter.captureException).not.toHaveBeenCalled();
   });
 });
