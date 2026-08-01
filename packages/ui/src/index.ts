@@ -64,6 +64,8 @@ export * from './components/quick-action';
 
 // Argent & Clients
 export * from './components/inner-screen-header';
+// Lot 0 — BackHeader canonique (promotion du screen-header local d'apps/mobile).
+export * from './components/back-header';
 export * from './components/hero-money-card';
 export * from './components/money-row';
 export * from './components/segmented-control';
@@ -99,6 +101,14 @@ export {
   ProgressiveBlurBob,
   type ProgressiveBlurBobViewProps,
 } from './components/progressive-blur-bob';
+// Lot 0 — le voile de header : mécanisme UNIQUE décliné en variantes de montée.
+export * from './components/header-veil';
+export {
+  DEFAULT_HEADER_VEIL_HEIGHT,
+  headerVeilPreset,
+  type HeaderVeilPreset,
+  type HeaderVeilVariant,
+} from './components/header-veil.logic';
 export {
   defineBlurPort,
   isSealedBlurPort,
