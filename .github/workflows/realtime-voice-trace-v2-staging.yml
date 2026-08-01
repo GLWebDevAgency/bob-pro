@@ -180,7 +180,8 @@ jobs:
             "BOB_REALTIME_VOICE_TRACE_V2_CANARY_AUDIO_FILE=$audio_file" \
             "BOB_REALTIME_VOICE_TRACE_V2_CANARY_SESSION_FILE=$session_file" \
             >> "$GITHUB_ENV"
-          node apps/api/scripts/agent-mission-m1b-staging-smoke.mjs preflight-v2
+          BOB_AGENT_MISSION_STAGING_PROFILE=m2a3-preview \
+            node apps/api/scripts/agent-mission-m1b-staging-smoke.mjs preflight-v2
       - name: Prove exact-SHA OFF baseline and its zero-trace canary
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
@@ -197,7 +198,8 @@ jobs:
           node apps/api/scripts/certify-railway-single-replica.mjs staging "$RAILWAY_API_SERVICE_ID" < "$status_file"
           served_id="$(node apps/api/scripts/agent-mission-m1b-staging-railway.mjs serving-deployment-id < "$status_file")"
           test -n "$served_id"
-          node apps/api/scripts/agent-mission-m1b-staging-smoke.mjs voice-trace-v2-off
+          BOB_AGENT_MISSION_STAGING_PROFILE=m2a3-preview \
+            node apps/api/scripts/agent-mission-m1b-staging-smoke.mjs voice-trace-v2-off
           session_handle="$(tr -d '\r\n' < "$BOB_REALTIME_VOICE_TRACE_V2_CANARY_SESSION_FILE")"
           [[ "$session_handle" =~ ^[0-9a-f-]{36}$ ]]
           echo "::add-mask::$session_handle"
@@ -302,7 +304,8 @@ jobs:
             local emit_receipt_outputs="${2:-false}"
             : > "$BOB_REALTIME_VOICE_TRACE_V2_CANARY_SESSION_FILE"
             set +e
-            node apps/api/scripts/agent-mission-m1b-staging-smoke.mjs "voice-trace-v2-$state"
+            BOB_AGENT_MISSION_STAGING_PROFILE=m2a3-preview \
+              node apps/api/scripts/agent-mission-m1b-staging-smoke.mjs "voice-trace-v2-$state"
             local smoke_status=$?
             set -e
             if test "$smoke_status" -ne 0; then
@@ -348,6 +351,11 @@ jobs:
               node apps/api/scripts/realtime-voice-trace-v2-staging-railway.mjs assert-off
             fi
             deploy_exact "$state"
+            if test "$state" = on; then
+              node apps/api/scripts/realtime-voice-trace-v2-staging-railway.mjs assert-active
+            else
+              node apps/api/scripts/realtime-voice-trace-v2-staging-railway.mjs assert-off
+            fi
             railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
               --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
               env CABINET_RELEASE_ENV=staging \
@@ -372,6 +380,7 @@ jobs:
       - name: Reprove final ON after the last canary
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          BOB_REALTIME_VOICE_TRACE_V2_ENCRYPTION_KEYRING: ${{ secrets.BOB_REALTIME_VOICE_TRACE_V2_STAGING_ENCRYPTION_KEYRING }}
           BOB_M1B_STAGING_HMAC_KEYRING: ${{ secrets.BOB_M1B_STAGING_HMAC_KEYRING }}
         run: |
           set -euo pipefail
@@ -460,6 +469,7 @@ jobs:
         id: deploy_safe_off
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          BOB_REALTIME_VOICE_TRACE_V2_ENCRYPTION_KEYRING: ${{ secrets.BOB_REALTIME_VOICE_TRACE_V2_STAGING_ENCRYPTION_KEYRING }}
         run: |
           set -euo pipefail
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
@@ -494,6 +504,7 @@ jobs:
           done
           test "$serving_id" = "$deployment_id"
           node apps/api/scripts/realtime-voice-trace-v2-readiness-proof.mjs assert-staging-off
+          node apps/api/scripts/realtime-voice-trace-v2-staging-railway.mjs assert-off
           echo "safe=true" >> "$GITHUB_OUTPUT"
       - name: Restore capacity only after exact OFF readiness
         if: ${{ always() && steps.deploy_safe_off.outputs.safe == 'true' }}
