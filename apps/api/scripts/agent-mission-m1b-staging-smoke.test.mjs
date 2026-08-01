@@ -5,6 +5,7 @@ import {
   describeM1BOperationFailure,
   parseM1BStagingSmokeEnvironment,
   preflightM1BStagingAccount,
+  preflightM2A3StagingAccount,
   runM1BNegativeStagingSmoke,
   runM1BPositiveStagingSmoke,
   runM1BRecoveryStagingSmoke,
@@ -25,6 +26,7 @@ const DRAFT_SESSION_ID = 'draft-m1b-staging';
 const CONTEXT_DIGEST = 'a'.repeat(64);
 const ANSWER_SDP = `v=0\r\n${'a'.repeat(80)}`;
 const OFFER_SDP = `v=0\r\n${'o'.repeat(80)}`;
+const CONFIRMED_AT = '2026-07-31T00:00:00.000Z';
 
 function environment(overrides = {}) {
   return {
@@ -35,6 +37,8 @@ function environment(overrides = {}) {
     BOB_M1B_STAGING_ACCOUNT_PASSWORD: 'staging-password',
     BOB_M1B_STAGING_USER_ID: USER_ID,
     BOB_M1B_STAGING_COMPANY_ID: COMPANY_ID,
+    BOB_AGENT_MISSION_STAGING_PROFILE: 'm2a3-preview',
+    BOB_M2A3_STAGING_TIME_ZONE: 'Europe/Paris',
     ...overrides,
   };
 }
@@ -46,11 +50,32 @@ function token(overrides = {}) {
       sub: USER_ID,
       aud: 'authenticated',
       exp: Math.floor(Date.now() / 1_000) + 3_600,
-      app_metadata: { company_id: COMPANY_ID },
+      app_metadata: {
+        company_id: COMPANY_ID,
+        bob_time_zone: 'Europe/Paris',
+        bob_time_zone_confirmed_at: CONFIRMED_AT,
+        bob_time_zone_company_id: COMPANY_ID,
+      },
       ...overrides,
     }),
   ).toString('base64url');
   return `${header}.${payload}.${'s'.repeat(64)}`;
+}
+
+function parseTestIanaTimeZone(value) {
+  return value === 'Europe/Paris' || value === 'Europe/London' ? value : null;
+}
+
+function deriveTestConfirmedTimeZone(candidate) {
+  if (
+    candidate.boundCompanyId !== candidate.currentCompanyId ||
+    typeof candidate.confirmedAt !== 'string' ||
+    !Number.isFinite(Date.parse(candidate.confirmedAt)) ||
+    new Date(candidate.confirmedAt).toISOString() !== candidate.confirmedAt
+  )
+    return null;
+  const timeZone = parseTestIanaTimeZone(candidate.timeZone);
+  return timeZone === null ? null : { timeZone, confirmedAt: candidate.confirmedAt };
 }
 
 function activeMission(revision = 1, phase = 'awaiting_quote_screen', binding = null) {
@@ -161,6 +186,8 @@ function fakeDependencies(options = {}) {
   let finalEvidenceAttempts = 0;
   let negativeFinalEvidenceAttempts = 0;
   let recoveryTerminalEvidenceAttempts = 0;
+  let timeZoneAuthority = options.timeZoneAuthority ?? 'confirmed';
+  let confirmedAt = CONFIRMED_AT;
   const missionSession = {
     protocolVersion: 1,
     get realtimeSessionId() {
@@ -286,6 +313,22 @@ function fakeDependencies(options = {}) {
         },
       };
     },
+    async confirmConversationTimeZone(timeZone) {
+      events.push(`time-zone:confirm:${timeZone}`);
+      if (options.timeZoneConfirmationError !== undefined) {
+        return { ok: false, error: options.timeZoneConfirmationError };
+      }
+      timeZoneAuthority = 'confirmed';
+      confirmedAt = options.confirmedAt ?? CONFIRMED_AT;
+      return {
+        ok: true,
+        value: {
+          timeZone,
+          confirmedAt,
+          requiresSessionRefresh: true,
+        },
+      };
+    },
     async createRealtimeVoiceCall(input) {
       createAttempts += 1;
       realtimeSessionId = input.sessionHandle;
@@ -344,7 +387,44 @@ function fakeDependencies(options = {}) {
   return {
     events,
     dependencies: {
-      authenticate: async () => ({ accessToken: token() }),
+      authenticate: async () => {
+        const appMetadata =
+          timeZoneAuthority === 'absent'
+            ? { company_id: COMPANY_ID }
+            : timeZoneAuthority === 'partial'
+              ? {
+                  company_id: COMPANY_ID,
+                  bob_time_zone: 'Europe/Paris',
+                }
+              : timeZoneAuthority === 'wrong-tenant'
+                ? {
+                    company_id: COMPANY_ID,
+                    bob_time_zone: 'Europe/Paris',
+                    bob_time_zone_confirmed_at: confirmedAt,
+                    bob_time_zone_company_id: 'company-other',
+                  }
+                : timeZoneAuthority === 'wrong-zone'
+                  ? {
+                      company_id: COMPANY_ID,
+                      bob_time_zone: 'Europe/London',
+                      bob_time_zone_confirmed_at: confirmedAt,
+                      bob_time_zone_company_id: COMPANY_ID,
+                    }
+                  : timeZoneAuthority === 'invalid-date'
+                    ? {
+                        company_id: COMPANY_ID,
+                        bob_time_zone: 'Europe/Paris',
+                        bob_time_zone_confirmed_at: '2026-07-31',
+                        bob_time_zone_company_id: COMPANY_ID,
+                      }
+                    : {
+                        company_id: COMPANY_ID,
+                        bob_time_zone: 'Europe/Paris',
+                        bob_time_zone_confirmed_at: confirmedAt,
+                        bob_time_zone_company_id: COMPANY_ID,
+                      };
+        return { accessToken: token({ app_metadata: appMetadata }) };
+      },
       createClient: async () => client,
       createPeer: async () => {
         peerCreations += 1;
@@ -358,6 +438,8 @@ function fakeDependencies(options = {}) {
         error.cause === 'Délai réseau dépassé après 12000 ms.' &&
         Object.keys(error).length === 3,
       isMeaningfulQuoteDraftPayload: (payload) => payload.meaningful === true,
+      parseIanaTimeZone: parseTestIanaTimeZone,
+      deriveConfirmedTimeZone: deriveTestConfirmedTimeZone,
       createEmptyQuoteDraftPayload: (sessionId) => ({
         ok: true,
         value: emptyQuoteDraftPayload(sessionId),
@@ -459,6 +541,7 @@ function fakeDependencies(options = {}) {
         finalEvidenceAttempts,
         negativeFinalEvidenceAttempts,
         recoveryTerminalEvidenceAttempts,
+        timeZoneAuthority,
       };
     },
   };
@@ -585,6 +668,54 @@ test('préflight réseau prouve le vrai tenant et Bob Live OpenAI avant le build
   assert.equal(calls.length, 3);
   assert.equal(calls[1].init.headers.authorization, `Bearer ${token()}`);
   assert.equal(calls[2].init.headers.authorization, `Bearer ${token()}`);
+  assert.equal(JSON.stringify(result).includes(USER_ID), false);
+  assert.equal(JSON.stringify(result).includes(COMPANY_ID), false);
+});
+
+test('préflight V2 exige le fuseau signé configuré sans le republier', async () => {
+  const calls = [];
+  const result = await preflightM2A3StagingAccount(environment(), {
+    parseIanaTimeZone: parseTestIanaTimeZone,
+    deriveConfirmedTimeZone: deriveTestConfirmedTimeZone,
+    async fetch(url, init) {
+      calls.push({ url, init });
+      if (url.includes('/auth/v1/token')) {
+        return new Response(
+          JSON.stringify({
+            access_token: token(),
+            user: { id: USER_ID, app_metadata: { company_id: COMPANY_ID } },
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.endsWith('/company/me')) {
+        return new Response(JSON.stringify({ id: COMPANY_ID }), { status: 200 });
+      }
+      return new Response(
+        JSON.stringify({
+          available: true,
+          transport: 'webrtc',
+          speechDelivery: 'openai-native-webrtc-v1',
+          configVersion: 'bob-live-provider-neutral-v4',
+          model: 'gpt-realtime',
+          voice: 'marin',
+          maxSessionSeconds: 600,
+        }),
+        { status: 200 },
+      );
+    },
+  });
+  assert.deepEqual(result, {
+    mode: 'preflight-v2',
+    passed: true,
+    account: 'eligible',
+    timeZoneAuthority: 'confirmed',
+    timeZoneProvisioned: false,
+    transport: 'webrtc',
+    speechDelivery: 'openai-native-webrtc-v1',
+  });
+  assert.equal(calls.length, 3);
+  assert.equal(JSON.stringify(result).includes('Europe/Paris'), false);
   assert.equal(JSON.stringify(result).includes(USER_ID), false);
   assert.equal(JSON.stringify(result).includes(COMPANY_ID), false);
 });
@@ -729,6 +860,57 @@ test('canary preview OFF demande explicitement V2 et exige une capability nulle'
   });
   assert.equal(fake.events.includes('realtime:create:2'), true);
   assert.equal(fake.events.includes('mission:get-current'), false);
+});
+
+test('canary V2 confirme une autorité temporelle entièrement absente puis se réauthentifie', async () => {
+  const fake = fakeDependencies({
+    agentMissionOff: true,
+    timeZoneAuthority: 'absent',
+  });
+  const result = await runM2A3PreviewOffStagingSmoke(environment(), fake.dependencies);
+  assert.equal(result.passed, true);
+  assert.equal(fake.state().timeZoneAuthority, 'confirmed');
+  assert.deepEqual(fake.events.slice(0, 3), [
+    'time-zone:confirm:Europe/Paris',
+    'company:get',
+    'evidence:clean',
+  ]);
+  assert.equal(fake.events.includes('realtime:create:2'), true);
+});
+
+test('canary V2 refuse toute autorité temporelle partielle, cross-tenant ou divergente avant WebRTC', async () => {
+  for (const timeZoneAuthority of ['partial', 'wrong-tenant', 'wrong-zone', 'invalid-date']) {
+    const fake = fakeDependencies({ agentMissionOff: true, timeZoneAuthority });
+    await assert.rejects(
+      runM2A3PreviewOffStagingSmoke(environment(), fake.dependencies),
+      /time.zone|time zone/u,
+    );
+    assert.equal(fake.events.includes('time-zone:confirm:Europe/Paris'), false);
+    assert.equal(
+      fake.events.some((event) => event.startsWith('peer:create:')),
+      false,
+    );
+    assert.equal(fake.state().createAttempts, 0);
+  }
+});
+
+test('canary V2 refuse un profil ou un fuseau opérateur non canonique avant toute mutation', async () => {
+  const fake = fakeDependencies({ agentMissionOff: true });
+  await assert.rejects(
+    runM2A3PreviewOffStagingSmoke(
+      environment({ BOB_AGENT_MISSION_STAGING_PROFILE: 'release' }),
+      fake.dependencies,
+    ),
+    /restricted to the staging preview profile/u,
+  );
+  await assert.rejects(
+    runM2A3PreviewOffStagingSmoke(
+      environment({ BOB_M2A3_STAGING_TIME_ZONE: 'Europe/Introuvable' }),
+      fake.dependencies,
+    ),
+    /canonical IANA time zone/u,
+  );
+  assert.equal(fake.events.length, 0);
 });
 
 test('preuve OFF repolle la lease exacte après un hangup indisponible', async () => {
