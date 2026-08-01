@@ -5,6 +5,9 @@ function object(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : null;
 }
 
+const RAILWAY_RESOURCE_ID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+
 export const RAILWAY_TOPOLOGY_UNAVAILABLE_EXIT_CODE = 1;
 export const RAILWAY_TOPOLOGY_DRIFT_EXIT_CODE = 2;
 
@@ -96,6 +99,14 @@ export function certifySingleRailwayReplica(status, environmentName, serviceName
     unavailable(`Railway service non unique ou introuvable: ${serviceNameOrId}`);
   }
   const service = object(matches[0]);
+  if (
+    typeof service?.serviceId !== 'string' ||
+    !RAILWAY_RESOURCE_ID.test(service.serviceId) ||
+    typeof service.serviceName !== 'string' ||
+    service.serviceName.length === 0
+  ) {
+    unavailable('Railway status: identité du service absente ou invalide');
+  }
   certifyDeploymentConfig(service?.latestDeployment, 'latestDeployment');
 
   const activeDeployments = service.activeDeployments;
@@ -126,7 +137,12 @@ export function certifySingleRailwayReplica(status, environmentName, serviceName
   }
   certifyDeploymentConfig(activeDeployment, 'activeDeployments[0]');
 
-  return { environment: environmentName, service: service.serviceName, replicas: 1 };
+  return {
+    environment: environmentName,
+    service: service.serviceName,
+    serviceId: service.serviceId,
+    replicas: 1,
+  };
 }
 
 export function railwayTopologyExitCode(error) {
@@ -155,7 +171,7 @@ async function main() {
         })
       : await readFile(statusPath, 'utf8');
   const result = certifySingleRailwayReplica(JSON.parse(raw), environmentName, serviceNameOrId);
-  process.stdout.write(`railway-single-replica-ok:${result.environment}:${result.service}\n`);
+  process.stdout.write(`railway-single-replica-ok:${result.environment}:${result.serviceId}\n`);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

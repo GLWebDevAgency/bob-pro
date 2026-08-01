@@ -244,6 +244,18 @@ test('trois deploiements attendent leur ID et chaque etat deploye recertifie la 
   );
 });
 
+test("chaque preuve topologique cible l'UUID Railway exact du service API", () => {
+  const certifierCalls = occurrences(workflow, /certify-railway-single-replica\.mjs/gu);
+  assert.equal(certifierCalls, 5);
+  assert.equal(
+    occurrences(
+      workflow,
+      /certify-railway-single-replica\.mjs\s*\\\s*\n\s*staging "\$RAILWAY_API_SERVICE_ID"/gu,
+    ),
+    certifierCalls,
+  );
+});
+
 test('chaque Railway CLI epingle projet, environnement et service sans relink', () => {
   assert.equal(
     occurrences(workflow, /railway (?:run|status)/gu),

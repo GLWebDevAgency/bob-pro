@@ -18,6 +18,48 @@ const DECISION_DIGEST = 'd'.repeat(64);
 const REPORT_CLI = fileURLToPath(
   new URL('./agent-mission-m2a3-staging-preview-report.mjs', import.meta.url),
 );
+const TOPOLOGY_CLI = fileURLToPath(
+  new URL('./certify-railway-single-replica.mjs', import.meta.url),
+);
+
+function singleReplicaRailwayStatus() {
+  const deploy = {
+    drainingSeconds: 0,
+    numReplicas: 1,
+    overlapSeconds: 0,
+    multiRegionConfig: { 'europe-west4-drams3a': { numReplicas: 1 } },
+  };
+  return {
+    environments: {
+      edges: [
+        {
+          node: {
+            name: 'staging',
+            serviceInstances: {
+              edges: [
+                {
+                  node: {
+                    serviceId: SERVICE_ID,
+                    serviceName: 'bob-pro-api',
+                    latestDeployment: { meta: { serviceManifest: { deploy } } },
+                    activeDeployments: [
+                      {
+                        status: 'SUCCESS',
+                        deploymentStopped: false,
+                        instances: [{ status: 'RUNNING' }],
+                        meta: { serviceManifest: { deploy } },
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          },
+        },
+      ],
+    },
+  };
+}
 
 function flagReceipt(command, m2aVersion) {
   const canary = command === 'assert-canary';
@@ -79,6 +121,7 @@ function environment(overrides = {}) {
   const mode = overrides.BOB_M2A3_PREVIEW_MODE ?? 'activate';
   const active = mode === 'activate';
   return {
+    RAILWAY_API_SERVICE_ID: SERVICE_ID,
     BOB_M2A3_PREVIEW_MODE: mode,
     BOB_M2A3_PREVIEW_RELEASE_SHA: SHA,
     BOB_M2A3_PREVIEW_NORMAL_RELEASE_RUN_ID: active ? '123450000' : '',
@@ -226,6 +269,55 @@ test('construit la preuve OFF uniquement depuis une désactivation live vérifi�
           }),
         ),
       /deactivation source provenance is invalid/u,
+    );
+  }
+});
+
+test("lie le reçu à l'UUID émis par le certifieur Railway réel", () => {
+  const certification = spawnSync(process.execPath, [TOPOLOGY_CLI, 'staging', SERVICE_ID], {
+    input: JSON.stringify(singleReplicaRailwayStatus()),
+    encoding: 'utf8',
+  });
+  assert.equal(certification.status, 0, certification.stderr);
+  assert.equal(certification.stdout, `railway-single-replica-ok:staging:${SERVICE_ID}\n`);
+
+  const report = buildM2A3StagingPreviewReport(
+    environment({
+      BOB_M2A3_PREVIEW_TOPOLOGY_OBSERVATION: certification.stdout.trim(),
+    }),
+  );
+  assert.equal(report.topology, 'single-replica');
+  assert.equal(validateM2A3StagingPreviewReport(report, SHA), report);
+  assert.throws(
+    () =>
+      buildM2A3StagingPreviewReport(
+        environment({
+          BOB_M2A3_PREVIEW_TOPOLOGY_OBSERVATION: 'railway-single-replica-ok:staging:bob-pro-api',
+        }),
+      ),
+    /topology observation is not single-replica staging/u,
+  );
+  assert.throws(
+    () =>
+      buildM2A3StagingPreviewReport(
+        environment({
+          BOB_M2A3_PREVIEW_TOPOLOGY_OBSERVATION:
+            'railway-single-replica-ok:staging:44444444-4444-4444-8444-444444444444',
+        }),
+      ),
+    /topology observation is not single-replica staging/u,
+  );
+  for (const invalidConfiguredServiceId of [
+    '',
+    'bob-pro-api',
+    'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA',
+  ]) {
+    assert.throws(
+      () =>
+        buildM2A3StagingPreviewReport(
+          environment({ RAILWAY_API_SERVICE_ID: invalidConfiguredServiceId }),
+        ),
+      /RAILWAY_API_SERVICE_ID is missing or invalid|configured Railway service id is invalid/u,
     );
   }
 });
