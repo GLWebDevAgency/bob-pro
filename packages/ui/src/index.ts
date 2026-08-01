@@ -89,6 +89,18 @@ export {
   type StatusStripColors,
   type StatusStripPalette,
 } from './components/status-strip.logic';
+// Lot 0 — champ de recherche (loupe + clear 44) et champs de formulaire à label visible.
+export * from './components/search-field';
+export { searchClearVisible } from './components/search-field.logic';
+export * from './components/form-field';
+export { applyDateMask, formFieldBorderColor } from './components/form-field.logic';
+// Lot 0 — bouton d'icône de header (squircle 44×44, radius 13 — l'arbitrage).
+export * from './components/header-icon-button';
+export {
+  HEADER_ICON_BUTTON_RADIUS,
+  HEADER_ICON_BUTTON_SIZE,
+  headerIconButtonStyle,
+} from './components/header-icon-button.logic';
 export * from './components/hero-money-card';
 export * from './components/money-row';
 export * from './components/segmented-control';
