@@ -3670,6 +3670,27 @@ const legacyFr = {
     pro: 'Le mode temps réel est indisponible ; poursuite en mode classique.',
     direct: 'Temps réel KO. Mode classique.',
   },
+  'agent.global.diagnosticTraceTitle': {
+    pote: 'Mode diagnostic de test',
+    direct: 'Mode diagnostic de test',
+    pro: 'Mode diagnostic de test',
+  },
+  'agent.global.diagnosticTrace': {
+    pote: 'Mode test : la transcription de ta demande et la réponse de Bob sont chiffrées et conservées jusqu’à {retentionDays} jours pour diagnostiquer la qualité. Aucun audio n’est conservé.',
+    direct:
+      'Mode test : transcription et réponse de Bob chiffrées, conservées jusqu’à {retentionDays} jours pour le diagnostic qualité. Aucun audio conservé.',
+    pro: 'Mode test : la transcription de votre demande et la réponse de Bob sont chiffrées et conservées jusqu’à {retentionDays} jours pour diagnostiquer la qualité. Aucun audio n’est conservé.',
+  },
+  'agent.global.diagnosticTraceConfirm': {
+    pote: 'Continuer',
+    direct: 'Continuer',
+    pro: 'Continuer',
+  },
+  'agent.global.diagnosticTraceCancel': {
+    pote: 'Annuler',
+    direct: 'Annuler',
+    pro: 'Annuler',
+  },
   'agent.global.heardNothing': {
     pote: 'Je n’ai rien entendu — touche le bouton pour reprendre.',
     pro: 'Je n’ai rien entendu. Touchez le bouton pour reprendre.',

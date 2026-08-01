@@ -47,6 +47,7 @@ import {
   REALTIME_SIDEBAND,
   REALTIME_VOICE_SETTINGS,
   REALTIME_SPEECH_SOURCE_POLICY,
+  REALTIME_VOICE_TRACE_V2,
 } from './realtime.tokens';
 import {
   realtimeAgentContextVersion,
@@ -113,6 +114,8 @@ import {
   type RealtimeAgentMissionAdmissionPreparation,
 } from './realtime-agent-mission-admission';
 import { realtimeSubjectBindings } from './realtime-principal-binding';
+import { RealtimeVoiceTraceFactory } from './realtime-voice-trace';
+import type { RealtimeVoiceTraceFailureClass, RealtimeVoiceTraceStage } from '@bob/core';
 
 export { admissionSubjectHash } from './realtime-principal-binding';
 
@@ -667,6 +670,13 @@ function providerErrorClass(error: unknown): string {
     'sideband_malformed_event',
     'sideband_provider_error',
     'sideband_activation_failed',
+    'sideband_owner_busy',
+    'sideband_owner_rejected',
+    'sideband_owner_unavailable',
+    'sideband_context_lost',
+    'sideband_context_stale',
+    'sideband_context_rejected',
+    'sideband_context_unavailable',
     'sideband_superseded',
     'sideband_unknown',
     'bootstrap_aborted',
@@ -676,6 +686,49 @@ function providerErrorClass(error: unknown): string {
     'realtime_bootstrap_fenced',
   ]);
   return allowed.has(value) ? value : 'provider_unknown';
+}
+
+function traceProviderFailure(errorClass: string): {
+  readonly stage: RealtimeVoiceTraceStage;
+  readonly failureClass: RealtimeVoiceTraceFailureClass;
+} {
+  if (errorClass === 'bootstrap_aborted') {
+    return { stage: 'provider_call', failureClass: 'bootstrap_aborted' };
+  }
+  if (errorClass === 'provider_call_registration_missing') {
+    return { stage: 'provider_call', failureClass: 'provider_registration_missing' };
+  }
+  const sideband = errorClass.startsWith('sideband_');
+  const allowedSideband = new Set<RealtimeVoiceTraceFailureClass>([
+    'sideband_timeout',
+    'sideband_send_failed',
+    'sideband_policy_drift',
+    'sideband_provider_error',
+    'sideband_network_error',
+    'sideband_closed_before_ready',
+    'sideband_activation_failed',
+    'sideband_owner_busy',
+    'sideband_owner_rejected',
+    'sideband_owner_unavailable',
+    'sideband_context_lost',
+    'sideband_context_stale',
+    'sideband_context_rejected',
+    'sideband_context_unavailable',
+  ]);
+  if (sideband && allowedSideband.has(errorClass as RealtimeVoiceTraceFailureClass)) {
+    return {
+      stage: errorClass.startsWith('sideband_owner_')
+        ? 'sideband_owner'
+        : errorClass.startsWith('sideband_context_')
+          ? 'context'
+          : 'sideband_bootstrap',
+      failureClass: errorClass as RealtimeVoiceTraceFailureClass,
+    };
+  }
+  return {
+    stage: sideband ? 'sideband_bootstrap' : 'provider_call',
+    failureClass: sideband ? 'unknown' : 'provider_create_failed',
+  };
 }
 
 @Injectable()
@@ -726,6 +779,9 @@ export class RealtimeVoiceService {
     @Inject(REALTIME_AGENT_MISSION_ADMISSION)
     private readonly agentMissionAdmission: RealtimeAgentMissionAdmissionGate =
       new DisabledRealtimeAgentMissionAdmissionGate(),
+    @Optional()
+    @Inject(REALTIME_VOICE_TRACE_V2)
+    private readonly voiceTrace: RealtimeVoiceTraceFactory | null = null,
   ) {
     // Les tests unitaires et les compositions historiques construisent encore le service
     // directement. Le fallback doit capturer le paramètre `provider` déjà initialisé : une
@@ -765,6 +821,10 @@ export class RealtimeVoiceService {
         this.metrics.bobLiveEntitlementChecks.inc({ outcome: 'preflight_error', plan: 'unknown' });
       }
     }
+    const diagnosticTrace =
+      principal?.companyId && principal.userId
+        ? (this.voiceTrace?.disclosureFor(principal.companyId, principal.userId) ?? null)
+        : null;
     const common = {
       available,
       ...(availabilityReason === undefined ? {} : { availabilityReason }),
@@ -773,6 +833,7 @@ export class RealtimeVoiceService {
       configVersion: BOB_REALTIME_CONFIG_VERSION,
       requiresDevelopmentBuild: true,
       maxSessionSeconds: this.settings.maxSessionSeconds,
+      ...(diagnosticTrace === null ? {} : { diagnosticTrace }),
     } as const;
     if (this.settings.provider === 'mistral') {
       return {
@@ -911,10 +972,27 @@ export class RealtimeVoiceService {
     if (!principal?.userId || !principal.companyId) {
       return this.finishError('identity_missing', startedAt, appForbidden('Session utilisateur et espace de travail requis.'));
     }
+    let trace: ReturnType<RealtimeVoiceTraceFactory['begin']> = null;
+    try {
+      trace = this.voiceTrace?.begin(principal.companyId, principal.userId) ?? null;
+    } catch {
+      // Observateur strictement non autoritaire : aucune panne locale du journal ne coupe Bob.
+      this.logger.error(
+        'bob.live.trace.v2.failed class=attempt_initialization',
+        undefined,
+        'BobLiveTraceV2',
+      );
+    }
     if (
       parsed.value.agentMissionNegotiation.requested === 'v2'
       && principal.confirmedTimeZone === undefined
     ) {
+      trace?.record({
+        eventKind: 'session_bootstrap_failed',
+        stage: 'admission',
+        outcome: 'rejected',
+        failureClass: 'admission_rejected',
+      });
       return this.finishError(
         'time_zone_confirmation_required',
         startedAt,
@@ -922,6 +1000,12 @@ export class RealtimeVoiceService {
       );
     }
     if (!this.settings.safetySecret || !this.settings.apiKey) {
+      trace?.record({
+        eventKind: 'session_bootstrap_failed',
+        stage: 'provider_call',
+        outcome: 'unavailable',
+        failureClass: 'provider_create_failed',
+      });
       return this.finishError('misconfigured', startedAt, {
         kind: 'dependency',
         port: 'openai-realtime',
@@ -936,6 +1020,12 @@ export class RealtimeVoiceService {
       });
     } catch {
       this.metrics.bobLiveEntitlementChecks.inc({ outcome: 'error', plan: 'unknown' });
+      trace?.record({
+        eventKind: 'session_bootstrap_failed',
+        stage: 'admission',
+        outcome: 'unavailable',
+        failureClass: 'admission_rejected',
+      });
       return this.finishError(
         'entitlement_unavailable',
         startedAt,
@@ -944,6 +1034,12 @@ export class RealtimeVoiceService {
     }
     if (!entitlement.allowed) {
       this.metrics.bobLiveEntitlementChecks.inc({ outcome: 'denied', plan: entitlement.plan });
+      trace?.record({
+        eventKind: 'session_bootstrap_failed',
+        stage: 'admission',
+        outcome: 'rejected',
+        failureClass: 'admission_rejected',
+      });
       return this.finishError(
         'entitlement_denied',
         startedAt,
@@ -958,6 +1054,12 @@ export class RealtimeVoiceService {
       principal.userId,
     );
     if (subjectBindings === null) {
+      trace?.record({
+        eventKind: 'session_bootstrap_failed',
+        stage: 'admission',
+        outcome: 'unavailable',
+        failureClass: 'admission_rejected',
+      });
       return this.finishError(
         'misconfigured',
         startedAt,
@@ -979,6 +1081,12 @@ export class RealtimeVoiceService {
         speechDelivery: parsed.value.speechDelivery,
       });
     } catch {
+      trace?.record({
+        eventKind: 'session_bootstrap_failed',
+        stage: 'admission',
+        outcome: 'unavailable',
+        failureClass: 'admission_rejected',
+      });
       return this.finishError(
         'admission_unavailable',
         startedAt,
@@ -1001,10 +1109,17 @@ export class RealtimeVoiceService {
     if (!admission.allowed) {
       this.metrics.bobLiveRateLimited.inc({ scope: admission.denial ?? 'unknown' });
       const error = admissionDenial(admission);
+      trace?.record({
+        eventKind: 'session_bootstrap_failed',
+        stage: 'admission',
+        outcome: 'rejected',
+        failureClass: 'admission_rejected',
+      });
       return this.finishError(error.kind, startedAt, error);
     }
 
     const lease = admission.lease;
+    trace?.bindSession(lease.sessionId);
     const agentMissionAuthority = admission.agentMissionProof === null
       ? undefined
       : Object.freeze({
@@ -1036,6 +1151,12 @@ export class RealtimeVoiceService {
         ...lease,
         providerTermination: 'not_created',
       }).catch(() => undefined);
+      trace?.record({
+        eventKind: 'session_bootstrap_failed',
+        stage: 'admission',
+        outcome: 'unavailable',
+        failureClass: 'admission_rejected',
+      });
       return this.finishError(
         'admission_unavailable',
         startedAt,
@@ -1052,6 +1173,12 @@ export class RealtimeVoiceService {
         );
       } catch {
         await this.admission.release({ ...lease, providerTermination: 'not_created' }).catch(() => undefined);
+        trace?.record({
+          eventKind: 'session_bootstrap_failed',
+          stage: 'speech_prepare',
+          outcome: 'unavailable',
+          failureClass: 'speech_publish_failed',
+        });
         return this.finishError(
           'speech_unavailable',
           startedAt,
@@ -1120,6 +1247,7 @@ export class RealtimeVoiceService {
         subjectKeyVersion: this.settings.subjectKeyVersion,
         session,
         lifecycle,
+        ...(trace === null ? {} : { trace }),
         turn: {
           run: async ({ turnId, transcript, history, signal: turnSignal }) => {
             const contextIdentity = {
@@ -1159,6 +1287,7 @@ export class RealtimeVoiceService {
                   return realtimeAgentContextVersion(current.snapshot);
                 },
               },
+              ...(trace === null ? {} : { trace }),
               signal: turnSignal,
             });
           },
@@ -1209,6 +1338,14 @@ export class RealtimeVoiceService {
         voice: this.settings.voice,
         configVersion: BOB_REALTIME_CONFIG_VERSION,
         maxSessionSeconds: this.settings.maxSessionSeconds,
+        ...(trace === null
+          ? {}
+          : {
+              diagnosticTrace: this.voiceTrace!.disclosureFor(
+                principal.companyId,
+                principal.userId,
+              )!,
+            }),
       } as const;
       if (parsed.value.speechDelivery === 'openai-native-webrtc-v1') {
         return ok({
@@ -1227,6 +1364,14 @@ export class RealtimeVoiceService {
         speechSourcePolicy,
       });
     } catch (error) {
+      const errorClass = providerErrorClass(error);
+      const traceFailure = traceProviderFailure(errorClass);
+      trace?.record({
+        eventKind: 'provider_failed',
+        stage: traceFailure.stage,
+        outcome: signal?.aborted ? 'aborted' : 'failed',
+        failureClass: traceFailure.failureClass,
+      });
       const providerTermination = error instanceof RealtimeProviderCallCompensatedError
         ? 'confirmed'
         : error instanceof RealtimeProviderCleanupError
@@ -1241,7 +1386,6 @@ export class RealtimeVoiceService {
       if (error instanceof RealtimeProviderCleanupError) {
         this.metrics.bobLiveProviderErrors.inc({ class: `orphan_${error.cleanupErrorClass}` });
       }
-      const errorClass = providerErrorClass(error);
       this.metrics.bobLiveProviderErrors.inc({ class: errorClass });
       this.logger.warn(`bob.live.bootstrap.failed class=${errorClass}`, 'BobLive');
       return this.finishError('provider_error', startedAt, {
@@ -1523,20 +1667,29 @@ export class RealtimeVoiceService {
     // compris sur une autre réplique, doit perdre la course avant que l’UI puisse croire la
     // session terminée. Ce détachement ne touche ni provider ni lease : le claim ci-dessus est
     // désormais leur unique propriétaire.
+    let detachedTermination: ReturnType<RealtimeSidebandControl['fenceAndDetachSession']> =
+      'not_found';
     try {
-      this.sideband.fenceAndDetachSession({
+      detachedTermination = this.sideband.fenceAndDetachSession({
         userId: principal.userId,
         companyId: principal.companyId,
         sessionHandle,
+        reason: 'user',
       });
     } catch {
       // Une autre réplique ou le reaper durable reprend ci-dessous.
     }
     if (!termination.claim) {
       if (termination.pending) {
+        if (detachedTermination !== 'not_found') {
+          // Un claim détenu par une autre réplique n'est pas un échec fournisseur observé.
+          // Laisser la trace sans terminal vaut mieux qu'inventer un diagnostic ou un hangup.
+          detachedTermination.settle('unconfirmed');
+        }
         this.metrics.bobLiveProviderErrors.inc({ class: 'explicit_hangup_pending_reaper' });
         return { ok: false, error: appUnavailable('bob-live-hangup', 10) };
       }
+      if (detachedTermination !== 'not_found') detachedTermination.settle('confirmed');
       return ok({ ended: true });
     }
 
@@ -1553,9 +1706,13 @@ export class RealtimeVoiceService {
         hardExpiryProof: termination.claim.hardExpiryProof,
       });
     } catch {
+      if (detachedTermination !== 'not_found') {
+        detachedTermination.settle('provider_failed');
+      }
       this.metrics.bobLiveProviderErrors.inc({ class: 'explicit_hangup_pending_reaper' });
       return { ok: false, error: appUnavailable('bob-live-hangup', 10) };
     }
+    if (detachedTermination !== 'not_found') detachedTermination.settle('confirmed');
     const completed = await this.admission.completeReaping({
       companyId: termination.claim.companyId,
       subjectHash: termination.claim.subjectHash,

@@ -7,7 +7,11 @@ import {
   resolveBobLiveSubjectHmacKeyRing,
   resolveMistralConversationPersistenceKeyRing,
   resolveMistralV2IdentityEncryptionKeyRing,
+  resolveRealtimeVoiceTraceV2Env,
 } from './env';
+
+const REALTIME_TRACE_COMPANY_ID = 'company-staging-owner';
+const REALTIME_TRACE_USER_ID = '00000000-0000-4000-8000-000000000042';
 
 function validRealtimeEnv(): void {
   vi.stubEnv('DEMO_MODE', 'true');
@@ -66,8 +70,108 @@ function enableMistralV2TerminalReplay(): void {
   );
 }
 
+function enableRealtimeVoiceTraceV2(options?: {
+  missionSecret?: string;
+  traceSecret?: string;
+}): void {
+  validRealtimeEnv();
+  const missionSecret = options?.missionSecret ?? Buffer.alloc(32, 41).toString('base64url');
+  const traceSecret = options?.traceSecret ?? Buffer.alloc(32, 42).toString('base64url');
+  vi.stubEnv('CABINET_RELEASE_ENV', 'staging');
+  vi.stubEnv(
+    'BOB_LIVE_LOCAL_AUDIT_BASE_URL',
+    'http://bob-live-whisper-audit.railway.internal:8080/v1',
+  );
+  vi.stubEnv('BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED', 'true');
+  vi.stubEnv('BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED', 'true');
+  vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEY_VERSION', '1');
+  vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEYRING', JSON.stringify({ 1: missionSecret }));
+  vi.stubEnv('VOICE_TRACE_REALTIME_V2_ENABLED', 'true');
+  vi.stubEnv(
+    'VOICE_TRACE_REALTIME_V2_SUBJECTS',
+    `${REALTIME_TRACE_COMPANY_ID}:${REALTIME_TRACE_USER_ID}`,
+  );
+  vi.stubEnv('VOICE_TRACE_REALTIME_V2_ENCRYPTION_KEYRING', JSON.stringify({ 1: traceSecret }));
+  vi.stubEnv('VOICE_TRACE_REALTIME_V2_ENCRYPTION_CURRENT_VERSION', '1');
+}
+
 describe('Bob Live — validation de la politique d’admission', () => {
   afterEach(() => vi.unstubAllEnvs());
+
+  it('accepte Voice Trace V2 uniquement sur le sujet staging explicitement autorisé', () => {
+    enableRealtimeVoiceTraceV2();
+
+    const resolved = resolveRealtimeVoiceTraceV2Env(loadEnv());
+    expect(resolved.enabled).toBe(true);
+    expect(resolved.subjects).toEqual(
+      new Set([`${REALTIME_TRACE_COMPANY_ID}:${REALTIME_TRACE_USER_ID}`]),
+    );
+    expect(resolved.encryptionVersions).toEqual([1]);
+    expect(resolved.currentEncryptionVersion).toBe(1);
+    const firstRead = resolved.encryptionSecret(1);
+    expect(firstRead).toEqual(Uint8Array.from(Buffer.alloc(32, 42)));
+    firstRead?.fill(0);
+    expect(resolved.encryptionSecret(1)).toEqual(Uint8Array.from(Buffer.alloc(32, 42)));
+  });
+
+  it('impose un bloc Voice Trace V2 tout-ou-rien et absent lorsque le master est OFF', () => {
+    validRealtimeEnv();
+    vi.stubEnv(
+      'VOICE_TRACE_REALTIME_V2_SUBJECTS',
+      `${REALTIME_TRACE_COMPANY_ID}:${REALTIME_TRACE_USER_ID}`,
+    );
+    expect(() => loadEnv()).toThrow(/doit être absent.*ENABLED=false/u);
+
+    vi.stubEnv('VOICE_TRACE_REALTIME_V2_ENABLED', 'true');
+    expect(() => loadEnv()).toThrow(/exige le bloc VOICE_TRACE_REALTIME_V2_\* complet/u);
+  });
+
+  it.each(['development', 'production'] as const)(
+    'refuse Voice Trace V2 dans CABINET_RELEASE_ENV=%s',
+    (environment) => {
+      enableRealtimeVoiceTraceV2();
+      vi.stubEnv('CABINET_RELEASE_ENV', environment);
+      expect(() => loadEnv()).toThrow(/réservé à CABINET_RELEASE_ENV=staging/u);
+    },
+  );
+
+  it('exige OpenAI, les deux masters AgentMission et interdit le traceur vocal historique', () => {
+    enableRealtimeVoiceTraceV2();
+    vi.stubEnv('BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED', 'false');
+    expect(() => loadEnv()).toThrow(/exige les masters AgentMission V1 et M2-A actifs/u);
+
+    vi.stubEnv('BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED', 'true');
+    vi.stubEnv('VOICE_TRACE_ENABLED', 'true');
+    expect(() => loadEnv()).toThrow(/ne peuvent pas être actifs ensemble/u);
+  });
+
+  it('refuse les sujets, keyrings et versions de chiffrement ambigus', () => {
+    enableRealtimeVoiceTraceV2();
+    vi.stubEnv('VOICE_TRACE_REALTIME_V2_SUBJECTS', `${REALTIME_TRACE_COMPANY_ID}:not-a-uuid`);
+    expect(() => loadEnv()).toThrow(/couples companyId:userId canoniques/u);
+
+    vi.stubEnv(
+      'VOICE_TRACE_REALTIME_V2_SUBJECTS',
+      `${REALTIME_TRACE_COMPANY_ID}:${REALTIME_TRACE_USER_ID}`,
+    );
+    vi.stubEnv(
+      'VOICE_TRACE_REALTIME_V2_ENCRYPTION_KEYRING',
+      JSON.stringify({ 1: Buffer.alloc(31, 42).toString('base64url') }),
+    );
+    expect(() => loadEnv()).toThrow(/version ou une clé invalide/u);
+
+    vi.stubEnv(
+      'VOICE_TRACE_REALTIME_V2_ENCRYPTION_KEYRING',
+      JSON.stringify({ 2: Buffer.alloc(32, 42).toString('base64url') }),
+    );
+    expect(() => loadEnv()).toThrow(/CURRENT_VERSION doit exister/u);
+  });
+
+  it('interdit de réutiliser le secret AgentMission pour chiffrer les traces', () => {
+    const sharedSecret = Buffer.alloc(32, 43).toString('base64url');
+    enableRealtimeVoiceTraceV2({ missionSecret: sharedSecret, traceSecret: sharedSecret });
+    expect(() => loadEnv()).toThrow(/Chaque clé fournisseur.*Voice Trace V2.*doit être dédiée/u);
+  });
 
   it('garde AgentMission dormant sans keyring lorsque le master est OFF', () => {
     validRealtimeEnv();

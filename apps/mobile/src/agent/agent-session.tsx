@@ -18,6 +18,7 @@ import {
   REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
   REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
   type RealtimeAgentMissionProtocolVersion,
+  type RealtimeVoiceDiagnosticTraceDisclosure,
 } from '@bob/api-client';
 import { makeBobAgent } from '../data/bob';
 import { useAuth } from '../data/auth';
@@ -117,6 +118,10 @@ export interface AgentSessionValue {
   readonly reviewRequired: boolean;
   readonly contextAtTurn: AgentContext | null;
   readonly handoff: AgentSessionHandoff | null;
+  readonly diagnosticTrace: RealtimeVoiceDiagnosticTraceDisclosure | null;
+  readonly diagnosticTraceConfirmationPending: boolean;
+  readonly confirmDiagnosticTrace: () => void;
+  readonly cancelDiagnosticTrace: () => void;
   readonly timeZoneConfirmation: ConversationTimeZoneConfirmationState | null;
   readonly confirmConversationTimeZone: (timeZone: string) => Promise<void>;
   readonly redetectConversationTimeZone: () => void;
@@ -178,6 +183,39 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
   const [reviewRequired, setReviewRequired] = useState(false);
   const [contextAtTurn, setContextAtTurn] = useState<AgentContext | null>(null);
   const [handoff, setHandoff] = useState<AgentSessionHandoff | null>(null);
+  const [diagnosticTrace, setDiagnosticTrace] =
+    useState<RealtimeVoiceDiagnosticTraceDisclosure | null>(null);
+  const [diagnosticTraceConfirmationPending, setDiagnosticTraceConfirmationPending] =
+    useState(false);
+  const diagnosticTraceDecisionRef = useRef<{
+    readonly disclosure: RealtimeVoiceDiagnosticTraceDisclosure;
+    readonly resolve: (accepted: boolean) => void;
+  } | null>(null);
+  const settleDiagnosticTraceDecision = useCallback((accepted: boolean): void => {
+    const pending = diagnosticTraceDecisionRef.current;
+    if (pending === null) return;
+    diagnosticTraceDecisionRef.current = null;
+    setDiagnosticTraceConfirmationPending(false);
+    if (!accepted) setDiagnosticTrace(null);
+    pending.resolve(accepted);
+  }, []);
+  const confirmDiagnosticTrace = useCallback((): void => {
+    settleDiagnosticTraceDecision(true);
+  }, [settleDiagnosticTraceDecision]);
+  const cancelDiagnosticTrace = useCallback((): void => {
+    settleDiagnosticTraceDecision(false);
+  }, [settleDiagnosticTraceDecision]);
+  const requestDiagnosticTraceDecision = useCallback(
+    (disclosure: RealtimeVoiceDiagnosticTraceDisclosure): Promise<boolean> => {
+      if (diagnosticTraceDecisionRef.current !== null) return Promise.resolve(false);
+      setDiagnosticTrace(disclosure);
+      setDiagnosticTraceConfirmationPending(true);
+      return new Promise<boolean>((resolve) => {
+        diagnosticTraceDecisionRef.current = { disclosure, resolve };
+      });
+    },
+    [],
+  );
   const handoffRef = useRef<AgentSessionHandoff | null>(null);
   handoffRef.current = handoff;
   const historyRef = useRef<AgentConversationTurn[]>([]);
@@ -272,6 +310,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
           return config.ok ? config.value : null;
         },
         ensureConfirmedTimeZoneForMissionV2: requireConfirmedTimeZone,
+        confirmDiagnosticTraceBeforeListening: requestDiagnosticTraceDecision,
         updateContext: async (handle, update) => client.updateRealtimeVoiceContext(handle, update),
         createOrchestrator: (
           negotiation,
@@ -362,6 +401,10 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
           if (!realtimeActiveRef.current || !final) return;
           setResponse(text);
           historyRef.current = [...historyRef.current, { role: 'bob' as const, text }].slice(-12);
+        },
+        onDiagnosticTrace: (disclosure) => {
+          if (!realtimeActiveRef.current) return;
+          setDiagnosticTrace(disclosure);
         },
         onReview: (proposalId, proposalExpiresAt) => {
           if (!realtimeActiveRef.current) return;
@@ -528,6 +571,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     // realtimeActiveRef ne passe à true) doit quand même invalider la génération du contrôleur
     // — sinon le bootstrap aboutit et ouvre un micro fantôme sur une session affichée éteinte.
     realtimeActiveRef.current = false;
+      settleDiagnosticTraceDecision(false);
     driverRef.current = 'idle';
     realtimeMistralCheckpointUsedRef.current = null;
     sessionGenerationRef.current += 1;
@@ -544,11 +588,14 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     setContextAtTurn(null);
     setHandoff(null);
     setReviewRequired(false);
-    setSessionPhase('idle');
+      setDiagnosticTrace(null);
+      setSessionPhase('idle');
     return afterManualHandoff
       ? realtimeStop
       : realtimeStop.catch(() => undefined);
-  }, [setSessionPhase, stopSpeaking]);
+  },
+    [setSessionPhase, settleDiagnosticTraceDecision, stopSpeaking],
+  );
 
   const stop = useCallback((): void => {
     void stopWithReason('user');
@@ -885,6 +932,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     setReviewRequired(false);
     setContextAtTurn(null);
     setHandoff(null);
+      setDiagnosticTrace(null);
     setSessionPhase('thinking');
     // TEMPS RÉEL d'abord — le serveur décide (plan voice_live + rollout). Une reprise durable
     // interdit structurellement le repli historique et tout changement silencieux de protocole.
@@ -963,6 +1011,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     setReviewRequired(false);
     setContextAtTurn(null);
     setHandoff(null);
+    setDiagnosticTrace(null);
   }, []);
 
   const consumeHandoff = useCallback((id: string): void => {
@@ -1084,6 +1133,10 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
       reviewRequired,
       contextAtTurn,
       handoff,
+      diagnosticTrace,
+      diagnosticTraceConfirmationPending,
+      confirmDiagnosticTrace,
+      cancelDiagnosticTrace,
       timeZoneConfirmation,
       confirmConversationTimeZone,
       redetectConversationTimeZone,
@@ -1101,10 +1154,14 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     [
       active,
       cancelTimeZoneConfirmation,
+      cancelDiagnosticTrace,
+      confirmDiagnosticTrace,
       confirmConversationTimeZone,
       contextAtTurn,
       consumeHandoff,
       dismissResponse,
+      diagnosticTrace,
+      diagnosticTraceConfirmationPending,
       handoff,
       issue,
       phase,

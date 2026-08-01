@@ -668,7 +668,11 @@ SELECT pg_catalog.format(
    AND relation.relkind IN ('r', 'p', 'v', 'f')
    -- Cette autorité globale reste fermée jusqu'à son provisioner owner-aware. Même au premier
    -- déploiement, elle ne traverse jamais une fenêtre DML ouverte au runtime.
-   AND relation.relname <> 'realtime_global_capacity'
+   AND relation.relname NOT IN (
+     'realtime_global_capacity',
+     'realtime_voice_trace_events',
+     'realtime_voice_trace_access_audits'
+   )
    AND relation.relowner = (
      SELECT role.oid FROM pg_catalog.pg_roles AS role WHERE role.rolname = current_user
    )
@@ -748,6 +752,24 @@ REVOKE UPDATE, DELETE ON TABLE
   public.quote_creation_requests,
   public.bank_balance_snapshots
 FROM :"app_role";
+-- Voice Trace Realtime V2 est exclu du grant DML large. Son provisioner owner-aware reconstruit
+-- uniquement INSERT par colonne + lecture du digest ; aucun DELETE ni ciphertext n'est direct.
+REVOKE ALL PRIVILEGES ON TABLE public.realtime_voice_trace_events FROM :"app_role";
+REVOKE ALL PRIVILEGES ON TABLE public.realtime_voice_trace_access_audits FROM :"app_role";
+SELECT pg_catalog.format(
+  'REVOKE SELECT (%I), INSERT (%I), UPDATE (%I), REFERENCES (%I) ON TABLE public.realtime_voice_trace_events FROM %I',
+  attribute.attname,
+  attribute.attname,
+  attribute.attname,
+  attribute.attname,
+  :'app_role'
+)
+  FROM pg_catalog.pg_attribute AS attribute
+ WHERE attribute.attrelid = 'public.realtime_voice_trace_events'::regclass
+   AND attribute.attnum > 0
+   AND NOT attribute.attisdropped
+ ORDER BY attribute.attnum
+\gexec
 -- Rail global monotone du protocole de règlement : le runtime le lit via le trigger, mais seule
 -- DIRECT_URL peut activer V2 après retrait prouvé de N-1. Les snapshots d'antécédents n'ont
 -- aucune capacité UPDATE, même si une future policy RLS dérive.
@@ -2439,6 +2461,32 @@ ensure_catalogue_search_token_authority_role() {
     -f apps/api/prisma/catalogue-search-token-authority-role.sql
 }
 
+ensure_realtime_voice_trace_authority_roles() {
+  psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
+    -f apps/api/prisma/realtime-voice-trace-authority-role.sql
+}
+
+provision_realtime_voice_trace_authorities() {
+  ensure_realtime_voice_trace_authority_roles
+  # Le provisionneur possède son propre BEGIN/COMMIT : ne pas l'envelopper dans une seconde
+  # transaction psql, afin que son contrat soit identique sur PostgreSQL local et Supabase.
+  psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+    -v app_role="${APP_DATABASE_ROLE:-}" \
+    -v release_env="$CABINET_RELEASE_ENV" \
+    -f apps/api/prisma/realtime-voice-trace-authority-provision.sql
+}
+
+certify_realtime_voice_trace_release() {
+  if [ -z "${APP_DATABASE_ROLE:-}" ]; then
+    echo "APP_DATABASE_ROLE unset; cannot certify Realtime Voice Trace runtime ACL" >&2
+    return 1
+  fi
+  psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+    -v app_role="$APP_DATABASE_ROLE" \
+    -v release_env="$CABINET_RELEASE_ENV" \
+    -f apps/api/prisma/realtime-voice-trace-release-cert.sql
+}
+
 provision_catalogue_search_token_authority() {
   ensure_catalogue_search_token_authority_role
   psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
@@ -2882,6 +2930,10 @@ command -v pnpm >/dev/null 2>&1 || { echo "pnpm is required" >&2; exit 1; }
 command -v psql >/dev/null 2>&1 || { echo "psql is required" >&2; exit 1; }
 command -v node >/dev/null 2>&1 || { echo "node is required" >&2; exit 1; }
 
+# La migration n'est rejouable que si chaque CHECK fermé correspond encore à sa source TS.
+# Cette preuve précède le reçu et toute mutation de rôle, de flag ou de schéma.
+node apps/api/scripts/generate-realtime-voice-trace-migration-values.mjs --check
+
 node apps/api/scripts/release-phase-receipt.mjs preflight
 if [ "$BOB_RELEASE_PHASE" = predeploy ]; then
   node apps/api/scripts/release-phase-receipt.mjs clear
@@ -2920,6 +2972,7 @@ if [ "$BOB_RELEASE_PHASE" = postdeploy ]; then
   certify_openai_native_release_metadata
   certify_realtime_reaper_release_metadata
   certify_realtime_global_capacity_release_metadata
+  certify_realtime_voice_trace_release
   certify_document_archive_evidence_privacy
   certify_cabinet_worker_scope
   # Relecture finale juste avant le premier geste mutable : toute dérive concurrente laisse
@@ -2941,6 +2994,7 @@ ensure_realtime_reaper_directory_role
 ensure_agent_mission_release_flag_authority_role
 ensure_agent_mission_fingerprint_readiness_authority_role
 ensure_catalogue_search_token_authority_role
+ensure_realtime_voice_trace_authority_roles
 DIRECT_URL="$DIRECT_URL" sh apps/api/scripts/realtime-capacity-release.sh ensure
 if [ "$BOB_RELEASE_PHASE" = predeploy ]; then
   close_and_drain_realtime_before_cancellation_fence_expand
@@ -2962,6 +3016,8 @@ node apps/api/scripts/manage-mistral-conversation-key-version.mjs stage
 node apps/api/scripts/manage-bob-live-native-key-versions.mjs stage
 grant_app_role
 psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 -f apps/api/prisma/rls.sql
+provision_realtime_voice_trace_authorities
+certify_realtime_voice_trace_release
 provision_catalogue_search_token_authority
 provision_agent_mission_fingerprint_readiness_authority
 node apps/api/scripts/manage-agent-mission-fingerprint-key-versions.mjs stage

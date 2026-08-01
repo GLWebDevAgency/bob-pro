@@ -20,6 +20,7 @@ on:
           - m2a3-staging-schema
           - m2a3-staging-preview-activate
           - m2a3-staging-preview-deactivate
+          - realtime-voice-trace-v2-staging
           - k2-staging-schema
       environment:
         description: Railway environment
@@ -134,7 +135,7 @@ jobs:
           RELEASE_PURPOSE: ${{ inputs.purpose }}
         run: |
           case "$RELEASE_PURPOSE" in
-            release|m1b-staging-certification|m1b-staging-recovery|m2a3-semantic-certification|m2a3-staging-schema|m2a3-staging-preview-activate|m2a3-staging-preview-deactivate|k2-staging-schema) ;;
+            release|m1b-staging-certification|m1b-staging-recovery|m2a3-semantic-certification|m2a3-staging-schema|m2a3-staging-preview-activate|m2a3-staging-preview-deactivate|realtime-voice-trace-v2-staging|k2-staging-schema) ;;
             *) echo "Unsupported Railway release purpose" >&2; exit 1 ;;
           esac
 
@@ -266,6 +267,40 @@ jobs:
       founder_authorization_ref: ${{ inputs.founder_authorization_ref }}
       claude_countersign_ref: ${{ inputs.claude_countersign_ref }}
       gpt_countersign_ref: ${{ inputs.gpt_countersign_ref }}
+    secrets: inherit
+
+  route-realtime-voice-trace-v2-staging:
+    needs: validate-purpose
+    if: ${{ inputs.purpose == 'realtime-voice-trace-v2-staging' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    environment: staging
+    steps:
+      - name: Require the exact staging-only Voice Trace target
+        env:
+          RELEASE_ENVIRONMENT: ${{ inputs.environment }}
+          RELEASE_SERVICE: ${{ inputs.service }}
+          EXPECTED_SERVICE: ${{ vars.RAILWAY_API_SERVICE }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          NORMAL_STAGING_RELEASE_RUN_ID: ${{ inputs.normal_staging_release_run_id }}
+          CONTROL_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          test "$RELEASE_ENVIRONMENT" = staging
+          test "$CONTROL_REF" = refs/heads/main
+          test -n "$EXPECTED_SERVICE"
+          test "$RELEASE_SERVICE" = "$EXPECTED_SERVICE"
+          [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$NORMAL_STAGING_RELEASE_RUN_ID" =~ ^[1-9][0-9]{0,19}$ ]]
+          test "$EXPECTED_SHA" = "$GITHUB_SHA"
+
+  operate-realtime-voice-trace-v2-staging:
+    needs: route-realtime-voice-trace-v2-staging
+    if: ${{ inputs.purpose == 'realtime-voice-trace-v2-staging' && needs.route-realtime-voice-trace-v2-staging.result == 'success' }}
+    uses: ./.github/workflows/realtime-voice-trace-v2-staging.yml
+    with:
+      expected_sha: ${{ inputs.expected_sha }}
+      normal_staging_release_run_id: ${{ inputs.normal_staging_release_run_id }}
     secrets: inherit
 
   certify-agent-mission-k2-staging-schema:

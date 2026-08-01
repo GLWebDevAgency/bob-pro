@@ -1,11 +1,17 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { OnApplicationShutdown } from '@nestjs/common';
 import {
+  BOB_GENERIC_ASSISTANCE_SPEECH,
   isAllowedAgentNavigationRoute,
   type AgentHistoryTurn,
   type AgentRunKind,
 } from '@bob/ai';
-import { deriveRealtimeTurnId, type PlanTier } from '@bob/core';
+import {
+  deriveRealtimeTurnId,
+  type PlanTier,
+  type RealtimeVoiceTraceFailureClass,
+  type RealtimeVoiceTraceStage,
+} from '@bob/core';
 import WebSocket, { type ClientOptions, type RawData } from 'ws';
 import type { AppLogger } from '../../observability/logger';
 import type { Metrics } from '../../observability/metrics';
@@ -42,6 +48,7 @@ import type {
   RealtimeVoiceSettings,
 } from './realtime.types';
 import type { RealtimeVoiceUsageWriterPort } from './realtime-voice-usage';
+import type { RealtimeVoiceTraceRecorder } from './realtime-voice-trace';
 
 const CALL_ID = /^rtc_[A-Za-z0-9_-]{1,200}$/u;
 const PROVIDER_ITEM_ID = /^[A-Za-z0-9_-]{1,200}$/u;
@@ -119,6 +126,8 @@ export interface RealtimeSidebandAttachInput {
   plan: PlanTier;
   subjectKeyVersion: number;
   session: OpenAiRealtimeSessionConfig;
+  /** Observateur staging non autoritaire ; absent pour tout autre sujet/environnement. */
+  trace?: RealtimeVoiceTraceRecorder;
   lifecycle?: {
     activate(): Promise<void>;
     fenceAfterDurableTerminationClaim(): void;
@@ -235,7 +244,14 @@ export interface RealtimeSidebandControl {
     userId: string;
     companyId: string;
     sessionHandle: string;
-  }): 'not_found' | 'detached';
+    reason: 'user' | 'kill_switch';
+  }): 'not_found' | RealtimeSidebandDetachedTerminationObserver;
+}
+
+export interface RealtimeSidebandDetachedTerminationObserver {
+  readonly status: 'detached';
+  /** Journalise l'issue fournisseur puis la clôture, exactement une fois et dans cet ordre. */
+  settle(outcome: 'confirmed' | 'provider_failed' | 'unconfirmed'): void;
 }
 
 type DecodedSidebandEvent =
@@ -286,6 +302,13 @@ interface PendingNativeSpeech {
   responseId: string | null;
   providerCompleted: boolean;
   deliverySettled: boolean;
+}
+
+/** Fenêtre asynchrone entre la décision Bob et l'installation du dispatcher natif. */
+interface PendingNativePreparation {
+  readonly generation: number;
+  readonly turnId: string;
+  readonly context: RealtimeSidebandContextVersion;
 }
 
 interface DecodedSidebandWireEvent {
@@ -618,6 +641,56 @@ function cancellationReasonForClose(
   return 'session_end';
 }
 
+function traceSecurityFailure(
+  reason:
+    | 'unexpected_tool_call'
+    | 'session_policy_drift'
+    | 'malformed_event'
+    | 'unauthorized_response'
+    | 'dangerous_conversation_item'
+    | 'turn_budget_exceeded'
+    | 'context_fence_rejected',
+): RealtimeVoiceTraceFailureClass {
+  return reason;
+}
+
+function traceRuntimeFailure(
+  reason:
+    | 'provider_event_error'
+    | 'sideband_closed'
+    | 'hangup_failed'
+    | 'turn_failed'
+    | 'speech_publish_failed'
+    | 'speech_delivery_failed'
+    | 'control_seal_failed'
+    | 'speech_cancel_failed'
+    | 'owner_lease_lost',
+): {
+  readonly stage: RealtimeVoiceTraceStage;
+  readonly failureClass: RealtimeVoiceTraceFailureClass;
+} {
+  switch (reason) {
+    case 'provider_event_error':
+      return { stage: 'provider_call', failureClass: 'provider_event_error' };
+    case 'sideband_closed':
+      return { stage: 'sideband_bootstrap', failureClass: 'sideband_network_error' };
+    case 'turn_failed':
+      return { stage: 'agent', failureClass: 'agent_failed' };
+    case 'speech_publish_failed':
+      return { stage: 'speech_prepare', failureClass: 'speech_publish_failed' };
+    case 'speech_delivery_failed':
+      return { stage: 'speech_delivery', failureClass: 'speech_delivery_failed' };
+    case 'control_seal_failed':
+      return { stage: 'speech_prepare', failureClass: 'control_seal_failed' };
+    case 'speech_cancel_failed':
+      return { stage: 'speech_delivery', failureClass: 'speech_cancel_failed' };
+    case 'owner_lease_lost':
+      return { stage: 'sideband_owner', failureClass: 'owner_lease_lost' };
+    case 'hangup_failed':
+      return { stage: 'session', failureClass: 'hangup_failed' };
+  }
+}
+
 class ManagedSidebandSession {
   private settled = false;
   private ready = false;
@@ -642,6 +715,7 @@ class ManagedSidebandSession {
   private turnAbort: AbortController | null = null;
   private turnCleanup: Promise<void> = Promise.resolve();
   private currentSpeech: PendingSpeech | null = null;
+  private currentNativePreparation: PendingNativePreparation | null = null;
   private currentNativeSpeech: PendingNativeSpeech | null = null;
   private readonly nativeSpeechByDeliveryId = new Map<string, PendingNativeSpeech>();
   private readonly nativeSpeechByResponseId = new Map<string, PendingNativeSpeech>();
@@ -660,6 +734,9 @@ class ManagedSidebandSession {
   } | null = null;
   private turns = 0;
   private providerErrors = 0;
+  private currentTurnId: string | null = null;
+  private traceClosed = false;
+  private pendingTerminationObserver: RealtimeSidebandDetachedTerminationObserver | null = null;
 
   constructor(
     readonly principal: { userId: string; companyId: string },
@@ -717,6 +794,7 @@ class ManagedSidebandSession {
     ) => void,
     private readonly onReady: () => void,
     private readonly onClosed: (wasCountedActive: boolean) => void,
+    private readonly trace: RealtimeVoiceTraceRecorder | null,
   ) {}
 
   isReady(): boolean {
@@ -819,7 +897,7 @@ class ManagedSidebandSession {
             return;
           }
           this.providerErrors += 1;
-          this.onProviderError('provider_event_error');
+          this.reportProviderError('provider_event_error');
           if (this.providerErrors >= MAX_PROVIDER_ERRORS) void this.close('kill_switch').catch(() => undefined);
         }
       });
@@ -829,7 +907,7 @@ class ManagedSidebandSession {
           return;
         }
         if (!this.closed) {
-          this.onProviderError('sideband_closed');
+          this.reportProviderError('sideband_closed');
           void this.close('kill_switch').catch(() => undefined);
         }
       });
@@ -840,7 +918,7 @@ class ManagedSidebandSession {
           return;
         }
         if (!this.closed) {
-          this.onProviderError('sideband_closed');
+          this.reportProviderError('sideband_closed');
           void this.close('kill_switch').catch(() => undefined);
           return;
         }
@@ -972,12 +1050,12 @@ class ManagedSidebandSession {
       return { status: 'unavailable' };
     }
     if (result.status === 'lost') {
-      this.onProviderError('owner_lease_lost');
+      this.reportProviderError('owner_lease_lost');
       void this.close('kill_switch').catch(() => undefined);
       return { status: 'unavailable' };
     }
     if (result?.status !== 'applied') {
-      this.onSecurityRejection('context_fence_rejected');
+      this.reportSecurityRejection('context_fence_rejected');
       void this.close('kill_switch').catch(() => undefined);
       return { status: 'rejected' };
     }
@@ -985,6 +1063,13 @@ class ManagedSidebandSession {
     this.appliedContext = { revision, digest };
     this.contextTransitionPending = false;
     this.history = [];
+    this.trace?.record({
+      eventKind: 'context_applied',
+      contextRevision: revision,
+      contextDigest: digest,
+      stage: 'context',
+      outcome: 'ready',
+    });
     return { status: 'applied', revision, digest };
   }
 
@@ -1002,6 +1087,15 @@ class ManagedSidebandSession {
     ) return;
     pending.delivered = true;
     this.currentSpeech = null;
+    this.trace?.record({
+      eventKind: 'turn_speech_delivered',
+      turnId: pending.turnId,
+      contextRevision: pending.context.revision,
+      contextDigest: pending.context.digest,
+      speechDelivery: this.speechDelivery,
+      stage: 'speech_delivery',
+      outcome: 'delivered',
+    });
     this.pushHistory({ role: 'bob', text: pending.canonicalSpeech });
     this.metrics.bobLiveTurns.inc({ outcome: 'completed', kind: pending.kind });
     // L'autorité est désormais PostgreSQL. Le sideband ne conserve jamais une seconde capacité
@@ -1081,15 +1175,17 @@ class ManagedSidebandSession {
   ): Promise<RealtimeCallTerminationOutcome> {
     if (this.closed && !this.closing) return 'confirmed';
     if (this.closing) return this.closing;
-    this.closing = this.terminate(reason).catch((error: unknown) => {
-      this.onProviderError('hangup_failed');
-      throw error;
-    });
+    this.closing = this.terminate(reason);
     return this.closing;
   }
 
-  forceDispose(): void {
+  forceDispose(
+    reason: 'user' | 'kill_switch' | 'superseded' | 'max_duration' | 'shutdown' = 'kill_switch',
+    recordClosure = true,
+  ): void {
     if (this.finalized) return;
+    this.recordTraceInterruption(cancellationReasonForClose(reason));
+    if (recordClosure && this.owner !== null) this.recordTraceClosed(reason);
     this.providerIngressFenced = true;
     this.closed = true;
     this.turnAbort?.abort();
@@ -1102,9 +1198,49 @@ class ManagedSidebandSession {
     this.finalize();
   }
 
-  fenceAndDetachAfterDurableClaim(): void {
+  fenceAndDetachAfterDurableClaim(
+    reason: 'user' | 'kill_switch',
+  ): RealtimeSidebandDetachedTerminationObserver {
+    const traceEligible = this.ready && this.owner !== null;
+    const observer =
+      this.takePendingTerminationObserver() ??
+      this.createTerminationObserver(reason, traceEligible);
     this.fenceLeaseLifecycle();
-    this.forceDispose();
+    this.forceDispose(reason, false);
+    return observer;
+  }
+
+  takePendingTerminationObserver(): RealtimeSidebandDetachedTerminationObserver | null {
+    const observer = this.pendingTerminationObserver;
+    this.pendingTerminationObserver = null;
+    return observer;
+  }
+
+  private createTerminationObserver(
+    reason: 'user' | 'kill_switch' | 'superseded' | 'max_duration' | 'shutdown',
+    traceEligible: boolean,
+  ): RealtimeSidebandDetachedTerminationObserver {
+    let settled = false;
+    return Object.freeze({
+      status: 'detached',
+      settle: (outcome: 'confirmed' | 'provider_failed' | 'unconfirmed') => {
+        // Une autre réplique détient peut-être le claim. Ce n'est ni un terminal ni un échec :
+        // l'appel interne concurrent garde le même observer et pourra encore le solder.
+        if (outcome === 'unconfirmed') return;
+        if (settled) return;
+        settled = true;
+        if (!traceEligible) return;
+        if (outcome === 'provider_failed') {
+          this.trace?.record({
+            eventKind: 'provider_failed',
+            stage: 'session',
+            outcome: 'failed',
+            failureClass: 'hangup_failed',
+          });
+        }
+        this.recordTraceClosed(reason, true);
+      },
+    });
   }
 
   private failBootstrap(reject: (error: Error) => void, reason: string): void {
@@ -1118,7 +1254,7 @@ class ManagedSidebandSession {
   }
 
   private rejectSecurity(reason: Parameters<ManagedSidebandSession['onSecurityRejection']>[0]): void {
-    this.onSecurityRejection(reason);
+    this.reportSecurityRejection(reason);
     if (this.speechDelivery === 'openai-native-webrtc-v1') {
       this.hardFenceAndScheduleTermination('protocol_violation');
       return;
@@ -1126,7 +1262,49 @@ class ManagedSidebandSession {
     void this.close('kill_switch').catch(() => undefined);
   }
 
+  private reportSecurityRejection(
+    reason: Parameters<ManagedSidebandSession['onSecurityRejection']>[0],
+  ): void {
+    const turnId =
+      this.currentTurnId ?? this.currentSpeech?.turnId ?? this.currentNativeSpeech?.turnId;
+    const context =
+      this.currentSpeech?.context ?? this.currentNativeSpeech?.context ?? this.appliedContext;
+    this.trace?.record({
+      eventKind: 'security_rejected',
+      ...(turnId === undefined || turnId === null ? {} : { turnId }),
+      ...(context === null
+        ? {}
+        : { contextRevision: context.revision, contextDigest: context.digest }),
+      stage: 'security',
+      outcome: 'rejected',
+      failureClass: traceSecurityFailure(reason),
+    });
+    this.onSecurityRejection(reason);
+  }
+
+  private reportProviderError(
+    reason: Parameters<ManagedSidebandSession['onProviderError']>[0],
+  ): void {
+    const turnId =
+      this.currentTurnId ?? this.currentSpeech?.turnId ?? this.currentNativeSpeech?.turnId;
+    const context =
+      this.currentSpeech?.context ?? this.currentNativeSpeech?.context ?? this.appliedContext;
+    const failure = traceRuntimeFailure(reason);
+    this.trace?.record({
+      eventKind: 'provider_failed',
+      ...(turnId === undefined || turnId === null ? {} : { turnId }),
+      ...(context === null
+        ? {}
+        : { contextRevision: context.revision, contextDigest: context.digest }),
+      stage: failure.stage,
+      outcome: 'failed',
+      failureClass: failure.failureClass,
+    });
+    this.onProviderError(reason);
+  }
+
   private async finishActivation(resolve: () => void, fail: (reason: string) => void): Promise<void> {
+    let initialContext: RealtimeSidebandContextVersion | null = null;
     try {
       await this.activateLease();
       const acquired = await this.ownerPort.acquire({
@@ -1138,12 +1316,14 @@ class ManagedSidebandSession {
       });
       if (acquired.status !== 'acquired') throw new Error(`sideband_owner_${acquired.status}`);
       this.owner = acquired.owner;
+      this.trace?.bindOwner(acquired.owner.ownerEpoch);
       if (acquired.currentContext) {
         const applied = await this.ownerPort.applyContext(acquired.owner, acquired.currentContext);
         if (applied.status !== 'applied') throw new Error(`sideband_context_${applied.status}`);
         this.appliedContext = acquired.currentContext;
         this.highestContextRevision = acquired.currentContext.revision;
         this.highestContextDigest = acquired.currentContext.digest;
+        initialContext = acquired.currentContext;
       }
     } catch (error) {
       if (this.owner) await this.ownerPort.release(this.owner).catch(() => undefined);
@@ -1162,6 +1342,24 @@ class ManagedSidebandSession {
     if (this.bootstrapTimer) clearTimeout(this.bootstrapTimer);
     this.bootstrapTimer = null;
     this.startReject = null;
+    this.trace?.record({
+      eventKind: 'session_ready',
+      provider: 'openai',
+      transport: 'webrtc',
+      speechDelivery: this.speechDelivery,
+      realtimeModel: this.session.model,
+      stage: 'sideband_owner',
+      outcome: 'ready',
+    });
+    if (initialContext !== null) {
+      this.trace?.record({
+        eventKind: 'context_applied',
+        contextRevision: initialContext.revision,
+        contextDigest: initialContext.digest,
+        stage: 'context',
+        outcome: 'ready',
+      });
+    }
     this.onReady();
     this.scheduleOwnerRenewal();
     this.lifetimeTimer = setTimeout(() => {
@@ -1179,14 +1377,14 @@ class ManagedSidebandSession {
       void this.ownerPort.renew(owner, this.ownerLeaseSeconds).then((result) => {
         if (this.closed || this.finalized) return;
         if (result.status !== 'renewed') {
-          this.onProviderError('owner_lease_lost');
+            this.reportProviderError('owner_lease_lost');
           void this.close('kill_switch').catch(() => undefined);
           return;
         }
         this.scheduleOwnerRenewal();
       }, () => {
         if (this.closed || this.finalized) return;
-        this.onProviderError('owner_lease_lost');
+          this.reportProviderError('owner_lease_lost');
         void this.close('kill_switch').catch(() => undefined);
       });
     }, this.ownerRenewSeconds * 1_000);
@@ -1209,10 +1407,13 @@ class ManagedSidebandSession {
       return;
     }
     if (this.contextTransitionPending || !this.appliedContext) {
-      this.onSecurityRejection('context_fence_rejected');
+      this.reportSecurityRejection('context_fence_rejected');
       return;
     }
-    if (!await this.awaitNativeDeliveryBeforeNextTurn()) return;
+    const turnId = deriveRealtimeTurnId(this.sessionHandle, inputItemId);
+    if (!(await this.awaitNativeDeliveryBeforeNextTurn())) return;
+    if (this.contextTransitionPending || !this.appliedContext) return;
+    const acceptedContext = this.appliedContext;
 
     // Le ticket est pris avant le premier await : deux transcripts reçus dans le même tick ne
     // peuvent donc jamais lancer deux cerveaux avec des AbortSignal encore valides.
@@ -1221,7 +1422,16 @@ class ManagedSidebandSession {
     if (this.closed || this.finalized || generation !== this.turnGeneration) return;
     const controller = new AbortController();
     this.turnAbort = controller;
-    const turnId = deriveRealtimeTurnId(this.sessionHandle, inputItemId);
+    this.currentTurnId = turnId;
+    this.trace?.record({
+      eventKind: 'turn_transcript_final',
+      turnId,
+      contextRevision: acceptedContext.revision,
+      contextDigest: acceptedContext.digest,
+      stage: 'transcription',
+      outcome: 'ready',
+      transcript,
+    });
     const brainStartedAt = performance.now();
     let outcome: RealtimeAgentTurnOutcome;
     try {
@@ -1232,35 +1442,45 @@ class ManagedSidebandSession {
         signal: controller.signal,
       });
     } catch {
-      outcome = { status: 'failed', canonicalSpeech: 'Je rencontre un souci temporaire. Rien n’a été exécuté.' };
+      outcome = {
+        status: 'failed',
+        canonicalSpeech: 'Je rencontre un souci temporaire. Rien n’a été exécuté.',
+      };
     }
     this.metrics.bobLiveBrainDuration.observe(
       { outcome: outcome.status },
       (performance.now() - brainStartedAt) / 1_000,
     );
     if (
-      controller.signal.aborted
-      || this.closed
-      || this.finalized
-      || generation !== this.turnGeneration
-      || outcome.status === 'aborted'
-    ) return;
-    if (outcome.status === 'ready' && outcome.turnId !== turnId) {
-      this.onSecurityRejection('context_fence_rejected');
+      controller.signal.aborted ||
+      this.closed ||
+      this.finalized ||
+      generation !== this.turnGeneration ||
+      outcome.status === 'aborted'
+    ) {
+      if (this.currentTurnId === turnId) this.currentTurnId = null;
       return;
     }
+    if (outcome.status === 'ready' && outcome.turnId !== turnId) {
+      this.reportSecurityRejection('context_fence_rejected');
+      this.turnAbort = null;
+      if (this.currentTurnId === turnId) this.currentTurnId = null;
+      return;
+    }
+    if (outcome.status === 'failed') this.reportProviderError('turn_failed');
     this.turnAbort = null;
-    if (outcome.status === 'failed') this.onProviderError('turn_failed');
+    if (this.currentTurnId === turnId) this.currentTurnId = null;
     this.pushHistory({ role: 'user', text: transcript });
     await this.publishOutcome(outcome, transcript, generation, turnId);
   }
 
   private async processTranscriptFailure(inputItemId: string): Promise<void> {
     if (
-      !this.rememberProcessedInput(inputItemId)
-      || this.contextTransitionPending
-      || !this.appliedContext
-    ) return;
+      !this.rememberProcessedInput(inputItemId) ||
+      this.contextTransitionPending ||
+      !this.appliedContext
+    )
+      return;
     this.turns += 1;
     if (this.turns > MAX_TURNS_PER_SESSION) {
       this.rejectSecurity('turn_budget_exceeded');
@@ -1270,10 +1490,25 @@ class ManagedSidebandSession {
     await this.interruptCurrentTurn('superseded', false);
     if (this.closed || this.finalized || generation !== this.turnGeneration) return;
     const turnId = deriveRealtimeTurnId(this.sessionHandle, inputItemId);
-    await this.publishOutcome({
-      status: 'failed',
-      canonicalSpeech: "Je n’ai pas bien entendu. Tu peux répéter en une phrase courte ?",
-    }, '', generation, turnId);
+    this.trace?.record({
+      eventKind: 'provider_failed',
+      turnId,
+      contextRevision: this.appliedContext.revision,
+      contextDigest: this.appliedContext.digest,
+      stage: 'transcription',
+      outcome: 'failed',
+      failureClass: 'transcription_failed',
+    });
+    await this.publishOutcome(
+      {
+        status: 'failed',
+        canonicalSpeech: BOB_GENERIC_ASSISTANCE_SPEECH.retry,
+      },
+      '',
+      generation,
+      turnId,
+      false,
+    );
   }
 
   private async publishOutcome(
@@ -1281,16 +1516,43 @@ class ManagedSidebandSession {
     userTranscript: string,
     generation: number,
     turnId: string,
+    traceAgentResult = true,
   ): Promise<void> {
+    if (traceAgentResult)
+      this.trace?.record({
+        eventKind: 'turn_agent_result',
+        turnId,
+        ...(outcome.status === 'ready' && outcome.contextVersion.revision !== null
+          ? {
+              contextRevision: outcome.contextVersion.revision,
+              contextDigest: outcome.contextVersion.digest,
+            }
+          : {}),
+        runKind: outcome.status === 'ready' ? outcome.kind : 'failed',
+        controlKind:
+          outcome.status === 'ready'
+            ? outcome.proposalId !== undefined && outcome.navigate !== undefined
+              ? 'navigate_proposal'
+              : outcome.proposalId !== undefined
+                ? 'proposal'
+                : outcome.navigate !== undefined
+                  ? 'navigate'
+                  : 'none'
+            : 'none',
+        stage: 'agent',
+        outcome: outcome.status === 'ready' ? 'ready' : 'failed',
+        ...(outcome.status === 'failed' ? { failureClass: 'agent_failed' as const } : {}),
+        canonicalReply: outcome.canonicalSpeech,
+      });
     const owner = this.owner;
     const context = speechContext(outcome, this.appliedContext);
     if (!owner || !context || this.closed || this.finalized || generation !== this.turnGeneration) {
-      this.onSecurityRejection('context_fence_rejected');
+      this.reportSecurityRejection('context_fence_rejected');
       if (outcome.status === 'ready') this.rejectControlTurn(outcome.turnId);
       return;
     }
     if (!UUID.test(turnId)) {
-      this.onSecurityRejection('context_fence_rejected');
+      this.reportSecurityRejection('context_fence_rejected');
       return;
     }
     if (this.speechDelivery === 'openai-native-webrtc-v1') {
@@ -1299,7 +1561,7 @@ class ManagedSidebandSession {
     }
     const audited = this.audited;
     if (!audited) {
-      this.onProviderError('speech_publish_failed');
+      this.reportProviderError('speech_publish_failed');
       void this.close('kill_switch').catch(() => undefined);
       return;
     }
@@ -1358,6 +1620,16 @@ class ManagedSidebandSession {
         await this.cancelArtifact(pending, 'barge_in');
         return;
       }
+      this.trace?.record({
+        eventKind: 'turn_speech_ready',
+        turnId: pending.turnId,
+        contextRevision: pending.context.revision,
+        contextDigest: pending.context.digest,
+        speechDelivery: this.speechDelivery,
+        durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+        stage: 'speech_prepare',
+        outcome: published.status,
+      });
       if (pending.control) {
         let sealed: Awaited<ReturnType<RealtimeDurableControlAuthority['issue']>>;
         try {
@@ -1389,7 +1661,7 @@ class ManagedSidebandSession {
           if (this.currentSpeech === pending) this.currentSpeech = null;
           this.rejectControlTurn(pending.turnId);
           await this.cancelArtifact(pending, 'session_end');
-          this.onProviderError('control_seal_failed');
+          this.reportProviderError('control_seal_failed');
           void this.close('kill_switch').catch(() => undefined);
           return;
         }
@@ -1405,7 +1677,7 @@ class ManagedSidebandSession {
     if (this.currentSpeech === pending) this.currentSpeech = null;
     if (pending.control) this.rejectControlTurn(pending.turnId);
     if (published.status !== 'aborted' && !stale) {
-      this.onProviderError('speech_publish_failed');
+      this.reportProviderError('speech_publish_failed');
       void this.close('kill_switch').catch(() => undefined);
     }
   }
@@ -1418,12 +1690,15 @@ class ManagedSidebandSession {
     context: RealtimeSidebandContextVersion,
     turnId: string,
   ): Promise<void> {
+    const speechStartedAt = performance.now();
     const native = this.native;
-    if (!native || outcome.status !== 'ready') {
-      this.onProviderError('speech_publish_failed');
+    if (!native) {
+      this.reportProviderError('speech_publish_failed');
       void this.close('kill_switch').catch(() => undefined);
       return;
     }
+    const preparation: PendingNativePreparation = { generation, turnId, context };
+    this.currentNativePreparation = preparation;
     let prepared: Awaited<ReturnType<OpenAiNativeSpeechAuthority['prepareTurn']>>;
     try {
       prepared = await native.authority.prepareTurn({
@@ -1439,16 +1714,27 @@ class ManagedSidebandSession {
         canonicalSpeech: outcome.canonicalSpeech,
         model: this.session.model,
         voice: this.session.audio.output.voice,
-        risk: {
-          purpose: outcome.speechPurpose,
-          source: outcome.speechSource,
-          runKind: outcome.kind,
-          hasTenantContext: outcome.hasTenantContext,
-          hasControl: outcome.navigate !== undefined || outcome.proposalId !== undefined,
-        },
+        risk:
+          outcome.status === 'ready'
+            ? {
+                purpose: outcome.speechPurpose,
+                source: outcome.speechSource,
+                runKind: outcome.kind,
+                hasTenantContext: outcome.hasTenantContext,
+                hasControl: outcome.navigate !== undefined || outcome.proposalId !== undefined,
+              }
+            : {
+                purpose: 'generic_assistance',
+                source: 'card_body',
+                runKind: 'answer',
+                hasTenantContext: false,
+                hasControl: false,
+              },
       });
     } catch {
       prepared = { status: 'unavailable' };
+    } finally {
+      if (this.currentNativePreparation === preparation) this.currentNativePreparation = null;
     }
     const staleAfterPreparation = this.closed
       || this.finalized
@@ -1474,7 +1760,7 @@ class ManagedSidebandSession {
     if (prepared.status !== 'prepared') {
       // Le contrat v4 natif ne possède aucun fallback audité par tour. Une réponse sensible ou
       // improuvable reste donc silencieuse et termine la session jusqu'au protocole hybride v5.
-      this.onProviderError('speech_publish_failed');
+      this.reportProviderError('speech_publish_failed');
       void this.close('kill_switch').catch(() => undefined);
       return;
     }
@@ -1501,7 +1787,7 @@ class ManagedSidebandSession {
       });
     } catch {
       await this.cancelPreparedNativeTurn(native.authority, binding);
-      this.onProviderError('speech_publish_failed');
+      this.reportProviderError('speech_publish_failed');
       void this.close('kill_switch').catch(() => undefined);
       return;
     }
@@ -1535,7 +1821,7 @@ class ManagedSidebandSession {
         const pending = pendingRef.current;
         if (!pending) return;
         this.settleNativeSpeech(pending, 'cancelled');
-        this.onProviderError('speech_publish_failed');
+        this.reportProviderError('speech_publish_failed');
       },
     };
     const fence: OpenAiNativeResponseSessionFencePort = {
@@ -1556,7 +1842,7 @@ class ManagedSidebandSession {
       turnId,
       userTranscript,
       canonicalSpeech: outcome.canonicalSpeech,
-      kind: outcome.kind,
+      kind: outcome.status === 'ready' ? outcome.kind : 'failed',
       context,
       authorityBinding: binding,
       dispatcher,
@@ -1581,7 +1867,19 @@ class ManagedSidebandSession {
       || this.finalized
       || generation !== this.turnGeneration
       || this.currentNativeSpeech !== pending;
-    if (started.status === 'started' && !stale) return;
+    if (started.status === 'started' && !stale) {
+      this.trace?.record({
+        eventKind: 'turn_speech_ready',
+        turnId: pending.turnId,
+        contextRevision: pending.context.revision,
+        contextDigest: pending.context.digest,
+        speechDelivery: this.speechDelivery,
+        durationMs: Math.max(0, Math.round(performance.now() - speechStartedAt)),
+        stage: 'speech_dispatch',
+        outcome: 'ready',
+      });
+      return;
+    }
     this.settleNativeSpeech(pending, 'cancelled');
     if (started.status === 'started') {
       await dispatcher.interruptForServerOrigin(
@@ -1591,7 +1889,7 @@ class ManagedSidebandSession {
       return;
     }
     if (started.status !== 'fatal') {
-      this.onProviderError('speech_publish_failed');
+      this.reportProviderError('speech_publish_failed');
       void this.close('kill_switch').catch(() => undefined);
     }
   }
@@ -1625,12 +1923,23 @@ class ManagedSidebandSession {
     invalidateGeneration = true,
   ): Promise<void> {
     const wasThinking = this.turnAbort !== null;
+    const thinkingTurnId = this.currentTurnId;
     const speech = this.currentSpeech;
+    const nativePreparation = this.currentNativePreparation;
     const nativeSpeech = this.currentNativeSpeech;
     this.invalidateUnconsumedControls();
     if (invalidateGeneration) this.turnGeneration += 1;
     this.turnAbort?.abort();
     this.turnAbort = null;
+    this.currentTurnId = null;
+    this.currentNativePreparation = null;
+    this.recordTraceInterruption(reason, {
+      wasThinking,
+      thinkingTurnId,
+      speech,
+      nativePreparation,
+      nativeSpeech,
+    });
     if (wasThinking) this.metrics.bobLiveTurns.inc({ outcome: 'interrupted', kind: 'thinking' });
     const pending: Promise<unknown>[] = [];
     if (speech) {
@@ -1694,6 +2003,15 @@ class ManagedSidebandSession {
       || this.nativeSpeechByDeliveryId.get(pending.deliveryId) !== pending
     ) return false;
     this.settleNativeSpeech(pending, 'delivered');
+    this.trace?.record({
+      eventKind: 'turn_speech_delivered',
+      turnId: pending.turnId,
+      contextRevision: pending.context.revision,
+      contextDigest: pending.context.digest,
+      speechDelivery: this.speechDelivery,
+      stage: 'speech_delivery',
+      outcome: 'delivered',
+    });
     // Le texte publié est exclusivement la parole canonique déjà approuvée par le cerveau Bob.
     // Ni le transcript fournisseur ni la ligne PostgreSQL ne deviennent une autorité UI.
     this.pushHistory({ role: 'bob', text: pending.canonicalSpeech });
@@ -1776,7 +2094,7 @@ class ManagedSidebandSession {
   private failNativeDeliveryReconciliation(pending: PendingNativeSpeech): void {
     if (pending.deliverySettled) return;
     this.settleNativeSpeech(pending, 'cancelled');
-    this.onProviderError('speech_delivery_failed');
+    this.reportProviderError('speech_delivery_failed');
     this.hardFenceAndScheduleTermination('internal_error');
   }
 
@@ -1787,7 +2105,7 @@ class ManagedSidebandSession {
     const outcome = await boundedCleanup(pending.deliverySettlement, this.timeoutMs);
     if (outcome === 'delivered') return this.isReady();
     if (outcome === 'cancelled') return this.isReady();
-    this.onProviderError('speech_delivery_failed');
+    this.reportProviderError('speech_delivery_failed');
     this.hardFenceAndScheduleTermination('internal_error');
     return false;
   }
@@ -1799,13 +2117,13 @@ class ManagedSidebandSession {
     if (!speech.artifactId || !this.owner) return;
     const id = this.cancellationId();
     if (!UUID.test(id)) {
-      this.onProviderError('speech_cancel_failed');
+      this.reportProviderError('speech_cancel_failed');
       void this.close('kill_switch').catch(() => undefined);
       return;
     }
     const cancellation = this.audited?.cancellation;
     if (!cancellation) {
-      this.onProviderError('speech_cancel_failed');
+      this.reportProviderError('speech_cancel_failed');
       void this.close('kill_switch').catch(() => undefined);
       return;
     }
@@ -1822,7 +2140,7 @@ class ManagedSidebandSession {
       this.timeoutMs,
     );
     if (result?.status === 'cancelled' || result?.status === 'terminal') return;
-    this.onProviderError('speech_cancel_failed');
+    this.reportProviderError('speech_cancel_failed');
     void this.close('kill_switch').catch(() => undefined);
   }
 
@@ -1859,8 +2177,10 @@ class ManagedSidebandSession {
     _reason: Exclude<OpenAiNativeResponseFatalReason, 'session_fence_failed'>,
   ): ReturnType<OpenAiNativeResponseSessionFencePort['fenceAndClose']> {
     this.providerIngressFenced = true;
+    this.recordTraceInterruption('session_end');
     this.turnAbort?.abort();
     this.turnAbort = null;
+    this.currentTurnId = null;
     if (this.currentNativeSpeech) this.settleNativeSpeech(this.currentNativeSpeech, 'cancelled');
     let socketFenced = this.providerSocketTerminated || this.socket.readyState === WebSocket.CLOSED;
     if (!socketFenced) {
@@ -1881,6 +2201,9 @@ class ManagedSidebandSession {
   private async terminate(
     reason: 'user' | 'kill_switch' | 'superseded' | 'max_duration' | 'shutdown',
   ): Promise<RealtimeCallTerminationOutcome> {
+    const traceEligible = this.ready && this.owner !== null;
+    const terminationObserver = this.createTerminationObserver(reason, traceEligible);
+    this.pendingTerminationObserver = terminationObserver;
     this.closed = true;
     this.contextApplicationGeneration += 1;
     await this.interruptCurrentTurn(cancellationReasonForClose(reason));
@@ -1888,9 +2211,23 @@ class ManagedSidebandSession {
     this.owner = null;
     if (owner) await this.ownerPort.release(owner).catch(() => undefined);
     let outcome: RealtimeCallTerminationOutcome = 'pending_reaper';
+    let providerFailed = false;
     try {
       outcome = await this.terminateCall(reason);
+    } catch (error) {
+      providerFailed = true;
+      terminationObserver.settle('provider_failed');
+      this.onProviderError('hangup_failed');
+      throw error;
     } finally {
+      // `pending_reaper` ne prouve jamais que le fournisseur est arrêté. L'observer survit à la
+      // fermeture locale afin que le détenteur du claim journalise l'issue avant le terminal.
+      if (!providerFailed && outcome === 'confirmed') {
+        terminationObserver.settle('confirmed');
+      }
+      if (outcome !== 'pending_reaper' && this.pendingTerminationObserver === terminationObserver) {
+        this.pendingTerminationObserver = null;
+      }
       if (this.socket.readyState === WebSocket.OPEN) {
         try { this.socket.close(1000, `bob_${reason}`); } catch { /* déjà fermée */ }
       } else {
@@ -1899,6 +2236,62 @@ class ManagedSidebandSession {
       this.finalize();
     }
     return outcome;
+  }
+
+  private recordTraceClosed(
+    reason: 'user' | 'kill_switch' | 'superseded' | 'max_duration' | 'shutdown',
+    allowAfterDetach = false,
+  ): void {
+    if (this.traceClosed || (!this.ready && !allowAfterDetach)) return;
+    this.traceClosed = true;
+    this.trace?.record({
+      eventKind: 'session_closed',
+      stage: 'session',
+      outcome: 'closed',
+      sessionCloseReason: reason,
+    });
+  }
+
+  private recordTraceInterruption(
+    reason: RealtimeSpeechCancellationReason,
+    current: {
+      readonly wasThinking: boolean;
+      readonly thinkingTurnId: string | null;
+      readonly speech: PendingSpeech | null;
+      readonly nativePreparation: PendingNativePreparation | null;
+      readonly nativeSpeech: PendingNativeSpeech | null;
+    } = {
+      wasThinking: this.turnAbort !== null,
+      thinkingTurnId: this.currentTurnId,
+      speech: this.currentSpeech,
+      nativePreparation: this.currentNativePreparation,
+      nativeSpeech: this.currentNativeSpeech,
+    },
+  ): void {
+    const interrupted = new Map<string, 'agent' | 'speech_prepare' | 'speech_delivery'>();
+    if (current.wasThinking && current.thinkingTurnId !== null) {
+      interrupted.set(current.thinkingTurnId, 'agent');
+    }
+    if (current.speech) interrupted.set(current.speech.turnId, 'speech_delivery');
+    if (current.nativePreparation) {
+      interrupted.set(current.nativePreparation.turnId, 'speech_prepare');
+    }
+    if (current.nativeSpeech) interrupted.set(current.nativeSpeech.turnId, 'speech_delivery');
+    for (const [turnId, stage] of interrupted) {
+      this.trace?.record({
+        eventKind: 'turn_interrupted',
+        turnId,
+        ...(this.appliedContext === null
+          ? {}
+          : {
+              contextRevision: this.appliedContext.revision,
+              contextDigest: this.appliedContext.digest,
+            }),
+        stage,
+        outcome: 'cancelled',
+        interruptionReason: reason,
+      });
+    }
   }
 
   private contextMatches(revision: number, digest: string): boolean {
@@ -2071,8 +2464,10 @@ class ManagedSidebandSession {
     this.contextApplication = null;
     this.turnAbort?.abort();
     this.turnAbort = null;
+    this.currentTurnId = null;
     this.currentSpeech?.controller.abort();
     this.currentSpeech = null;
+    this.currentNativePreparation = null;
     if (this.currentNativeSpeech) this.settleNativeSpeech(this.currentNativeSpeech, 'cancelled');
     this.nativeSpeechByDeliveryId.clear();
     this.nativeSpeechByResponseId.clear();
@@ -2097,9 +2492,17 @@ class ManagedSidebandSession {
  * En mode natif, seul le dispatcher corrélé peut créer et accepter la réponse OpenAI ; toute autre
  * sortie déclenche le kill-switch. Aucun des deux chemins ne peut retomber implicitement sur l’autre.
  */
+const DETACHED_TERMINATION_OBSERVER_TTL_MS = 60_000;
+
+interface RetainedTerminationObserver {
+  readonly observer: RealtimeSidebandDetachedTerminationObserver;
+  readonly timer: ReturnType<typeof setTimeout>;
+}
+
 export class RealtimeSidebandManager implements RealtimeSidebandControl, OnApplicationShutdown {
   private readonly sessionsByPrincipal = new Map<string, ManagedSidebandSession>();
   private readonly generationsByPrincipal = new Map<string, number>();
+  private readonly retainedTerminationObservers = new Map<string, RetainedTerminationObserver>();
   private readonly instanceHash = tokenHash(randomBytes(32).toString('base64url'));
   private readonly entropy: NonNullable<RealtimeSidebandSpeechDependencies['entropy']>;
   private shuttingDown = false;
@@ -2116,6 +2519,38 @@ export class RealtimeSidebandManager implements RealtimeSidebandControl, OnAppli
       ownerToken: () => randomBytes(32).toString('base64url'),
       cancellationId: randomUUID,
     };
+  }
+
+  private terminationObserverKey(principal: string, sessionHandle: string): string {
+    return `${principal}\u0000${sessionHandle.toLowerCase()}`;
+  }
+
+  private retainTerminationObserver(
+    principal: string,
+    sessionHandle: string,
+    observer: RealtimeSidebandDetachedTerminationObserver,
+  ): void {
+    const key = this.terminationObserverKey(principal, sessionHandle);
+    const previous = this.retainedTerminationObservers.get(key);
+    if (previous) clearTimeout(previous.timer);
+    const timer = setTimeout(() => {
+      const current = this.retainedTerminationObservers.get(key);
+      if (current?.timer === timer) this.retainedTerminationObservers.delete(key);
+    }, DETACHED_TERMINATION_OBSERVER_TTL_MS);
+    timer.unref?.();
+    this.retainedTerminationObservers.set(key, { observer, timer });
+  }
+
+  private takeRetainedTerminationObserver(
+    principal: string,
+    sessionHandle: string,
+  ): RealtimeSidebandDetachedTerminationObserver | null {
+    const key = this.terminationObserverKey(principal, sessionHandle);
+    const retained = this.retainedTerminationObservers.get(key);
+    if (!retained) return null;
+    clearTimeout(retained.timer);
+    this.retainedTerminationObservers.delete(key);
+    return retained.observer;
   }
 
   async attach(input: RealtimeSidebandAttachInput): Promise<void> {
@@ -2137,6 +2572,7 @@ export class RealtimeSidebandManager implements RealtimeSidebandControl, OnAppli
       )
     ) throw new Error('sideband_speech_not_configured');
     if (this.shuttingDown) throw new Error('sideband_closed_before_ready');
+    input.trace?.bindSession(input.sessionHandle);
     const ownerToken = this.entropy.ownerToken();
     if (ownerToken.length < 32 || ownerToken.length > 128) throw new Error('sideband_owner_entropy_invalid');
     const socket = this.socketFactory(websocketUrl(this.settings.baseUrl, input.callId), {
@@ -2188,12 +2624,17 @@ export class RealtimeSidebandManager implements RealtimeSidebandControl, OnAppli
       },
       () => this.metrics.bobLiveSessionsActive.inc({ transport: 'webrtc' }),
       (wasCountedActive) => {
+        const pendingTermination = managed.takePendingTerminationObserver();
+        if (pendingTermination) {
+          this.retainTerminationObserver(key, managed.sessionHandle, pendingTermination);
+        }
         if (this.sessionsByPrincipal.get(key) === managed) {
           this.sessionsByPrincipal.delete(key);
           if (this.generationsByPrincipal.get(key) === generation) this.generationsByPrincipal.delete(key);
         }
         if (wasCountedActive) this.metrics.bobLiveSessionsActive.dec({ transport: 'webrtc' });
       },
+      input.trace ?? null,
     );
     this.sessionsByPrincipal.set(key, managed);
     try {
@@ -2289,11 +2730,14 @@ export class RealtimeSidebandManager implements RealtimeSidebandControl, OnAppli
     userId: string;
     companyId: string;
     sessionHandle: string;
-  }): 'not_found' | 'detached' {
-    const session = this.sessionsByPrincipal.get(principalKey(input));
-    if (!session || session.sessionHandle !== input.sessionHandle.toLowerCase()) return 'not_found';
-    session.fenceAndDetachAfterDurableClaim();
-    return 'detached';
+    reason: 'user' | 'kill_switch';
+  }): 'not_found' | RealtimeSidebandDetachedTerminationObserver {
+    const key = principalKey(input);
+    const session = this.sessionsByPrincipal.get(key);
+    if (!session || session.sessionHandle !== input.sessionHandle.toLowerCase()) {
+      return this.takeRetainedTerminationObserver(key, input.sessionHandle) ?? 'not_found';
+    }
+    return session.fenceAndDetachAfterDurableClaim(input.reason);
   }
 
   async onApplicationShutdown(): Promise<void> {
@@ -2308,5 +2752,10 @@ export class RealtimeSidebandManager implements RealtimeSidebandControl, OnAppli
     }));
     this.sessionsByPrincipal.clear();
     this.generationsByPrincipal.clear();
+    for (const retained of this.retainedTerminationObservers.values()) {
+      clearTimeout(retained.timer);
+      retained.observer.settle('unconfirmed');
+    }
+    this.retainedTerminationObservers.clear();
   }
 }

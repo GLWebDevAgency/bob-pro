@@ -677,6 +677,117 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
            AND "claimId" = ${claimId}::uuid
       `;
       expect(updated).toBe(1);
+  }
+
+  async function nativeDeliveryOwnerIdentifier(): Promise<string> {
+    const [owner] = await admin.$queryRaw<
+      Array<{
+        roleName: string;
+        canSet: boolean;
+      }>
+    >`
+        SELECT pg_catalog.pg_get_userbyid(relation.relowner) AS "roleName",
+               pg_catalog.pg_has_role(
+                 current_user,
+                 relation.relowner,
+                 'SET'
+               ) AS "canSet"
+          FROM pg_catalog.pg_class AS relation
+         WHERE relation.oid = 'public.realtime_native_speech_deliveries'::regclass
+      `;
+    if (
+      !owner ||
+      !owner.canSet ||
+      owner.roleName.length < 1 ||
+      owner.roleName.length > 63 ||
+      Array.from(owner.roleName).some((character) => {
+        const codePoint = character.codePointAt(0);
+        return codePoint !== undefined && (codePoint <= 31 || codePoint === 127);
+      })
+    )
+      throw new Error('OpenAI native table owner is not an assumable PostgreSQL role.');
+    return `"${owner.roleName.replaceAll('"', '""')}"`;
+  }
+
+  async function installNativeScenarioExpandState(): Promise<void> {
+    const ownerIdentifier = await nativeDeliveryOwnerIdentifier();
+    const [constraint] = await admin.$queryRaw<
+      Array<{
+        definition: string;
+        validated: boolean;
+      }>
+    >`
+        SELECT pg_catalog.pg_get_constraintdef(constraint_catalog.oid, TRUE) AS definition,
+               constraint_catalog.convalidated AS validated
+          FROM pg_catalog.pg_constraint AS constraint_catalog
+         WHERE constraint_catalog.conrelid =
+               'public.realtime_native_speech_deliveries'::regclass
+           AND constraint_catalog.conname =
+               'realtime_native_speech_deliveries_dimension_check'
+      `;
+    if (
+      !constraint ||
+      !constraint.validated ||
+      !constraint.definition.startsWith('CHECK (') ||
+      !constraint.definition.includes('generic_retry_v1') ||
+      constraint.definition.includes(';')
+    )
+      throw new Error('OpenAI native final scenario constraint is not canonical.');
+
+    await admin.$transaction(
+      async (transaction) => {
+        await transaction.$executeRawUnsafe(`SET LOCAL ROLE ${ownerIdentifier}`);
+        await transaction.$executeRawUnsafe(`
+          ALTER TABLE public.realtime_native_speech_deliveries
+            DROP CONSTRAINT realtime_native_speech_deliveries_dimension_check
+        `);
+        await transaction.$executeRawUnsafe(`
+          ALTER TABLE public.realtime_native_speech_deliveries
+            ADD CONSTRAINT realtime_native_speech_deliveries_dimension_check_v2
+            ${constraint.definition} NOT VALID
+        `);
+      },
+      { timeout: 30_000 },
+    );
+
+    const [expanded] = await admin.$queryRaw<Array<{ validated: boolean }>>`
+        SELECT constraint_catalog.convalidated AS validated
+          FROM pg_catalog.pg_constraint AS constraint_catalog
+         WHERE constraint_catalog.conrelid =
+               'public.realtime_native_speech_deliveries'::regclass
+           AND constraint_catalog.conname =
+               'realtime_native_speech_deliveries_dimension_check_v2'
+      `;
+    expect(expanded).toEqual({ validated: false });
+  }
+
+  async function installNativeScenarioValidatedState(): Promise<void> {
+    const ownerIdentifier = await nativeDeliveryOwnerIdentifier();
+    await admin.$transaction(
+      async (transaction) => {
+        await transaction.$executeRawUnsafe(`SET LOCAL ROLE ${ownerIdentifier}`);
+        await transaction.$executeRawUnsafe(`
+          ALTER TABLE public.realtime_native_speech_deliveries
+            VALIDATE CONSTRAINT realtime_native_speech_deliveries_dimension_check_v2
+        `);
+        await transaction.$executeRawUnsafe(`
+          ALTER TABLE public.realtime_native_speech_deliveries
+            RENAME CONSTRAINT realtime_native_speech_deliveries_dimension_check_v2
+            TO realtime_native_speech_deliveries_dimension_check
+        `);
+      },
+      { timeout: 30_000 },
+    );
+
+    const [validated] = await admin.$queryRaw<Array<{ validated: boolean }>>`
+        SELECT constraint_catalog.convalidated AS validated
+          FROM pg_catalog.pg_constraint AS constraint_catalog
+         WHERE constraint_catalog.conrelid =
+               'public.realtime_native_speech_deliveries'::regclass
+           AND constraint_catalog.conname =
+               'realtime_native_speech_deliveries_dimension_check'
+      `;
+    expect(validated).toEqual({ validated: true });
     }
 
     beforeAll(async () => {
@@ -731,6 +842,29 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         ...((workers ?? []) as PrismaService[]).map((worker) => worker.$disconnect()),
         ...(admin ? [admin.$disconnect()] : []),
       ]);
+  });
+
+  it('garde le writer N-1 exact sous les états expand puis validate du scénario retry', async () => {
+    await installNativeScenarioExpandState();
+    try {
+      const expandAuthority = await createAuthority('n1-scenario-expand');
+      const expandState = await delivery(expandAuthority, 'n1-scenario-expand');
+      expect(expandState.speechScenarioId).toBe('generic_help_v1');
+      await expect(repositories[0].prepare(expandState)).resolves.toMatchObject({
+        status: 'created',
+        state: expandState,
+      });
+    } finally {
+      await installNativeScenarioValidatedState();
+    }
+
+    const validatedAuthority = await createAuthority('n1-scenario-validated');
+    const validatedState = await delivery(validatedAuthority, 'n1-scenario-validated');
+    expect(validatedState.speechScenarioId).toBe('generic_help_v1');
+    await expect(repositories[0].prepare(validatedState)).resolves.toMatchObject({
+      status: 'created',
+      state: validatedState,
+    });
     });
 
     it('certifie rôle runtime, prepare/replay sans réécriture, RLS et zéro contrôle natif', async () => {

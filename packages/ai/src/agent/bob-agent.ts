@@ -1935,6 +1935,7 @@ const BOB_GENERIC_CAPABILITY_CATALOG = [
  * acoustique les compare exactement avant d'autoriser un scénario natif à faible risque.
  */
 export const BOB_GENERIC_ASSISTANCE_SPEECH = Object.freeze({
+  retry: 'Je n’ai pas bien entendu. Tu peux répéter en une phrase courte ?',
   help:
     'Je m’occupe de l’administratif et du financier de ton activité. Dis-moi par exemple :\n'
     + BOB_GENERIC_CAPABILITY_CATALOG,

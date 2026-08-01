@@ -10,6 +10,7 @@ import type { AgentContext } from '@bob/ai';
 import type {
   RealtimeAgentMissionProtocolVersion,
   RealtimeAgentMissionSession,
+  RealtimeVoiceDiagnosticTraceDisclosure,
   RealtimeVoiceConfig,
 } from '@bob/api-client';
 import {
@@ -45,6 +46,8 @@ export interface RealtimeSessionHooks {
   readonly onPhase: (phase: RealtimeSessionPhase) => void;
   readonly onUserTranscript: (text: string, final: boolean) => void;
   readonly onBobTranscript: (text: string, final: boolean) => void;
+  /** Transparence staging déjà validée par config + bootstrap, avant la phase READY. */
+  readonly onDiagnosticTrace: (disclosure: RealtimeVoiceDiagnosticTraceDisclosure) => void;
   /** Proposition serveur : validation VISUELLE uniquement (CTA existant de la session). */
   readonly onReview: (proposalId: string | null, proposalExpiresAt: string | null) => void;
   /** Route DÉJÀ allowlistée par decideAgentControl. */
@@ -104,6 +107,13 @@ export interface RealtimeSessionDeps {
    * dépendent jamais de cette confirmation.
    */
   readonly ensureConfirmedTimeZoneForMissionV2: () => Promise<boolean>;
+  /**
+   * Consentement explicite du compte de test, résolu avant tout lease audio, permission micro,
+   * peer WebRTC ou appel provider. Un refus annule proprement le bootstrap.
+   */
+  readonly confirmDiagnosticTraceBeforeListening: (
+    disclosure: RealtimeVoiceDiagnosticTraceDisclosure,
+  ) => Promise<boolean>;
   readonly updateContext: RealtimeContextUpdateFn;
   /** Fabrique l'orchestrateur ; `onPrimaryCreated` capture chaque transport primaire frais. */
   readonly createOrchestrator: (
@@ -310,6 +320,24 @@ export class RealtimeSessionController {
     if (!negotiation?.available) {
       this.resolveMissionReady(false);
       return missionRequired ? 'failed_closed' : 'unavailable';
+    }
+    if (negotiation.diagnosticTrace !== undefined) {
+      let accepted = false;
+      try {
+        accepted = await this.deps.confirmDiagnosticTraceBeforeListening(
+          negotiation.diagnosticTrace,
+        );
+      } catch {
+        accepted = false;
+      }
+      if (gen !== this.generation) {
+        this.resolveMissionReady(false);
+        return 'cancelled';
+      }
+      if (!accepted) {
+        this.resolveMissionReady(false);
+        return 'cancelled';
+      }
     }
     if (
       missionRequired
@@ -589,6 +617,9 @@ export class RealtimeSessionController {
         return;
       case 'bob_transcript':
         this.hooks.onBobTranscript(event.text, event.final);
+        return;
+      case 'diagnostic_trace_disclosure':
+        this.hooks.onDiagnosticTrace(event.disclosure);
         return;
       case 'agent_control_candidate': {
         // Référence provider NON FIABLE → ACK one-shot par NOTRE serveur (gate, fencé sur la

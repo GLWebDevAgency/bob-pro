@@ -40,6 +40,8 @@ import {
   PrismaAgentMissionFingerprintKeyVersionAuthority,
 } from './agent-mission-fingerprint-key-version.prisma';
 import { PrismaVoiceTraceRepository } from '../voice-traces';
+import { PrismaRealtimeVoiceTraceRepository } from './realtime-voice-trace.prisma';
+import type { RealtimeVoiceTraceAuthorities } from '../../voice/realtime/realtime-voice-trace.repository';
 import { createPrismaCabinetInfrastructure } from '../../cabinet/prisma-cabinet-infrastructure';
 import type { CabinetInfrastructure } from '../../cabinet/cabinet-infrastructure';
 import { PrismaDocumentFolderDeletionPlanStore } from '../document-folder-deletion-plans';
@@ -218,6 +220,15 @@ export class PrismaPersistence implements Persistence {
 
   createRealtimeVoiceUsageRepository(): RealtimeVoiceUsageRepositoryPort {
     return new PrismaRealtimeVoiceUsageRepository(this.prisma);
+  }
+
+  createRealtimeVoiceTraceAuthorities(): RealtimeVoiceTraceAuthorities {
+    const repository = new PrismaRealtimeVoiceTraceRepository(this.prisma);
+    return {
+      append: repository,
+      eraser: repository,
+      retention: repository,
+    };
   }
 
   createRealtimeControlRepository(): RealtimeControlRepositoryPort {

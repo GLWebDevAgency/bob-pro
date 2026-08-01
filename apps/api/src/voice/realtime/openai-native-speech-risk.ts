@@ -3,6 +3,7 @@ import {
   type AgentRunKind,
   type CanonicalSpeechEnvelope,
 } from '@bob/ai';
+import type { OpenAiNativeSpeechScenarioId } from './openai-native-speech-delivery';
 
 /** Provenance du texte retenu par l'adaptateur monobrain, jamais fournie par le provider. */
 export type OpenAiNativeSpeechSource =
@@ -20,9 +21,7 @@ export type OpenAiNativeSpeechPurpose =
   | 'action_proposal'
   | 'action_result';
 
-export type OpenAiNativeEligibleSpeechScenario =
-  | 'generic_help_v1'
-  | 'generic_unknown_v1';
+export type OpenAiNativeEligibleSpeechScenario = OpenAiNativeSpeechScenarioId;
 
 export type OpenAiNativeSpeechRiskReason =
   | 'allowlisted_generic'
@@ -66,6 +65,7 @@ export interface OpenAiNativeSpeechRiskInput {
  * `audited_exact` jusqu'à revue : aucun texte libre ne peut se déclarer générique lui-même.
  */
 export const OPENAI_NATIVE_ELIGIBLE_SPEECH_V1 = Object.freeze({
+  generic_retry_v1: BOB_GENERIC_ASSISTANCE_SPEECH.retry,
   generic_help_v1: BOB_GENERIC_ASSISTANCE_SPEECH.help.replace(/\s+/gu, ' ').trim(),
   generic_unknown_v1: BOB_GENERIC_ASSISTANCE_SPEECH.unknown.replace(/\s+/gu, ' ').trim(),
 } as const satisfies Record<OpenAiNativeEligibleSpeechScenario, string>);

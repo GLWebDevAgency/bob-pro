@@ -139,6 +139,9 @@ function harness(
     >;
     allowMicrophoneActivation?: () => Promise<boolean>;
     ensureConfirmedTimeZoneForMissionV2?: () => Promise<boolean>;
+    confirmDiagnosticTraceBeforeListening?: (
+      disclosure: import('@bob/api-client').RealtimeVoiceDiagnosticTraceDisclosure,
+    ) => Promise<boolean>;
     synchronizeContext?: (
       fence: import('./realtime-driver').RealtimePublishedFence,
     ) => Promise<boolean>;
@@ -266,6 +269,9 @@ function harness(
     onPhase: (phase) => log.push(`phase:${phase}`),
     onUserTranscript: (text, final) => log.push(`user:${text}:${final}`),
     onBobTranscript: (text) => log.push(`bob:${text}`),
+    onDiagnosticTrace: (disclosure) => {
+      log.push(`trace:${disclosure.purpose}:${disclosure.retentionDays}`);
+    },
     onReview: (proposalId, proposalExpiresAt) => {
       log.push(`review:${proposalId}:${proposalExpiresAt ?? 'none'}`);
     },
@@ -285,6 +291,8 @@ function harness(
       },
       ensureConfirmedTimeZoneForMissionV2:
         input.ensureConfirmedTimeZoneForMissionV2 ?? (async () => true),
+      confirmDiagnosticTraceBeforeListening:
+        input.confirmDiagnosticTraceBeforeListening ?? (async () => true),
       updateContext: async (handle, update) => {
         log.push(`publish:${handle}:r${update.revision}`);
         if (input.updateContextImpl) return input.updateContextImpl(handle, update.revision);
@@ -398,6 +406,51 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     expect(order).toEqual(['time-zone']);
     expect(h.external.receivedNegotiation).toBeNull();
     expect(h.log.some((entry) => entry.startsWith('mic:'))).toBe(false);
+  });
+
+  it('demande le consentement diagnostic avant fuseau, orchestrateur et micro', async () => {
+    const order: string[] = [];
+    const diagnosticNegotiation: RealtimeVoiceConfig = {
+      ...NEGOTIATION,
+      diagnosticTrace: {
+        enabled: true,
+        retentionDays: 30,
+        purpose: 'staging_quality',
+      },
+    };
+    const h = harness({
+      negotiation: diagnosticNegotiation,
+      confirmDiagnosticTraceBeforeListening: async (disclosure) => {
+        order.push(`trace:${disclosure.retentionDays}`);
+        return false;
+      },
+      ensureConfirmedTimeZoneForMissionV2: async () => {
+        order.push('time-zone');
+        return true;
+      },
+    });
+
+    await expect(h.controller.start()).resolves.toBe('cancelled');
+
+    expect(order).toEqual(['trace:30']);
+    expect(h.external.receivedNegotiation).toBeNull();
+    expect(h.log.some((entry) => entry.startsWith('mic:'))).toBe(false);
+  });
+
+  it('transmet la disclosure bootstrap au hook sans changer la phase', async () => {
+    const h = harness({ negotiation: NATIVE_WEBRTC_NEGOTIATION });
+    await h.controller.start();
+
+    h.emit({
+      type: 'transport',
+      event: {
+        type: 'diagnostic_trace_disclosure',
+        disclosure: { enabled: true, retentionDays: 30, purpose: 'staging_quality' },
+      },
+    });
+
+    expect(h.log).toContain('trace:staging_quality:30');
+    expect(h.log.filter((entry) => entry.startsWith('phase:'))).toEqual([]);
   });
 
   it('ne bloque jamais une reprise V1 sur la confirmation du fuseau V2', async () => {

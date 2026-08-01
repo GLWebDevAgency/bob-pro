@@ -17,6 +17,7 @@ import { BackendService } from '../../backend.service';
 import {
   loadEnv,
   resolveBobLiveEnv,
+  resolveRealtimeVoiceTraceV2Env,
   resolveMistralConversationPersistenceKeyRing,
   resolveMistralV2IdentityEncryptionKeyRing,
   type Env,
@@ -127,6 +128,7 @@ import {
   REALTIME_PROVIDER_TERMINATION_REGISTRY,
   REALTIME_SIDEBAND,
   REALTIME_VOICE_SETTINGS,
+  REALTIME_VOICE_TRACE_V2,
   REALTIME_SPEECH_SOURCE_POLICY,
   BOB_LIVE_RUNTIME_READINESS,
 } from './realtime.tokens';
@@ -145,8 +147,28 @@ import {
   RealtimeSpeechAcousticProbe,
   type BobLiveAcousticProofPort,
 } from './realtime-acoustic-probe';
+import { RealtimeVoiceTraceFactory } from './realtime-voice-trace';
 
 const REALTIME_SPEECH_RUNTIME = Symbol('REALTIME_SPEECH_RUNTIME');
+
+const realtimeVoiceTraceV2Provider: Provider = {
+  provide: REALTIME_VOICE_TRACE_V2,
+  inject: [PERSISTENCE, AppLogger],
+  useFactory: async (
+    persistence: Persistence,
+    logger: AppLogger,
+  ): Promise<RealtimeVoiceTraceFactory | null> => {
+    const config = resolveRealtimeVoiceTraceV2Env(loadEnv());
+    // OFF ou sujet non autorisé : aucun repository, aucune file et aucun handle ne sont créés.
+    if (!config.enabled) return null;
+    const authorities = persistence.createRealtimeVoiceTraceAuthorities();
+    if (authorities === null) {
+      throw new Error('Realtime Voice Trace V2 persistence authority unavailable.');
+    }
+    await authorities.append.assertReady(config.encryptionVersions);
+    return new RealtimeVoiceTraceFactory(authorities.append, config, logger);
+  },
+};
 
 interface RealtimeCommonSpeechRuntime {
   readonly owner: RealtimeSidebandOwnerPort;
@@ -834,6 +856,7 @@ const realtimeSpeechSourcePolicyProvider: Provider = {
   controllers: [RealtimeVoiceController],
   providers: [
     realtimeVoiceSettingsProvider,
+    realtimeVoiceTraceV2Provider,
     openAiProvider,
     mistralRealtimeTerminationAuthorityProvider,
     providerTerminationRegistryProvider,
@@ -866,6 +889,6 @@ const realtimeSpeechSourcePolicyProvider: Provider = {
     OpenAiNativeSpeechMaintenanceScheduler,
     RealtimeVoiceService,
   ],
-  exports: [MISTRAL_REALTIME_INGRESS_RUNTIME, BOB_LIVE_RUNTIME_READINESS],
+  exports: [MISTRAL_REALTIME_INGRESS_RUNTIME, BOB_LIVE_RUNTIME_READINESS, REALTIME_VOICE_TRACE_V2],
 })
 export class RealtimeVoiceModule {}

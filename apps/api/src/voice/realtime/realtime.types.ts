@@ -1,6 +1,7 @@
 import type { MistralConversationSessionEndReason } from '@bob/ai';
 import { resolveBobLiveEnv, type BobLiveAuditProviderId, type BobLiveProviderId, type Env } from '../../config/env';
 import type { RealtimeAgentMissionBootstrapBinding } from './realtime-agent-mission-negotiation';
+import type { RealtimeVoiceTraceDiagnosticDisclosure } from './realtime-voice-trace';
 
 export const BOB_REALTIME_CONFIG_VERSION = 'bob-live-provider-neutral-v4';
 export const BOB_REALTIME_CONFIG_VERSION_N_MINUS_ONE = 'bob-live-provider-neutral-v3';
@@ -71,6 +72,8 @@ interface RealtimeVoicePublicConfigCommon {
   configVersion: string;
   requiresDevelopmentBuild: true;
   maxSessionSeconds: number;
+  /** Présent uniquement pour le sujet staging explicitement autorisé. */
+  diagnosticTrace?: RealtimeVoiceTraceDiagnosticDisclosure;
 }
 
 export interface RealtimeVoiceNativePublicConfig extends RealtimeVoicePublicConfigCommon {
@@ -102,6 +105,8 @@ interface RealtimeCallBootstrapCommon {
   voice: 'marin' | 'cedar';
   configVersion: string;
   maxSessionSeconds: number;
+  /** Répète le consentement négocié au bootstrap ; absent pour tout autre sujet/environnement. */
+  diagnosticTrace?: RealtimeVoiceTraceDiagnosticDisclosure;
 }
 
 interface RealtimeAuditedCallBootstrapCommon extends RealtimeCallBootstrapCommon {

@@ -4,8 +4,13 @@ import { InMemoryPersistence } from '../persistence/persistence.testing';
 import type { Persistence } from '../persistence/persistence';
 import type { InMemoryVoiceTraceRepository } from '../persistence/voice-traces.testing';
 import { AppLogger } from '../observability/logger';
+import type {
+  RealtimeVoiceTraceAuthorities,
+  RealtimeVoiceTraceRetention,
+} from '../voice/realtime/realtime-voice-trace.repository';
 import type { ScheduledTenantDirectory } from './tenant-directory';
 import {
+  REALTIME_VOICE_TRACE_V2_PURGE_LIMIT,
   VOICE_TRACE_PURGE_LIMIT_PER_TENANT,
   VOICE_TRACE_PURGE_MAX_TENANTS,
   VoiceTracePurgeService,
@@ -41,8 +46,17 @@ async function seed(
   });
 }
 
-function harness(companyIds: string[], now: () => Date = () => NOW) {
+function harness(
+  companyIds: string[],
+  now: () => Date = () => NOW,
+  realtimeV2Retention: RealtimeVoiceTraceRetention | null = null,
+) {
   const persistence = new InMemoryPersistence();
+  if (realtimeV2Retention !== null) {
+    vi.spyOn(persistence, 'createRealtimeVoiceTraceAuthorities').mockReturnValue({
+      retention: realtimeV2Retention,
+    } as RealtimeVoiceTraceAuthorities);
+  }
   const traces = persistence.voiceTraces as unknown as InMemoryVoiceTraceRepository;
   const service = new VoiceTracePurgeService(
     persistence as unknown as Persistence,
@@ -63,6 +77,45 @@ describe('VoiceTracePurgeService — la rétention est CÂBLÉE, pas décorative
 
     expect(summary).toMatchObject({ skipped: false, tenants: 1, purged: 1, failures: 0 });
     expect(traces.list().map((row) => row.id)).toEqual(['vtr_vivante']);
+  });
+
+  it('purge et inspecte le journal Realtime V2 même quand aucun tenant V1 n’est listé', async () => {
+    const retention: RealtimeVoiceTraceRetention = {
+      purgeExpired: vi.fn().mockResolvedValue(7),
+      inspectLag: vi.fn().mockResolvedValue({
+        due: 2,
+        oldestExpiredAt: '2026-08-31T23:00:00.000Z',
+      }),
+    };
+    const { service } = harness([], () => NOW, retention);
+
+    const summary = await service.sweep();
+
+    expect(retention.purgeExpired).toHaveBeenCalledWith(REALTIME_VOICE_TRACE_V2_PURGE_LIMIT);
+    expect(retention.inspectLag).toHaveBeenCalledOnce();
+    expect(summary).toMatchObject({
+      skipped: false,
+      tenants: 0,
+      purged: 7,
+      realtimeV2Purged: 7,
+      realtimeV2Due: 2,
+      realtimeV2OldestExpiredAt: '2026-08-31T23:00:00.000Z',
+      failures: 0,
+    });
+  });
+
+  it('laisse la purge tenantée avancer si l’autorité Realtime V2 échoue', async () => {
+    const retention: RealtimeVoiceTraceRetention = {
+      purgeExpired: vi.fn().mockRejectedValue(new Error('indisponible')),
+      inspectLag: vi.fn(),
+    };
+    const { service, traces } = harness(['co_ok'], () => NOW, retention);
+    await seed(traces, 'co_ok', 'vtr_ok', '2026-08-01T00:00:00.000Z');
+
+    const summary = await service.sweep();
+
+    expect(summary).toMatchObject({ tenants: 1, purged: 1, realtimeV2Purged: 0, failures: 1 });
+    expect(traces.list()).toEqual([]);
   });
 
   it('purge chaque tenant sous SON contexte tenant — jamais un balayage global', async () => {

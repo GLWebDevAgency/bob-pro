@@ -382,6 +382,8 @@ model Company {
   realtimeVoiceUsage                          RealtimeVoiceUsageEvent[]
   realtimeVoiceUsageDaily                     RealtimeVoiceUsageDaily[]
   voiceTraces                                 VoiceTrace[]
+  realtimeVoiceTraceEvents                    RealtimeVoiceTraceEvent[]
+  realtimeVoiceTraceAccessAudits              RealtimeVoiceTraceAccessAudit[]
   subscription                                Subscription?
   fiscalProfile                               FiscalProfile?
   billingSettings                             CompanyBillingSettings?
@@ -2938,4 +2940,77 @@ model VoiceTrace {
   @@index([companyId, level, startedAt], map: "voice_traces_level_idx")
   @@index([companyId, retentionExpiresAt], map: "voice_traces_retention_idx")
   @@map("voice_traces")
+}
+
+/// Journal d'observation GPT Realtime V2. Append-only, staging-only au niveau du runtime.
+/// Le transcript et la réponse ne sont jamais persistés en clair : les enveloppes AES-GCM sont
+/// déchiffrables uniquement par le lecteur opérateur local autorisé.
+model RealtimeVoiceTraceEvent {
+  id                       String   @id @db.Uuid
+  companyId                String   @db.Text
+  company                  Company  @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  userId                   String   @db.Uuid
+  traceAttemptId           String   @db.Uuid
+  sessionHandle            String?  @db.Uuid
+  ownerEpoch               Int
+  eventOrdinal             Int
+  turnId                   String?  @db.Uuid
+  eventKind                String   @db.VarChar(40)
+  eventDigest              String   @db.Char(64)
+  eventDigestKeyVersion    Int
+  occurredAt               DateTime @db.Timestamptz(6)
+  ingestedAt               DateTime @default(dbgenerated("transaction_timestamp()")) @db.Timestamptz(6)
+  durationMs               Int?
+  contextRevision          Int?
+  contextDigest            String?  @db.Char(64)
+  provider                 String?  @db.VarChar(16)
+  transport                String?  @db.VarChar(16)
+  speechDelivery           String?  @db.VarChar(40)
+  realtimeModel            String?  @db.VarChar(100)
+  plannerDisposition       String?  @db.VarChar(32)
+  plannerAuthority         String?  @db.VarChar(16)
+  plannerModel             String?  @db.VarChar(100)
+  plannerStepIndex         Int?
+  plannerStepCount         Int?
+  plannerIntent            String?  @db.VarChar(64)
+  missionKind              String?  @db.VarChar(100)
+  runKind                  String?  @db.VarChar(16)
+  controlKind              String?  @db.VarChar(24)
+  stage                    String?  @db.VarChar(32)
+  outcome                  String?  @db.VarChar(24)
+  failureClass             String?  @db.VarChar(64)
+  interruptionReason       String?  @db.VarChar(32)
+  sessionCloseReason       String?  @db.VarChar(32)
+  encryptionKeyVersion     Int?
+  transcriptCiphertext     String?  @db.Text
+  canonicalReplyCiphertext String?  @db.Text
+  retentionExpiresAt       DateTime @default(dbgenerated("(transaction_timestamp() + '720 hours'::interval)")) @db.Timestamptz(6)
+
+  @@unique([companyId, traceAttemptId, eventOrdinal], name: "realtime_voice_trace_attempt_ordinal")
+  @@index([companyId, userId, occurredAt], map: "realtime_voice_trace_subject_time_idx")
+  @@index([companyId, sessionHandle, ownerEpoch, eventOrdinal], map: "realtime_voice_trace_session_order_idx")
+  @@index([retentionExpiresAt, id], map: "realtime_voice_trace_retention_idx")
+  @@map("realtime_voice_trace_events")
+}
+
+/// Audit sans contenu de chaque lecture verbatim par l'outil opérateur staging.
+model RealtimeVoiceTraceAccessAudit {
+  id                 String   @id @db.Uuid
+  requestId          String   @unique @db.Uuid
+  companyId          String   @db.Text
+  company            Company  @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  subjectUserId      String   @db.Uuid
+  sessionHandle      String   @db.Uuid
+  actor              String   @db.VarChar(63)
+  reason             String   @db.VarChar(64)
+  ticket             String   @db.VarChar(64)
+  includedContent    Boolean
+  rowCount           Int
+  accessedAt         DateTime @default(dbgenerated("transaction_timestamp()")) @db.Timestamptz(6)
+  retentionExpiresAt DateTime @default(dbgenerated("(transaction_timestamp() + '2160 hours'::interval)")) @db.Timestamptz(6)
+
+  @@index([companyId, sessionHandle, accessedAt], map: "realtime_voice_trace_access_session_idx")
+  @@index([companyId, subjectUserId, accessedAt], map: "realtime_voice_trace_access_subject_idx")
+  @@index([retentionExpiresAt, id], map: "realtime_voice_trace_access_retention_idx")
+  @@map("realtime_voice_trace_access_audits")
 }
