@@ -977,6 +977,12 @@ const legacyFr = {
     pro: 'Rechercher un client…',
     direct: 'Chercher un client…',
   },
+  // Bouton effacer du SearchField kit (Lot 4) — libellé fourni par l'écran, jamais par le kit.
+  'clients.searchClear': {
+    pote: 'Effacer la recherche',
+    pro: 'Effacer la recherche',
+    direct: 'Effacer',
+  },
   // Chips filtres par type (Tous / Particuliers / Entreprises / Public).
   'clients.filterAll': {
     pote: 'Tous',
@@ -1432,6 +1438,12 @@ const legacyFr = {
     pro: 'Ajouter une photo',
     direct: 'Photo',
   },
+  // Tuile fantôme d'envoi (Lot 4) — sur un chantier en 3G, l'artisan VOIT que Bob travaille.
+  'chantierFiche.photoUploading': {
+    pote: 'Photo en route…',
+    pro: 'Envoi de la photo…',
+    direct: 'Envoi…',
+  },
   'chantierFiche.photoSourceTitle': {
     pote: 'Ajouter une photo',
     pro: 'Ajouter une photo',
@@ -1705,6 +1717,12 @@ const legacyFr = {
   },
   'equipements.historyNote': { pote: 'Note', pro: 'Note', direct: 'Note' },
   'equipements.historyPhoto': { pote: 'Photo', pro: 'Photo', direct: 'Photo' },
+  // Statuts d'intervention de la timeline (Lot 4) — le statut serveur cesse d'être affiché brut.
+  'equipements.interventionScheduled': { pote: 'Planifiée', pro: 'Planifiée', direct: 'Planifiée' },
+  'equipements.interventionInProgress': { pote: 'En cours', pro: 'En cours', direct: 'En cours' },
+  'equipements.interventionCompleted': { pote: 'Terminée', pro: 'Terminée', direct: 'Terminée' },
+  'equipements.interventionSigned': { pote: 'Signée', pro: 'Signée', direct: 'Signée' },
+  'equipements.interventionCancelled': { pote: 'Annulée', pro: 'Annulée', direct: 'Annulée' },
   'equipements.addNoteCta': {
     pote: 'Ajouter une note',
     pro: 'Ajouter une note',

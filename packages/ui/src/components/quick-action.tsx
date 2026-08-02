@@ -27,11 +27,13 @@ export interface QuickActionProps {
   tone?: QuickActionTone;
   /** Icône 18 injectée, couleur pleine assortie côté appelant. */
   icon?: ReactNode;
+  /** Action indisponible (donnée absente, snapshot périmé — Lot 4) : 0.45 + état annoncé. */
+  disabled?: boolean;
   onPress?: () => void;
 }
 
 export function QuickAction({ style,
-  label, tone = 'ai', icon, onPress }: QuickActionProps) {
+  label, tone = 'ai', icon, disabled = false, onPress }: QuickActionProps) {
   const { colors, semantic, controls } = useTheme();
   const pastel: Record<QuickActionTone, string> = {
     success: semantic.successBg,
@@ -47,6 +49,8 @@ export function QuickAction({ style,
     <PressableScale
       accessibilityRole="button"
       accessibilityLabel={label}
+      accessibilityState={{ disabled }}
+      disabled={disabled}
       {...(onPress ? { onPress } : {})}
       style={[{
         backgroundColor: colors.surface,
@@ -58,6 +62,7 @@ export function QuickAction({ style,
         alignItems: 'center',
         minHeight: 44,
         minWidth: 44,
+        opacity: disabled ? 0.45 : 1,
         ...shadowNative.e1,
       }, style]}
     >

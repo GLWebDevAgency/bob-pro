@@ -109,6 +109,21 @@ export * from './components/tip-card';
 export * from './components/segmented-control';
 export * from './components/client-row';
 export * from './components/score';
+// Lot 4 — CRM terrain : fil rouge « couleur de l'argent » + visionneuse + interrupteur kit.
+export {
+  standingAccentColor,
+  standingAccentRole,
+  type StandingAccentPalette,
+  type StandingAccentRole,
+} from './components/standing-accent.logic';
+export * from './components/photo-viewer';
+export { photoViewerAnimationType, type PhotoViewerAnimation } from './components/photo-viewer.logic';
+export * from './components/bob-switch';
+export {
+  bobSwitchThumbOffset,
+  bobSwitchTrackColor,
+  type BobSwitchPalette,
+} from './components/bob-switch.logic';
 
 // Conformité (divulgation progressive des protections légales)
 export * from './components/legal-hint';

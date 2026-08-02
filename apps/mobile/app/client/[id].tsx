@@ -34,7 +34,7 @@
  *   aujourd'hui (TODO C40) — les statuts Réglée/Réglée en partie portent l'info.
  * Zéro hex/rgba : useTheme()/@bob/tokens. Zéro import de src/components/ui (ancien kit).
  */
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AccessibilityInfo,
   Alert,
@@ -68,18 +68,26 @@ import { shadowNative } from '@bob/tokens';
 import { t, type I18nKey } from '@bob/i18n';
 import {
   Avatar,
+  BobSurface,
   Button,
   Card,
   EmptyState,
+  ErrorNotice,
   ErrorRetry,
+  FadeIn,
   IconTile,
+  KpiTile,
+  MoneyText,
+  QuickAction,
   SegmentedControl,
   Sheet,
   Skeleton,
   SkeletonRow,
   StatusBadge,
+  StickyActionBar,
   Toast,
   font,
+  standingAccentColor,
   statusBadgeColors,
   useStatusBadgePalette,
   useTheme,
@@ -111,16 +119,17 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   CheckIcon,
-  EllipsisIcon,
   FileIcon,
   FileTextIcon,
   FolderSmallIcon,
   MailIcon,
+  PencilIcon,
   PhoneIcon,
   PlusIcon,
   SendIcon,
   ShieldIcon,
 } from '../../src/components/icons';
+import { firstQueryErrorFacts } from '../../src/data/query-error-facts';
 import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
 import { ChantierRowCountBadges } from '../../src/components/chantier-row-counts';
 import { DEFAULT_WORKSITE_TERM, worksiteParamsFor } from '../../src/lib/worksite-terminology';
@@ -210,76 +219,6 @@ interface ActivityItem {
   iconTone: StatusBadgeVariant;
   /** Détail de pièce C16 — la rangée navigue (retour humain 20:27 : « plus cliquables »). */
   href: `/facture/${string}` | `/devis/${string}`;
-}
-
-/** Tuile d'action rapide (réf : carte blanche, icône navy, label sombre) — composée @bob/ui. */
-function ActionTile({
-  label,
-  icon,
-  onPress,
-  disabled = false,
-}: {
-  label: string;
-  icon: ReactNode;
-  onPress?: (() => void) | undefined;
-  disabled?: boolean;
-}) {
-  const { colors, controls } = useTheme();
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      accessibilityState={{ disabled }}
-      disabled={disabled}
-      {...(onPress ? { onPress } : {})}
-      style={({ pressed }) => [
-        {
-          flex: 1,
-          backgroundColor: colors.surface,
-          borderRadius: 16,
-          borderWidth: 1,
-          borderColor: controls.cardBorder,
-          paddingVertical: 13,
-          paddingHorizontal: 4,
-          alignItems: 'center',
-          minHeight: 44,
-          minWidth: 44,
-          opacity: disabled ? 0.45 : 1,
-          ...shadowNative.e1,
-        },
-        pressed && !disabled ? { transform: [{ scale: 0.96 }] } : null,
-      ]}
-    >
-      {icon}
-      <Text
-        numberOfLines={1}
-        style={[font('meta'), { fontSize: 11.5, color: colors.ink800, marginTop: 7 }]}
-      >
-        {label}
-      </Text>
-    </Pressable>
-  );
-}
-
-/** Cellule KPI (réf : label 11 slate400 + valeur 16/800 teintée, tabular-nums). */
-function KpiCell({ label, value, color }: { label: string; value: string; color: string }) {
-  const { colors } = useTheme();
-  return (
-    <Card radius={16} padding={12} style={{ flex: 1 }}>
-      <Text numberOfLines={1} style={[font('meta'), { fontSize: 11, color: colors.slate400 }]}>
-        {label}
-      </Text>
-      <Text
-        numberOfLines={1}
-        style={[
-          font('bigNum'),
-          { fontSize: 16, color, fontVariant: ['tabular-nums'], marginTop: 5 },
-        ]}
-      >
-        {value}
-      </Text>
-    </Card>
-  );
 }
 
 /** Rangée d'activité (pièce réelle) : pastille doc → titre + « date · note » → montant teinté. */
@@ -796,14 +735,17 @@ export default function ClientDetail() {
       : standing === null
         ? null
         : 0;
+  // Fil rouge « couleur de l'argent » (Lot 4) : LA palette du standing — le MÊME token du
+  // carnet (ClientRow tone) au héros (MoneyText) au geste (liseré StickyActionBar).
+  // danger = dangerVivid (le token de ClientRow/KpiTile), neutral = slate500.
+  const standingPalette = {
+    success: semantic.success,
+    warning: semantic.warning,
+    danger: semantic.dangerVivid,
+    neutral: colors.slate500,
+  } as const;
   const outstandingColor =
-    standing === null
-      ? colors.slate300
-      : standing.kind === 'en_retard'
-      ? semantic.danger
-      : standing.kind === 'en_attente'
-        ? semantic.warning
-        : semantic.success;
+    standing === null ? colors.slate300 : standingAccentColor(standing.kind, standingPalette);
   const revenue12m =
     invoices.data !== undefined ? revenueLast12MonthsCents(custInvoices, today) : null;
 
@@ -1021,7 +963,9 @@ export default function ClientDetail() {
               pressed && customerFresh && customer !== null ? { transform: [{ scale: 0.94 }] } : null,
             ]}
           >
-            <EllipsisIcon color={colors.slate400} />
+            {/* Lot 4 : le « … » muet devient un crayon qui dit ce qu'il fait — annoncé
+                « Modifier » (fiche.editCta, déjà porté par le label) ET dessiné crayon. */}
+            <PencilIcon color={colors.ink600} />
           </Pressable>
         </View>
 
@@ -1109,70 +1053,105 @@ export default function ClientDetail() {
             </Card>
           ) : (
             <>
-              {/* ── En-tête : avatar + nom + partyLine ADAPTATIF (b2c : rien) ── */}
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 13 }}>
-                <Avatar name={customer.name} size={54} tone={TONE_BY_TYPE[customer.type]} />
-                <View style={{ flex: 1 }}>
-                  <Text
-                    numberOfLines={1}
-                    style={[font('cardTitle'), { fontSize: 18, color: colors.ink900 }]}
-                  >
-                    {customer.name}
-                  </Text>
-                  {customer.type !== 'b2c' ? (
-                    <View
-                      style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 5 }}
+              {/* ── Héros BobSurface marine (Lot 4, parité fiche équipement/contrat) :
+                   avatar + nom en pageTitle + partyLine ADAPTATIF (b2c : rien), puis
+                   l'ENCOURS en MoneyText moneyHero teinté par le standing — le fil rouge
+                   « couleur de l'argent » au niveau fiche. ── */}
+              <BobSurface tone="marine" emphasis="raised">
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 13 }}>
+                  <Avatar name={customer.name} size={54} tone={TONE_BY_TYPE[customer.type]} />
+                  <View style={{ flex: 1 }}>
+                    <Text
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.6}
+                      style={[font('pageTitle'), { color: colors.ink900 }]}
                     >
-                      <StatusBadge
-                        label={t(customer.type === 'b2b' ? 'fiche.badgeB2b' : 'fiche.badgeB2g', {
-                          personality,
-                        })}
-                        variant={TONE_BY_TYPE[customer.type]}
-                      />
-                      {siren !== null ? (
-                        <Text style={[font('meta'), { fontSize: 11.5, color: colors.slate400 }]}>
-                          {t('fiche.sirenLabel', {
+                      {customer.name}
+                    </Text>
+                    {customer.type !== 'b2c' ? (
+                      <View
+                        style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 5 }}
+                      >
+                        <StatusBadge
+                          label={t(customer.type === 'b2b' ? 'fiche.badgeB2b' : 'fiche.badgeB2g', {
                             personality,
-                            params: { siren: formatSiren(siren) },
                           })}
-                        </Text>
-                      ) : null}
-                    </View>
-                  ) : null}
+                          variant={TONE_BY_TYPE[customer.type]}
+                        />
+                        {siren !== null ? (
+                          <Text style={[font('meta'), { fontSize: 11.5, color: colors.slate400 }]}>
+                            {t('fiche.sirenLabel', {
+                              personality,
+                              params: { siren: formatSiren(siren) },
+                            })}
+                          </Text>
+                        ) : null}
+                      </View>
+                    ) : null}
+                  </View>
                 </View>
-              </View>
+                <View style={{ marginTop: 14 }}>
+                  <Text style={[font('meta'), { color: colors.slate500 }]}>
+                    {t('fiche.kpiOutstanding', { personality })}
+                  </Text>
+                  {outstandingCents === null ? (
+                    <Text
+                      style={[
+                        font('bigNum'),
+                        { color: colors.slate300, fontVariant: ['tabular-nums'], marginTop: 2 },
+                      ]}
+                    >
+                      —
+                    </Text>
+                  ) : (
+                    <View style={{ marginTop: 2 }}>
+                      <MoneyText cents={outstandingCents} variant="moneyHero" whole color={outstandingColor} />
+                    </View>
+                  )}
+                </View>
+              </BobSurface>
 
-              {/* ── 4 actions rapides (parité humain ↔ Bob ; tel:/mailto: = device) ── */}
+              {/* ── 4 actions rapides — QuickAction kit (Lot 4 ; parité humain ↔ Bob ;
+                   tel:/mailto: = device). Tones : devis b2b (même canal que la Home),
+                   relance ai (c'est Bob qui agit — l'indigo est SON canal), appel success,
+                   email warning — pastilles distinctes, icônes teintées comme la Home. ── */}
               <View style={{ flexDirection: 'row', gap: 9 }}>
-                <ActionTile
+                <QuickAction
+                  style={{ flex: 1 }}
                   label={t('fiche.actionQuote', { personality })}
-                  icon={<FileTextIcon color={colors.ink600} size={19} />}
+                  tone="b2b"
+                  icon={<FileTextIcon color={semantic.b2b} size={18} />}
                   disabled={!customerFresh}
                   onPress={() => router.push('/devis/new')}
                 />
-                <ActionTile
+                <QuickAction
+                  style={{ flex: 1 }}
                   label={t('fiche.actionRelance', { personality })}
-                  icon={<SendIcon color={colors.ink600} size={19} />}
+                  tone="ai"
+                  icon={<SendIcon color={semantic.ai} size={18} />}
                   disabled={!customerFresh || !piecesFresh}
                   onPress={() =>
                     router.push({ pathname: '/(tabs)/assistant', params: { prompt: 'relance' } })
                   }
                 />
-                <ActionTile
+                <QuickAction
+                  style={{ flex: 1 }}
                   label={t('fiche.actionCall', { personality })}
-                  icon={<PhoneIcon color={colors.ink600} size={19} />}
+                  tone="success"
+                  icon={<PhoneIcon color={semantic.success} size={18} />}
                   disabled={phone === null || !customerFresh}
-                  onPress={
-                    phone !== null
-                      ? () => openLink(`tel:${phone.replace(/[^+\d]/g, '')}`)
-                      : undefined
-                  }
+                  {...(phone !== null
+                    ? { onPress: () => openLink(`tel:${phone.replace(/[^+\d]/g, '')}`) }
+                    : {})}
                 />
-                <ActionTile
+                <QuickAction
+                  style={{ flex: 1 }}
                   label={t('fiche.actionEmail', { personality })}
-                  icon={<MailIcon color={colors.ink600} size={19} />}
+                  tone="warning"
+                  icon={<MailIcon color={semantic.warning} size={18} />}
                   disabled={email === null || !customerFresh}
-                  onPress={email !== null ? () => openLink(`mailto:${email}`) : undefined}
+                  {...(email !== null ? { onPress: () => openLink(`mailto:${email}`) } : {})}
                 />
               </View>
 
@@ -1193,26 +1172,26 @@ export default function ClientDetail() {
                 />
               ) : null}
 
-              {/* ── 3 KPI : Encours teinté par statut · Délai moyen · CA 12 mois ── */}
+              {/* ── KPI (KpiTile kit, Lot 4) : Délai moyen · CA 12 mois — l'encours vit
+                   désormais dans le héros (MoneyText teinté par le standing), même
+                   information, aucun doublon. Donnée absente = « — », jamais un zéro. ── */}
               <View style={{ flexDirection: 'row', gap: 9 }}>
-                <KpiCell
-                  label={t('fiche.kpiOutstanding', { personality })}
-                  value={outstandingCents === null ? '—' : formatEURWhole(outstandingCents)}
-                  color={outstandingColor}
-                />
-                <KpiCell
+                <KpiTile
+                  style={{ flex: 1 }}
                   label={t('fiche.kpiAvgDelay', { personality })}
-                  value={
-                    avgDelayDays !== null
-                      ? t('fiche.kpiDays', { personality, params: { days: avgDelayDays } })
-                      : '—'
-                  }
-                  color={avgDelayDays !== null ? colors.ink900 : colors.slate300}
+                  {...(avgDelayDays !== null
+                    ? {
+                        valueText: t('fiche.kpiDays', {
+                          personality,
+                          params: { days: avgDelayDays },
+                        }),
+                      }
+                    : {})}
                 />
-                <KpiCell
+                <KpiTile
+                  style={{ flex: 1 }}
                   label={t('fiche.kpiRevenue12m', { personality })}
-                  value={revenue12m !== null ? formatEURWhole(revenue12m) : '—'}
-                  color={revenue12m !== null ? colors.ink900 : colors.slate300}
+                  {...(revenue12m !== null ? { amountCents: revenue12m } : {})}
                 />
               </View>
 
@@ -1291,6 +1270,9 @@ export default function ClientDetail() {
                 accessibilityLabel={t('fiche.tabActivity', { personality })}
               />
 
+              {/* Lot 4 : FadeIn au changement d'onglet (remonté via key) — fail-closed
+                  hérité de useReduceMotion : préférence non résolue = bascule sèche. */}
+              <FadeIn key={tab} index={0}>
               {tab === 'activity' ? (
                 docsUnavailable ? null /* erreur : la carte fiche.dataError ci-dessus parle déjà */ : activity.length ===
                   0 ? (
@@ -1604,39 +1586,24 @@ export default function ClientDetail() {
                   ) : null}
                 </View>
               )}
+              </FadeIn>
             </>
           )}
         </View>
       </ScrollView>
 
-      {/* ── CTA sticky contextuelle par standing (aplat ink du thème, réf) ── */}
-      {!booting && customerFresh && piecesFresh && customer !== null && cta !== null ? (
-        <View style={{ position: 'absolute', left: 18, right: 18, bottom: insets.bottom + 14 }}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={cta.label}
-            onPress={cta.onPress}
-            style={({ pressed }) => [
-              {
-                backgroundColor: theme.ink,
-                borderRadius: 16,
-                minHeight: 52,
-                flexDirection: 'row',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 7,
-                paddingHorizontal: 18,
-                ...shadowNative.e3,
-              },
-              pressed && { transform: [{ scale: 0.98 }] },
-            ]}
-          >
-            <Text style={[font('button'), { fontSize: 15, color: colors.surface }]}>
-              {cta.label}
-            </Text>
-            <ChevronRightIcon color={colors.surface} size={14} strokeWidth={2.4} />
-          </Pressable>
-        </View>
+      {/* ── CTA sticky contextuelle par standing — StickyActionBar 'floating' (Lot 4) :
+           aplat ink + liseré accent de la MÊME teinte que le standing (fil rouge
+           « couleur de l'argent » au niveau du geste), apparition FadeIn fail-closed. ── */}
+      {!booting && customerFresh && piecesFresh && customer !== null && cta !== null
+      && standing !== null ? (
+        <StickyActionBar
+          variant="floating"
+          label={cta.label}
+          onPress={cta.onPress}
+          accentColor={standingAccentColor(standing.kind, standingPalette)}
+          trailingIcon={<ChevronRightIcon color={colors.surface} size={14} strokeWidth={2.4} />}
+        />
       ) : null}
 
       {/* ── Sheet création chantier/projet — rattaché à CE client, adresse préremplie ── */}
@@ -1764,9 +1731,20 @@ export default function ClientDetail() {
           />
 
           {chantierError ? (
-            <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.danger, marginTop: 12 }]}>
-              {t('fiche.chantierCreateError', { personality, params: worksiteParams })}
-            </Text>
+            /* Lot 4 — grammaire d'erreur : l'échec de mutation devient un ErrorNotice
+               2 faces (code + corrélation, partage sans PII) — un ticket support aveugle
+               n'a plus sa place dans une feuille de création. */
+            <View style={{ marginTop: 12 }}>
+              <ErrorNotice
+                message={t('fiche.chantierCreateError', { personality, params: worksiteParams })}
+                {...(() => {
+                  const facts = firstQueryErrorFacts([createChantier]);
+                  return facts
+                    ? { code: facts.code, correlationId: facts.correlationId, kind: facts.kind }
+                    : { code: 'BOB-API-500' };
+                })()}
+              />
+            </View>
           ) : null}
 
           <Button

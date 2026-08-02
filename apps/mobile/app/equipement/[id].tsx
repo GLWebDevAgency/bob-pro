@@ -24,13 +24,18 @@ import { t } from '@bob/i18n';
 import {
   BobSurface,
   Button,
+  DateField,
   EmptyState,
   ErrorRetry,
+  FormField,
   MorphReplace,
   Sheet,
   SkeletonCard,
   StatusBadge,
   font,
+  statusBadgeColors,
+  useErrorSheet,
+  useStatusBadgePalette,
   useTheme,
 } from '@bob/ui';
 import { parisDateOnly, type EquipmentHistoryEntry } from '@bob/core';
@@ -45,6 +50,10 @@ import {
 import { ScreenHeader } from '../../src/components/screen-header';
 import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
 import { warrantyChipOf } from '../../src/components/equipment-row.logic';
+import {
+  interventionStatusKey,
+  timelineDotVariant,
+} from '../../src/components/equipment-timeline.logic';
 import { retireConfirmMessage } from '../../src/components/equipment-retire.logic';
 import { useConfirm } from '../../src/components/ConfirmSheet';
 import { useBobClient } from '../../src/data/client';
@@ -86,6 +95,7 @@ const EDIT_FIELDS: { key: EditField; labelKey: Parameters<typeof t>[0] }[] = [
 
 function TimelineRow({ entry }: { entry: EquipmentHistoryEntry }) {
   const { personality, colors } = useTheme();
+  const palette = useStatusBadgePalette();
   const heading =
     entry.type === 'note'
       ? t('equipements.historyNote', { personality })
@@ -94,13 +104,22 @@ function TimelineRow({ entry }: { entry: EquipmentHistoryEntry }) {
         : entry.type === 'intervention'
           ? entry.label
           : entry.filename;
+  // Lot 4 : entry.status → i18n (statut serveur brut interdit à l'écran comme à l'oreille) ;
+  // un statut inconnu du domaine reste affiché brut — honnête, jamais une invention.
+  const interventionStatus =
+    entry.type === 'intervention'
+      ? (() => {
+          const key = interventionStatusKey(entry.status);
+          return key !== null ? t(key, { personality }) : entry.status;
+        })()
+      : null;
   const body =
     entry.type === 'note'
       ? `« ${entry.text} » — ${entry.authorLabel}`
       : entry.type === 'photo'
         ? entry.filename
         : entry.type === 'intervention'
-          ? entry.status
+          ? (interventionStatus ?? entry.status)
           : entry.kind;
   return (
     <View
@@ -108,13 +127,15 @@ function TimelineRow({ entry }: { entry: EquipmentHistoryEntry }) {
       accessibilityLabel={`${frInstant(entry.at)}, ${heading}, ${body}`}
       style={{ flexDirection: 'row', gap: 10, paddingVertical: 10 }}
     >
+      {/* Lot 4 : point teinté par TYPE d'entrée (statusBadgeColors) — l'historique, LA
+          valeur de l'écran, devient scannable par couleur. */}
       <View
         style={{
           width: 8,
           height: 8,
           borderRadius: 4,
           marginTop: 6,
-          backgroundColor: colors.ink600,
+          backgroundColor: statusBadgeColors(timelineDotVariant(entry.type), palette).fg,
         }}
       />
       <View style={{ flex: 1, gap: 2 }}>
@@ -128,8 +149,12 @@ function TimelineRow({ entry }: { entry: EquipmentHistoryEntry }) {
 
 export default function FicheEquipement() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { personality, colors, controls } = useTheme();
+  const { personality, colors, controls, semantic } = useTheme();
   const router = useRouter();
+  // Lot 4 — grammaire d'erreur : retrait/réactivation échoués parlent dans la feuille
+  // Bob, plus jamais un Alert.alert « Oups » système (le filet post-ACK d'avertissement
+  // contrat, lui, n'est pas une erreur et reste un Alert).
+  const errorSheet = useErrorSheet();
   const scrollInsets = useBobAwareScrollInsets();
   const confirm = useConfirm();
   const client = useBobClient();
@@ -251,7 +276,7 @@ export default function FicheEquipement() {
         Alert.alert(t('equipements.retireConfirmTitle', { personality }), result.contractWarning);
       }
     } catch (error) {
-      Alert.alert('Oups', appErrorMessage(error));
+      errorSheet.showError(t('equipements.retireCta', { personality }), appErrorMessage(error));
     }
   };
 
@@ -267,7 +292,7 @@ export default function FicheEquipement() {
         t('equipements.reactivatedAnnounce', { personality, params: { label: equipment.label } }),
       );
     } catch (error) {
-      Alert.alert('Oups', appErrorMessage(error));
+      errorSheet.showError(t('equipements.reactivateCta', { personality }), appErrorMessage(error));
     }
   };
 
@@ -363,40 +388,47 @@ export default function FicheEquipement() {
                 ) : null}
               </BobSurface>
 
-              <View style={{ flexDirection: 'row', gap: 8 }}>
-                <View style={{ flex: 1 }}>
+              {/* Lot 4 : la rangée de 3 boutons écrasés devient PRIMAIRE PLEINE LARGEUR
+                  + 2 secondaires — le geste quotidien (la note) respire, et Dynamic Type
+                  XL ne tronque plus les libellés. Retirée : Réactiver prend la primaire. */}
+              {retired ? (
+                <View style={{ gap: 8 }}>
+                  <Button
+                    title={t('equipements.reactivateCta', { personality })}
+                    loading={reactivate.isPending}
+                    onPress={() => void handleReactivate()}
+                  />
                   <Button
                     title={t('equipements.addNoteCta', { personality })}
                     variant="secondary"
                     onPress={() => setNoteOpen(true)}
                   />
                 </View>
-                {!retired ? (
-                  <View style={{ flex: 1 }}>
-                    <Button
-                      title={t('equipements.editCta', { personality })}
-                      variant="secondary"
-                      onPress={openEdit}
-                    />
+              ) : (
+                <View style={{ gap: 8 }}>
+                  <Button
+                    title={t('equipements.addNoteCta', { personality })}
+                    onPress={() => setNoteOpen(true)}
+                  />
+                  <View style={{ flexDirection: 'row', gap: 8 }}>
+                    <View style={{ flex: 1 }}>
+                      <Button
+                        title={t('equipements.editCta', { personality })}
+                        variant="secondary"
+                        onPress={openEdit}
+                      />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Button
+                        title={t('equipements.retireCta', { personality })}
+                        variant="secondary"
+                        loading={retire.isPending}
+                        onPress={() => void handleRetire()}
+                      />
+                    </View>
                   </View>
-                ) : null}
-                <View style={{ flex: 1 }}>
-                  {retired ? (
-                    <Button
-                      title={t('equipements.reactivateCta', { personality })}
-                      loading={reactivate.isPending}
-                      onPress={() => void handleReactivate()}
-                    />
-                  ) : (
-                    <Button
-                      title={t('equipements.retireCta', { personality })}
-                      variant="secondary"
-                      loading={retire.isPending}
-                      onPress={() => void handleRetire()}
-                    />
-                  )}
                 </View>
-              </View>
+              )}
 
               <BobSurface tone="neutral" emphasis="raised" padding={14}>
                 <Text style={[font('section'), { color: colors.ink800 }]}>
@@ -473,35 +505,34 @@ export default function FicheEquipement() {
         <Text style={[font('section'), { color: colors.ink800, marginBottom: 10 }]}>
           {t('equipements.editCta', { personality })}
         </Text>
+        {/* Lot 4 : FormField ×5 + DateField ×2 — labels visibles persistants, masque
+            AAAA-MM-JJ purement visuel ; l'erreur parle en danger avec role alert. */}
         <View style={{ gap: 8 }}>
-          {EDIT_FIELDS.map((field) => (
-            <TextInput
-              key={field.key}
-              value={editDraft?.[field.key] ?? ''}
-              onChangeText={(value) => {
-                setEditError(null);
-                setEditDraft((current) => (current === null ? current : { ...current, [field.key]: value }));
-              }}
-              placeholder={t(field.labelKey, { personality })}
-              placeholderTextColor={colors.slate400}
-              accessibilityLabel={t(field.labelKey, { personality })}
-              autoCapitalize={field.key === 'installedAt' || field.key === 'warrantyUntil' ? 'none' : 'sentences'}
-              style={[
-                font('body'),
-                {
-                  minHeight: 44,
-                  borderWidth: 1,
-                  borderColor: controls.cardBorder,
-                  borderRadius: 12,
-                  paddingHorizontal: 12,
-                  color: colors.ink800,
-                  backgroundColor: colors.surface,
-                },
-              ]}
-            />
-          ))}
+          {EDIT_FIELDS.map((field) =>
+            field.key === 'installedAt' || field.key === 'warrantyUntil' ? (
+              <DateField
+                key={field.key}
+                label={t(field.labelKey, { personality })}
+                value={editDraft?.[field.key] ?? ''}
+                onChangeText={(value) => {
+                  setEditError(null);
+                  setEditDraft((current) => (current === null ? current : { ...current, [field.key]: value }));
+                }}
+              />
+            ) : (
+              <FormField
+                key={field.key}
+                label={t(field.labelKey, { personality })}
+                value={editDraft?.[field.key] ?? ''}
+                onChangeText={(value) => {
+                  setEditError(null);
+                  setEditDraft((current) => (current === null ? current : { ...current, [field.key]: value }));
+                }}
+              />
+            ),
+          )}
           {editError ? (
-            <Text accessibilityLiveRegion="polite" style={[font('sub', 500), { color: colors.slate500 }]}>
+            <Text accessibilityRole="alert" style={[font('sub', 600), { color: semantic.danger }]}>
               {editError}
             </Text>
           ) : null}
@@ -512,6 +543,7 @@ export default function FicheEquipement() {
           />
         </View>
       </Sheet>
+      {errorSheet.errorSheet}
     </View>
   );
 }

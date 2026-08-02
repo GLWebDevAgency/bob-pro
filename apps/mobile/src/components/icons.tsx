@@ -393,3 +393,14 @@ export function TrashIcon({ color, size = 17, strokeWidth = 2 }: IconProps) {
     </Svg>
   );
 }
+
+/** Crayon — modifier (Lot 4 : le « … » de la fiche client devient un crayon qui dit ce
+ * qu'il fait ; annoncé « Modifier » via le label de l'écran, dessiné crayon). */
+export function PencilIcon({ color, size = 17, strokeWidth = 2 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" stroke={color} strokeWidth={strokeWidth} {...common}>
+      <Path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3Z" />
+      <Path d="M15 5l4 4" />
+    </Svg>
+  );
+}

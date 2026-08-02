@@ -19,7 +19,6 @@ import { useMemo, useState } from 'react';
 import {
   Alert,
   Image,
-  Modal,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -31,13 +30,16 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { deriveChantierPieces, formatEUR, tradeToWorksiteTerminology } from '@bob/core';
-import { shadowNative } from '@bob/tokens';
+import { overlays, shadowNative } from '@bob/tokens';
 import { t } from '@bob/i18n';
 import {
+  BobSurface,
   Button,
   Card,
   EmptyState,
   ErrorRetry,
+  PhotoViewer,
+  SectionHeader,
   Sheet,
   Skeleton,
   SkeletonRow,
@@ -64,7 +66,7 @@ import { chantierExpensesTotalCents, expensesForChantier } from '../../src/expen
 import { RetenueSuiviCard } from '../../src/components/RetenueSuiviCard';
 import { useConfirm } from '../../src/components/ConfirmSheet';
 import { usePublishAgentContext, type AgentContext, type AgentSurface } from '../../src/agent';
-import { CameraIcon, ChevronLeftIcon, CloseIcon, TrashIcon } from '../../src/components/icons';
+import { CameraIcon, ChevronLeftIcon, CloseIcon } from '../../src/components/icons';
 import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
 import { DEFAULT_WORKSITE_TERM, worksiteParamsFor } from '../../src/lib/worksite-terminology';
 
@@ -105,15 +107,18 @@ function PhotoThumbnail({
   photoId: string;
   onOpen: (photoId: string) => void;
 }) {
-  const { colors } = useTheme();
+  // BUG corrigé (Lot 4, correction de comportement assumée) : personality:'pote' était
+  // hardcodée dans t() — l'utilisateur en « pro »/« direct » entendait la voix « pote »
+  // sur chaque miniature. La personnalité vient du thème, comme partout.
+  const { personality, colors } = useTheme();
   const url = useWorksitePhotoUrl(photoId);
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={t('chantierFiche.photoOpen', { personality: 'pote' })}
+      accessibilityLabel={t('chantierFiche.photoOpen', { personality })}
       onPress={() => onOpen(photoId)}
       style={{
-        width: '31.5%',
+        width: '31%',
         aspectRatio: 1,
         borderRadius: 12,
         overflow: 'hidden',
@@ -369,32 +374,36 @@ export default function ChantierDetail() {
             />
           }
         >
-          {/* ── En-tête : nom, adresse, statut ── */}
-          <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
-            <View style={{ flex: 1 }}>
-              <Text style={[font('pageTitle'), { fontSize: 22, color: colors.ink900 }]}>{chantier.name}</Text>
-              {chantier.address ? (
-                <Text style={[font('sub'), { color: colors.slate500, marginTop: 4 }]}>{chantier.address}</Text>
-              ) : null}
-              <Text style={[font('meta'), { color: colors.slate400, marginTop: 5 }]}>
-                {t('chantiers.openedOn', { personality, params: { date: frDate(chantier.openedAt) } })}
-              </Text>
-              {chantier.notes ? (
-                <Text style={[font('sub'), { color: colors.slate500, marginTop: 8, lineHeight: 19 }]}>
-                  {chantier.notes}
+          {/* ── Héros BobSurface marine (Lot 4 — parité fiche équipement) :
+               nom, adresse, statut sur la matière Bob, jamais la transparence iOS. ── */}
+          <BobSurface tone="marine" emphasis="raised">
+            <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={[font('pageTitle'), { fontSize: 22, color: colors.ink900 }]}>{chantier.name}</Text>
+                {chantier.address ? (
+                  <Text style={[font('sub'), { color: colors.slate500, marginTop: 4 }]}>{chantier.address}</Text>
+                ) : null}
+                <Text style={[font('meta'), { color: colors.slate400, marginTop: 5 }]}>
+                  {t('chantiers.openedOn', { personality, params: { date: frDate(chantier.openedAt) } })}
                 </Text>
-              ) : null}
+                {chantier.notes ? (
+                  <Text style={[font('sub'), { color: colors.slate500, marginTop: 8, lineHeight: 19 }]}>
+                    {chantier.notes}
+                  </Text>
+                ) : null}
+              </View>
+              <StatusBadge
+                label={t(chantier.status === 'open' ? 'chantiers.open' : 'chantiers.closed', { personality })}
+                variant={chantier.status === 'open' ? 'b2b' : 'success'}
+              />
             </View>
-            <StatusBadge
-              label={t(chantier.status === 'open' ? 'chantiers.open' : 'chantiers.closed', { personality })}
-              variant={chantier.status === 'open' ? 'b2b' : 'success'}
-            />
-          </View>
+          </BobSurface>
 
-          {/* ── Journal (notes horodatées) ── */}
-          <Text style={[font('label', 700), { fontSize: 13, color: colors.slate500, marginTop: 26, marginBottom: 10 }]}>
-            {t('chantierFiche.notesTitle', { personality })}
-          </Text>
+          {/* ── Journal (notes horodatées) — SectionHeader kit (Lot 4 : 5 titres maison
+               résorbés, rythme marginTop 28 unifié). ── */}
+          <View style={{ marginTop: 28 }}>
+            <SectionHeader title={t('chantierFiche.notesTitle', { personality })} />
+          </View>
           {notes.isLoading ? (
             <SkeletonRow avatar="square" trailing={false} style={{ minHeight: 58 }} />
           ) : notes.isError ? (
@@ -467,39 +476,33 @@ export default function ChantierDetail() {
             </Text>
           ) : null}
 
-          {/* ── Photos ── */}
-          <View
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              marginTop: 28,
-              marginBottom: 10,
-            }}
-          >
-            <Text style={[font('label', 700), { fontSize: 13, color: colors.slate500 }]}>
-              {t('chantierFiche.photosTitle', { personality })}
-            </Text>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={t('chantierFiche.photoAdd', { personality })}
-              onPress={() => setPhotoSourceOpen(true)}
-              hitSlop={8}
-              style={({ pressed }) => [
-                {
-                  width: 44,
-                  height: 44,
-                  borderRadius: 22,
-                  backgroundColor: theme.ink,
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  ...shadowNative.e1,
-                },
-                pressed && { transform: [{ scale: 0.94 }] },
-              ]}
-            >
-              <CameraIcon color={colors.surface} size={18} />
-            </Pressable>
+          {/* ── Photos — SectionHeader kit, bouton appareil photo en action ── */}
+          <View style={{ marginTop: 28 }}>
+            <SectionHeader
+              title={t('chantierFiche.photosTitle', { personality })}
+              action={
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={t('chantierFiche.photoAdd', { personality })}
+                  onPress={() => setPhotoSourceOpen(true)}
+                  hitSlop={8}
+                  style={({ pressed }) => [
+                    {
+                      width: 44,
+                      height: 44,
+                      borderRadius: 22,
+                      backgroundColor: theme.ink,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      ...shadowNative.e1,
+                    },
+                    pressed && { transform: [{ scale: 0.94 }] },
+                  ]}
+                >
+                  <CameraIcon color={colors.surface} size={18} />
+                </Pressable>
+              }
+            />
           </View>
           {photos.isLoading ? (
             <SkeletonRow avatar="square" trailing={false} style={{ minHeight: 58 }} />
@@ -509,7 +512,7 @@ export default function ChantierDetail() {
               onRetry={() => void photos.refetch()}
               retrying={photos.isRefetching}
             />
-          ) : (photos.data ?? []).length === 0 ? (
+          ) : (photos.data ?? []).length === 0 && !uploadPhoto.isPending ? (
             <Card>
               <EmptyState
                 body={t('chantierFiche.photosEmpty', { personality })}
@@ -517,21 +520,29 @@ export default function ChantierDetail() {
               />
             </Card>
           ) : (
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: '2.5%' }}>
+            /* Grille en POINTS NUMÉRIQUES (gap 8, plus jamais un gap en pourcentage) ;
+               l'envoi en cours est une TUILE FANTÔME dans la grille — sur un chantier en
+               3G, l'artisan voit que Bob travaille sans re-taper (Lot 4). */
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
               {(photos.data ?? []).map((photo) => (
                 <PhotoThumbnail key={photo.id} photoId={photo.id} onOpen={setFullscreenPhotoId} />
               ))}
+              {uploadPhoto.isPending ? (
+                <View
+                  accessible
+                  accessibilityLabel={t('chantierFiche.photoUploading', { personality })}
+                  accessibilityState={{ busy: true }}
+                  style={{ width: '31%', aspectRatio: 1, borderRadius: 12, overflow: 'hidden' }}
+                >
+                  <Skeleton height={1} radius={12} style={{ flex: 1 }} />
+                </View>
+              ) : null}
             </View>
           )}
           {photoError ? (
             <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.danger, marginTop: 8 }]}>
               {photoError}
             </Text>
-          ) : null}
-          {uploadPhoto.isPending ? (
-            <View style={{ marginTop: 10 }}>
-              <Skeleton height={13} width="50%" radius={6} />
-            </View>
           ) : null}
 
           {/* ── B5 — Retenue de garantie à récupérer (loi 71-584) : créance suivie du CLIENT
@@ -546,29 +557,23 @@ export default function ChantierDetail() {
                la section se tait tant que le parc est vide (matière réelle uniquement). ── */}
           {(equipments.data ?? []).length > 0 ? (
             <>
-              <View
-                style={{
-                  marginTop: 28,
-                  marginBottom: 10,
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                }}
-              >
-                <Text style={[font('label', 700), { fontSize: 13, color: colors.slate500 }]}>
-                  {t('equipements.sectionOnSite', { personality })} ({(equipments.data ?? []).length})
-                </Text>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={t('equipements.seeAll', { personality })}
-                  onPress={() => router.push(`/equipements/${chantier.id}`)}
-                  hitSlop={8}
-                  style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1, minHeight: 44, justifyContent: 'center' })}
-                >
-                  <Text style={[font('label', 700), { fontSize: 13, color: colors.ink600 }]}>
-                    {t('equipements.seeAll', { personality })}
-                  </Text>
-                </Pressable>
+              <View style={{ marginTop: 28 }}>
+                <SectionHeader
+                  title={`${t('equipements.sectionOnSite', { personality })} (${(equipments.data ?? []).length})`}
+                  action={
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={t('equipements.seeAll', { personality })}
+                      onPress={() => router.push(`/equipements/${chantier.id}`)}
+                      hitSlop={8}
+                      style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1, minHeight: 44, justifyContent: 'center' })}
+                    >
+                      <Text style={[font('label', 700), { fontSize: 13, color: colors.ink600 }]}>
+                        {t('equipements.seeAll', { personality })}
+                      </Text>
+                    </Pressable>
+                  }
+                />
               </View>
               <Card radius={16} padding={0} style={{ paddingHorizontal: 14 }}>
                 {(equipments.data ?? []).slice(0, 3).map((equipment, index, rows) => (
@@ -611,9 +616,9 @@ export default function ChantierDetail() {
 
           {/* ── PR-08 — Pièces du site : devis + factures rattachés (dérivation pure sur les
                listes existantes ; chaque row navigue vers sa fiche). ── */}
-          <Text style={[font('label', 700), { fontSize: 13, color: colors.slate500, marginTop: 28, marginBottom: 10 }]}>
-            {t('chantierFiche.piecesTitle', { personality })}
-          </Text>
+          <View style={{ marginTop: 28 }}>
+            <SectionHeader title={t('chantierFiche.piecesTitle', { personality })} />
+          </View>
           {quotes.isLoading || invoices.isLoading ? (
             <SkeletonRow avatar="square" trailing={false} style={{ minHeight: 58 }} />
           ) : quotes.isError || invoices.isError ? (
@@ -688,9 +693,9 @@ export default function ChantierDetail() {
 
           {/* ── Dépenses imputées (rentabilité par chantier) — filtre CLIENT sur la liste
                existante (useExpenses), les plus récentes en tête, total TTC en pied. ── */}
-          <Text style={[font('label', 700), { fontSize: 13, color: colors.slate500, marginTop: 28, marginBottom: 10 }]}>
-            {t('chantierFiche.expensesTitle', { personality })}
-          </Text>
+          <View style={{ marginTop: 28 }}>
+            <SectionHeader title={t('chantierFiche.expensesTitle', { personality })} />
+          </View>
           {expenses.isLoading ? (
             <SkeletonRow avatar="square" trailing={false} style={{ minHeight: 58 }} />
           ) : expenses.isError ? (
@@ -780,53 +785,32 @@ export default function ChantierDetail() {
         />
       </Sheet>
 
-      {/* ── Plein écran ── */}
-      <Modal visible={fullscreenPhotoId !== null} transparent animationType="fade" onRequestClose={() => setFullscreenPhotoId(null)}>
-        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.92)' }}>
-          <View
-            style={{
-              paddingTop: insets.top + 8,
-              paddingHorizontal: 16,
-              flexDirection: 'row',
-              justifyContent: 'space-between',
-            }}
-          >
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={t('chantierFiche.photoClose', { personality })}
-              onPress={() => setFullscreenPhotoId(null)}
-              hitSlop={8}
-              style={{ width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }}
-            >
-              <CloseIcon color="#ffffff" size={20} />
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={t('chantierFiche.photoDelete', { personality })}
-              onPress={() => fullscreenPhotoId && void confirmDeletePhoto(fullscreenPhotoId)}
-              hitSlop={8}
-              style={{ width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }}
-            >
-              <TrashIcon color="#ffffff" size={19} />
-            </Pressable>
-          </View>
-          <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-            {fullscreenUrl.isLoading ? (
-              <Skeleton height={280} width="86%" radius={12} />
-            ) : fullscreenUrl.isSuccess ? (
-              <Image
-                source={{ uri: fullscreenUrl.data.url }}
-                style={{ width: '100%', height: '80%' }}
-                resizeMode="contain"
-              />
-            ) : (
-              <Text style={[font('sub'), { color: '#ffffff' }]}>
-                {t('chantierFiche.photoLoadError', { personality })}
-              </Text>
-            )}
-          </View>
-        </View>
-      </Modal>
+      {/* ── Plein écran — PhotoViewer kit (Lot 4) : scrim/chrome tokenisés (fin des hex
+           de cet écran), fade gaté reduce-motion fail-closed. Le contenu (skeleton, image,
+           erreur en corps AA on-dark ≥ white80) reste ici : les données sont à l'écran. ── */}
+      <PhotoViewer
+        visible={fullscreenPhotoId !== null}
+        onRequestClose={() => setFullscreenPhotoId(null)}
+        closeAccessibilityLabel={t('chantierFiche.photoClose', { personality })}
+        onDelete={() => {
+          if (fullscreenPhotoId !== null) void confirmDeletePhoto(fullscreenPhotoId);
+        }}
+        deleteAccessibilityLabel={t('chantierFiche.photoDelete', { personality })}
+      >
+        {fullscreenUrl.isLoading ? (
+          <Skeleton height={280} width="86%" radius={12} />
+        ) : fullscreenUrl.isSuccess ? (
+          <Image
+            source={{ uri: fullscreenUrl.data.url }}
+            style={{ width: '100%', height: '80%' }}
+            resizeMode="contain"
+          />
+        ) : (
+          <Text style={[font('sub'), { color: overlays.white80 }]}>
+            {t('chantierFiche.photoLoadError', { personality })}
+          </Text>
+        )}
+      </PhotoViewer>
     </View>
   );
 }

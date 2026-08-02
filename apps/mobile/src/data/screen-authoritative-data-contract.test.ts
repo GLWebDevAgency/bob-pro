@@ -122,7 +122,9 @@ describe('contrat données autoritatives des écrans métier', () => {
     expect(clients).toContain('capabilities:\n        sourcesFresh && !displayError');
     expect(detail).toContain('const standing = useMemo<CustomerStanding | null>');
     expect(detail).not.toContain("kind: 'nouveau', amountCents: 0");
-    expect(detail).toContain("value={outstandingCents === null ? '—'");
+    // Lot 4 : l'encours vit dans le héros (MoneyText) — l'invariant reste le même :
+    // sources absentes ⇒ « — », jamais un zéro fabriqué.
+    expect(detail).toContain('{outstandingCents === null ? (');
     expect(detail).not.toMatch(/paidOnTimeRatio\s*\?\?\s*0/u);
     expect(detail).toContain('customerFresh && piecesFresh');
   });

@@ -12,14 +12,27 @@
  * CTA « Créer le brouillon » : l'ACTIVATION reste un geste distinct (jamais synonymes).
  */
 import { useMemo, useState } from 'react';
-import { AccessibilityInfo, Pressable, ScrollView, Switch, Text, TextInput, View } from 'react-native';
+import { AccessibilityInfo, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { t } from '@bob/i18n';
-import { BobSurface, Button, LegalHint, Stepper, font, useTheme } from '@bob/ui';
+import {
+  BobSwitch,
+  BobSurface,
+  Button,
+  DeleteIconButton,
+  ErrorRetry,
+  FadeIn,
+  LegalHint,
+  SkeletonRow,
+  Stepper,
+  font,
+  useTheme,
+} from '@bob/ui';
 import { currentPeriod, formatEURWhole, parisDateOnly } from '@bob/core';
 import type { ContractLineInput } from '@bob/core';
 import { appErrorMessage, useChantiers, useCreateMaintenanceContract, useCustomers } from '../../src/data/hooks';
 import { ScreenHeader } from '../../src/components/screen-header';
+import { CheckIcon, TrashIcon } from '../../src/components/icons';
 import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
 import {
   frContractDate,
@@ -58,7 +71,7 @@ function parseDraftLine(line: DraftLine): ContractLineInput | null {
 
 export default function NouveauContrat() {
   const { customerId: presetCustomerId } = useLocalSearchParams<{ customerId?: string }>();
-  const { personality, colors, controls } = useTheme();
+  const { personality, colors, controls, semantic, theme } = useTheme();
   const router = useRouter();
   const scrollInsets = useBobAwareScrollInsets();
 
@@ -207,9 +220,13 @@ export default function NouveauContrat() {
     />
   );
 
-  const pickRow = (picked: boolean, title: string, subtitle: string | null, onPress: () => void) => (
+  /** Rangée de sélection — ARBITRAGE SÉLECTION (plan DA 01/08) : theme.ink + CheckIcon
+   * PARTOUT (le canon vivant de facture/new), jamais le vert (récompense du geste commis)
+   * ni l'indigo (canal exclusif de Bob). borderWidth CONSTANT 2 : fin du saut d'1 px. */
+  const pickRow = (key: string, picked: boolean, title: string, subtitle: string | null, onPress: () => void) => (
     <Pressable
-      accessibilityRole="button"
+      key={key}
+      accessibilityRole="radio"
       accessibilityState={{ selected: picked }}
       accessibilityLabel={title}
       onPress={onPress}
@@ -218,13 +235,19 @@ export default function NouveauContrat() {
         paddingVertical: 10,
         paddingHorizontal: 12,
         borderRadius: 12,
-        borderWidth: 1,
-        borderColor: picked ? colors.ink800 : controls.cardBorder,
+        borderWidth: 2,
+        borderColor: picked ? theme.ink : controls.cardBorder,
         backgroundColor: colors.surface,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 10,
       }}
     >
-      <Text style={[font('body', picked ? 700 : 500), { color: colors.ink800 }]}>{title}</Text>
-      {subtitle ? <Text style={[font('sub', 500), { color: colors.slate500 }]}>{subtitle}</Text> : null}
+      <View style={{ flex: 1 }}>
+        <Text style={[font('body', picked ? 700 : 500), { color: colors.ink800 }]}>{title}</Text>
+        {subtitle ? <Text style={[font('sub', 500), { color: colors.slate500 }]}>{subtitle}</Text> : null}
+      </View>
+      {picked ? <CheckIcon color={theme.ink} size={18} strokeWidth={2.4} /> : null}
     </Pressable>
   );
 
@@ -242,7 +265,15 @@ export default function NouveauContrat() {
           title={t('contrat.newTitle', { personality })}
         />
         <View style={{ paddingHorizontal: 16, gap: 12 }}>
-          <Stepper total={4} current={step} labels={stepLabels} accessibilityLabel={t('contrat.newTitle', { personality })} />
+          <Stepper total={4} current={step} accessibilityLabel={t('contrat.newTitle', { personality })} />
+
+          {/* Lot 4 : titre d'étape en section/700 (le cran du kit, plus l'eyebrow du
+              Stepper) + FadeIn entre étapes (remonté via key — fail-closed hérité). */}
+          <FadeIn key={step} index={0}>
+          <View style={{ gap: 12 }}>
+          <Text accessibilityRole="header" style={[font('section'), { color: colors.ink800 }]}>
+            {stepLabels[step]}
+          </Text>
 
           {step === 0 ? (
             <View style={{ gap: 8 }}>
@@ -250,26 +281,65 @@ export default function NouveauContrat() {
               <Text style={[font('sub', 500), { color: colors.slate500 }]}>
                 {t('contrat.b2cFiltered', { personality })}
               </Text>
-              {professionalCustomers.map((customer) =>
-                pickRow(
-                  customerId === customer.id,
-                  customer.name,
-                  customer.type === 'b2g' ? 'B2G' : 'B2B',
-                  () => {
-                    setError(null);
-                    setCustomerId(customer.id);
-                  },
-                ),
+              {/* États manquants (correction de comportement ASSUMÉE par le plan — doctrine
+                  P0 « une source absente n'est jamais une collection vide ») : un carnet en
+                  erreur réseau n'est plus indistinguable d'un carnet sans client pro. */}
+              {customers.isPending ? (
+                <View style={{ gap: 8 }}>
+                  <SkeletonRow />
+                  <SkeletonRow />
+                  <SkeletonRow />
+                </View>
+              ) : customers.isError ? (
+                <ErrorRetry
+                  message={t('contrat.dataError', { personality })}
+                  onRetry={() => void customers.refetch()}
+                  retrying={customers.isRefetching}
+                />
+              ) : (
+                professionalCustomers.map((customer) =>
+                  pickRow(
+                    customer.id,
+                    customerId === customer.id,
+                    customer.name,
+                    customer.type === 'b2g' ? 'B2G' : 'B2B',
+                    () => {
+                      setError(null);
+                      setCustomerId(customer.id);
+                    },
+                  ),
+                )
               )}
               <Text style={[font('sub', 700), { color: colors.slate500, letterSpacing: 0.6, marginTop: 8 }]}>
                 {t('contrat.siteLabel', { personality }).toUpperCase()}
               </Text>
-              {pickRow(chantierId === null, t('pieceSite.none', { personality, params: { term: 'site' } }), null, () => setChantierId(null))}
-              {openSites.map((site) =>
-                pickRow(chantierId === site.id, site.name, null, () => {
-                  setError(null);
-                  setChantierId(site.id);
-                }),
+              {chantiers.isPending ? (
+                <View style={{ gap: 8 }}>
+                  <SkeletonRow />
+                  <SkeletonRow />
+                </View>
+              ) : chantiers.isError ? (
+                <ErrorRetry
+                  message={t('contrat.dataError', { personality })}
+                  onRetry={() => void chantiers.refetch()}
+                  retrying={chantiers.isRefetching}
+                />
+              ) : (
+                <>
+                  {pickRow(
+                    'site-none',
+                    chantierId === null,
+                    t('pieceSite.none', { personality, params: { term: 'site' } }),
+                    null,
+                    () => setChantierId(null),
+                  )}
+                  {openSites.map((site) =>
+                    pickRow(site.id, chantierId === site.id, site.name, null, () => {
+                      setError(null);
+                      setChantierId(site.id);
+                    }),
+                  )}
+                </>
               )}
             </View>
           ) : null}
@@ -312,17 +382,18 @@ export default function NouveauContrat() {
                       })}
                     </View>
                     {lines.length > 1 ? (
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel={t('contrat.removeLineA11y', {
-                          personality,
-                          params: { label: line.label || String(index + 1) },
-                        })}
-                        onPress={() => setLines((current) => current.filter((_, i) => i !== index))}
-                        style={{ minHeight: 44, justifyContent: 'center' }}
-                      >
-                        <Text style={[font('sub', 600), { color: colors.slate500 }]}>✕</Text>
-                      </Pressable>
+                      /* Lot 4 : le '✕' texte → DeleteIconButton kit (corbeille danger,
+                         cible 44, press feedback) — un glyphe muet n'est pas un bouton. */
+                      <View style={{ alignSelf: 'flex-end' }}>
+                        <DeleteIconButton
+                          icon={<TrashIcon color={semantic.danger} size={18} />}
+                          accessibilityLabel={t('contrat.removeLineA11y', {
+                            personality,
+                            params: { label: line.label || String(index + 1) },
+                          })}
+                          onPress={() => setLines((current) => current.filter((_, i) => i !== index))}
+                        />
+                      </View>
                     ) : null}
                   </View>
                 </BobSurface>
@@ -376,7 +447,9 @@ export default function NouveauContrat() {
                 <Text style={[font('body', 600), { color: colors.ink800 }]}>
                   {t('contrat.tacitField', { personality })}
                 </Text>
-                <Switch
+                {/* Lot 4 : Switch natif (vert plateforme hors tokens) → BobSwitch kit
+                    (piste theme.ink — la sélection utilisateur, pas la récompense). */}
+                <BobSwitch
                   value={tacitRenewal}
                   onValueChange={setTacitRenewal}
                   accessibilityLabel={t('contrat.tacitField', { personality })}
@@ -432,9 +505,13 @@ export default function NouveauContrat() {
               </Text>
             </BobSurface>
           ) : null}
+          </View>
+          </FadeIn>
 
           {error ? (
-            <Text accessibilityLiveRegion="polite" style={[font('sub', 500), { color: colors.slate500 }]}>
+            /* Lot 4 : l'erreur du wizard parle en DANGER avec role alert — un refus en
+               slate chuchotait ce qui bloque la création. */
+            <Text accessibilityRole="alert" style={[font('sub', 600), { color: semantic.danger }]}>
               {error}
             </Text>
           ) : null}
