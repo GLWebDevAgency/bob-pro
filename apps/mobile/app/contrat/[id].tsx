@@ -34,7 +34,11 @@ import {
   Button,
   EmptyState,
   ErrorRetry,
+  Eyebrow,
   LegalHint,
+  MoneyText,
+  MorphReplace,
+  PressableScale,
   Sheet,
   SkeletonRow,
   StatusBadge,
@@ -54,6 +58,7 @@ import {
   useTerminateMaintenanceContract,
 } from '../../src/data/hooks';
 import { ScreenHeader } from '../../src/components/screen-header';
+import { ChevronRightIcon } from '../../src/components/icons';
 import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
 import { useConfirm } from '../../src/components/ConfirmSheet';
 import {
@@ -497,10 +502,12 @@ export default function FicheContrat() {
     }
   };
 
+  // Lot 4 : le sur-titre maison (sub 700 + letterSpacing inline) → Eyebrow kit —
+  // l'écran étalon ne réinvente pas le cran du kit.
   const sectionTitle = (label: string) => (
-    <Text style={[font('sub', 700), { color: colors.slate500, letterSpacing: 0.6, marginTop: 16 }]}>
-      {label}
-    </Text>
+    <View style={{ marginTop: 16 }}>
+      <Eyebrow>{label}</Eyebrow>
+    </View>
   );
 
   return (
@@ -533,39 +540,68 @@ export default function FicheContrat() {
           {/* Héros — BobSurface marine (matière Bob, jamais la transparence iOS). */}
           <BobSurface tone="marine" emphasis="raised">
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
-              <StatusBadge variant={badge.variant} label={badge.label} />
+              {/* Lot 4 : après « Résilier », le badge MORPHE sous les yeux (parité fiche
+                  équipement) — reduce-motion : bascule sèche, l'annonce existante porte le fait. */}
+              <MorphReplace morphKey={`${contract.status}|${expired !== null ? 'expired' : 'current'}`}>
+                <StatusBadge variant={badge.variant} label={badge.label} />
+              </MorphReplace>
               <StatusBadge
                 variant="b2b"
                 label={t(contract.tacitRenewal ? 'contrat.tacitOn' : 'contrat.tacitOff', { personality })}
               />
             </View>
+            {/* Lot 4 : les liens '›' texte deviennent de vraies rangées — PressableScale +
+                ChevronRightIcon + structure row/gap (une carte de navigation qui ne répond
+                pas au doigt paraît cassée). */}
             <View style={{ gap: 4, marginTop: 10 }}>
-              <Pressable
+              <PressableScale
                 accessibilityRole="button"
                 accessibilityLabel={`${t('contrat.clientLabel', { personality })} : ${view.customerName ?? ''}`}
                 onPress={() => router.push(`/client/${contract.customerId}`)}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 44 }}
               >
-                <Text style={[font('body', 600), { color: colors.ink800 }]}>
-                  {t('contrat.clientLabel', { personality })}  {view.customerName ?? contract.customerId} ›
+                <Text style={[font('body', 600), { color: colors.ink800, flexShrink: 1 }]} numberOfLines={1}>
+                  {t('contrat.clientLabel', { personality })}  {view.customerName ?? contract.customerId}
                 </Text>
-              </Pressable>
+                <ChevronRightIcon color={controls.chevron} size={14} strokeWidth={2} />
+              </PressableScale>
               {contract.chantierId !== null ? (
-                <Pressable
+                <PressableScale
                   accessibilityRole="button"
                   accessibilityLabel={`${t('contrat.siteLabel', { personality })} : ${view.chantierNom ?? ''}`}
                   onPress={() => router.push(`/chantier/${contract.chantierId}`)}
+                  style={{ flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 44 }}
                 >
-                  <Text style={[font('body', 600), { color: colors.ink800 }]}>
-                    {t('contrat.siteLabel', { personality })}  {view.chantierNom ?? contract.chantierId} ›
+                  <Text style={[font('body', 600), { color: colors.ink800, flexShrink: 1 }]} numberOfLines={1}>
+                    {t('contrat.siteLabel', { personality })}  {view.chantierNom ?? contract.chantierId}
                   </Text>
-                </Pressable>
+                  <ChevronRightIcon color={controls.chevron} size={14} strokeWidth={2} />
+                </PressableScale>
               ) : null}
             </View>
-            <Text style={[font('cardTitle'), { color: colors.ink800, marginTop: 10 }]}>
-              {t('contrat.totalPerYear', { personality, params: { amount: formatEURWhole(view.annualTotals.ht) } })}
-              {'  ·  '}
-              {t('contrat.visitsPerYear', { personality, params: { count: String(contract.visitsPerYear) } })}
-            </Text>
+            {/* Lot 4 : le total annuel en MoneyText (bigNum tabular) DANS la phrase i18n —
+                le chiffre est le héros, la phrase reste celle de la voix de Bob. */}
+            {(() => {
+              const amount = formatEURWhole(view.annualTotals.ht);
+              const line = `${t('contrat.totalPerYear', { personality, params: { amount } })}  ·  ${t(
+                'contrat.visitsPerYear',
+                { personality, params: { count: String(contract.visitsPerYear) } },
+              )}`;
+              const at = line.indexOf(amount);
+              return (
+                <Text style={[font('cardTitle'), { color: colors.ink800, marginTop: 10 }]}>
+                  {at === -1 ? (
+                    line
+                  ) : (
+                    <>
+                      {line.slice(0, at)}
+                      <MoneyText cents={view.annualTotals.ht} variant="big" whole color={colors.ink800} />
+                      {line.slice(at + amount.length)}
+                    </>
+                  )}
+                </Text>
+              );
+            })()}
           </BobSurface>
 
           {/* Bloc « TVA recalculée » (amélioration 2) — visible tant que l'écart n'est pas lu. */}
@@ -601,9 +637,7 @@ export default function FicheContrat() {
 
           {/* ÉCHÉANCES — période CALCULÉE, couverture DÉRIVÉE (bornes INCLUSES lisibles). */}
           <BobSurface tone="neutral" emphasis="raised">
-            <Text style={[font('sub', 700), { color: colors.slate500, letterSpacing: 0.6 }]}>
-              {t('contrat.sectionEcheances', { personality })}
-            </Text>
+            <Eyebrow>{t('contrat.sectionEcheances', { personality })}</Eyebrow>
             {period !== null ? (
               <Text style={[font('body', 600), { color: colors.ink800, marginTop: 8 }]}>
                 {t('contrat.currentPeriod', {
@@ -689,9 +723,7 @@ export default function FicheContrat() {
               }}
             >
               <BobSurface tone="neutral" emphasis="raised">
-                <Text style={[font('sub', 700), { color: colors.slate500, letterSpacing: 0.6 }]}>
-                  {t('contrat.sectionEquipments', { personality })}
-                </Text>
+                <Eyebrow>{t('contrat.sectionEquipments', { personality })}</Eyebrow>
                 <Text style={[font('body', 600), { color: colors.ink800, marginTop: 6 }]}>
                   {retiredCovered > 0
                     ? t('contrat.equipmentsCountRetired', {
@@ -1006,7 +1038,9 @@ export default function FicheContrat() {
             source="clause de préavis du contrat"
           />
           {terminateError ? (
-            <Text accessibilityLiveRegion="polite" style={[font('sub', 500), { color: colors.slate500 }]}>
+            /* Lot 4 : résilier est le geste le plus grave de la fiche — son erreur parle
+               en DANGER avec role alert, elle ne chuchote pas en slate. */
+            <Text accessibilityRole="alert" style={[font('sub', 600), { color: semantic.danger }]}>
               {terminateError}
             </Text>
           ) : null}
