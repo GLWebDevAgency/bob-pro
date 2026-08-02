@@ -35,6 +35,7 @@ import { Tabs, useIsFocused } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { ReactElement, ReactNode } from 'react';
 import { patterns } from '@bob/tokens';
+import { t } from '@bob/i18n';
 import { BottomTabBar, type BottomTabItem } from '@bob/ui';
 import {
   FolderIcon,
@@ -54,12 +55,18 @@ import {
   useTabScrollTop,
 } from '../../src/components/bob-tabs-scroll-view';
 
+/**
+ * SOURCE UNIQUE des 5 destinations : clés de route, libellés (t() tabs.* — chaînes identiques
+ * dans les 3 tons au premier jour, donc zéro changement visible ; la voix de Bob POURRA les
+ * différencier plus tard sans toucher ce fichier) et glyphes. Les `options.title` des écrans
+ * sont DÉRIVÉES d'ITEMS ci-dessous — plus jamais deux listes à garder alignées.
+ */
 const ITEMS: readonly BottomTabItem[] = [
-  { key: 'index', label: "Aujourd'hui", icon: (s) => <SunriseIcon color={s.color} size={s.size} /> },
-  { key: 'clients', label: 'Clients', icon: (s) => <PeopleIcon color={s.color} size={s.size} /> },
-  { key: 'argent', label: 'Argent', icon: (s) => <WalletIcon color={s.color} size={s.size} /> },
-  { key: 'documents', label: 'Documents', icon: (s) => <FolderIcon color={s.color} size={s.size} /> },
-  { key: 'assistant', label: 'Assistant', icon: (s) => <SparkIcon color={s.color} size={s.size} /> },
+  { key: 'index', label: t('tabs.index'), icon: (s) => <SunriseIcon color={s.color} size={s.size} /> },
+  { key: 'clients', label: t('tabs.clients'), icon: (s) => <PeopleIcon color={s.color} size={s.size} /> },
+  { key: 'argent', label: t('tabs.argent'), icon: (s) => <WalletIcon color={s.color} size={s.size} /> },
+  { key: 'documents', label: t('tabs.documents'), icon: (s) => <FolderIcon color={s.color} size={s.size} /> },
+  { key: 'assistant', label: t('tabs.assistant'), icon: (s) => <SparkIcon color={s.color} size={s.size} /> },
 ];
 
 /** Mêmes clés, mêmes libellés, mêmes glyphes : la barre portée ne redessine aucune icône. */
@@ -170,11 +177,9 @@ export default function TabsLayout() {
         )
       }
     >
-      <Tabs.Screen name="index" options={{ title: "Aujourd'hui" }} />
-      <Tabs.Screen name="clients" options={{ title: 'Clients' }} />
-      <Tabs.Screen name="argent" options={{ title: 'Argent' }} />
-      <Tabs.Screen name="documents" options={{ title: 'Documents' }} />
-      <Tabs.Screen name="assistant" options={{ title: 'Assistant' }} />
+      {ITEMS.map((item) => (
+        <Tabs.Screen key={item.key} name={item.key} options={{ title: item.label }} />
+      ))}
     </Tabs>
   );
 
