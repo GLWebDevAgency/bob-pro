@@ -28,9 +28,7 @@
  */
 import { useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   Alert,
-  Pressable,
   RefreshControl,
   Text,
   View,
@@ -44,22 +42,25 @@ import { challengeFor } from '@bob/ai';
 import { buildQuoteRelance, formatEURWhole, normalizeVoiceText, type TodayPriority } from '@bob/core';
 import { useIdentity } from '../../src/data/identity';
 import type { InvoiceView } from '@bob/api-client';
-import { patterns, shadowNative } from '@bob/tokens';
+import { spacing } from '@bob/tokens';
 import { PERSONALITY_LABELS, t } from '@bob/i18n';
 import {
   AppHeaderNavy,
   Button,
   Card,
+  DeleteIconButton,
   EmptyState,
+  ErrorNotice,
   ErrorRetry,
   FadeIn,
   FloatingBalanceCard,
+  FloatingBalanceCardPlaceholder,
   KpiTile,
-  PressableScale,
   PriorityCard,
   QuickAction,
   SectionHeader,
-  Skeleton,
+  SkeletonKpiTile,
+  SkeletonPriorityCard,
   StatusBadge,
   Toast,
   font,
@@ -81,7 +82,7 @@ import {
   inclusivePeriodOf,
 } from '../../src/components/contract-fiche.logic';
 import { isExpectedMissingBankingInput } from '../../src/data/cashflow-banking-state';
-import { Badge } from '../../src/components/ui';
+import { firstQueryErrorFacts } from '../../src/data/query-error-facts';
 import { useConfirm } from '../../src/components/ConfirmSheet';
 import { hasMeaningfulQuoteDraft, useQuoteDraft } from '../../src/quote-draft';
 import { combineQueryStates } from '../../src/data/query-state';
@@ -199,90 +200,6 @@ function todayLabel(d: Date = new Date()): string {
 }
 
 const KPI_TILE: StyleProp<ViewStyle> = { flexBasis: '47%', flexGrow: 1 };
-const HERO = patterns.floatingBalanceCard;
-
-/** Skeleton d'une tuile KPI pendant le chargement initial (états du contrat C10). */
-function SkeletonTile() {
-  return (
-    <Card style={KPI_TILE}>
-      <Skeleton height={12} width="55%" radius={6} />
-      <Skeleton height={21} width="70%" radius={6} style={{ marginTop: 10 }} />
-    </Card>
-  );
-}
-
-/** Skeleton d'une carte priorité (même gabarit qu'une PriorityCard au repos). */
-function SkeletonPriority() {
-  return (
-    <Card>
-      <Skeleton height={20} width="38%" radius={10} />
-      <Skeleton height={15} width="80%" radius={6} style={{ marginTop: 12 }} />
-      <Skeleton height={15} width="62%" radius={6} style={{ marginTop: 8 }} />
-      <Skeleton height={34} width="42%" radius={12} style={{ marginTop: 14 }} />
-    </Card>
-  );
-}
-
-/**
- * Héros « Dispo réel » sans donnée (chargement ou hors-ligne) : même géométrie que la
- * FloatingBalanceCard (recette @bob/tokens patterns.floatingBalanceCard) — jamais un montant inventé.
- */
-function HeroPlaceholder({
-  loading,
-  failed,
-  onPress,
-}: {
-  loading: boolean;
-  failed: boolean;
-  onPress: () => void;
-}) {
-  const { personality, colors, controls } = useTheme();
-  const hintKey = failed ? 'today.balanceUnavailableHint' : 'today.balanceMissingHint';
-  return (
-    <PressableScale
-      accessibilityRole="button"
-      accessibilityLabel={t(hintKey, { personality })}
-      onPress={onPress}
-      style={{
-        marginTop: HERO.overlap,
-        marginHorizontal: HERO.sideInset,
-        backgroundColor: colors.surface,
-        borderRadius: HERO.radius,
-        borderWidth: 1,
-        borderColor: controls.cardBorder,
-        paddingTop: HERO.padding[0],
-        paddingHorizontal: HERO.padding[1],
-        paddingBottom: HERO.padding[2],
-        minHeight: 44,
-        ...shadowNative.e3,
-      }}
-    >
-      <Text style={[font('eyebrow'), { color: colors.slate400 }]}>
-        {t('today.balanceLabel', { personality })}
-      </Text>
-      {loading ? (
-        <Skeleton height={31} width="46%" radius={8} style={{ marginTop: 6 }} />
-      ) : (
-        <Text
-          style={{
-            ...font('bigNum'),
-            fontSize: HERO.numberSize,
-            letterSpacing: HERO.numberTracking,
-            color: colors.slate400,
-            marginTop: 3,
-          }}
-        >
-          —
-        </Text>
-      )}
-      {!loading ? (
-        <Text style={[font('meta'), { color: colors.slate500, marginTop: 5 }]}>
-          {t(hintKey, { personality })}
-        </Text>
-      ) : null}
-    </PressableScale>
-  );
-}
 
 /** Carte d'une priorité dérivée (@bob/core TodayPriority, + rappel local de brouillon
  * DisplayPriority) — copy @bob/i18n, CTA = parité d'actions Bob. */
@@ -403,9 +320,9 @@ function TodayPriorityCard({
           )}`}
           leadingIcon={<Feather name="send" size={13} color={semantic.warning} />}
           badge={
-            <Badge
+            <StatusBadge
               label={t('today.prioInvoiceTransmitBadge', { personality }).toUpperCase()}
-              tone="warning"
+              variant="warning"
             />
           }
           cta={
@@ -441,9 +358,9 @@ function TodayPriorityCard({
           )}`}
           leadingIcon={<Feather name="send" size={13} color={semantic.warning} />}
           badge={
-            <Badge
+            <StatusBadge
               label={t('today.prioTransmitBadge', { personality }).toUpperCase()}
-              tone="warning"
+              variant="warning"
             />
           }
           cta={
@@ -493,14 +410,14 @@ function TodayPriorityCard({
           )}`}
           leadingIcon={<ClockIcon color={semantic.warning} size={13} />}
           badge={
-            <Badge
+            <StatusBadge
               label={t(
                 priority.palier === 'j30'
                   ? 'today.prioQuoteRelanceBadgeJ30'
                   : 'today.prioQuoteRelanceBadgeJ15',
                 { personality },
               ).toUpperCase()}
-              tone="warning"
+              variant="warning"
             />
           }
           cta={
@@ -541,9 +458,9 @@ function TodayPriorityCard({
           )}`}
           leadingIcon={<Feather name="file-text" size={13} color={semantic.warning} />}
           badge={
-            <Badge
+            <StatusBadge
               label={t('today.prioBcManquantBadge', { personality }).toUpperCase()}
-              tone="warning"
+              variant="warning"
             />
           }
           cta={
@@ -708,9 +625,9 @@ function TodayPriorityCard({
           subtitle={t('today.prioDraftHint', { personality })}
           leadingIcon={<Feather name="file-text" size={13} color={semantic.warning} />}
           badge={
-            <Badge
+            <StatusBadge
               label={t('today.prioDraftBadge', { personality }).toUpperCase()}
-              tone="warning"
+              variant="warning"
             />
           }
           cta={
@@ -730,11 +647,13 @@ function TodayPriorityCard({
                 icon={<Feather name="edit-3" size={15} color={colors.surface} />}
                 onPress={() => router.push('/devis/new?resume=1')}
               />
-              <Pressable
-                accessibilityRole="button"
+              {/* Corbeille CANONIQUE du kit (extinction locale Lot 1) — le flux
+                  ConfirmSheet + busy est STRICTEMENT conservé : jamais un tap unique. */}
+              <DeleteIconButton
+                icon={<Feather name="trash-2" size={16} color={semantic.danger} />}
                 accessibilityLabel={t('today.ctaDraftDelete', { personality })}
-                disabled={draftDeleteBusy}
-                hitSlop={4}
+                loading={draftDeleteBusy}
+                radius={12}
                 onPress={() =>
                   void (async () => {
                     const ok = await confirm({
@@ -752,23 +671,7 @@ function TodayPriorityCard({
                     }
                   })()
                 }
-                style={({ pressed }) => ({
-                  width: 40,
-                  height: 40,
-                  borderRadius: 12,
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  backgroundColor: semantic.dangerBg,
-                  opacity: draftDeleteBusy ? 0.5 : pressed ? 0.7 : 1,
-                  transform: [{ scale: pressed && !draftDeleteBusy ? 0.94 : 1 }],
-                })}
-              >
-                {draftDeleteBusy ? (
-                  <ActivityIndicator size="small" color={semantic.danger} />
-                ) : (
-                  <Feather name="trash-2" size={16} color={semantic.danger} />
-                )}
-              </Pressable>
+              />
             </View>
           }
         />
@@ -1184,20 +1087,62 @@ export default function Aujourdhui() {
               : {})}
           />
         ) : (
-          <HeroPlaceholder
+          // État loading/failed INTÉGRÉ au kit (Lot 1) — même recette que la carte pleine,
+          // fin de la géométrie du héros dupliquée écran/kit. Jamais un montant inventé.
+          // Solde en ATTENTE DE CONFIRMATION (périmé/jamais confirmé — incident fondateur
+          // 02/08) : le tap mène à Argent avec la feuille de confirmation DÉJÀ ouverte ;
+          // une vraie panne garde la navigation simple (revoir l'écran, pas saisir).
+          <FloatingBalanceCardPlaceholder
+            label={t('today.balanceLabel', { personality })}
+            hint={t(
+              bankBalance.isError && !expectedBankBalanceMissing
+                ? 'today.balanceUnavailableHint'
+                : 'today.balanceMissingHint',
+              { personality },
+            )}
             loading={bankBalance.isLoading}
-            failed={bankBalance.isError && !expectedBankBalanceMissing}
-            onPress={() => router.push('/(tabs)/argent')}
+            onPress={() =>
+              router.push(
+                expectedBankBalanceMissing
+                  ? { pathname: '/(tabs)/argent', params: { confirmBalance: '1' } }
+                  : '/(tabs)/argent',
+              )
+            }
           />
         )}
 
-        <View style={{ paddingHorizontal: 18, paddingTop: 22, gap: 20 }}>
+        <View
+          style={{
+            paddingHorizontal: spacing.gutter,
+            paddingTop: spacing.sectionGap,
+            gap: spacing.sectionGap,
+          }}
+        >
           {dataFailed ? (
-            <ErrorRetry
-              message={t('today.dataError', { personality })}
-              onRetry={retryAll}
-              retrying={refreshing}
-            />
+            /* Erreur d'ÉCRAN à deux faces (Lot 1) : sur l'écran le plus vu, une erreur sans
+               corrélation est un ticket support aveugle. Le CTA retry est CONSERVÉ ;
+               ErrorRetry reste la grammaire des sous-sections. */
+            <View>
+              <ErrorNotice
+                message={t('today.dataError', { personality })}
+                {...(() => {
+                  // Les 4 sources typées AppError de l'écran (les états composés — priorités,
+                  // fiscalité, notifications — n'exposent pas d'erreur brute : sans fait, on
+                  // n'invente NI code NI corrélation, le registre projette 500 honnête).
+                  const facts = firstQueryErrorFacts([companyMe, invoices, cashflow, bankBalance]);
+                  return facts
+                    ? { code: facts.code, correlationId: facts.correlationId, kind: facts.kind }
+                    : { code: 'BOB-API-500' };
+                })()}
+              />
+              <Button
+                title="Réessayer"
+                variant="secondary"
+                loading={refreshing}
+                onPress={retryAll}
+                style={{ alignSelf: 'flex-start', marginTop: 10 }}
+              />
+            </View>
           ) : null}
 
           {/* Bilan de fin d'essai (SPEC pilier 2, décision 2) — n'existe qu'au TERME de l'essai
@@ -1225,13 +1170,13 @@ export default function Aujourdhui() {
             />
             {
               today.isLoading ? (
-                <View style={{ gap: 11 }}>
-                  <SkeletonPriority />
-                  <SkeletonPriority />
+                <View style={{ gap: spacing.itemGap }}>
+                  <SkeletonPriorityCard />
+                  <SkeletonPriorityCard />
                 </View>
               ) : displayed.length > 0 ? (
                 // Sortie de skeleton : fondu (transform/opacity only — zéro saut de layout).
-                <FadeIn index={0} style={{ gap: 11 }}>
+                <FadeIn index={0} style={{ gap: spacing.itemGap }}>
                   {displayed.map((p) => (
                     <TodayPriorityCard
                       key={p.id}
@@ -1271,11 +1216,11 @@ export default function Aujourdhui() {
             <View>
               <SectionHeader title={t('today.sectionGlance', { personality })} />
               {glanceLoading ? (
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 11 }}>
-                  <SkeletonTile />
-                  <SkeletonTile />
-                  <SkeletonTile />
-                  <SkeletonTile />
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.itemGap }}>
+                  <SkeletonKpiTile style={KPI_TILE} />
+                  <SkeletonKpiTile style={KPI_TILE} />
+                  <SkeletonKpiTile style={KPI_TILE} />
+                  <SkeletonKpiTile style={KPI_TILE} />
                 </View>
               ) : glanceBlockingError || (!glanceReady && !glanceMissingBankingInput) ? (
                 <ErrorRetry
@@ -1284,12 +1229,28 @@ export default function Aujourdhui() {
                   retrying={refreshing}
                 />
               ) : glanceMissingBankingInput ? (
+                /* La trésorerie attend LE geste (confirmer le solde) : l'état est ACTIONNABLE
+                   — navigation vers Argent avec la feuille de confirmation déjà ouverte,
+                   plus jamais un cul-de-sac informatif (incident fondateur 02/08). */
                 <Card>
-                  <EmptyState body={t('today.balanceMissingHint', { personality })} />
+                  <EmptyState
+                    body={t('today.balanceMissingHint', { personality })}
+                    cta={{
+                      label: t('today.confirmBalanceCta', { personality }),
+                      onPress: () =>
+                        router.push({
+                          pathname: '/(tabs)/argent',
+                          params: { confirmBalance: '1' },
+                        }),
+                    }}
+                  />
                 </Card>
               ) : (
                 // Même géométrie que la grille de skeletons — le fondu n'ajoute AUCUN saut.
-                <FadeIn index={1} style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 11 }}>
+                <FadeIn
+                  index={1}
+                  style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.itemGap }}
+                >
                     <KpiTile
                       style={KPI_TILE}
                       label={t('today.kpiOwed', { personality })}
@@ -1337,7 +1298,10 @@ export default function Aujourdhui() {
               {/* Section statique : entre dans la même cascade sobre que le reste du briefing.
                   5 actions (B1 ajoute la facture directe) : grille qui respire (wrap 3+2)
                   plutôt qu'une rangée écrasée. */}
-              <FadeIn index={2} style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
+              <FadeIn
+                index={2}
+                style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.itemGap }}
+              >
                 {TODAY_QUICK_ACTIONS.map((action) => (
                   <QuickAction
                     key={action.id}
@@ -1352,10 +1316,11 @@ export default function Aujourdhui() {
             </View>
           ) : null}
 
+          {/* Footer signature : slate500 — le slate300 échouait l'AA au soleil (Lot 1). */}
           <Text
             style={[
               font('meta', 500),
-              { color: colors.slate300, textAlign: 'center', paddingTop: 6, paddingBottom: 8 },
+              { color: colors.slate500, textAlign: 'center', paddingTop: 6, paddingBottom: 8 },
             ]}
           >
             {t('today.footer', { personality })}

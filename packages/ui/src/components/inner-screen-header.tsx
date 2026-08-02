@@ -2,11 +2,22 @@
  * InnerScreenHeader — §3 (Argent / Clients / Documents / Assistant).
  * En-tête clair : eyebrow slate400 uppercase → titre pageTitle ink800 → sous-titre 14.5 slate500.
  * L'accueil est le SEUL en-tête dégradé ; ici, fond clair (hérité de l'écran).
+ *
+ * VOILE V2 EN PIED (Lot 1, plan DA 01/08) : la variante `innerScreenHeader` du HeaderVeil
+ * (Lot 0) est montée SOUS le bord bas de l'en-tête — UN point de montée kit, et les écrans
+ * consommateurs héritent de la signature sans une ligne d'écran : le contenu fond sous le
+ * titre dans la retombée canvas (ton = fond d'app : discret par construction sur le fond
+ * canonique, visible dès qu'une surface différente passe dessous). Décoratif pur
+ * (pointerEvents none, absolu, zéro layout), fail-closed intégral hérité du mécanisme —
+ * aucun port de flou injecté (mode nominal teinté), préférence de transparence inconnue =
+ * le MÊME voile plat.
  */
 import type { ReactNode } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { patterns } from '@bob/tokens';
 import { font, useTheme } from '../theme';
+import { HeaderVeil } from './header-veil';
+import { DEFAULT_HEADER_VEIL_HEIGHT } from './header-veil.logic';
 
 export interface InnerScreenHeaderProps {
   eyebrow: string;
@@ -43,6 +54,12 @@ export function InnerScreenHeader({ eyebrow, title, subtitle, action, compact = 
         ) : null}
       </View>
       {action !== undefined ? <View style={styles.action}>{action}</View> : null}
+
+      {/* VOILE V2 — la retombée canvas SOUS l'en-tête (hauteur = débord du contrat, 44) :
+          le contenu déclaré après par l'écran est peint au-dessus ; la matière vit dessous. */}
+      <View pointerEvents="none" style={styles.veil}>
+        <HeaderVeil variant="innerScreenHeader" testID="inner-screen-header-veil" />
+      </View>
     </View>
   );
 }
@@ -59,4 +76,11 @@ const styles = StyleSheet.create({
   title: { marginTop: 4 },
   subtitle: { marginTop: 4 },
   action: { marginLeft: 12 },
+  veil: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: -DEFAULT_HEADER_VEIL_HEIGHT,
+    height: DEFAULT_HEADER_VEIL_HEIGHT,
+  },
 });

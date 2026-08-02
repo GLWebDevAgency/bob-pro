@@ -37,6 +37,17 @@ type Copy = Readonly<Record<Personality, string>>;
 const legacyFr = {
   'common.close': { pote: 'Fermer', pro: 'Fermer', direct: 'Fermer' },
   'common.cancel': { pote: 'Annuler', pro: 'Annuler', direct: 'Annuler' },
+  // Valeur absente lue par un lecteur d'écran — « — » visuel, jamais « tiret » verbalisé.
+  'common.notProvided': { pote: 'non renseigné', pro: 'non renseigné', direct: 'non renseigné' },
+
+  // ── Lot 1 — chrome : libellés des 5 onglets (source unique ITEMS, (tabs)/_layout.tsx).
+  // Chaînes IDENTIQUES dans les 3 tons au premier jour (plan DA 01/08 : « zéro changement
+  // visible ») — la voix de Bob POURRA les différencier plus tard sans toucher au layout.
+  'tabs.index': { pote: "Aujourd'hui", pro: "Aujourd'hui", direct: "Aujourd'hui" },
+  'tabs.clients': { pote: 'Clients', pro: 'Clients', direct: 'Clients' },
+  'tabs.argent': { pote: 'Argent', pro: 'Argent', direct: 'Argent' },
+  'tabs.documents': { pote: 'Documents', pro: 'Documents', direct: 'Documents' },
+  'tabs.assistant': { pote: 'Assistant', pro: 'Assistant', direct: 'Assistant' },
   'bob.greeting': {
     pote: 'Salut {name} 👋',
     pro: 'Bonjour {name}',
@@ -120,6 +131,13 @@ const legacyFr = {
     pote: 'Je n’arrive pas à relire ton solde. Ouvre Argent pour réessayer.',
     pro: 'Le solde bancaire est temporairement indisponible. Ouvrez Argent pour réessayer.',
     direct: 'Solde indisponible. Réessaie dans Argent.',
+  },
+  // CTA du geste attendu quand la trésorerie attend une confirmation de solde (périmé ou
+  // jamais confirmé) : mène à Argent avec la feuille de confirmation DÉJÀ ouverte.
+  'today.confirmBalanceCta': {
+    pote: 'Confirmer mon solde',
+    pro: 'Confirmer le solde',
+    direct: 'Confirmer le solde',
   },
   'today.sectionToday': {
     pote: 'À régler aujourd’hui',
@@ -564,6 +582,36 @@ const legacyFr = {
     pote: 'Actualiser',
     pro: 'Actualiser',
     direct: 'Actualiser',
+  },
+  // ── Solde PÉRIMÉ (BANK_BALANCE_FRESHNESS_POLICY_V1 : confirmation expirée à 24 h) —
+  // pédagogie au point de décision (patron LegalHint) : POURQUOI Bob refuse un solde
+  // périmé, pas seulement « confirme ». Jamais un ton d'erreur : rien n'est cassé.
+  'argent.staleTitle': {
+    pote: 'Ton solde a pris un coup de vieux',
+    pro: 'Votre solde doit être reconfirmé',
+    direct: 'Solde à reconfirmer',
+  },
+  'argent.staleBody': {
+    pote: 'Ton dernier solde confirmé a plus de 24 h. Une vieille vérité n’est pas une vérité : plutôt que de calculer tes prévisions sur du périmé, je te le redemande.',
+    pro: 'Le dernier solde confirmé date de plus de 24 heures. Une vieille vérité n’est pas une vérité : aucune projection n’est calculée sur une donnée périmée.',
+    direct: 'Solde confirmé il y a plus de 24 h. Une vieille vérité n’est pas une vérité : je ne calcule rien sur du périmé.',
+  },
+  'argent.staleWhy': {
+    pote: 'C’est ma règle de fraîcheur : un solde confirmé vaut 24 h. C’est elle qui garde mes chiffres honnêtes.',
+    pro: 'Règle de fraîcheur : un solde confirmé reste qualifié 24 h. C’est ce qui garantit des chiffres honnêtes.',
+    direct: 'Règle de fraîcheur : 24 h. Chiffres honnêtes.',
+  },
+  // Labels distincts des 2 SegmentedControl de la carte prévision — au lecteur d'écran,
+  // deux contrôles nommés pareil sur LA carte financière étaient indiscernables.
+  'argent.horizonControlLabel': {
+    pote: 'Horizon',
+    pro: 'Horizon',
+    direct: 'Horizon',
+  },
+  'argent.scenarioControlLabel': {
+    pote: 'Scénario',
+    pro: 'Scénario',
+    direct: 'Scénario',
   },
   'argent.balanceObserved': {
     pote: 'Solde confirmé récemment · source propriétaire',

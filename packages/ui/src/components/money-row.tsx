@@ -9,6 +9,7 @@ import { StyleSheet, Text, View } from 'react-native';
 import { patterns } from '@bob/tokens';
 import { font, useTheme } from '../theme';
 import { moneyRowAmountColor, moneyRowAmountText, type MoneyRowVariant } from './money-row.logic';
+import { Skeleton, SkeletonTextLine } from './skeleton';
 
 export interface MoneyRowProps {
   label: string;
@@ -58,6 +59,87 @@ export function MoneyRow({ label, amountCents, variant = 'default', icon, divide
       >
         {amountText}
       </Text>
+    </View>
+  );
+}
+
+export interface MoneyRowEmptyProps {
+  label: string;
+  variant?: MoneyRowVariant;
+  divider?: boolean;
+  /**
+   * Ce que le lecteur d'écran annonce à la place du tiret (ex. « non renseigné », i18n côté
+   * écran) — « — » visuel reste, mais un tiret verbalisé n'informe personne.
+   */
+  valueA11yLabel?: string;
+}
+
+/**
+ * Rangée du grand-livre SANS donnée (Lot 1) : « — » est un état de premier rang — MÊMES
+ * styles que MoneyRow (padding V 9, séparateur, crans lead/total), jamais un 0 inventé.
+ */
+export function MoneyRowEmpty({
+  label,
+  variant = 'default',
+  divider = true,
+  valueA11yLabel,
+}: MoneyRowEmptyProps) {
+  const { colors } = useTheme();
+  const isTotal = variant === 'total';
+  const isLead = variant === 'lead';
+  return (
+    <View
+      style={[styles.row, isTotal && styles.rowTotal, divider && styles.divider]}
+      accessible
+      accessibilityLabel={`${label}, ${valueA11yLabel ?? '—'}`}
+    >
+      <Text
+        numberOfLines={1}
+        style={[
+          font('body'),
+          styles.label,
+          { color: colors.slate500 },
+          isLead && [styles.labelLead, { color: colors.ink800 }],
+          isTotal && [styles.labelTotal, { color: colors.ink800 }],
+        ]}
+      >
+        {label}
+      </Text>
+      <Text
+        style={[
+          font('cardTitle'),
+          styles.amount,
+          { color: colors.slate400 },
+          isTotal && styles.amountTotal,
+        ]}
+      >
+        —
+      </Text>
+    </View>
+  );
+}
+
+export interface MoneyRowSkeletonProps {
+  variant?: MoneyRowVariant;
+  divider?: boolean;
+}
+
+/** Rangée du grand-livre en CHARGEMENT (Lot 1) — même gabarit que MoneyRow (padding V 9,
+ *  séparateur, lead avec icône 17, total padding-top 13 + montant 20). Zéro saut. */
+export function MoneyRowSkeleton({ variant = 'default', divider = true }: MoneyRowSkeletonProps) {
+  const isLead = variant === 'lead';
+  const isTotal = variant === 'total';
+  return (
+    <View style={[styles.row, isTotal && styles.rowTotal, divider && styles.divider]}>
+      <View style={styles.labelWrap}>
+        {isLead ? <Skeleton width={17} height={17} radius={5} /> : null}
+        <SkeletonTextLine width={isLead ? 138 : 118} />
+      </View>
+      <SkeletonTextLine
+        width={isTotal ? 92 : 72}
+        barHeight={isTotal ? 18 : 15}
+        boxHeight={isTotal ? 27 : 21}
+      />
     </View>
   );
 }

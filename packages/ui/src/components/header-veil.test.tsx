@@ -127,4 +127,21 @@ describe('HeaderVeil — fail-closed hérité du mécanisme', () => {
     const envelope = nodes(renderer).find((node) => node.props['testID'] === 'veil');
     expect(envelope?.props['style']).toMatchObject([{ top: 0, height: 44 }, undefined]);
   });
+
+  it('la prop height SURCHARGE la hauteur du préréglage — témoin du mutant `height ?? preset.height` → `preset.height` (finding Lot 0)', async () => {
+    isReduceTransparencyEnabled.mockReturnValue(new Promise<boolean>(() => {}));
+    // 46 = la hauteur de montée RÉELLE du Lot 1 (pied navy d'AppHeaderNavy,
+    // patterns.floatingBalanceCard.headerPaddingBottom) — PAS le 44 du préréglage.
+    expect(headerVeilPreset('appHeaderNavy').height).toBe(44);
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <ThemeProvider>
+          <HeaderVeil variant="appHeaderNavy" height={46} testID="veil" />
+        </ThemeProvider>,
+      );
+    });
+    const envelope = nodes(renderer).find((node) => node.props['testID'] === 'veil');
+    expect(envelope?.props['style']).toMatchObject([{ top: 0, height: 46 }, undefined]);
+  });
 });

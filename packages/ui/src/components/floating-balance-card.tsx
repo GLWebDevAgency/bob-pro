@@ -9,6 +9,8 @@ import { Pressable, Text, View } from 'react-native';
 import { formatEURWhole } from '@bob/core';
 import { patterns, shadowNative } from '@bob/tokens';
 import { font, useTheme } from '../theme';
+import { PressableScale } from './pressable-scale';
+import { Skeleton } from './skeleton';
 
 const P = patterns.floatingBalanceCard;
 
@@ -149,5 +151,73 @@ export function FloatingBalanceCard({
         </Text>
       </View>
     </Pressable>
+  );
+}
+
+export interface FloatingBalanceCardPlaceholderProps {
+  /** Eyebrow au-dessus du tiret/skeleton — le MÊME label que la carte pleine. */
+  readonly label: string;
+  /**
+   * Voix de Bob sous le tiret : dit POURQUOI il n'y a pas de chiffre et le geste attendu
+   * (i18n côté écran — confirmation attendue vs indisponibilité réelle).
+   */
+  readonly hint: string;
+  /** Premier chargement : skeleton du montant (pulse fail-closed du socle), hint masqué. */
+  readonly loading: boolean;
+  readonly onPress: () => void;
+}
+
+/**
+ * État loading/failed INTÉGRÉ de la FloatingBalanceCard (Lot 1, plan DA 01/08) : MÊME
+ * recette `patterns.floatingBalanceCard` que la carte pleine — zéro saut de layout quand la
+ * donnée arrive, et JAMAIS un montant inventé (A1-C10). Remplace le HeroPlaceholder local
+ * de l'accueil : la géométrie du héros ne vit plus qu'ICI, à côté du composant qu'elle mime.
+ */
+export function FloatingBalanceCardPlaceholder({
+  label,
+  hint,
+  loading,
+  onPress,
+}: FloatingBalanceCardPlaceholderProps) {
+  const { colors, controls } = useTheme();
+  return (
+    <PressableScale
+      accessibilityRole="button"
+      accessibilityLabel={hint}
+      onPress={onPress}
+      style={{
+        marginTop: P.overlap,
+        marginHorizontal: P.sideInset,
+        backgroundColor: colors.surface,
+        borderRadius: P.radius,
+        borderWidth: 1,
+        borderColor: controls.cardBorder,
+        paddingTop: P.padding[0],
+        paddingHorizontal: P.padding[1],
+        paddingBottom: P.padding[2],
+        minHeight: 44,
+        ...shadowNative.e3,
+      }}
+    >
+      <Text style={[font('eyebrow'), { color: colors.slate400 }]}>{label}</Text>
+      {loading ? (
+        <Skeleton height={31} width="46%" radius={8} style={{ marginTop: 6 }} />
+      ) : (
+        <Text
+          style={{
+            ...font('bigNum'),
+            fontSize: P.numberSize,
+            letterSpacing: P.numberTracking,
+            color: colors.slate400,
+            marginTop: 3,
+          }}
+        >
+          —
+        </Text>
+      )}
+      {!loading ? (
+        <Text style={[font('meta'), { color: colors.slate500, marginTop: 5 }]}>{hint}</Text>
+      ) : null}
+    </PressableScale>
   );
 }

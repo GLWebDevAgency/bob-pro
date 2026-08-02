@@ -85,6 +85,24 @@ export function Skeleton({ width = '100%', height, radius = 8, style }: Skeleton
   );
 }
 
+export interface SkeletonTextLineProps {
+  width: DimensionValue;
+  /** Hauteur de la BARRE (l'encre simulée). */
+  barHeight?: number;
+  /** Hauteur de la BOÎTE = lineHeight du texte réel simulé — zéro saut à l'arrivée. */
+  boxHeight?: number;
+}
+
+/** Barre de texte squelettée à hauteur de ligne EXACTE : la barre est centrée dans une boîte
+ *  de la hauteur du texte final — la géométrie du row skeleton == celle du row final. */
+export function SkeletonTextLine({ width, barHeight = 14, boxHeight = 20 }: SkeletonTextLineProps) {
+  return (
+    <View style={{ height: boxHeight, justifyContent: 'center' }}>
+      <Skeleton width={width} height={barHeight} />
+    </View>
+  );
+}
+
 export interface SkeletonRowProps {
   /** Forme de l'avatar de tête — false = pas d'avatar. */
   avatar?: 'circle' | 'square' | false;
@@ -140,6 +158,49 @@ export function SkeletonCard({ height, contentLines = 3, radius, style }: Skelet
       {Array.from({ length: Math.max(0, contentLines - 1) }, (_, index) => (
         <Skeleton key={index} width={index % 2 === 0 ? '88%' : '64%'} height={12} style={{ marginBottom: 9 }} />
       ))}
+    </Card>
+  );
+}
+
+export interface SkeletonKpiTileProps {
+  /** Style du conteneur (grilles : flexBasis, flexGrow…) — le même que la KpiTile simulée. */
+  style?: StyleProp<ViewStyle>;
+}
+
+/** Tuile KPI en chargement (Lot 1) — MÊME géométrie que KpiTile (surface radius 18,
+ *  bordure, padding 15, e1) : ligne label puis montant bigNum. Zéro saut à l'arrivée. */
+export function SkeletonKpiTile({ style }: SkeletonKpiTileProps) {
+  const { colors, controls } = useTheme();
+  return (
+    <View
+      style={[
+        {
+          backgroundColor: colors.surface,
+          borderRadius: 18,
+          borderWidth: 1,
+          borderColor: controls.cardBorder,
+          padding: 15,
+          minHeight: 44,
+          ...shadowNative.e1,
+        },
+        style,
+      ]}
+    >
+      <Skeleton height={12} width="55%" radius={6} />
+      <Skeleton height={21} width="70%" radius={6} style={{ marginTop: 9 }} />
+    </View>
+  );
+}
+
+/** Carte priorité en chargement (Lot 1) — même gabarit qu'une PriorityCard au repos :
+ *  badge, deux lignes de brief, CTA compact. Zéro saut à l'arrivée. */
+export function SkeletonPriorityCard() {
+  return (
+    <Card>
+      <Skeleton height={20} width="38%" radius={10} />
+      <Skeleton height={15} width="80%" radius={6} style={{ marginTop: 12 }} />
+      <Skeleton height={15} width="62%" radius={6} style={{ marginTop: 8 }} />
+      <Skeleton height={34} width="42%" radius={12} style={{ marginTop: 14 }} />
     </Card>
   );
 }

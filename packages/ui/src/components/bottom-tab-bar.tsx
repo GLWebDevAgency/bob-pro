@@ -1,19 +1,25 @@
 /**
  * BottomTabBar — barre d'onglets pill flottante (COMPONENT_SPECS.md §14).
- * Pill surface radius 22, ombre e2 + bordure carte (Android), 5 items colonne
- * (icône 23 stroke 1.9 + label 10/600). Actif = rôle navigation.active
+ * 5 items colonne (icône 23 stroke 1.9 + label 10/600). Actif = rôle navigation.active
  * (assistant = navigation.assistantActive), inactif = navigation.inactive — les
  * trois paires sont certifiées AA sur surface ; voir bottom-tab-bar.logic.
+ *
+ * GÉOMÉTRIE/TEINTE DE LA PILULE (Lot 1, PERF-13 borné) : les statiques VALIDÉS de la barre
+ * portée (`bob-tab-bar.logic`, au repos) remplacent les constantes historiques — pilule
+ * pleinement ronde (rayon = rectangle mesuré / 2), rythme 4/4, bordure de la palette AA.
+ * RIEN d'animé, rien de comportemental : tout ce qui bouge attend le flag
+ * `mobile_tabs_experiment_v1` — voir bottom-tab-bar.statics.ts.
  *
  * `floating` : conteneur absolu bas + fondu bg (patterns.bottomTabBar.fade) pour que
  * le contenu défile dessous en s'estompant — le pill ne colle jamais aux bords.
  */
 import type { ReactNode } from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { Platform, Pressable, Text, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { patterns, shadowNative } from '@bob/tokens';
 import { font, useTheme } from '../theme';
 import { tabColor } from './bottom-tab-bar.logic';
+import { deliveredPillStatics } from './bottom-tab-bar.statics';
 
 const ICON_SIZE = 23;
 const TAB_BAR = patterns.bottomTabBar;
@@ -46,7 +52,8 @@ export function BottomTabBar({
   insetBottom = TAB_BAR.padding[2],
   floating = false,
 }: BottomTabBarProps) {
-  const { colors, controls, radius } = useTheme();
+  const { colors, appearance } = useTheme();
+  const statics = deliveredPillStatics(Platform.OS === 'android' ? 'android' : 'ios', appearance);
 
   const pill = (
     <View
@@ -54,11 +61,11 @@ export function BottomTabBar({
       style={{
         flexDirection: 'row',
         backgroundColor: colors.surface,
-        borderRadius: radius.cardXl,
-        borderWidth: 1,
-        borderColor: controls.cardBorder,
-        paddingVertical: 8,
-        paddingHorizontal: 6,
+        borderRadius: statics.borderRadius,
+        borderWidth: statics.borderWidth,
+        borderColor: statics.borderColor,
+        paddingVertical: statics.paddingVertical,
+        paddingHorizontal: statics.paddingHorizontal,
         ...(floating ? {} : { marginBottom: insetBottom }),
         ...shadowNative.e2,
       }}
@@ -75,7 +82,7 @@ export function BottomTabBar({
             onPress={() => onSelect(item.key)}
             style={{
               flex: 1,
-              minHeight: 44,
+              minHeight: statics.pressableMinHeight,
               alignItems: 'center',
               justifyContent: 'center',
               gap: 3,

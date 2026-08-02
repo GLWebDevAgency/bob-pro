@@ -9,8 +9,9 @@ import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Defs, RadialGradient, Rect, Stop } from 'react-native-svg';
 import { rgbaStop } from './halo-stops';
 import { formatEUR } from '@bob/core';
-import { shadowComponentsNative } from '@bob/tokens';
+import { shadowComponentsNative, shadowNative } from '@bob/tokens';
 import { font, parseGradient, useTheme } from '../theme';
+import { Skeleton } from './skeleton';
 
 export interface HeroMoneyCardProps {
   label: string;
@@ -86,3 +87,46 @@ const styles = StyleSheet.create({
   pillText: { fontSize: 12, fontWeight: '700' },
   caption: { marginTop: 7 },
 });
+
+export interface HeroMoneyCardPlaceholderProps {
+  /** Le MÊME label que la carte pleine (« trésorerie mobilisable »). */
+  readonly label: string;
+  /** Premier chargement : skeletons montant + pill + caption ; sinon « — » honnête. */
+  readonly loading: boolean;
+}
+
+/**
+ * État loading/failed INTÉGRÉ de la HeroMoneyCard (Lot 1, plan DA 01/08) : MÊME géométrie
+ * (radius 24, padding 20 — label → montant heroNum + pill → caption) — zéro saut quand la
+ * donnée arrive, jamais un montant inventé (A1-C10). Surface claire (pas le dégradé) : un
+ * héros sans chiffre ne porte pas la matière du chiffre. Remplace le HeroPlaceholder local
+ * d'argent.tsx — la géométrie du héros ne vit plus qu'à côté du composant qu'elle mime.
+ */
+export function HeroMoneyCardPlaceholder({ label, loading }: HeroMoneyCardPlaceholderProps) {
+  const { colors, controls } = useTheme();
+  return (
+    <View
+      style={{
+        backgroundColor: colors.surface,
+        borderRadius: 24,
+        borderWidth: 1,
+        borderColor: controls.cardBorder,
+        padding: 20,
+        ...shadowNative.e2,
+      }}
+    >
+      <Text style={[font('label'), { color: colors.slate400 }]}>{label}</Text>
+      {loading ? (
+        <>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 }}>
+            <Skeleton width="52%" height={34} radius={9} />
+            <Skeleton width={92} height={22} radius={999} />
+          </View>
+          <Skeleton width="74%" height={13} style={{ marginTop: 9 }} />
+        </>
+      ) : (
+        <Text style={{ ...font('heroNum'), color: colors.slate400, marginTop: 4 }}>—</Text>
+      )}
+    </View>
+  );
+}

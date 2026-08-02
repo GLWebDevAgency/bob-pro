@@ -3,16 +3,30 @@
  * Seul en-tête dégradé de l'app : LinearGradient 168deg du thème actif,
  * 2 glows radiaux doux fondus dans le navy (indigo top-right pulsé · vert bottom-left),
  * topbar (avatar dégradé bleu→indigo / date+société / cloche), titre + sous-titre.
+ *
+ * VOILE V2 EN PIED (Lot 1, plan DA 01/08) : la variante `appHeaderNavy` du HeaderVeil (Lot 0)
+ * est montée SOUS le bord bas du dégradé — la retombée marine dissout la couture navy→clair
+ * sur la hauteur du pied navy (patterns.floatingBalanceCard.headerPaddingBottom, 46), et la
+ * FloatingBalanceCard (déclarée APRÈS le header par l'écran, donc peinte AU-DESSUS) flotte
+ * sur cette matière au lieu d'un bord dur. Décoratif pur : pointerEvents none, aucun port de
+ * flou injecté (mode nominal teinté), fail-closed intégral hérité du mécanisme — préférence
+ * de transparence inconnue = le MÊME voile plat. Zéro comportement, zéro layout (absolu).
+ *
  * Zéro hex/rgba : tout vient de useTheme() (overlays, colors, theme) et de @bob/tokens.
  */
 import { useEffect, useRef, type ReactNode } from 'react';
 import { Animated, Easing, Pressable, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Circle, Defs, RadialGradient, Stop } from 'react-native-svg';
-import { avatarGradient, frame } from '@bob/tokens';
+import { avatarGradient, frame, patterns } from '@bob/tokens';
 import { rgbaStop } from './halo-stops';
 import { useReduceMotion } from '../hooks/use-reduce-motion';
 import { font, parseGradient, useTheme } from '../theme';
+import { HeaderVeil } from './header-veil';
+
+/** Hauteur de la retombée du pied navy = le pied du header (46), PAS le débord du contrat
+ *  (44) — c'est la montée de surcharge qui arme le témoin du finding Lot 0. */
+const FOOT_VEIL_HEIGHT: number = patterns.floatingBalanceCard.headerPaddingBottom;
 
 export interface AppHeaderNavyProps {
   /** Inset haut réel du device (défaut : frame.safeTop du proto). */
@@ -105,7 +119,8 @@ export function AppHeaderNavy({
   const pulse = usePulse(reduceMotion);
 
   return (
-    <LinearGradient
+    <View>
+      <LinearGradient
       colors={header.colors}
       start={header.start}
       end={header.end}
@@ -113,7 +128,7 @@ export function AppHeaderNavy({
       style={{
         paddingTop: safeTop,
         paddingHorizontal: 20,
-        paddingBottom: 46,
+        paddingBottom: FOOT_VEIL_HEIGHT,
         borderBottomLeftRadius: 30,
         borderBottomRightRadius: 30,
         overflow: 'hidden',
@@ -206,6 +221,24 @@ export function AppHeaderNavy({
       <Text style={{ ...font('body'), fontSize: 15, color: overlays.white66, marginTop: 6 }}>
         {subtitle}
       </Text>
-    </LinearGradient>
+      </LinearGradient>
+
+      {/* VOILE V2 — la retombée marine SOUS la couture navy→clair : matière vivante du pied,
+          sur laquelle la carte flottante de l'écran (déclarée après, peinte au-dessus) repose.
+          Hors du dégradé (qui clippe) ; ancre 'top' du préréglage = opaque à la couture,
+          dissous vers le contenu. Fail-closed : aucun port injecté, mode nominal teinté. */}
+      <View
+        pointerEvents="none"
+        style={{
+          position: 'absolute',
+          left: 0,
+          right: 0,
+          bottom: -FOOT_VEIL_HEIGHT,
+          height: FOOT_VEIL_HEIGHT,
+        }}
+      >
+        <HeaderVeil variant="appHeaderNavy" height={FOOT_VEIL_HEIGHT} testID="app-header-navy-veil" />
+      </View>
+    </View>
   );
 }
