@@ -971,6 +971,12 @@ const legacyFr = {
     pro: 'Rechercher un client…',
     direct: 'Chercher un client…',
   },
+  // Bouton effacer du SearchField kit (Lot 4) — libellé fourni par l'écran, jamais par le kit.
+  'clients.searchClear': {
+    pote: 'Effacer la recherche',
+    pro: 'Effacer la recherche',
+    direct: 'Effacer',
+  },
   // Chips filtres par type (Tous / Particuliers / Entreprises / Public).
   'clients.filterAll': {
     pote: 'Tous',

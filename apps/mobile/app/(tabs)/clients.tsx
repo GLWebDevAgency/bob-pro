@@ -21,24 +21,23 @@
  *   l'outil agent creer_client (jamais un chemin parallèle). Succès = Toast + liste
  *   rafraîchie ; erreur = voix de Bob dans la feuille.
  *
- * Écarts assumés vs réf (composants @bob/ui figés pour ce claim) :
- * · ClientRow ne porte ni badge type inline ni mot de statut sous le montant (props
- *   figées) → rangée composée localement avec les primitives @bob/ui (Card, Avatar,
- *   StatusBadge) aux métriques ClientRow (gap 12, padding V 13, nom 14.5/700,
- *   sous-titre 12.5, montant tabular-nums) ;
- * · avatars en pastel sémantique par type (Avatar tone — gamme tokens), pas les
- *   dégradés par client du proto (hex hors tokens).
+ * Lot 4 (plan DA 01/08) — le kit fait autorité sur le seul écran fait pour ClientRow :
+ * · CustomerRowCard → ClientRow v2 kit (slots nameAccessory/statusWord, PressableScale) ;
+ * · la teinte du montant vient de standingAccentRole — LA dérivation du fil rouge
+ *   « couleur de l'argent » (la même de la rangée au héros de fiche au geste sticky) ;
+ * · SearchField kit (loupe + clear 44 pt) ; « + » → HeaderIconButton (squircle 44/13,
+ *   géométrie unifiée avec chantiers).
+ * Écart assumé vs réf : avatars en pastel sémantique par type (Avatar tone — gamme tokens),
+ * pas les dégradés par client du proto (hex hors tokens).
  * Zéro hex/rgba : useTheme()/@bob/tokens. Zéro import de src/components/ui (ancien kit).
  */
 import { useEffect, useMemo, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
-  Pressable,
   RefreshControl,
   ScrollView,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import { useRouter } from 'expo-router';
@@ -50,22 +49,25 @@ import {
   type CustomerStanding,
   type CustomerStandingKind,
 } from '@bob/core';
-import { shadowNative } from '@bob/tokens';
 import { t, type I18nKey, type Personality } from '@bob/i18n';
 import {
   Avatar,
   Card,
   Chip,
+  ClientRow,
   EmptyState,
   ErrorRetry,
   Fab,
+  HeaderIconButton,
   InnerScreenHeader,
+  SearchField,
   Sheet,
   SkeletonRow as BaseSkeletonRow,
   StaggeredList,
   StatusBadge,
   Toast,
   font,
+  standingAccentRole,
   useTheme,
   type StatusBadgeVariant,
 } from '@bob/ui';
@@ -74,13 +76,7 @@ import { combineQueryStates } from '../../src/data/query-state';
 import { hasBlockingAuthoritativeDataError } from '../../src/data/authoritative-query-state';
 import { CustomerForm } from '../../src/components/customer-form';
 import { usePublishAgentContext, type AgentContext } from '../../src/agent';
-import {
-  CheckIcon,
-  ChevronRightIcon,
-  PeopleIcon,
-  PlusIcon,
-  SearchIcon,
-} from '../../src/components/icons';
+import { CheckIcon, PeopleIcon, PlusIcon } from '../../src/components/icons';
 import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
 import { TabsScrollView } from '../../src/components/bob-tabs-scroll-view';
 
@@ -142,35 +138,18 @@ function rowSubtitle(type: CustomerListItem['type'], standing: CustomerStanding,
   }
 }
 
-/** Bouton « + » navy du header (réf : 42×42, radius 13, aplat ink du thème). */
+/** Bouton « + » du header — HeaderIconButton kit (squircle 44/13, l'arbitrage entre le
+ * squircle 42 d'ici et le rond 44 de chantiers : géométrie unifiée, Lot 4). */
 function AddClientButton({ onPress, disabled }: { onPress: () => void; disabled: boolean }) {
-  const { personality, theme, colors } = useTheme();
+  const { personality, colors } = useTheme();
   return (
-    <Pressable
-      accessibilityRole="button"
+    <HeaderIconButton
       accessibilityLabel={t('clients.addClient', { personality })}
-      accessibilityState={{ disabled }}
-      disabled={disabled}
       onPress={onPress}
-      hitSlop={6}
-      style={({ pressed }) => [
-        {
-          width: 42,
-          height: 42,
-          minWidth: 44,
-          minHeight: 44,
-          borderRadius: 13,
-          backgroundColor: theme.ink,
-          alignItems: 'center',
-          justifyContent: 'center',
-          ...shadowNative.e2,
-        },
-        disabled ? { opacity: 0.45 } : null,
-        pressed && !disabled ? { transform: [{ scale: 0.94 }] } : null,
-      ]}
+      disabled={disabled}
     >
       <PlusIcon color={colors.surface} />
-    </Pressable>
+    </HeaderIconButton>
   );
 }
 
@@ -204,40 +183,6 @@ function CarnetSubtitle({ count, totalCents }: { count: number; totalCents: numb
   );
 }
 
-/** Champ de recherche arrondi (réf : loupe + placeholder slate300, fond surface, ombre douce). */
-function SearchField({ value, onChange }: { value: string; onChange: (next: string) => void }) {
-  const { personality, colors, radius } = useTheme();
-  const placeholder = t('clients.searchPlaceholder', { personality });
-  return (
-    <View
-      style={{
-        marginTop: 12,
-        marginHorizontal: 18,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 9,
-        backgroundColor: colors.surface,
-        borderRadius: radius.squircle,
-        paddingVertical: 11,
-        paddingHorizontal: 14,
-        ...shadowNative.e1,
-      }}
-    >
-      <SearchIcon color={colors.slate300} />
-      <TextInput
-        value={value}
-        onChangeText={onChange}
-        placeholder={placeholder}
-        placeholderTextColor={colors.slate300}
-        autoCorrect={false}
-        returnKeyType="search"
-        accessibilityLabel={placeholder}
-        style={[font('body'), { flex: 1, padding: 0, color: colors.ink800 }]}
-      />
-    </View>
-  );
-}
-
 /** Skeleton d'une rangée client (même gabarit : avatar 44, deux lignes, montant). */
 function ClientSkeletonRow() {
   return (
@@ -248,9 +193,10 @@ function ClientSkeletonRow() {
 }
 
 /**
- * Rangée client (une Card par client, réf) : Avatar squircle pastel type → nom 14.5/700
- * + badge type → sous-titre contextuel → montant teinté par statut réel + mot de statut
- * → chevron. Métriques ClientRow (@bob/ui) — composée localement, cf. écarts en tête.
+ * Rangée client (une Card par client, réf) : ClientRow v2 kit (Lot 4) — Avatar squircle
+ * pastel type + badge type (slot nameAccessory) + sous-titre contextuel + montant teinté
+ * par le standing réel (standingAccentRole — fil rouge « couleur de l'argent ») + mot de
+ * statut (slot statusWord, 11.5 slate400) + chevron controls.chevron + PressableScale.
  */
 function CustomerRowCard({
   customer,
@@ -261,15 +207,8 @@ function CustomerRowCard({
   standing: CustomerStanding;
   onPress: () => void;
 }) {
-  const { personality, colors, semantic, controls } = useTheme();
+  const { personality } = useTheme();
   const badge = BADGE_BY_TYPE[customer.type];
-  const amountColor: Record<CustomerStandingKind, string> = {
-    a_jour: semantic.success,
-    en_retard: semantic.danger,
-    en_attente: semantic.warning,
-    devis: semantic.warning, // réf C12-frame : le devis en attente est ambré, comme l'attente
-    nouveau: colors.slate500,
-  };
   const amountLabel =
     standing.kind === 'a_jour' ? t('clients.upToDate', { personality }) : formatEURWhole(standing.amountCents);
   const statusWord = t(STATUS_WORD[standing.kind], { personality });
@@ -277,44 +216,19 @@ function CustomerRowCard({
 
   return (
     <Card radius={16} padding={0} style={{ paddingHorizontal: 14 }}>
-      <Pressable
-        accessibilityRole="button"
+      <ClientRow
+        name={customer.name}
+        subtitle={subtitle}
+        amountText={amountLabel}
+        tone={standingAccentRole(standing.kind)}
+        statusWord={statusWord}
+        avatar={<Avatar name={customer.name} tone={badge.variant} />}
+        nameAccessory={
+          <StatusBadge label={t(badge.label, { personality }).toUpperCase()} variant={badge.variant} />
+        }
         accessibilityLabel={`${customer.name}, ${subtitle}, ${amountLabel} ${statusWord}`}
         onPress={onPress}
-        style={({ pressed }) => ({
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 12,
-          paddingVertical: 13,
-          minHeight: 44,
-          opacity: pressed ? 0.65 : 1,
-        })}
-      >
-        <Avatar name={customer.name} tone={badge.variant} />
-        <View style={{ flex: 1 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            <Text numberOfLines={1} style={[font('body', 700), { color: colors.ink800, flexShrink: 1 }]}>
-              {customer.name}
-            </Text>
-            <StatusBadge label={t(badge.label, { personality }).toUpperCase()} variant={badge.variant} />
-          </View>
-          <Text numberOfLines={1} style={[font('meta'), { fontSize: 12.5, color: colors.slate400, marginTop: 2 }]}>
-            {subtitle}
-          </Text>
-        </View>
-        <View style={{ alignItems: 'flex-end' }}>
-          <Text
-            style={[
-              font('cardTitle'),
-              { fontSize: 14, color: amountColor[standing.kind], fontVariant: ['tabular-nums'] },
-            ]}
-          >
-            {amountLabel}
-          </Text>
-          <Text style={[font('meta'), { fontSize: 11, color: colors.slate300, marginTop: 1 }]}>{statusWord}</Text>
-        </View>
-        <ChevronRightIcon color={controls.chevron} size={14} strokeWidth={2} />
-      </Pressable>
+      />
     </Card>
   );
 }
@@ -499,7 +413,14 @@ export default function Clients() {
           <CarnetSubtitle count={carnet.length} totalCents={totalCents} />
         ) : null}
 
-        <SearchField value={query} onChange={setQuery} />
+        <SearchField
+          value={query}
+          onChange={setQuery}
+          placeholder={t('clients.searchPlaceholder', { personality })}
+          onClear={() => setQuery('')}
+          clearAccessibilityLabel={t('clients.searchClear', { personality })}
+          style={{ marginTop: 12, marginHorizontal: 18 }}
+        />
 
         <ScrollView
           horizontal
