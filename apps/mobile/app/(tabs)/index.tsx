@@ -1089,6 +1089,9 @@ export default function Aujourdhui() {
         ) : (
           // État loading/failed INTÉGRÉ au kit (Lot 1) — même recette que la carte pleine,
           // fin de la géométrie du héros dupliquée écran/kit. Jamais un montant inventé.
+          // Solde en ATTENTE DE CONFIRMATION (périmé/jamais confirmé — incident fondateur
+          // 02/08) : le tap mène à Argent avec la feuille de confirmation DÉJÀ ouverte ;
+          // une vraie panne garde la navigation simple (revoir l'écran, pas saisir).
           <FloatingBalanceCardPlaceholder
             label={t('today.balanceLabel', { personality })}
             hint={t(
@@ -1098,7 +1101,13 @@ export default function Aujourdhui() {
               { personality },
             )}
             loading={bankBalance.isLoading}
-            onPress={() => router.push('/(tabs)/argent')}
+            onPress={() =>
+              router.push(
+                expectedBankBalanceMissing
+                  ? { pathname: '/(tabs)/argent', params: { confirmBalance: '1' } }
+                  : '/(tabs)/argent',
+              )
+            }
           />
         )}
 
@@ -1220,8 +1229,21 @@ export default function Aujourdhui() {
                   retrying={refreshing}
                 />
               ) : glanceMissingBankingInput ? (
+                /* La trésorerie attend LE geste (confirmer le solde) : l'état est ACTIONNABLE
+                   — navigation vers Argent avec la feuille de confirmation déjà ouverte,
+                   plus jamais un cul-de-sac informatif (incident fondateur 02/08). */
                 <Card>
-                  <EmptyState body={t('today.balanceMissingHint', { personality })} />
+                  <EmptyState
+                    body={t('today.balanceMissingHint', { personality })}
+                    cta={{
+                      label: t('today.confirmBalanceCta', { personality }),
+                      onPress: () =>
+                        router.push({
+                          pathname: '/(tabs)/argent',
+                          params: { confirmBalance: '1' },
+                        }),
+                    }}
+                  />
                 </Card>
               ) : (
                 // Même géométrie que la grille de skeletons — le fondu n'ajoute AUCUN saut.

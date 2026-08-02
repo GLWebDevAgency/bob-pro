@@ -35,7 +35,7 @@
  *
  * Zéro hex/rgba : useTheme()/@bob/tokens. Zéro import de src/components/ui (ancien kit).
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Pressable,
   RefreshControl,
@@ -44,7 +44,7 @@ import {
   View,
   type ViewStyle,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Feather, Ionicons } from '@expo/vector-icons';
 import {
   buildLedgerView,
@@ -106,10 +106,8 @@ import { TabsScrollView } from '../../src/components/bob-tabs-scroll-view';
 import { BankBalanceSheet } from '../../src/components/BankBalanceSheet';
 import { RetenueSuiviCard } from '../../src/components/RetenueSuiviCard';
 import { hasBlockingAuthoritativeDataError } from '../../src/data/authoritative-query-state';
-import {
-  isBankBalanceQualificationError,
-  isCashflowBankingInputMissing,
-} from '../../src/data/cashflow-banking-state';
+import { isExpectedMissingBankingInput } from '../../src/data/cashflow-banking-state';
+import { deriveBalanceConfirmationState } from '../../src/finance/balance-confirmation-state';
 
 /** Clé SecureStore du coach-mark « première fois » de cet écran. */
 const TIP_KEY = 'bob.tips.argent.v1';
@@ -176,6 +174,18 @@ export default function Argent() {
   // douce sous le héros, visible seulement si ≥1 champ non confirmé) — voix parité stricte.
   const fiscalFlow = useFiscalProfileFlow();
   const [balanceSheetVisible, setBalanceSheetVisible] = useState(false);
+  // Accueil → « Confirmer mon solde » : la feuille s'ouvre DÉJÀ ouverte à l'arrivée
+  // (?confirmBalance=1) — le geste du fondateur ne se perd pas dans la navigation.
+  // Une seule fois par montage : la feuille refermée ne se rouvre pas dans le dos.
+  const params = useLocalSearchParams<{ confirmBalance?: string }>();
+  const confirmBalanceParamConsumed = useRef(false);
+  useEffect(() => {
+    if (confirmBalanceParamConsumed.current) return;
+    if (params.confirmBalance === '1') {
+      confirmBalanceParamConsumed.current = true;
+      setBalanceSheetVisible(true);
+    }
+  }, [params.confirmBalance]);
 
   const [scenario, setScenario] = useState<Scenario>('realiste');
   const [horizonKey, setHorizonKey] = useState<HorizonKey>('30');
@@ -314,11 +324,18 @@ export default function Argent() {
   const risky = overdueCustomers;
   const topRisk = risky[0];
 
-  const balanceNeedsConfirmation =
-    bankBalance.isError && isBankBalanceQualificationError(bankBalance.error);
-  const cashflowNeedsBalance = [cash7, cash30, cash60, cash90, heroSafe, heroUp].every(
-    (query) => query.isError && isCashflowBankingInputMissing(query.error),
-  );
+  // ── SOLDE PÉRIMÉ → CONFIRMATION EN PREMIER PLAN (incident fondateur 02/08) ─────────────
+  // Discrimination STRICTE des causes dans un module PUR (balance-confirmation-state) :
+  // un refus de qualification (périmé/jamais confirmé — sur /bank-balance ET relayé par
+  // /cashflow) est un état ATTENDU, jamais une panne ; un VRAI incident garde l'erreur.
+  const confirmation = deriveBalanceConfirmationState({
+    balance: { failed: bankBalance.isError, error: bankBalance.error },
+    cashflow: [cash7, cash30, cash60, cash90, heroSafe, heroUp].map((query) => ({
+      failed: query.isError,
+      error: query.error,
+    })),
+  });
+  const balanceNeedsConfirmation = confirmation.balanceNeedsConfirmation;
   const cashflowHasError =
     cash7.isError ||
     cash30.isError ||
@@ -327,7 +344,7 @@ export default function Argent() {
     heroSafe.isError ||
     heroUp.isError;
   const hasError =
-    (!cashflowNeedsBalance && cashflowHasError) ||
+    (!confirmation.cashflowOnlyAwaitsBalance && cashflowHasError) ||
     (bankBalance.isError && !balanceNeedsConfirmation) ||
     invoices.isError ||
     expenses.isError ||
@@ -343,27 +360,32 @@ export default function Argent() {
   // elle reste une donnée réelle et l'écran l'affiche avec la bannière d'erreur ci-dessous. En
   // revanche, si une source n'a JAMAIS répondu, aucune agrégation partielle/`[]`/zéro ne doit être
   // rendue comme une vérité financière. L'écran devient alors intégralement fail-closed.
+  // INCIDENT FONDATEUR 02/08 : le 503 « bank-balance-stale » relayé par /cashflow n'était PAS
+  // reconnu ici (prédicat trop étroit isCashflowBankingInputMissing) — il devenait BLOQUANT et
+  // l'erreur plein écran ÉCRASAIT la confirmation. isExpectedMissingBankingInput couvre TOUTE
+  // entrée bancaire attendue (stale, jamais confirmée, source absente) ; un vrai incident
+  // (autre erreur) reste bloquant, inchangé.
   const fatalDataError =
     hasBlockingAuthoritativeDataError([
-      { isError: cash7.isError && !isCashflowBankingInputMissing(cash7.error), data: cash7.data },
+      { isError: cash7.isError && !isExpectedMissingBankingInput(cash7.error), data: cash7.data },
       {
-        isError: cash30.isError && !isCashflowBankingInputMissing(cash30.error),
+        isError: cash30.isError && !isExpectedMissingBankingInput(cash30.error),
         data: cash30.data,
       },
       {
-        isError: cash60.isError && !isCashflowBankingInputMissing(cash60.error),
+        isError: cash60.isError && !isExpectedMissingBankingInput(cash60.error),
         data: cash60.data,
       },
       {
-        isError: cash90.isError && !isCashflowBankingInputMissing(cash90.error),
+        isError: cash90.isError && !isExpectedMissingBankingInput(cash90.error),
         data: cash90.data,
       },
       {
-        isError: heroSafe.isError && !isCashflowBankingInputMissing(heroSafe.error),
+        isError: heroSafe.isError && !isExpectedMissingBankingInput(heroSafe.error),
         data: heroSafe.data,
       },
       {
-        isError: heroUp.isError && !isCashflowBankingInputMissing(heroUp.error),
+        isError: heroUp.isError && !isExpectedMissingBankingInput(heroUp.error),
         data: heroUp.data,
       },
       invoices,
@@ -486,6 +508,14 @@ export default function Argent() {
     payments.data?.length === 0;
   const showWelcome =
     accountEmpty === true && !initialSourcesLoading && !fatalDataError && !hasError;
+  // La confirmation prend le SLOT DU HÉROS quand elle est la seule cause d'indisponibilité —
+  // jamais pendant le premier chargement (skeletons), jamais par-dessus l'invitation compte
+  // neuf (qui porte déjà le CTA solde), jamais quand le héros a une donnée à montrer.
+  const confirmationHeroShown =
+    confirmation.confirmationIsPrimary &&
+    !showWelcome &&
+    !initialSourcesLoading &&
+    heroSafe.data === undefined;
 
   if (fatalDataError && !initialSourcesLoading) {
     return (
@@ -590,6 +620,46 @@ export default function Argent() {
                   caption={heroCaption}
                 />
               </FadeIn>
+            ) : confirmationHeroShown ? (
+              /* ── CONFIRMATION EN PREMIER PLAN (incident fondateur 02/08) ─────────────
+                 La SEULE cause d'indisponibilité est la qualification du solde : le héros
+                 DEVIENT la confirmation actionnable — pédagogie au point de décision
+                 (pourquoi Bob refuse un solde périmé), AUCUN bandeau d'erreur générique. */
+              <FadeIn index={0}>
+                <Card radius={22} padding={20} elevation="e2">
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                    <IconTile tone="b2b" size={44} radius={14}>
+                      <Feather name="credit-card" size={20} color={semantic.b2b} />
+                    </IconTile>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={[font('section'), { color: colors.ink800 }]}>
+                        {confirmation.reason === 'stale'
+                          ? t('argent.staleTitle', { personality })
+                          : t('argent.balanceNeededTitle', { personality })}
+                      </Text>
+                    </View>
+                  </View>
+                  <Text style={[font('body'), { color: colors.slate500, lineHeight: 21, marginTop: 10 }]}>
+                    {confirmation.reason === 'stale'
+                      ? t('argent.staleBody', { personality })
+                      : t('argent.balanceNeededBody', { personality })}
+                  </Text>
+                  {confirmation.reason === 'stale' ? (
+                    /* La règle dite AU point de décision (patron LegalHint : « pourquoi Bob
+                       fait ça ») — une vieille vérité n'est pas une vérité. */
+                    <Text style={[font('meta'), { color: colors.slate400, lineHeight: 17, marginTop: 8 }]}>
+                      {t('argent.staleWhy', { personality })}
+                    </Text>
+                  ) : null}
+                  <View style={{ marginTop: spacing.cardPad }}>
+                    <Button
+                      title={t('argent.balanceNeededCta', { personality })}
+                      variant="primary"
+                      onPress={() => setBalanceSheetVisible(true)}
+                    />
+                  </View>
+                </Card>
+              </FadeIn>
             ) : (
               <HeroMoneyCardPlaceholder
                 label={t('argent.heroLabel', { personality })}
@@ -637,7 +707,9 @@ export default function Argent() {
                 </View>
               </Card>
             </FadeIn>
-          ) : balanceNeedsConfirmation ? (
+          ) : balanceNeedsConfirmation && !confirmationHeroShown ? (
+            /* Cas MIXTE (vrai incident en plus de la qualification) : la confirmation reste
+               actionnable en carte, l'état d'erreur d'avant garde la bannière — inchangé. */
             <Card radius={18} padding={15} style={{ marginTop: spacing.intraGap }}>
               <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 11 }}>
                 <IconTile tone="b2b" size={36} radius={11}>
