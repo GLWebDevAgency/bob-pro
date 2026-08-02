@@ -3,7 +3,7 @@
  * tabular-nums partout, couleur par défaut ink900.
  */
 import { Text } from 'react-native';
-import { formatEUR } from '@bob/core';
+import { formatEUR, formatEURWhole } from '@bob/core';
 import { useTheme, font } from '../theme';
 import { moneyTypeKey, type MoneyVariant } from './money-text.logic';
 
@@ -16,9 +16,12 @@ export interface MoneyTextProps {
   variant?: MoneyVariant;
   /** Teinte (success/dangerVivid…) — défaut ink900. */
   color?: string;
+  /** Agrégats (KPI, héros d'écran — Lot 4) : euros entiers via formatEURWhole ;
+   *  les documents (devis, factures) gardent les centimes de formatEUR. */
+  whole?: boolean;
 }
 
-export function MoneyText({ cents, variant = 'body', color }: MoneyTextProps) {
+export function MoneyText({ cents, variant = 'body', color, whole = false }: MoneyTextProps) {
   const { colors } = useTheme();
   return (
     <Text
@@ -27,7 +30,7 @@ export function MoneyText({ cents, variant = 'body', color }: MoneyTextProps) {
         { color: color ?? colors.ink900, fontVariant: ['tabular-nums'] },
       ]}
     >
-      {formatEUR(cents)}
+      {whole ? formatEURWhole(cents) : formatEUR(cents)}
     </Text>
   );
 }
