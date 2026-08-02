@@ -247,6 +247,23 @@ effectivement servi. Les migrations présentes uniquement dans le SHA de contrô
 bloquer cette sortie sûre, ni être tolérées par un mode permissif. Un checksum divergent ou une
 migration requise absente du SHA servi reste un refus fermé.
 
+Le drill VoiceTrace s'exécute au-dessus de la baseline M2-A preview globale, sans en devenir le
+propriétaire. Avant sa première mutation, après chaque transition Trace et avant toute réouverture
+de capacité, il prouve donc l'enveloppe M2-A canonique complète : masters V1/M2-A `true`, keyring
+valide, owner `bob-m2a3-staging-preview-v1`, SHA source égal au SHA exact du drill, run d'activation
+syntaxiquement canonique et absence du propriétaire temporaire M1-B. Les sept variables de cette
+enveloppe restent identiques octet pour octet pendant une mutation Trace. Un owner absent/étranger,
+un SHA stale, un run invalide ou une mutation concurrente ferme le drill avant mutation ou
+réouverture.
+Seule la sortie d'urgence `force-off` peut, sous enveloppe M2-A déjà corrompue, retirer les sept
+variables possédées par Trace et rien d'autre. Sa relecture post-mutation refuse alors tout verdict
+`safe` et toute réouverture de capacité tant que l'enveloppe M2-A n'est pas redevenue canonique.
+
+Chaque invocation du smoke Mission V2 (`preflight-v2`, canary Trace OFF ou ON) reçoit localement
+`BOB_AGENT_MISSION_STAGING_PROFILE=m2a3-preview`. Ce marqueur n'est jamais exporté au job ni à un
+step entier : les commandes Railway `wait-deployment` et `serving-deployment-id` partagent les
+mêmes steps mais possèdent un autre contrat d'environnement.
+
 Le lecteur de diagnostic refuse production, CI et stdin/stdout non-TTY. Le contenu n'apparaît
 qu'après `--include-content` explicite ; sa sortie n'est jamais archivée par le workflow.
 
@@ -271,6 +288,11 @@ qu'après `--include-content` explicite ; sa sortie n'est jamais archivée par l
 - [ ] Le snapshot production accepte exactement le profil historique complet ou le profil courant
       complet, refuse tout hybride ainsi que VoiceTrace actif, puis retrouve la même enveloppe de
       sécurité après le drill ; les assertions staging restent exact-SHA et contrat courant strict.
+- [ ] Chaque smoke V2 porte localement le profil `m2a3-preview` ; aucun job/step entier ne l'exporte.
+- [ ] Avant mutation, après chaque ON/OFF et avant rollback `safe=true`, l'enveloppe M2-A canonique
+      est prouvée et reste octet pour octet identique ; owner/SHA/run absent, étranger ou concurrent
+      refuse toute mutation normale ou réouverture de capacité. L'exception `force-off` peut
+      uniquement retirer le bloc Trace, puis doit refuser `safe` sous enveloppe M2-A invalide.
 - [ ] Workflow OFF → ON → OFF → ON vert sur staging exact-SHA ; production inchangée avant/après.
 
 ## 8. Definition of Done

@@ -2,6 +2,13 @@
 import { timingSafeEqual } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { parseAgentMissionFingerprintKeyOperation } from './manage-agent-mission-fingerprint-key-versions.mjs';
+import {
+  M1B_RAILWAY_CERTIFICATION_OWNER,
+  M2A3_RAILWAY_PREVIEW_ACTIVATION_RUN,
+  M2A3_RAILWAY_PREVIEW_OWNER,
+  M2A3_RAILWAY_PREVIEW_OWNER_VALUE,
+  M2A3_RAILWAY_PREVIEW_RELEASE_SHA,
+} from './agent-mission-m1b-staging-railway.mjs';
 
 const RAILWAY_GRAPHQL_URL = 'https://backboard.railway.com/graphql/v2';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -346,6 +353,14 @@ function assertPrerequisites(state, config) {
   } catch {
     fail('staging GPT Realtime AgentMission keyring is invalid or not dedicated');
   }
+  if (
+    variables[M2A3_RAILWAY_PREVIEW_OWNER] !== M2A3_RAILWAY_PREVIEW_OWNER_VALUE ||
+    !exactStringEqual(variables[M2A3_RAILWAY_PREVIEW_RELEASE_SHA], config.releaseSha) ||
+    !RUN_ID.test(variables[M2A3_RAILWAY_PREVIEW_ACTIVATION_RUN] ?? '') ||
+    Object.hasOwn(variables, M1B_RAILWAY_CERTIFICATION_OWNER)
+  ) {
+    fail('staging persistent M2-A preview ownership is not canonical for the exact Trace SHA');
+  }
   if (!config.subjects.split(',').includes(config.canarySubject)) {
     fail('the Voice Trace V2 allowlist omits the dedicated technical canary account');
   }
@@ -372,13 +387,14 @@ function activeBlock(config) {
   });
 }
 
-export function assertRealtimeVoiceTraceV2RailwayOff(state) {
+export function assertRealtimeVoiceTraceV2RailwayOff(state, config) {
   assertRestorable(state);
   for (const name of REALTIME_VOICE_TRACE_V2_OWNED_VARIABLES) {
     if (Object.hasOwn(state.variables, name)) {
       fail('the Realtime Voice Trace V2 variable block must be wholly absent while OFF');
     }
   }
+  assertPrerequisites(state, config);
 }
 
 export function assertRealtimeVoiceTraceV2RailwayActive(
@@ -404,8 +420,7 @@ export function assertRealtimeVoiceTraceV2RailwayActive(
 }
 
 export function assertRealtimeVoiceTraceV2RailwayPreflight(state, config) {
-  assertRealtimeVoiceTraceV2RailwayOff(state);
-  assertPrerequisites(state, config);
+  assertRealtimeVoiceTraceV2RailwayOff(state, config);
 }
 
 async function readBoundedBody(response) {
@@ -551,7 +566,7 @@ export async function runRealtimeVoiceTraceV2RailwayCommand(
   }
   if (command === 'assert-off') {
     const state = await readState(config, dependencies);
-    assertRealtimeVoiceTraceV2RailwayOff(state);
+    assertRealtimeVoiceTraceV2RailwayOff(state, config);
     return { command, state: 'off' };
   }
   if (command === 'assert-active') {
@@ -603,7 +618,7 @@ export async function runRealtimeVoiceTraceV2RailwayCommand(
       Object.hasOwn(before.variables, name),
     );
     if (present.length === 0) {
-      assertRealtimeVoiceTraceV2RailwayOff(before);
+      assertRealtimeVoiceTraceV2RailwayOff(before, config);
       return { command, state: 'off', changed: false };
     }
     if (command === 'deactivate') {
@@ -626,7 +641,7 @@ export async function runRealtimeVoiceTraceV2RailwayCommand(
     }
     const after = await readState(config, dependencies);
     try {
-      assertRealtimeVoiceTraceV2RailwayOff(after);
+      assertRealtimeVoiceTraceV2RailwayOff(after, config);
       if (!exactVariables(after.variables, restored)) {
         fail('deactivation changed variables outside the owned Voice Trace block');
       }

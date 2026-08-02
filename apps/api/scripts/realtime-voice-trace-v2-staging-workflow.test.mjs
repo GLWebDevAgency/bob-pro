@@ -32,6 +32,14 @@ function job(name) {
   return workflow.slice(start, following ?? workflow.length);
 }
 
+function step(name) {
+  const marker = `\n      - name: ${name}\n`;
+  const start = workflow.indexOf(marker);
+  assert.notEqual(start, -1, `missing workflow step ${name}`);
+  const following = workflow.indexOf('\n      - ', start + marker.length);
+  return workflow.slice(start, following === -1 ? workflow.length : following);
+}
+
 test('le drill est manuel, reutilisable, exact-SHA et serialise avec staging', () => {
   assert.match(workflow, /^permissions:\n  actions: read\n  contents: read$/mu);
   assert.match(workflow, /^on:\n  workflow_dispatch:/mu);
@@ -76,9 +84,13 @@ test('la sequence certifie OFF puis ON OFF ON et termine effectivement active', 
   const deploy = transition.indexOf('deploy_exact "$state"');
   const postdeploy = transition.indexOf('staging-release.mjs postdeploy');
   const canary = transition.indexOf('canary_and_cleanup "$state"');
+  const assertActiveAfterDeploy = transition.indexOf('staging-railway.mjs assert-active', deploy);
+  const assertOffAfterDeploy = transition.indexOf('staging-railway.mjs assert-off', deploy);
   assert.ok(baseline >= 0 && arm > baseline && drillStep > arm);
   assert.ok(transitionStart >= 0 && predeploy >= 0 && operation > predeploy);
   assert.ok(deploy > operation && postdeploy > deploy && canary > postdeploy);
+  assert.ok(assertActiveAfterDeploy > deploy && assertActiveAfterDeploy < postdeploy);
+  assert.ok(assertOffAfterDeploy > deploy && assertOffAfterDeploy < postdeploy);
   assert.equal(occurrences(drillBody, /transition_and_canary activate on/gu), 2);
   assert.equal(occurrences(drillBody, /transition_and_canary deactivate off/gu), 1);
   assert.match(transition, /capacity_restore_required=true[\s\S]*?predeploy/u);
@@ -99,6 +111,51 @@ test('chaque canary est WebRTC reel, sans faux ACK et sans audio conserve', () =
   assert.match(receiptScript, /transcriptInCi: false/u);
   assert.doesNotMatch(workflow, /upload-artifact[\s\S]{0,240}(?:\.wav|CANARY_AUDIO_FILE)/u);
   assert.doesNotMatch(workflow, /turn_speech_delivered/u);
+});
+
+test('les smokes Mission V2 selectionnent localement le profil preview sans contaminer les operateurs', () => {
+  const smokeInvocation = /node apps\/api\/scripts\/agent-mission-m1b-staging-smoke\.mjs/gu;
+  assert.equal(occurrences(workflow, /BOB_AGENT_MISSION_STAGING_PROFILE=m2a3-preview \\/gu), 3);
+  assert.equal(occurrences(workflow, smokeInvocation), 3);
+  assert.match(
+    workflow,
+    /BOB_AGENT_MISSION_STAGING_PROFILE=m2a3-preview \\\n+\s+node apps\/api\/scripts\/agent-mission-m1b-staging-smoke\.mjs preflight-v2/u,
+  );
+  assert.match(
+    workflow,
+    /BOB_AGENT_MISSION_STAGING_PROFILE=m2a3-preview \\\n+\s+node apps\/api\/scripts\/agent-mission-m1b-staging-smoke\.mjs voice-trace-v2-off/u,
+  );
+  assert.match(
+    workflow,
+    /BOB_AGENT_MISSION_STAGING_PROFILE=m2a3-preview \\\n+\s+node apps\/api\/scripts\/agent-mission-m1b-staging-smoke\.mjs "voice-trace-v2-\$state"/u,
+  );
+  assert.doesNotMatch(workflow, /^\s+BOB_AGENT_MISSION_STAGING_PROFILE:/mu);
+});
+
+test('chaque step operateur Trace recoit le keyring sans jamais le promouvoir au job', () => {
+  const operator = /node apps\/api\/scripts\/realtime-voice-trace-v2-staging-railway\.mjs/gu;
+  const operatorSteps = [
+    'Prove exact-SHA OFF baseline and its zero-trace canary',
+    'Execute three close-deploy-open cycles with a real canary at every state',
+    'Reprove final ON after the last canary',
+    'Force a cancellation-safe closed and staged-OFF state inline',
+    'Prove staging, close admission, then force the owned trace block OFF',
+    'Clean the canary and rebuild the exact OFF runtime',
+  ];
+  let coveredInvocations = 0;
+  for (const name of operatorSteps) {
+    const source = step(name);
+    const invocations = occurrences(source, operator);
+    assert.ok(invocations > 0, `missing Trace operator invocation in ${name}`);
+    coveredInvocations += invocations;
+    assert.match(
+      source,
+      /^\s+BOB_REALTIME_VOICE_TRACE_V2_ENCRYPTION_KEYRING: \$\{\{ secrets\.BOB_REALTIME_VOICE_TRACE_V2_STAGING_ENCRYPTION_KEYRING \}\}$/mu,
+      `missing Trace keyring in ${name}`,
+    );
+  }
+  assert.equal(coveredInvocations, occurrences(workflow, operator));
+  assert.doesNotMatch(workflow, /^ {6}BOB_REALTIME_VOICE_TRACE_V2_ENCRYPTION_KEYRING:/mu);
 });
 
 test('le seul recu certifie vient apres la preuve production finale et porte toutes les preuves', () => {
@@ -151,11 +208,14 @@ test('tout echec force OFF avant rebuild puis restaure la capacite', () => {
   const deploy = rollback.indexOf('railway up --project');
   const topology = rollback.indexOf('certify-railway-single-replica.mjs');
   const readiness = rollback.indexOf('assert-staging-off');
+  const canonicalOff = rollback.indexOf('staging-railway.mjs assert-off', readiness);
+  const safe = rollback.indexOf('echo "safe=true"', canonicalOff);
   const restore = rollback.indexOf('staging-release.mjs restore-capacity');
   assert.ok(installControl >= 0 && firstRailway > installControl);
   assert.ok(databasePin >= 0 && close > databasePin && forceOff > close);
   assert.ok(installApplication > forceOff && cleanup > installApplication && deploy > cleanup);
-  assert.ok(topology > deploy && readiness > topology && restore > readiness);
+  assert.ok(topology > deploy && readiness > topology);
+  assert.ok(canonicalOff > readiness && safe > canonicalOff && restore > safe);
   assert.match(
     rollback,
     /if: \$\{\{ always\(\) && steps\.deploy_safe_off\.outputs\.safe == 'true' \}\}/u,

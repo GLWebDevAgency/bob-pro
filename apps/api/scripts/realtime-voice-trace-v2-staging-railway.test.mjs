@@ -12,6 +12,13 @@ import {
   REALTIME_VOICE_TRACE_V2_RELEASE_SHA,
   runRealtimeVoiceTraceV2RailwayCommand,
 } from './realtime-voice-trace-v2-staging-railway.mjs';
+import {
+  M1B_RAILWAY_CERTIFICATION_OWNER,
+  M2A3_RAILWAY_PREVIEW_ACTIVATION_RUN,
+  M2A3_RAILWAY_PREVIEW_OWNER,
+  M2A3_RAILWAY_PREVIEW_OWNER_VALUE,
+  M2A3_RAILWAY_PREVIEW_RELEASE_SHA,
+} from './agent-mission-m1b-staging-railway.mjs';
 
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 const ENVIRONMENT_ID = '22222222-2222-4222-8222-222222222222';
@@ -50,6 +57,9 @@ function prerequisites(overrides = {}) {
     BOB_AGENT_MISSION_HMAC_KEYRING: JSON.stringify({
       1: Buffer.alloc(32, 18).toString('base64url'),
     }),
+    [M2A3_RAILWAY_PREVIEW_OWNER]: M2A3_RAILWAY_PREVIEW_OWNER_VALUE,
+    [M2A3_RAILWAY_PREVIEW_RELEASE_SHA]: RELEASE_SHA,
+    [M2A3_RAILWAY_PREVIEW_ACTIVATION_RUN]: '30722382425',
     OPENAI_API_KEY: 'openai-staging-secret',
     BOB_LIVE_USAGE_HMAC_SECRET: 'usage-staging-secret',
     BOB_LIVE_CONTROL_ENCRYPTION_SECRET: 'control-staging-secret',
@@ -191,6 +201,77 @@ test('preflight exige GPT Realtime M2-A actif et un OFF canonique restaurable', 
   );
 });
 
+test('tous les verdicts refusent une enveloppe M2-A non canonique ou non liee au SHA', () => {
+  const config = parseRealtimeVoiceTraceV2RailwayEnvironment(environment());
+  const cases = [
+    {
+      name: 'owner absent',
+      mutate(variables) {
+        delete variables[M2A3_RAILWAY_PREVIEW_OWNER];
+      },
+    },
+    {
+      name: 'owner etranger',
+      mutate(variables) {
+        variables[M2A3_RAILWAY_PREVIEW_OWNER] = 'foreign-owner';
+      },
+    },
+    {
+      name: 'SHA M2-A obselete',
+      mutate(variables) {
+        variables[M2A3_RAILWAY_PREVIEW_RELEASE_SHA] = 'b'.repeat(40);
+      },
+    },
+    {
+      name: 'activation M2-A absente',
+      mutate(variables) {
+        delete variables[M2A3_RAILWAY_PREVIEW_ACTIVATION_RUN];
+      },
+    },
+    {
+      name: 'activation M2-A invalide',
+      mutate(variables) {
+        variables[M2A3_RAILWAY_PREVIEW_ACTIVATION_RUN] = 'not-a-run';
+      },
+    },
+    {
+      name: 'owner M1-B concurrent',
+      mutate(variables) {
+        variables[M1B_RAILWAY_CERTIFICATION_OWNER] = 'foreign-m1b-owner';
+      },
+    },
+    {
+      name: 'M2-A desactive',
+      mutate(variables) {
+        variables.BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED = 'false';
+      },
+    },
+  ];
+
+  for (const scenario of cases) {
+    const offVariables = { ...prerequisites() };
+    scenario.mutate(offVariables);
+    const off = decoded(offVariables);
+    assert.throws(
+      () => assertRealtimeVoiceTraceV2RailwayPreflight(off, config),
+      /prerequisites are incomplete|persistent M2-A preview ownership is not canonical/u,
+      scenario.name,
+    );
+    assert.throws(
+      () => assertRealtimeVoiceTraceV2RailwayOff(off, config),
+      /prerequisites are incomplete|persistent M2-A preview ownership is not canonical/u,
+      scenario.name,
+    );
+
+    const activeVariables = { ...offVariables, ...activeBlock() };
+    assert.throws(
+      () => assertRealtimeVoiceTraceV2RailwayActive(decoded(activeVariables), config),
+      /prerequisites are incomplete|persistent M2-A preview ownership is not canonical/u,
+      scenario.name,
+    );
+  }
+});
+
 test('activation ajoute exactement le bloc possédé, sans auto-deploy, puis récupère un ACK perdu', async () => {
   const baseline = railwayState();
   const active = railwayState({ ...prerequisites(), ...activeBlock() });
@@ -251,6 +332,26 @@ test('activation refuse une concurrence et un owner d un autre run', async () =>
     () => assertRealtimeVoiceTraceV2RailwayActive(foreign, config),
     /exact Realtime Voice Trace V2 block/u,
   );
+
+  const m2aDrifted = railwayState({
+    ...prerequisites({ [M2A3_RAILWAY_PREVIEW_ACTIVATION_RUN]: '30722382426' }),
+  });
+  let m2aMutationCalls = 0;
+  reads = 0;
+  await assert.rejects(
+    runRealtimeVoiceTraceV2RailwayCommand('activate', environment(), {
+      graphql: async (_config, query) => {
+        if (!query.includes('query RealtimeVoiceTraceV2State')) {
+          m2aMutationCalls += 1;
+          return { variableCollectionUpsert: true };
+        }
+        reads += 1;
+        return reads === 1 ? baseline : m2aDrifted;
+      },
+    }),
+    /changed concurrently/u,
+  );
+  assert.equal(m2aMutationCalls, 0);
 });
 
 test('deactivation remplace la collection sans le bloc et conserve chaque variable étrangère', async () => {
@@ -281,7 +382,17 @@ test('deactivation remplace la collection sans le bloc et conserve chaque variab
   assert.equal(mutation.variables.input.replace, true);
   assert.equal(mutation.variables.input.skipDeploys, true);
   assert.deepEqual(mutation.variables.input.variables, afterVariables);
-  assert.doesNotThrow(() => assertRealtimeVoiceTraceV2RailwayOff(decoded(afterVariables)));
+  assert.equal(
+    mutation.variables.input.variables[M2A3_RAILWAY_PREVIEW_OWNER],
+    M2A3_RAILWAY_PREVIEW_OWNER_VALUE,
+  );
+  assert.equal(mutation.variables.input.variables[M2A3_RAILWAY_PREVIEW_RELEASE_SHA], RELEASE_SHA);
+  assert.equal(
+    mutation.variables.input.variables[M2A3_RAILWAY_PREVIEW_ACTIVATION_RUN],
+    prerequisites()[M2A3_RAILWAY_PREVIEW_ACTIVATION_RUN],
+  );
+  const config = parseRealtimeVoiceTraceV2RailwayEnvironment(environment());
+  assert.doesNotThrow(() => assertRealtimeVoiceTraceV2RailwayOff(decoded(afterVariables), config));
 });
 
 test('force-off nettoie un bloc partiel mais refuse de masquer une mutation concurrente', async () => {
@@ -316,5 +427,33 @@ test('force-off nettoie un bloc partiel mais refuse de masquer une mutation conc
       },
     }),
     /changed concurrently/u,
+  );
+});
+
+test('force-off retire le bloc Trace mais refuse de declarer safe une enveloppe M2-A corrompue', async () => {
+  const invalidPrerequisites = prerequisites({
+    [M2A3_RAILWAY_PREVIEW_RELEASE_SHA]: 'b'.repeat(40),
+  });
+  const before = railwayState({ ...invalidPrerequisites, ...activeBlock() });
+  const after = railwayState(invalidPrerequisites);
+  const calls = [];
+  let reads = 0;
+
+  await assert.rejects(
+    runRealtimeVoiceTraceV2RailwayCommand('force-off', environment(), {
+      graphql: async (_config, query, variables) => {
+        calls.push({ query, variables });
+        if (query.includes('query RealtimeVoiceTraceV2State')) {
+          reads += 1;
+          return reads <= 2 ? before : after;
+        }
+        return { variableCollectionUpsert: true };
+      },
+    }),
+    /persistent M2-A preview ownership is not canonical/u,
+  );
+  assert.ok(
+    calls.some(({ query }) => query.includes('mutation RealtimeVoiceTraceV2Variables')),
+    'the emergency path must still remove the owned Trace block',
   );
 });
