@@ -1065,11 +1065,15 @@ describe('2 · highlight glissant — un seul bloc, transform-only, suivi live d
  *  · LA BOÎTE VISUELLE, en LARGEUR — un label plus large qu'un onglet est RETIRÉ par le palier
  *    avant d'avoir pu déborder, et la frontière est posée au point près.
  */
-describe('overflow: hidden — deux ciseaux déclarés, et les prémisses qui les désarment', () => {
-  it('les DEUX déclarations sont là, et la barre ne peint pas un ciseau de plus', async () => {
+describe('overflow: hidden — trois ciseaux déclarés, et les prémisses qui les désarment', () => {
+  it('les TROIS déclarations sont là, et la barre ne peint pas un ciseau de plus', async () => {
     const harness = await mount();
     expect(styleOf(byTestID(harness.renderer, 'bar-pill'))['overflow']).toBe('hidden');
     expect(styleOf(visualBox(harness.renderer, 'argent'))['overflow']).toBe('hidden');
+    // TROISIÈME ciseau : le BLOC LIBELLÉ (hauteur animée vers 0 au repli). Sa prémisse est
+    // posée par « REPLI · le bloc libellé » plus bas : au repos sa hauteur vaut EXACTEMENT le
+    // flux de son contenu (marginTop 3 + lignes × lineHeight mesurée) — rien à couper ; pendant
+    // le repli il ne coupe qu'un texte déjà en train de disparaître (opacité 0 dès p = 0,4).
     /*
      * ET LA BARRE N'EN DÉCLARE AUCUN AUTRE : cinq boîtes visuelles + la pilule = six. Un
      * septième couperait quelque chose sans que personne l'ait décidé.
@@ -1084,8 +1088,9 @@ describe('overflow: hidden — deux ciseaux déclarés, et les prémisses qui le
     // UN SEUL instantané d'arbre : `toJSON()` reconstruit des objets NEUFS à chaque appel, et
     // comparer par identité deux relevés différents ne rapprocherait rien du tout.
     const tree = nodes(harness.renderer);
+    // Cinq boîtes visuelles + cinq blocs libellé + la pilule = 2 × TAB_COUNT + 1.
     expect(hiddenIn(tree.find((node) => node.props['testID'] === 'bar-pill'))).toHaveLength(
-      TAB_COUNT + 1,
+      2 * TAB_COUNT + 1,
     );
     const fromFalloff = new Set(
       hiddenIn(tree.find((node) => node.props['testID'] === 'bar-falloff')),
@@ -1093,7 +1098,7 @@ describe('overflow: hidden — deux ciseaux déclarés, et les prémisses qui le
     const own = tree.filter(
       (node) => styleOf(node)['overflow'] === 'hidden' && !fromFalloff.has(node),
     );
-    expect(own).toHaveLength(TAB_COUNT + 1);
+    expect(own).toHaveLength(2 * TAB_COUNT + 1);
   });
 
   /**
@@ -2207,5 +2212,61 @@ describe('géométrie horizontale — marge de safe area et retrait animé sont 
     // `max(34 − 16, 12)` = 18 pour un inset bas de 34.
     expect(styleOf(container)['marginBottom']).toBe(18);
     expect(styleOf(byTestID(harness.renderer, 'bar-pill'))['marginHorizontal']).toBe(0);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * REPLI · LE BLOC LIBELLÉ REPLIE SA HAUTEUR — le défaut constaté par le fondateur sur l'APK
+ * `e5b53997` (02/08) : icônes hautes dans la pilule repliée, vide dessous. Cause : le label ne
+ * perdait que son OPACITÉ ; son flux (marginTop 3 + ligne mesurée) restait et poussait le glyphe
+ * hors du centre des 35 pt. La référence `expo-glass-tabs` replie `LABEL_BLOCK = LABEL_HEIGHT +
+ * ITEM_GAP` avec la progression — c'est la mécanique reproduite ici, prouvée en littéraux.
+ */
+describe('REPLI · le bloc libellé replie sa hauteur, le glyphe se centre', () => {
+  /** Le bloc libellé d'un onglet : l'unique enfant `overflow: hidden` de sa boîte visuelle. */
+  function labelBlockOf(harness: Harness, key: string): Node {
+    const box = visualBox(harness.renderer, key);
+    const blocks = flatten(box ?? null).filter(
+      (node) => node !== box && styleOf(node)['overflow'] === 'hidden',
+    );
+    // Témoin d'observation : exactement UN bloc — zéro voudrait dire que le ciseau a disparu,
+    // deux que la structure a changé sans que ce test l'ait décidé.
+    expect(blocks).toHaveLength(1);
+    return blocks[0] as Node;
+  }
+
+  it('au REPOS (p = 0), la hauteur du bloc vaut EXACTEMENT son flux : 3 + 1 × 12 = 15', async () => {
+    const harness = await mount();
+    // Sonde nourrie en littéraux : une ligne de 12 pt — le régime standard du calcul B4.
+    await feedProbesSplit(harness, { width: 40, height: 12 }, { width: 20, height: 12 });
+    harness.setProgress(0);
+    await harness.refresh();
+    // marginTop 3 (ITEM_GAP) + 1 ligne × 12 = 15 — rien n'est coupé au repos, c'est la
+    // prémisse qui désarme le troisième ciseau de la sentinelle.
+    expect(styleOf(labelBlockOf(harness, 'argent'))['height']).toBe(15);
+  });
+
+  it('au REPLI (p = 1), la hauteur du bloc vaut 0 — le glyphe seul se centre dans les 35 pt', async () => {
+    const harness = await mount();
+    await feedProbesSplit(harness, { width: 40, height: 12 }, { width: 20, height: 12 });
+    harness.setProgress(1);
+    await harness.refresh();
+    expect(styleOf(labelBlockOf(harness, 'argent'))['height']).toBe(0);
+    // Et la boîte visuelle repliée ne contient plus que le glyphe : 23 pt centrés par
+    // `justifyContent: center` dans 35 pt — (35 − 23) / 2 = 6 pt de part et d'autre, le
+    // centrage que la référence obtient avec 44/… et que le fondateur attendait.
+    expect(styleOf(visualBox(harness.renderer, 'argent'))['height']).toBe(35);
+  });
+
+  it('à mi-course (p = 0,5), la hauteur suit la MÊME progression que le reste : 7,5', async () => {
+    const harness = await mount();
+    await feedProbesSplit(harness, { width: 40, height: 12 }, { width: 20, height: 12 });
+    harness.setProgress(0.5);
+    await harness.refresh();
+    // interpolate(0,5, [0 ; 1], [15 ; 0]) = 7,5 — le bloc suit la progression du repli, pas un
+    // ressort séparé : un seul mouvement, comme la référence.
+    expect(styleOf(labelBlockOf(harness, 'argent'))['height']).toBeCloseTo(7.5, 10);
   });
 });

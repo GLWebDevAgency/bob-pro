@@ -170,18 +170,23 @@ type LabelMeasures = Readonly<Record<string, LabelMeasure>>;
 function contentHeights(
   measures: LabelMeasures,
   tier: TabLabelTier,
-): { readonly expanded: number; readonly minimized: number } {
+): { readonly expanded: number; readonly minimized: number; readonly labelBlock: number } {
   // Le pire cas décide : une seule ligne plus haute que les autres fait grandir TOUTE la rangée.
   const lineHeight = Object.values(measures).reduce(
     (worst, measure) => Math.max(worst, measure.lineHeight),
     0,
   );
   const lines = tier === 'icon-only' ? 0 : tier === 'two-lines' ? 2 : 1;
+  // Le BLOC LIBELLÉ (gap compris, patron de la référence : LABEL_BLOCK = LABEL_HEIGHT + GAP) :
+  // c'est LUI qui doit replier sa hauteur vers 0 pendant la minimisation — un label seulement
+  // effacé (opacité 0) resterait dans le flux et pousserait le glyphe hors du centre des 35 pt.
+  const labelBlock = lines === 0 ? 0 : ITEM_GAP + lineHeight * lines;
   return {
-    expanded: lines === 0 ? ICON_SIZE : ICON_SIZE + ITEM_GAP + lineHeight * lines,
+    expanded: ICON_SIZE + labelBlock,
     // Au repli le label a disparu : il ne reste que le glyphe. Le plancher de 35 pt le domine à
     // la taille standard, et c'est bien le plancher qui gagne — pas ce calcul.
     minimized: ICON_SIZE,
+    labelBlock,
   };
 }
 
@@ -617,6 +622,7 @@ export function BobTabBar({
             bounds={bounds}
             palette={palette}
             showLabel={showLabel}
+            labelBlock={heights.labelBlock}
             testID={testID === undefined ? undefined : `${testID}-tab-${item.key}`}
             onPress={() => {
               // Ré-expansion forcée : toute interaction délibérée avec la barre la ré-étend.
@@ -692,6 +698,8 @@ interface TabItemProps {
   readonly bounds: TabBarGeometryBounds;
   readonly palette: TabTintPalette;
   readonly showLabel: boolean;
+  /** Hauteur du bloc libellé (gap + lignes) au repos — repliée vers 0 pendant la minimisation. */
+  readonly labelBlock: number;
   readonly onPress: () => void;
   readonly testID?: string | undefined;
 }
@@ -714,6 +722,7 @@ function TabItem({
   bounds,
   palette,
   showLabel,
+  labelBlock,
   onPress,
   testID,
 }: TabItemProps): ReactElement {
@@ -756,6 +765,18 @@ function TabItem({
       [0, 1],
       [palette.inactive, activeTint],
     ),
+  }));
+
+  /**
+   * LE BLOC LIBELLÉ REPLIE SA HAUTEUR — pas seulement son opacité. Sans cela le texte invisible
+   * reste dans le flux et pousse le glyphe hors du centre : dans une boîte repliée de 35 pt, un
+   * bloc fantôme de 15 pt (gap 3 + ligne 12) centre le glyphe à ~10 pt au lieu de 17,5 — le
+   * défaut constaté par le fondateur sur l'APK e5b53997 (icônes hautes, vide dessous). La
+   * référence `expo-glass-tabs` replie `LABEL_BLOCK = LABEL_HEIGHT + ITEM_GAP` avec la même
+   * progression ; on fait pareil, gap compris (le `marginTop` du texte vit DANS ce bloc).
+   */
+  const labelBlockStyle = useAnimatedStyle(() => ({
+    height: interpolate(progress.value, [0, 1], [labelBlock, 0], Extrapolation.CLAMP),
   }));
 
   return (
@@ -822,16 +843,27 @@ function TabItem({
             reste porté par `accessibilityLabel`. `adjustsFontSizeToFit` est interdit — il
             annulerait silencieusement la préférence de taille de l'utilisateur. */}
         {showLabel ? (
-          <Animated.Text
-            numberOfLines={2}
+          <Animated.View
             style={[
-              font('meta'),
-              { fontSize: LABEL_FONT_SIZE, marginTop: ITEM_GAP, textAlign: 'center' as const },
-              labelStyle,
+              {
+                alignSelf: 'stretch' as const,
+                alignItems: 'center' as const,
+                overflow: 'hidden' as const,
+              },
+              labelBlockStyle,
             ]}
           >
-            {item.label}
-          </Animated.Text>
+            <Animated.Text
+              numberOfLines={2}
+              style={[
+                font('meta'),
+                { fontSize: LABEL_FONT_SIZE, marginTop: ITEM_GAP, textAlign: 'center' as const },
+                labelStyle,
+              ]}
+            >
+              {item.label}
+            </Animated.Text>
+          </Animated.View>
         ) : null}
       </Animated.View>
     </AnimatedPressable>
