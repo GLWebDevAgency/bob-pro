@@ -12,12 +12,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   AccessibilityInfo,
-  Alert,
   Pressable,
   RefreshControl,
   ScrollView,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -25,14 +23,18 @@ import { t } from '@bob/i18n';
 import {
   BobSurface,
   Button,
+  DateField,
   EmptyState,
   ErrorRetry,
+  FormField,
   PresenceRow,
+  SearchField,
   SegmentedControl,
   Sheet,
   SkeletonRow,
   StatusBadge,
   font,
+  useErrorSheet,
   useRowPresence,
   useTheme,
 } from '@bob/ui';
@@ -45,7 +47,6 @@ import {
   useReopenChantier,
 } from '../../src/data/hooks';
 import { ScreenHeader } from '../../src/components/screen-header';
-import { SearchIcon } from '../../src/components/icons';
 import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
 import {
   equipmentRowSubtitle,
@@ -134,8 +135,11 @@ function EquipmentRow({
 
 export default function ParcEquipements() {
   const { chantierId } = useLocalSearchParams<{ chantierId: string }>();
-  const { personality, colors, controls, semantic } = useTheme();
+  const { personality, colors, semantic } = useTheme();
   const router = useRouter();
+  // Lot 4 — grammaire d'erreur : la réouverture échouée parle dans la feuille Bob,
+  // plus jamais un Alert.alert « Oups » système au milieu du parcours.
+  const errorSheet = useErrorSheet();
   const scrollInsets = useBobAwareScrollInsets();
   const today = parisDateOnly();
 
@@ -285,38 +289,30 @@ export default function ParcEquipements() {
                   onPress={() =>
                     void reopen
                       .mutateAsync(chantierId)
-                      .catch((error) => Alert.alert('Oups', appErrorMessage(error)))
+                      .catch((error) =>
+                        errorSheet.showError(
+                          t('equipements.reopenCta', { personality }),
+                          appErrorMessage(error),
+                        ),
+                      )
                   }
                 />
               </View>
             </BobSurface>
           ) : null}
-          <View
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 8,
-              backgroundColor: colors.surface,
-              borderRadius: 12,
-              borderWidth: 1,
-              borderColor: controls.cardBorder,
-              paddingHorizontal: 12,
-            }}
-          >
-            <SearchIcon color={colors.slate400} size={16} />
-            <TextInput
-              value={query}
-              onChangeText={setQuery}
-              placeholder={t('equipements.searchPlaceholder', { personality })}
-              placeholderTextColor={colors.slate400}
-              accessibilityLabel={t('equipements.searchPlaceholder', { personality })}
-              style={[font('body'), { flex: 1, minHeight: 44, color: colors.ink800 }]}
-            />
-          </View>
+          {/* Lot 4 : SearchField kit (surface + e1 + loupe + clear 44 pt) — même champ
+              canonique que le carnet clients. */}
+          <SearchField
+            value={query}
+            onChange={setQuery}
+            placeholder={t('equipements.searchPlaceholder', { personality })}
+            onClear={() => setQuery('')}
+            clearAccessibilityLabel={t('clients.searchClear', { personality })}
+          />
           <SegmentedControl<Segment>
             options={[
-              { key: 'active', label: `${t('equipements.segmentActive', { personality })} ${counts.active}` },
-              { key: 'retired', label: `${t('equipements.segmentRetired', { personality })} ${counts.retired}` },
+              { key: 'active', label: `${t('equipements.segmentActive', { personality })} · ${counts.active}` },
+              { key: 'retired', label: `${t('equipements.segmentRetired', { personality })} · ${counts.retired}` },
             ]}
             value={segment}
             onChange={setSegment}
@@ -386,38 +382,36 @@ export default function ParcEquipements() {
         <Text style={[font('section'), { color: colors.ink800, marginBottom: 10 }]}>
           {t('equipements.sheetTitle', { personality })}
         </Text>
+        {/* Lot 4 : FormField ×5 + DateField ×2 — labels VISIBLES PERSISTANTS (sept champs
+            anonymes dès la première lettre étaient hostiles aux gants et aux
+            interruptions) ; le masque AAAA-MM-JJ des dates est purement visuel. */}
         <View style={{ gap: 8 }}>
-          {fields.map((field) => (
-            <TextInput
-              key={field.key}
-              value={draft[field.key]}
-              onChangeText={(value) => {
-                setDraftError(null);
-                setDraft((current) => ({ ...current, [field.key]: value }));
-              }}
-              placeholder={t(field.labelKey, { personality })}
-              placeholderTextColor={colors.slate400}
-              accessibilityLabel={t(field.labelKey, { personality })}
-              autoCapitalize={field.key === 'installedAt' || field.key === 'warrantyUntil' ? 'none' : 'sentences'}
-              style={[
-                font('body'),
-                {
-                  minHeight: 44,
-                  borderWidth: 1,
-                  borderColor: controls.cardBorder,
-                  borderRadius: 12,
-                  paddingHorizontal: 12,
-                  color: colors.ink800,
-                  backgroundColor: colors.surface,
-                },
-              ]}
-            />
-          ))}
+          {fields.map((field) =>
+            field.key === 'installedAt' || field.key === 'warrantyUntil' ? (
+              <DateField
+                key={field.key}
+                label={t(field.labelKey, { personality })}
+                value={draft[field.key]}
+                onChangeText={(value) => {
+                  setDraftError(null);
+                  setDraft((current) => ({ ...current, [field.key]: value }));
+                }}
+              />
+            ) : (
+              <FormField
+                key={field.key}
+                label={t(field.labelKey, { personality })}
+                value={draft[field.key]}
+                onChangeText={(value) => {
+                  setDraftError(null);
+                  setDraft((current) => ({ ...current, [field.key]: value }));
+                }}
+              />
+            ),
+          )}
           {draftError ? (
-            <Text
-              accessibilityLiveRegion="polite"
-              style={[font('sub', 500), { color: colors.slate500 }]}
-            >
+            /* Lot 4 : l'erreur de brouillon parle en DANGER avec role alert. */
+            <Text accessibilityRole="alert" style={[font('sub', 600), { color: semantic.danger }]}>
               {draftError}
             </Text>
           ) : null}
@@ -428,6 +422,7 @@ export default function ParcEquipements() {
           />
         </View>
       </Sheet>
+      {errorSheet.errorSheet}
     </View>
   );
 }

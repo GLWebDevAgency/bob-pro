@@ -1711,6 +1711,12 @@ const legacyFr = {
   },
   'equipements.historyNote': { pote: 'Note', pro: 'Note', direct: 'Note' },
   'equipements.historyPhoto': { pote: 'Photo', pro: 'Photo', direct: 'Photo' },
+  // Statuts d'intervention de la timeline (Lot 4) — le statut serveur cesse d'être affiché brut.
+  'equipements.interventionScheduled': { pote: 'Planifiée', pro: 'Planifiée', direct: 'Planifiée' },
+  'equipements.interventionInProgress': { pote: 'En cours', pro: 'En cours', direct: 'En cours' },
+  'equipements.interventionCompleted': { pote: 'Terminée', pro: 'Terminée', direct: 'Terminée' },
+  'equipements.interventionSigned': { pote: 'Signée', pro: 'Signée', direct: 'Signée' },
+  'equipements.interventionCancelled': { pote: 'Annulée', pro: 'Annulée', direct: 'Annulée' },
   'equipements.addNoteCta': {
     pote: 'Ajouter une note',
     pro: 'Ajouter une note',
