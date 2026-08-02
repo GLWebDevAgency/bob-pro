@@ -242,7 +242,7 @@ export const vaultFolderTints = [
 ] as const;
 
 export const systemVaultFolderTintIndex = {
-  chantiers: 0, achats: 1, assurances: 2, fiscal: 3, banque: 4, comptable: 5,
+  projects: 0, purchases: 1, insurance: 2, tax_social: 3, bank: 4, accounting: 5,
 } as const;
 
 // Rôles dédiés (Lot 0) — fin du recyclage des tons de typologie client

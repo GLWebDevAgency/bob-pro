@@ -2,9 +2,8 @@
  * useReduceMotion — comportement FAIL-CLOSED (Lot 0, plan DA 01/08) de l'implémentation
  * UNIQUE : pendant la fenêtre d'ignorance (préférence système non résolue) le hook répond
  * `true` (RÉDUIT — pas d'animation), puis reflète la résolution et les changements système.
- * La MÉMOIRE DE MODULE (dernière valeur résolue) fait que seuls le tout premier montage et
- * les échecs de lecture traversent la fenêtre fermée — d'où `vi.resetModules()` + import
- * dynamique : chaque test repart d'une mémoire vierge, comme un démarrage à froid.
+ * Aucun cache de module ne peut réouvrir un nouveau montage avant sa propre lecture native —
+ * d'où `vi.resetModules()` + import dynamique pour isoler chaque scénario.
  * AccessibilityInfo est mocké (aucun accès natif sous vitest) ; le composant Probe rend
  * `null` : seul react-test-renderer pilote le cycle de vie React (effets compris).
  */
@@ -96,10 +95,10 @@ describe('useReduceMotion — fail-closed', () => {
     expect(values.at(-1)).toBe(true);
   });
 
-  it('retient la dernière résolution (mémoire de module) : un montage SUIVANT démarre ouvert, pas fermé', async () => {
+  it('referme chaque nouveau montage si une ancienne lecture false est suivie d’un rejet natif', async () => {
     const { useReduceMotion } = await loadHook();
     const Probe = makeProbe(useReduceMotion);
-    isReduceMotionEnabled.mockResolvedValue(false);
+    isReduceMotionEnabled.mockResolvedValueOnce(false);
 
     // Premier montage : traverse la fenêtre fermée puis résout `false`.
     let first: ReturnType<typeof create> | null = null;
@@ -114,13 +113,17 @@ describe('useReduceMotion — fail-closed', () => {
       first?.unmount();
     });
 
-    // Second montage : démarre DIRECTEMENT sur la valeur résolue — les animations de
-    // montage (FadeIn ne joue qu'au montage) restent vivantes après la première résolution.
+    // La préférence a pu changer sans consommateur monté. Si la relecture échoue, l'ancienne
+    // valeur `false` ne doit autoriser aucune animation, ni sur la première frame ni ensuite.
+    isReduceMotionEnabled.mockRejectedValueOnce(new Error('bridge indisponible au remontage'));
     const secondValues: boolean[] = [];
     await act(async () => {
       create(<Probe onValue={(v) => secondValues.push(v)} />);
+      await Promise.resolve();
+      await Promise.resolve();
     });
-    expect(secondValues[0]).toBe(false);
+    expect(secondValues[0]).toBe(true);
+    expect(secondValues.at(-1)).toBe(true);
   });
 
   it('reste FERMÉ quand la lecture système ÉCHOUE (rejet) — on ne décide pas à la place de l’utilisateur', async () => {

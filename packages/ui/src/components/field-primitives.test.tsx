@@ -6,7 +6,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import type { ReactNode } from 'react';
+import { neutrals } from '@bob/tokens';
 import { ThemeProvider } from '../theme';
+import { contrastRatio } from './bob-tab-bar.logic';
 import { SearchField } from './search-field';
 import {
   SEARCH_CLEAR_HIT_SLOP,
@@ -57,6 +59,12 @@ describe('SearchField', () => {
     expect(rendered).toContain('M21 21l-4.3-4.3'); // loupe
     expect(rendered).toContain('Rechercher un client');
     expect(rendered).not.toContain('"accessibilityRole":"button"');
+    const input = renderer.root.findByType('TextInput' as never);
+    const glyph = renderer.root.findByType('Svg' as never);
+    expect(input.props.placeholderTextColor).toBe(neutrals.slate500);
+    expect(glyph.props.stroke).toBe(neutrals.slate500);
+    expect(glyph.props.accessible).toBe(false);
+    expect(contrastRatio(neutrals.slate500, neutrals.surface)).toBeGreaterThanOrEqual(4.5);
   });
 
   it('clear : visible seulement avec du texte ET un effaceur — cible 44 par hitSlop (28 + 2×8)', () => {
@@ -69,10 +77,21 @@ describe('SearchField', () => {
 
     const onClear = vi.fn();
     const renderer = render(
-      <SearchField value="mairie" onChange={() => {}} placeholder="Rechercher" onClear={onClear} />,
+      <SearchField
+        value="mairie"
+        onChange={() => {}}
+        placeholder="Rechercher"
+        onClear={onClear}
+        clearAccessibilityLabel="Effacer la recherche"
+      />,
     );
-    const clear = renderer.root.findByProps({ accessibilityLabel: 'Effacer' });
+    const clear = renderer.root.findByProps({ accessibilityLabel: 'Effacer la recherche' });
     expect(clear.props.hitSlop).toBe(SEARCH_CLEAR_HIT_SLOP);
+    const clearGlyph = renderer.root
+      .findAllByType('Text' as never)
+      .find((node) => node.children.join('') === '×');
+    expect(clearGlyph?.props.style.color).toBe(neutrals.slate500);
+    expect(contrastRatio(neutrals.slate500, neutrals.surface)).toBeGreaterThanOrEqual(3);
     act(() => {
       clear.props.onPress();
     });

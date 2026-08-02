@@ -19,24 +19,37 @@ import {
   searchClearVisible,
 } from './search-field.logic';
 
-export interface SearchFieldProps {
+interface SearchFieldBaseProps {
   readonly value: string;
   readonly onChange: (next: string) => void;
   /** Placeholder i18n — sert aussi de libellé accessible par défaut. */
   readonly placeholder: string;
-  /** Fourni ⇒ bouton clear (cible 44 pt) dès que `value` est non vide. */
-  readonly onClear?: () => void;
-  /** Libellé accessible du bouton clear (défaut « Effacer » — patron Sheet « Fermer »). */
-  readonly clearAccessibilityLabel?: string;
   readonly accessibilityLabel?: string;
   readonly style?: StyleProp<ViewStyle>;
   readonly testID?: string;
 }
 
+/**
+ * Un effaceur est soit absent, soit complet avec son libellé i18n. Le kit ne connaît pas la
+ * personnalité Bob du consommateur et ne fabrique donc jamais une copy française par défaut.
+ */
+type SearchFieldClearProps =
+  | {
+      readonly onClear?: undefined;
+      readonly clearAccessibilityLabel?: never;
+    }
+  | {
+      readonly onClear: () => void;
+      readonly clearAccessibilityLabel: string;
+    };
+
+export type SearchFieldProps = SearchFieldBaseProps & SearchFieldClearProps;
+
 /** Loupe — même tracé que SearchIcon d'icons.tsx (lucide-style 24×24, 18/2). */
 function SearchGlyph({ color }: { color: string }) {
   return (
     <Svg
+      accessible={false}
       width={18}
       height={18}
       viewBox="0 0 24 24"
@@ -57,7 +70,7 @@ export function SearchField({
   onChange,
   placeholder,
   onClear,
-  clearAccessibilityLabel = 'Effacer',
+  clearAccessibilityLabel,
   accessibilityLabel,
   style,
   testID,
@@ -80,18 +93,21 @@ export function SearchField({
         style,
       ]}
     >
-      <SearchGlyph color={colors.slate300} />
+      <SearchGlyph color={colors.slate500} />
       <TextInput
         value={value}
         onChangeText={onChange}
         placeholder={placeholder}
-        placeholderTextColor={colors.slate300}
+        placeholderTextColor={colors.slate500}
         autoCorrect={false}
         returnKeyType="search"
         accessibilityLabel={accessibilityLabel ?? placeholder}
         style={[font('body'), { flex: 1, padding: 0, color: colors.ink800 }]}
       />
-      {searchClearVisible(value, onClear !== undefined) ? (
+      {onClear !== undefined
+      && clearAccessibilityLabel !== undefined
+      && clearAccessibilityLabel.trim().length > 0
+      && searchClearVisible(value, true) ? (
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={clearAccessibilityLabel}
@@ -109,7 +125,7 @@ export function SearchField({
           <Text
             accessible={false}
             allowFontScaling={false}
-            style={{ color: colors.slate400, fontSize: 20, fontWeight: '500', lineHeight: 22 }}
+            style={{ color: colors.slate500, fontSize: 20, fontWeight: '500', lineHeight: 22 }}
           >
             ×
           </Text>

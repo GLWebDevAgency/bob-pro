@@ -46,18 +46,24 @@ function composeOver(rgba: string, backgroundHex: string): string {
 
 describe('Lot 0 — teintes des dossiers du coffre (folderTintFor)', () => {
   it('donne 6 teintes DISTINCTES aux 6 dossiers système (bijection sur la palette)', () => {
-    const systemIds = ['chantiers', 'achats', 'assurances', 'fiscal', 'banque', 'comptable'] as const;
-    const pairs = systemIds.map((id) => folderTintFor(id));
+    const systemKeys = ['projects', 'purchases', 'insurance', 'tax_social', 'bank', 'accounting'] as const;
+    const pairs = systemKeys.map((systemKey) => folderTintFor({ id: `folder-${systemKey}`, systemKey }));
     // 6 fonds distincts ET 6 encres distinctes — la couleur-repère code l'identité.
     expect(new Set(pairs.map((pair) => pair.bg)).size).toBe(6);
     expect(new Set(pairs.map((pair) => pair.tint)).size).toBe(6);
     // Affectation exacte, épinglée en littéraux (l'ordre de la palette est le contrat).
-    expect(folderTintFor('chantiers')).toEqual({ tint: '#1B3A63', bg: '#E6EDF6' }); // marine
-    expect(folderTintFor('achats')).toEqual({ tint: '#0E7C5A', bg: '#EAF2EC' }); // vert
-    expect(folderTintFor('assurances')).toEqual({ tint: '#C77A12', bg: '#FBF0DF' }); // ambre
-    expect(folderTintFor('fiscal')).toEqual({ tint: '#6D28D9', bg: '#F1EBFA' }); // violet
-    expect(folderTintFor('banque')).toEqual({ tint: '#3B5B85', bg: '#E9EFF7' }); // acier (NOUVEAU)
-    expect(folderTintFor('comptable')).toEqual({ tint: '#0E6E73', bg: '#DFEFF0' }); // sarcelle (NOUVEAU)
+    expect(folderTintFor({ id: 'uuid-projects', systemKey: 'projects' })).toEqual({ tint: '#1B3A63', bg: '#E6EDF6' }); // marine
+    expect(folderTintFor({ id: 'uuid-purchases', systemKey: 'purchases' })).toEqual({ tint: '#0E7C5A', bg: '#EAF2EC' }); // vert
+    expect(folderTintFor({ id: 'uuid-insurance', systemKey: 'insurance' })).toEqual({ tint: '#C77A12', bg: '#FBF0DF' }); // ambre
+    expect(folderTintFor({ id: 'uuid-tax', systemKey: 'tax_social' })).toEqual({ tint: '#6D28D9', bg: '#F1EBFA' }); // violet
+    expect(folderTintFor({ id: 'uuid-bank', systemKey: 'bank' })).toEqual({ tint: '#3B5B85', bg: '#E9EFF7' }); // acier (NOUVEAU)
+    expect(folderTintFor({ id: 'uuid-accounting', systemKey: 'accounting' })).toEqual({ tint: '#0E6E73', bg: '#DFEFF0' }); // sarcelle (NOUVEAU)
+  });
+
+  it("utilise systemKey comme identité stable même si l'UUID serveur change", () => {
+    expect(folderTintFor({ id: 'uuid-a', systemKey: 'bank' })).toBe(
+      folderTintFor({ id: 'uuid-b', systemKey: 'bank' }),
+    );
   });
 
   it('hache STABLEMENT les dossiers personnalisés sur la palette (djb2-xor % 6, littéraux vérifiés à la main)', () => {
@@ -65,22 +71,24 @@ describe('Lot 0 — teintes des dossiers du coffre (folderTintFor)', () => {
     //  'garanties-decennales' → 2396616772 ; 2396616772 % 6 = 4 → acier.
     //  'photos-avant-apres'   → 282092707  ; 282092707  % 6 = 1 → vert.
     //  'sous-traitants-2026'  → 3549554955 ; 3549554955 % 6 = 3 → violet.
-    expect(folderTintFor('garanties-decennales')).toEqual({ tint: '#3B5B85', bg: '#E9EFF7' });
-    expect(folderTintFor('photos-avant-apres')).toEqual({ tint: '#0E7C5A', bg: '#EAF2EC' });
-    expect(folderTintFor('sous-traitants-2026')).toEqual({ tint: '#6D28D9', bg: '#F1EBFA' });
+    expect(folderTintFor({ id: 'garanties-decennales', systemKey: null })).toEqual({ tint: '#3B5B85', bg: '#E9EFF7' });
+    expect(folderTintFor({ id: 'photos-avant-apres', systemKey: null })).toEqual({ tint: '#0E7C5A', bg: '#EAF2EC' });
+    expect(folderTintFor({ id: 'sous-traitants-2026', systemKey: null })).toEqual({ tint: '#6D28D9', bg: '#F1EBFA' });
     // Stabilité : le même id rend la MÊME paire à chaque appel (référence de palette comprise).
-    expect(folderTintFor('garanties-decennales')).toBe(folderTintFor('garanties-decennales'));
+    expect(folderTintFor({ id: 'garanties-decennales', systemKey: null })).toBe(
+      folderTintFor({ id: 'garanties-decennales', systemKey: null }),
+    );
   });
 
   it('expose la palette ordonnée et l’index système comme contrat public', () => {
     expect(vaultFolderTints).toHaveLength(6);
     expect(systemVaultFolderTintIndex).toEqual({
-      chantiers: 0,
-      achats: 1,
-      assurances: 2,
-      fiscal: 3,
-      banque: 4,
-      comptable: 5,
+      projects: 0,
+      purchases: 1,
+      insurance: 2,
+      tax_social: 3,
+      bank: 4,
+      accounting: 5,
     });
   });
 

@@ -35,15 +35,33 @@ function useSystemPreference(
   const [state, setState] = useState<PreferenceState>('unknown');
   useEffect(() => {
     let alive = true;
+    let eventObserved = false;
     const apply = (value: boolean): void => {
       if (alive) setState(value ? 'active' : 'inactive');
     };
-    const subscription = AccessibilityInfo.addEventListener(event, apply);
-    read().then(apply, () => {
-      // Une lecture qui échoue laisse l'état INCONNU — donc le rang sûr. On ne bascule jamais
-      // vers « inactive » par défaut : ce serait décider à la place de l'utilisateur.
-      if (alive) setState('unknown');
-    });
+    const applyEvent = (value: boolean): void => {
+      // Un événement est plus récent que le snapshot demandé au montage. Une résolution tardive
+      // de ce snapshot ne doit jamais écraser la préférence que le système vient d'annoncer.
+      eventObserved = true;
+      apply(value);
+    };
+    const subscription = AccessibilityInfo.addEventListener(event, applyEvent);
+    try {
+      read().then(
+        (value) => {
+          if (!eventObserved) apply(value);
+        },
+        () => {
+          // Une lecture qui échoue laisse l'état INCONNU — donc le rang sûr. Si un événement
+          // plus récent a déjà été reçu, il reste autoritaire et ne doit pas être effacé.
+          if (alive && !eventObserved) setState('unknown');
+        },
+      );
+    } catch {
+      // Certains ponts natifs peuvent lever avant même de rendre une Promise. L'état initial
+      // `unknown` est déjà le seul état sûr ; un événement ultérieur pourra toujours le résoudre.
+      if (alive && !eventObserved) setState('unknown');
+    }
     return () => {
       alive = false;
       subscription.remove();

@@ -12,40 +12,17 @@
  * la doctrine de la tab bar v2 devient la loi de tout le kit. Coût assumé : première frame
  * sans animation.
  *
- * MÉMOIRE DE MODULE — la résolution est retenue au niveau du module : seul le TOUT PREMIER
- * montage (ou un échec de lecture) traverse la fenêtre d'ignorance ; les montages suivants
- * démarrent sur la dernière valeur RÉSOLUE du système (les animations de montage — FadeIn ne
- * joue qu'au montage — restent donc vivantes après la première résolution). Chaque montage
- * relit quand même la préférence : une valeur périmée est corrigée dès la réponse native.
+ * AUCUN CACHE FAIL-OPEN — chaque montage repart de l'état tri-état `unknown`. Une ancienne
+ * résolution `inactive` ne peut donc jamais autoriser un FadeIn avant la nouvelle lecture native :
+ * la préférence a pu changer pendant qu'aucun consommateur n'était monté, et le pont natif peut
+ * échouer. `unknown` et `active` ferment tous deux l'animation ; seul `inactive`, relu ou reçu par
+ * événement pendant CE montage, l'autorise.
  *
  * Pour les cas fins qui doivent DISTINGUER « inconnu » de « réduit » (ligne de scan),
  * consommer `useReduceMotionPreference` (tri-état, use-accessibility-preference.ts).
  */
-import { useEffect, useState } from 'react';
-import { AccessibilityInfo } from 'react-native';
-
-/** Dernière valeur RÉSOLUE par le système — null tant qu'aucune lecture n'a abouti. */
-let lastResolvedReduceMotion: boolean | null = null;
+import { useReduceMotionPreference } from './use-accessibility-preference';
 
 export function useReduceMotion(): boolean {
-  // Fenêtre d'ignorance = RÉDUIT (fail-closed) ; sinon, dernière valeur résolue connue.
-  const [reduced, setReduced] = useState(lastResolvedReduceMotion ?? true);
-  useEffect(() => {
-    let alive = true;
-    const apply = (value: boolean): void => {
-      lastResolvedReduceMotion = value;
-      if (alive) setReduced(value);
-    };
-    const subscription = AccessibilityInfo.addEventListener('reduceMotionChanged', apply);
-    AccessibilityInfo.isReduceMotionEnabled().then(apply, () => {
-      // Lecture en échec : on ne décide PAS à la place de l'utilisateur — l'état reste
-      // celui du montage (fermé si aucune résolution n'a jamais abouti), et la mémoire
-      // de module n'est pas écrite.
-    });
-    return () => {
-      alive = false;
-      subscription.remove();
-    };
-  }, []);
-  return reduced;
+  return useReduceMotionPreference() !== 'inactive';
 }

@@ -113,10 +113,22 @@ describe('Sheet — reduce motion', () => {
 
   it('anime le slide/fondu sur DURATION_MS quand la préférence système est normale', async () => {
     isReduceMotionEnabled.mockResolvedValue(false);
+    let renderer!: ReactTestRenderer;
     await act(async () => {
-      renderSheet(true);
+      renderer = renderSheet(false);
       await Promise.resolve();
       await Promise.resolve();
+    });
+    timing.mockClear();
+
+    await act(async () => {
+      renderer.update(
+        <ThemeProvider>
+          <Sheet visible onClose={() => {}}>
+            <></>
+          </Sheet>
+        </ThemeProvider>,
+      );
     });
 
     expect(timing).toHaveBeenCalled();
