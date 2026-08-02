@@ -32,7 +32,7 @@ Produit par l'étude workflow `etude-da-ecrans-par-lots` (39 écrans inventorié
 - [Lot 0 — tokens] Encres AA sur fond pastel : semantic.warningInk / semantic.successInk (patron pieceDetail.creditInk généralisé) — consommées par StatusStrip, checklist transmission, facture/[id]
 - [Lot 0 — tokens] Rôles couleur dédiés : journaux comptables (ventes/achats/banque/OD), catégories de dépense, IconTile tone 'document' (neutre), themes.indigo.accent (remplace l'emprunt vault.scanChipIcon) — fin du recyclage des tons de typologie client
 - [Lot 0 — tokens] overlays.photoScrim (noir ≈ .92) + rôle « chrome sur scrim » + rôles texte AA on-dark (corps ≥ white80, détail ≥ white70) dans la famille overlays existante (index.ts l.354)
-- [Lot 0 — tokens] +2 teintes vault dossiers (6 distinctes pour 6 dossiers système) + util PURE `folderTintFor(folderId)` (hash stable sur la palette — logique testable par mutants)
+- [Lot 0 — tokens] +2 teintes vault dossiers (6 distinctes pour 6 dossiers système) + util PURE `folderTintFor({ id, systemKey })` : `systemKey` porte l'identité métier des dossiers système, `id` est haché uniquement pour les dossiers personnalisés (hash stable sur la palette — logique testable par mutants)
 - [Lot 0 — doctrine] Fail-closed motion généralisé : useReduceMotion (packages/ui/src/hooks/use-reduce-motion.ts) passe fail-closed + réexport public de useReduceMotionPreference (PreferenceState, déjà écrit dans use-accessibility-preference.ts) + resolveScanReadingMotion étendu à 3 états (unknown/reduced/full) — corrige en un commit les premières frames de L1/L2/L4/L5
 - [Lot 0 — doctrine] Grammaire d'erreur : ErrorSheet promu de apps/mobile/src/components/ErrorSheet.tsx vers @bob/ui (porte ErrorNotice 2 faces ; QuestionSheet y est déjà) + Toast tone success/danger + face sombre d'ErrorNotice (pour diagnostic)
 - [Lot 0 — doctrine] StatusBadge variant 'ai' + table de correspondance officielle BadgeTone legacy → StatusBadgeVariant (dont tone 'ai' → 'ai') — FIGÉE avant toute migration, testée unitairement
@@ -58,7 +58,7 @@ Produit par l'étude workflow `etude-da-ecrans-par-lots` (39 écrans inventorié
 Commits estimés : ~7
 
 **Interventions**
-- `packages/tokens/src/index.ts` — Ajouter en 2 commits : échelle spacing (gutter 20 canonique), crans sheetTitle/wizardTitle/héros MoneyText, encres warningInk/successInk, rôles journaux + catégories dépense + tone 'document' + indigo.accent, overlays.photoScrim + rôles AA on-dark, +2 teintes vault + util pure folderTintFor(id).
+- `packages/tokens/src/index.ts` — Ajouter en 2 commits : échelle spacing (gutter 20 canonique), crans sheetTitle/wizardTitle/héros MoneyText, encres warningInk/successInk, rôles journaux + catégories dépense + tone 'document' + indigo.accent, overlays.photoScrim + rôles AA on-dark, +2 teintes vault + util pure `folderTintFor({ id, systemKey })`.
   - Pourquoi : Toutes les décisions de langage (espace, typo, couleur) se figent AVANT que les écrans ne bougent — c'est ce qui empêche les 5 lots de re-négocier chacun leur canon.
   - Risque : bas — additif pur, aucun consommateur encore
 - `packages/ui/src/hooks/use-reduce-motion.ts + resolveScanReadingMotion` — Basculer useReduceMotion en fail-closed (préférence non résolue = pas d'animation), exposer publiquement useReduceMotionPreference (3 états), étendre resolveScanReadingMotion à unknown/reduced/full.
@@ -141,7 +141,7 @@ Commits estimés : ~10
 - `documents.tsx l.1068-1139, gouttières 18, l.252-1506 (slate300 <13px), press states hétérogènes` — SectionHeader kit ×2, gouttière 18→20 (token), métadonnées small → slate500, tous les press states → PressableScale, micro-rythme PendingCard 12/13/14 → intraGap.
   - Pourquoi : Le bord gauche cesse de zigzaguer de 2 px entre titre et cartes ; « il y a 2 h » redevient lisible au soleil ; un seul langage de pression.
   - Risque : bas
-- `documents.tsx l.131-141 + l.806-820, folder/[id].tsx l.796-801` — 6 teintes distinctes pour les dossiers système + folderTintFor(id) (Lot 0) pour les personnalisés, teinte d'identité propagée aux sous-dossiers (FolderRow).
+- `documents.tsx l.131-141 + l.806-820, folder/[id].tsx l.796-801` — 6 teintes distinctes pour les dossiers système via leur `systemKey` + `folderTintFor({ id, systemKey })` (Lot 0) pour les personnalisés, teinte d'identité propagée aux sous-dossiers (FolderRow).
   - Pourquoi : La couleur-repère doit coder l'identité (retrouver « Assurances » d'un coup d'œil) et survivre à la navigation dans l'arborescence.
   - Risque : bas
 - `documents.tsx l.571-575/599-602/670/750, folder/[id].tsx l.649-651, scan-document.tsx l.1419-1461` — Grammaire d'erreur : échecs de mutation (classement, confirmation, export FEC, suppression, réconciliation unresolved/stale/rejected) → ErrorSheet kit avec face développeur/corrélation ; Toast réservé aux succès.
@@ -298,3 +298,38 @@ Commits estimés : ~10
 - apps/mobile/src/audio/**, apps/mobile/src/data/voice.ts, apps/api/src/voice/**, packages/ai/** — périmètre agent/voix/realtime du contrat binaire, intouchable jusqu'au bâton explicite
 - apps/mobile/app/catalogue.tsx et apps/mobile/app/onboarding.tsx — claims GPT documentés (catalogue-screen fail-closed, onboarding portfolio persistence) ; hors des 5 lots audités de toute façon — à réauditer après restitution
 - Nota : notifications.tsx, compte.tsx, reglages-facturation.tsx, profil-fiscal.tsx, diagnostic-technique.tsx, src/screens (auth) ne sont PAS lane GPT mais hors périmètre des audits — vague ultérieure avec le kit complet
+
+## Addendum contractuel post-review — O6/LOT0-CORRECTION-01 (02/08/2026)
+
+La revue adversariale de la PR #51 a réfuté quatre contrats du Lot 0 malgré une CI verte. Ce
+micro-lot correctif est requis avant tout consommateur des fondations et avant la reprise du train
+Bob Live O5.
+
+**Objectif.** Rendre le socle Lot 0 réellement commun à React Native et au Web, fidèle aux
+identités métier persistées et strictement fail-closed pour l'accessibilité.
+
+**Périmètre.** `@bob/tokens` et son miroir de handoff, CSS générée, `useReduceMotion`, contrat
+accessible de `SearchField`, tests de dérive domaine↔tokens et tests de régression. **Hors
+périmètre.** Adoption visuelle dans les écrans (Lots 1–5), nouvelle direction artistique, ajout de
+données ou modification d'un use case métier.
+
+**Invariants.** Les six clés système sont exactement `projects`, `purchases`, `insurance`,
+`tax_social`, `bank`, `accounting` ; un UUID système n'est jamais haché comme un dossier
+personnalisé. Tout rôle ajouté par le Lot 0 existe dans `toCssVars()` et dans `variables.css`. Une
+préférence reduce-motion non résolue ou illisible ferme l'animation à chaque montage ; un événement
+système récent ne peut jamais être écrasé par le snapshot initial plus ancien. Aucun libellé
+accessible visible ou vocal n'est fabriqué dans `@bob/ui` : il vient de l'appelant i18n. Le champ de
+recherche canonique respecte 4,5:1 pour son placeholder et 3:1 pour ses contrôles graphiques.
+
+**Critères d'acceptation binaires.** (1) garde croisée contre `DOCUMENT_FOLDER_SYSTEM_KEYS` verte,
+six index distincts et hash personnalisé stable ; (2) assertions exactes des nouveaux rôles CSS sur
+les quatre thèmes et fichier généré sans dérive ; (3) régression « lecture `false` → démontage →
+nouvelle lecture rejetée » rendant `true` dès la première et la dernière valeur, course « événement
+actif → snapshot initial inactif » conservant l'événement et exception synchrone restant inconnue ;
+(4) compilation refusant un `SearchField` effaçable sans `clearAccessibilityLabel`, décor SVG masqué
+et contrastes mesurés verts ; (5) tests et typechecks `@bob/tokens`, `@bob/ui`, mobile et Web verts,
+`git diff --check` vert.
+
+**Definition of Done.** `implemented` après preuves locales et revue adversariale sans P0/P1 ;
+`certified` reste interdit tant que les preuves device ON/OFF/unknown et les captures prévues par le
+Lot 0 ne sont pas produites.

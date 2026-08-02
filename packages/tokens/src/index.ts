@@ -497,13 +497,25 @@ export const vaultFolderTints: readonly [
 
 /** Index de teinte des 6 dossiers SYSTÈME — bijection sur la palette (6 identités distinctes). */
 export const systemVaultFolderTintIndex = {
-  chantiers: 0,
-  achats: 1,
-  assurances: 2,
-  fiscal: 3,
-  banque: 4,
-  comptable: 5,
+  projects: 0,
+  purchases: 1,
+  insurance: 2,
+  tax_social: 3,
+  bank: 4,
+  accounting: 5,
 } as const;
+
+/** Clés sérialisées du domaine. La garde croisée mobile casse si le domaine en ajoute une. */
+export type VaultSystemFolderKey = keyof typeof systemVaultFolderTintIndex;
+
+/**
+ * Identité minimale reçue par les vues de documents. L'identité d'un dossier système vient de
+ * `systemKey` ; son `id` est un UUID de stockage et ne doit jamais décider de sa couleur.
+ */
+export interface VaultFolderTintIdentity {
+  readonly id: string;
+  readonly systemKey: VaultSystemFolderKey | null;
+}
 
 /**
  * Hachage djb2-xor 32 bits d'un identifiant de dossier — STABLE par construction (aucune
@@ -523,11 +535,11 @@ function hashFolderId(folderId: string): number {
  *  · dossier SYSTÈME → sa teinte dédiée (6 distinctes, `systemVaultFolderTintIndex`) ;
  *  · dossier personnalisé → hachage stable sur la palette (`hashFolderId(id) % 6`).
  */
-export function folderTintFor(folderId: string): VaultFolderTint {
-  const systemIndex =
-    systemVaultFolderTintIndex[folderId as keyof typeof systemVaultFolderTintIndex];
-  if (systemIndex !== undefined) return vaultFolderTints[systemIndex] as VaultFolderTint;
-  return vaultFolderTints[hashFolderId(folderId) % vaultFolderTints.length] as VaultFolderTint;
+export function folderTintFor(folder: VaultFolderTintIdentity): VaultFolderTint {
+  if (folder.systemKey !== null) {
+    return vaultFolderTints[systemVaultFolderTintIndex[folder.systemKey]] as VaultFolderTint;
+  }
+  return vaultFolderTints[hashFolderId(folder.id) % vaultFolderTints.length] as VaultFolderTint;
 }
 
 // ----------------------------------------------------------------------------
@@ -733,8 +745,10 @@ export const toCssVars = (t: BrandTheme): Record<string, string> => {
     '--bob-color-success': semantic.success,
     '--bob-color-success-bg': semantic.successBg,
     '--bob-color-success-on-dark': semantic.successOnDark,
+    '--bob-color-success-ink': semantic.successInk,
     '--bob-color-warning': semantic.warning,
     '--bob-color-warning-bg': semantic.warningBg,
+    '--bob-color-warning-ink': semantic.warningInk,
     '--bob-color-danger': semantic.danger,
     '--bob-color-danger-bg': semantic.dangerBg,
     '--bob-color-danger-vivid': semantic.dangerVivid,
@@ -762,6 +776,41 @@ export const toCssVars = (t: BrandTheme): Record<string, string> => {
     '--bob-control-button-secondary-border': controls.buttonSecondaryBorder,
     '--bob-control-danger-badge-bg': controls.dangerBadgeBg,
     '--bob-control-tab-inactive': controls.tabInactive,
+    '--bob-journal-ventes-ink': journal.ventes.ink,
+    '--bob-journal-ventes-bg': journal.ventes.bg,
+    '--bob-journal-achats-ink': journal.achats.ink,
+    '--bob-journal-achats-bg': journal.achats.bg,
+    '--bob-journal-banque-ink': journal.banque.ink,
+    '--bob-journal-banque-bg': journal.banque.bg,
+    '--bob-journal-od-ink': journal.od.ink,
+    '--bob-journal-od-bg': journal.od.bg,
+    '--bob-expense-category-fournitures-ink': expenseCategory.fournitures.ink,
+    '--bob-expense-category-fournitures-bg': expenseCategory.fournitures.bg,
+    '--bob-expense-category-materiel-ink': expenseCategory.materiel.ink,
+    '--bob-expense-category-materiel-bg': expenseCategory.materiel.bg,
+    '--bob-expense-category-carburant-ink': expenseCategory.carburant.ink,
+    '--bob-expense-category-carburant-bg': expenseCategory.carburant.bg,
+    '--bob-expense-category-repas-ink': expenseCategory.repas.ink,
+    '--bob-expense-category-repas-bg': expenseCategory.repas.bg,
+    '--bob-expense-category-sous-traitance-ink': expenseCategory.sous_traitance.ink,
+    '--bob-expense-category-sous-traitance-bg': expenseCategory.sous_traitance.bg,
+    '--bob-expense-category-autre-ink': expenseCategory.autre.ink,
+    '--bob-expense-category-autre-bg': expenseCategory.autre.bg,
+    '--bob-document-tile-ink': documentTile.ink,
+    '--bob-document-tile-bg': documentTile.bg,
+    '--bob-vault-folder-projects-tint': vaultFolderTints[systemVaultFolderTintIndex.projects].tint,
+    '--bob-vault-folder-projects-bg': vaultFolderTints[systemVaultFolderTintIndex.projects].bg,
+    '--bob-vault-folder-purchases-tint': vaultFolderTints[systemVaultFolderTintIndex.purchases].tint,
+    '--bob-vault-folder-purchases-bg': vaultFolderTints[systemVaultFolderTintIndex.purchases].bg,
+    '--bob-vault-folder-insurance-tint': vaultFolderTints[systemVaultFolderTintIndex.insurance].tint,
+    '--bob-vault-folder-insurance-bg': vaultFolderTints[systemVaultFolderTintIndex.insurance].bg,
+    '--bob-vault-folder-tax-social-tint': vaultFolderTints[systemVaultFolderTintIndex.tax_social].tint,
+    '--bob-vault-folder-tax-social-bg': vaultFolderTints[systemVaultFolderTintIndex.tax_social].bg,
+    '--bob-vault-folder-bank-tint': vaultFolderTints[systemVaultFolderTintIndex.bank].tint,
+    '--bob-vault-folder-bank-bg': vaultFolderTints[systemVaultFolderTintIndex.bank].bg,
+    '--bob-vault-folder-accounting-tint': vaultFolderTints[systemVaultFolderTintIndex.accounting].tint,
+    '--bob-vault-folder-accounting-bg': vaultFolderTints[systemVaultFolderTintIndex.accounting].bg,
+    '--bob-overlay-white-80': overlays.white80,
     '--bob-overlay-white-70': overlays.white70,
     '--bob-overlay-white-66': overlays.white66,
     '--bob-overlay-white-60': overlays.white60,
@@ -772,6 +821,8 @@ export const toCssVars = (t: BrandTheme): Record<string, string> => {
     '--bob-overlay-white-08': overlays.white08,
     '--bob-overlay-white-07': overlays.white07,
     '--bob-overlay-scrim': overlays.scrim,
+    '--bob-overlay-photo-scrim': overlays.photoScrim,
+    '--bob-overlay-scrim-chrome': overlays.scrimChrome,
     '--bob-overlay-success-pill': overlays.successPill,
     '--bob-shadow-e0': shadow.e0,
     '--bob-shadow-e1': shadow.e1,
@@ -789,13 +840,31 @@ export const toCssVars = (t: BrandTheme): Record<string, string> => {
     '--bob-radius-card-xl': px(radius.cardXl),
     '--bob-radius-pill': px(radius.pill),
     '--bob-radius-circle': radius.circle,
+    '--bob-spacing-gutter': px(spacing.gutter),
+    '--bob-spacing-section-gap': px(spacing.sectionGap),
+    '--bob-spacing-item-gap': px(spacing.itemGap),
+    '--bob-spacing-intra-gap': px(spacing.intraGap),
+    '--bob-spacing-card-pad': px(spacing.cardPad),
+    '--bob-spacing-hero-pad': px(spacing.heroPad),
     '--bob-font-family-display': fonts.display,
     '--bob-font-family-text': fonts.text,
+    '--bob-type-sheet-title-family': fonts[type.sheetTitle.family],
+    '--bob-type-sheet-title-size': px(type.sheetTitle.size),
+    '--bob-type-sheet-title-weight': String(type.sheetTitle.weight),
+    '--bob-type-sheet-title-tracking': px(type.sheetTitle.tracking),
+    '--bob-type-wizard-title-family': fonts[type.wizardTitle.family],
+    '--bob-type-wizard-title-size': px(type.wizardTitle.size),
+    '--bob-type-wizard-title-weight': String(type.wizardTitle.weight),
+    '--bob-type-wizard-title-tracking': px(type.wizardTitle.tracking),
+    '--bob-type-money-hero-family': fonts[type.moneyHero.family],
+    '--bob-type-money-hero-size': px(type.moneyHero.size),
+    '--bob-type-money-hero-weight': String(type.moneyHero.weight),
     '--brand-d1': t.d1,
     '--brand-d2': t.d2,
     '--brand-d3': t.d3,
     '--brand-ink': t.ink,
     '--brand-ink2': t.ink2,
+    '--brand-accent': t.accent,
     '--brand-gradient-header': g.header,
     '--brand-gradient-hero': g.hero,
     '--brand-gradient-fab': g.fab,

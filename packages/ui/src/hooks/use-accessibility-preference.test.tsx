@@ -12,21 +12,26 @@ import { createElement } from 'react';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const { isReduceMotionEnabled, isScreenReaderEnabled, addEventListener, remove } = vi.hoisted(
-  () => ({
+const { isReduceMotionEnabled, isScreenReaderEnabled, addEventListener, remove, listeners } =
+  vi.hoisted(() => {
+    const listeners = new Map<string, (enabled: boolean) => void>();
+    return {
     isReduceMotionEnabled: vi.fn<() => Promise<boolean>>(),
     isScreenReaderEnabled: vi.fn<() => Promise<boolean>>(),
-    addEventListener: vi.fn(),
+      addEventListener: vi.fn((event: string, listener: (enabled: boolean) => void) => {
+        listeners.set(event, listener);
+      }),
     remove: vi.fn(),
-  }),
-);
+      listeners,
+    };
+  });
 
 vi.mock('react-native', () => ({
   AccessibilityInfo: {
     isReduceMotionEnabled: () => isReduceMotionEnabled(),
     isScreenReaderEnabled: () => isScreenReaderEnabled(),
-    addEventListener: (...args: unknown[]) => {
-      addEventListener(...args);
+    addEventListener: (event: string, listener: (enabled: boolean) => void) => {
+      addEventListener(event, listener);
       return { remove };
     },
   },
@@ -53,6 +58,7 @@ async function renderHook(hook: () => string): Promise<{ values: string[]; tree:
 
 beforeEach(() => {
   vi.clearAllMocks();
+  listeners.clear();
 });
 
 describe('préférences d’accessibilité — trois états, jamais deux', () => {
@@ -66,7 +72,10 @@ describe('préférences d’accessibilité — trois états, jamais deux', () =>
     const { values } = await renderHook(useReduceMotionPreference);
     expect(values[0]).toBe('unknown');
     expect(values[0]).not.toBe('inactive');
-    resolveRead?.(false);
+    await act(async () => {
+      resolveRead?.(false);
+      await Promise.resolve();
+    });
   });
 
   it('passe à `inactive` quand la préférence revient à faux', async () => {
@@ -85,6 +94,37 @@ describe('préférences d’accessibilité — trois états, jamais deux', () =>
     isReduceMotionEnabled.mockRejectedValue(new Error('pont natif indisponible'));
     const { values } = await renderHook(useReduceMotionPreference);
     expect(values.at(-1)).toBe('unknown');
+  });
+
+  it('garde l’événement récent si le snapshot initial plus ancien se résout ensuite', async () => {
+    let resolveRead: ((value: boolean) => void) | undefined;
+    isReduceMotionEnabled.mockReturnValue(
+      new Promise<boolean>((resolve) => {
+        resolveRead = resolve;
+      }),
+    );
+    const { values } = await renderHook(useReduceMotionPreference);
+
+    await act(async () => {
+      listeners.get('reduceMotionChanged')?.(true);
+    });
+    expect(values.at(-1)).toBe('active');
+
+    await act(async () => {
+      resolveRead?.(false);
+      await Promise.resolve();
+    });
+    expect(values.at(-1)).toBe('active');
+  });
+
+  it('reste `unknown` si le pont natif lève avant de rendre une Promise', async () => {
+    isReduceMotionEnabled.mockImplementationOnce(() => {
+      throw new Error('pont natif indisponible synchroniquement');
+    });
+
+    const { values } = await renderHook(useReduceMotionPreference);
+
+    expect(values).toEqual(['unknown']);
   });
 
   it('s’abonne au changement système et se désabonne au démontage', async () => {
@@ -106,6 +146,9 @@ describe('préférences d’accessibilité — trois états, jamais deux', () =>
     );
     const { values } = await renderHook(useScreenReaderPreference);
     expect(values[0]).toBe('unknown');
-    resolveRead?.(false);
+    await act(async () => {
+      resolveRead?.(false);
+      await Promise.resolve();
+    });
   });
 });
