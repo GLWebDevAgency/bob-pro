@@ -40,6 +40,9 @@ const { FakeAnimatedValue } = vi.hoisted(() => {
 vi.mock('react-native', () => ({
   AccessibilityInfo: {
     isReduceMotionEnabled: () => Promise.resolve(false),
+    // Voile v2 en pied d'InnerScreenHeader (Lot 1) : la préférence de transparence reste
+    // NON RÉSOLUE — fail-closed, le voile plat teinté identique dans les DEUX arbres.
+    isReduceTransparencyEnabled: () => new Promise<boolean>(() => {}),
     addEventListener: () => ({ remove: vi.fn() }),
     setAccessibilityFocus: vi.fn(),
   },
