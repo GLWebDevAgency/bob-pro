@@ -103,6 +103,9 @@ export {
 } from './components/header-icon-button.logic';
 export * from './components/hero-money-card';
 export * from './components/money-row';
+// Lot 1 — cœur quotidien : échéance (promotion du FiscalDeadlineRow local) + coach-mark.
+export * from './components/deadline-row';
+export * from './components/tip-card';
 export * from './components/segmented-control';
 export * from './components/client-row';
 export * from './components/score';
