@@ -33,7 +33,12 @@ export const MOBILE_TABS_EXPERIMENT_ENV = 'EXPO_PUBLIC_MOBILE_TABS_EXPERIMENT_V1
 const TRUTHY = new Set(['1', 'true']);
 
 export function isMobileTabsExperimentEnabled(
-  raw: string | undefined = process.env[MOBILE_TABS_EXPERIMENT_ENV],
+  // ACCÈS STATIQUE OBLIGATOIRE : le bundler d'Expo n'inline que la forme littérale
+  // `process.env.EXPO_PUBLIC_X` — un accès calculé (crochets) reste une lecture runtime,
+  // et `process.env` est VIDE dans l'app embarquée : le flag valait OFF dans tous les
+  // builds, quel que soit eas.json (constaté sur l'APK dc12c56c, 02/08). Même règle que
+  // crash-reporter.ts ; verrouillé par la garde source du test.
+  raw: string | undefined = process.env.EXPO_PUBLIC_MOBILE_TABS_EXPERIMENT_V1,
 ): boolean {
   return raw !== undefined && TRUTHY.has(raw.trim().toLowerCase());
 }
