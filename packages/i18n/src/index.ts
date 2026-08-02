@@ -1432,6 +1432,12 @@ const legacyFr = {
     pro: 'Ajouter une photo',
     direct: 'Photo',
   },
+  // Tuile fantôme d'envoi (Lot 4) — sur un chantier en 3G, l'artisan VOIT que Bob travaille.
+  'chantierFiche.photoUploading': {
+    pote: 'Photo en route…',
+    pro: 'Envoi de la photo…',
+    direct: 'Envoi…',
+  },
   'chantierFiche.photoSourceTitle': {
     pote: 'Ajouter une photo',
     pro: 'Ajouter une photo',
