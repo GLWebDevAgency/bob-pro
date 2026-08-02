@@ -37,7 +37,6 @@
  */
 import { useMemo, useState } from 'react';
 import {
-  Modal,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -54,31 +53,36 @@ import {
   parisDateOnly,
   type CashflowBand,
   type CashflowSeriesPoint,
-  type FiscalDeadline,
   type Horizon,
   type Scenario,
 } from '@bob/core';
-import { patterns, shadowNative } from '@bob/tokens';
+import { spacing } from '@bob/tokens';
 import { deriveAgedBalance, type AgedBucketKey } from '@bob/core';
-import { t, type I18nKey, type Personality } from '@bob/i18n';
+import { t, type I18nKey } from '@bob/i18n';
 import { usePublishAgentContext, type AgentContext, type AgentSurface } from '../../src/agent';
 import { deriveCashPositionDisplay } from '../../src/finance/cash-position-view';
 import {
   Avatar,
   Button,
   Card,
+  DeadlineRow,
+  DeadlineRowSkeleton,
   ErrorRetry,
   Fab,
   FadeIn,
   HeroMoneyCard,
+  HeroMoneyCardPlaceholder,
   IconTile,
   InnerScreenHeader,
   MoneyRow,
+  MoneyRowEmpty,
+  MoneyRowSkeleton,
   MoneyText,
   SectionHeader,
   SegmentedControl,
   Skeleton,
   StatusBadge,
+  TipCard,
   font,
   useReduceMotion,
   useTheme,
@@ -127,94 +131,6 @@ const BAND_LABEL: Record<CashflowBand, I18nKey> = {
   repart: 'argent.bandRepart',
 };
 
-/**
- * Héros sans donnée (chargement ou erreur) : MÊME géométrie que la HeroMoneyCard (radius 24,
- * padding 20, label → montant heroNum + pill → caption) — zéro saut quand la donnée arrive,
- * et jamais un montant inventé (A1-C10). Skeletons du socle @bob/ui (pulse, reduce-motion safe).
- */
-function HeroPlaceholder({ loading }: { loading: boolean }) {
-  const { personality, colors, controls } = useTheme();
-  return (
-    <View
-      style={{
-        backgroundColor: colors.surface,
-        borderRadius: 24,
-        borderWidth: 1,
-        borderColor: controls.cardBorder,
-        padding: 20,
-        ...shadowNative.e2,
-      }}
-    >
-      <Text style={[font('label'), { color: colors.slate400 }]}>
-        {t('argent.heroLabel', { personality })}
-      </Text>
-      {loading ? (
-        <>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 }}>
-            <Skeleton width="52%" height={34} radius={9} />
-            <Skeleton width={92} height={22} radius={999} />
-          </View>
-          <Skeleton width="74%" height={13} style={{ marginTop: 9 }} />
-        </>
-      ) : (
-        <Text style={{ ...font('heroNum'), color: colors.slate400, marginTop: 4 }}>—</Text>
-      )}
-    </View>
-  );
-}
-
-/**
- * Rangée du grand-livre sans donnée : « — » est un état de premier rang — même géométrie
- * que MoneyRow (padding V 9, séparateur patterns.moneyRow.divider), jamais un 0 inventé.
- */
-function EmptyMoneyRow({
-  label,
-  variant = 'default',
-  divider = true,
-}: {
-  label: string;
-  variant?: 'default' | 'lead' | 'total';
-  divider?: boolean;
-}) {
-  const { colors } = useTheme();
-  const isTotal = variant === 'total';
-  const isLead = variant === 'lead';
-  return (
-    <View
-      accessible
-      accessibilityLabel={`${label}, —`}
-      style={{
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        paddingVertical: 9,
-        ...(isTotal ? { paddingTop: 13 } : {}),
-        ...(divider ? { borderBottomWidth: 1, borderBottomColor: patterns.moneyRow.divider } : {}),
-      }}
-    >
-      <Text
-        numberOfLines={1}
-        style={[
-          font('body'),
-          { fontSize: 14, color: colors.slate500 },
-          isLead ? { fontWeight: '600', color: colors.ink800 } : null,
-          isTotal ? { fontSize: 15, fontWeight: '700', color: colors.ink800 } : null,
-        ]}
-      >
-        {label}
-      </Text>
-      <Text
-        style={[
-          font('cardTitle'),
-          { fontSize: isTotal ? 20 : 15, color: colors.slate400, fontVariant: ['tabular-nums'] },
-        ]}
-      >
-        —
-      </Text>
-    </View>
-  );
-}
-
 // ── Échéancier fiscal « À venir » (C-EXP-UI1 — deriveFiscalCalendar C-EXP5/5b) ──
 
 const FR_MONTHS_SHORT = [
@@ -242,243 +158,10 @@ function frShortDate(dateOnly: string): string {
     : `${Number(d)} ${month} ${y}`;
 }
 
-/**
- * Rangée d'échéance fiscale : date FR courte, label, explain à la voix de Bob — JAMAIS de
- * montant (amountHint null en v1, P03/P23 les brancheront). Les échéances 'assumed'
- * (périodicité URSSAF / clôture inconnues) portent un badge discret « à confirmer ».
- */
-function FiscalDeadlineRow({
-  deadline,
-  personality,
-  last,
-}: {
-  deadline: FiscalDeadline;
-  personality: Personality;
-  last: boolean;
-}) {
-  const { colors } = useTheme();
-  return (
-    <View
-      accessible
-      accessibilityLabel={`${frShortDate(deadline.date)}, ${deadline.label}`}
-      style={{
-        flexDirection: 'row',
-        alignItems: 'flex-start',
-        gap: 12,
-        paddingVertical: 11,
-        ...(last ? {} : { borderBottomWidth: 1, borderBottomColor: colors.lineSoft }),
-      }}
-    >
-      <View style={{ minWidth: 62 }}>
-        <Text
-          style={[
-            font('label', 700),
-            { fontSize: 13.5, color: colors.ink800, fontVariant: ['tabular-nums'] },
-          ]}
-        >
-          {frShortDate(deadline.date)}
-        </Text>
-      </View>
-      <View style={{ flex: 1 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
-          <Text
-            numberOfLines={2}
-            style={[font('label', 600), { fontSize: 14, color: colors.ink800, flexShrink: 1 }]}
-          >
-            {deadline.label}
-          </Text>
-          {deadline.confidence === 'assumed' ? (
-            <StatusBadge
-              label={t('argent.upcomingAssumed', { personality }).toUpperCase()}
-              variant="particulier"
-            />
-          ) : null}
-        </View>
-        <Text style={[font('meta'), { color: colors.slate500, marginTop: 2, lineHeight: 16 }]}>
-          {deadline.explain}
-        </Text>
-      </View>
-    </View>
-  );
-}
-
-/** Barre de texte squelettée à hauteur de ligne EXACTE (boxHeight = lineHeight du texte réel) —
- *  la géométrie du row skeleton == celle du row final : zéro saut à l'arrivée des données. */
-function SkeletonTextLine({
-  width,
-  barHeight = 14,
-  boxHeight = 20,
-}: {
-  width: number | `${number}%`;
-  barHeight?: number;
-  boxHeight?: number;
-}) {
-  return (
-    <View style={{ height: boxHeight, justifyContent: 'center' }}>
-      <Skeleton width={width} height={barHeight} />
-    </View>
-  );
-}
-
-/** Skeleton d'une rangée du grand-livre — MÊME gabarit que MoneyRow (padding V 9, séparateur
- *  patterns.moneyRow.divider, lead avec icône 17, total padding-top 13 + montant 20). */
-function SkeletonMoneyRow({
-  variant = 'default',
-  divider = true,
-}: {
-  variant?: 'default' | 'lead' | 'total';
-  divider?: boolean;
-}) {
-  const isLead = variant === 'lead';
-  const isTotal = variant === 'total';
-  return (
-    <View
-      style={{
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        paddingVertical: 9,
-        ...(isTotal ? { paddingTop: 13 } : {}),
-        ...(divider ? { borderBottomWidth: 1, borderBottomColor: patterns.moneyRow.divider } : {}),
-      }}
-    >
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
-        {isLead ? <Skeleton width={17} height={17} radius={5} /> : null}
-        <SkeletonTextLine width={isLead ? 138 : 118} />
-      </View>
-      <SkeletonTextLine
-        width={isTotal ? 92 : 72}
-        barHeight={isTotal ? 18 : 15}
-        boxHeight={isTotal ? 27 : 21}
-      />
-    </View>
-  );
-}
-
-/** Skeleton d'une échéance fiscale — MÊME gabarit que FiscalDeadlineRow (padding V 11,
- *  colonne date 62, label + explain). */
-function SkeletonDeadlineRow({ last = false }: { last?: boolean }) {
-  const { colors } = useTheme();
-  return (
-    <View
-      style={{
-        flexDirection: 'row',
-        alignItems: 'flex-start',
-        gap: 12,
-        paddingVertical: 11,
-        ...(last ? {} : { borderBottomWidth: 1, borderBottomColor: colors.lineSoft }),
-      }}
-    >
-      <View style={{ minWidth: 62 }}>
-        <SkeletonTextLine width={50} barHeight={13} boxHeight={18} />
-      </View>
-      <View style={{ flex: 1, gap: 5 }}>
-        <SkeletonTextLine width="58%" barHeight={13} boxHeight={18} />
-        <SkeletonTextLine width="84%" barHeight={11} boxHeight={16} />
-      </View>
-    </View>
-  );
-}
-
-/**
- * Astuce « première fois » (réf C11-frame-astuce.png) : carte centrée sur scrim,
- * voix de Bob, dismiss persisté. « Tout passer » = même dismiss tant que cet écran
- * porte le seul tip (TODO : registre de tips multi-écrans).
- */
-function FirstTimeTip({ visible, onDismiss }: { visible: boolean; onDismiss: () => void }) {
-  const { personality, colors, semantic, overlays } = useTheme();
-  const reduceMotion = useReduceMotion();
-  if (!visible) return null;
-  return (
-    <Modal
-      transparent
-      visible
-      animationType={reduceMotion ? 'none' : 'fade'}
-      statusBarTranslucent
-      onRequestClose={onDismiss}
-    >
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 26 }}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={t('argent.tipSkip', { personality })}
-          onPress={onDismiss}
-          style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundColor: overlays.scrim,
-          }}
-        />
-        <View
-          style={{
-            width: '100%',
-            maxWidth: 318,
-            backgroundColor: colors.surface,
-            borderRadius: 22,
-            paddingTop: 22,
-            paddingHorizontal: 20,
-            paddingBottom: 18,
-            ...shadowNative.e3,
-          }}
-        >
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 13 }}>
-            <View
-              style={{
-                width: 38,
-                height: 38,
-                borderRadius: 13,
-                backgroundColor: semantic.ai,
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              <Ionicons name="sparkles" size={18} color={colors.surface} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={[font('eyebrow'), { fontSize: 10.5, color: semantic.ai }]}>
-                {t('argent.tipEyebrow', { personality })}
-              </Text>
-              <Text style={[font('meta'), { color: colors.slate400, marginTop: 1 }]}>
-                {t('argent.tipAuthor', { personality })}
-              </Text>
-            </View>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={t('argent.tipSkip', { personality })}
-              onPress={onDismiss}
-              hitSlop={10}
-            >
-              <Text style={[font('meta'), { color: colors.slate300 }]}>
-                {t('argent.tipSkip', { personality })}
-              </Text>
-            </Pressable>
-          </View>
-          <Text style={[font('section'), { fontSize: 19, color: colors.ink800 }]}>
-            {t('argent.tipTitle', { personality })}
-          </Text>
-          <Text
-            style={[
-              font('body'),
-              { color: colors.slate500, lineHeight: 21, marginTop: 6, marginBottom: 15 },
-            ]}
-          >
-            {t('argent.tipBody', { personality })}
-          </Text>
-          <Button
-            title={t('argent.tipCta', { personality })}
-            variant="primary"
-            onPress={onDismiss}
-          />
-        </View>
-      </View>
-    </Modal>
-  );
-}
-
 export default function Argent() {
   const { personality, colors, semantic } = useTheme();
+  // « — » visuel, jamais « tiret » à l'oreille (critère VoiceOver Lot 1).
+  const notProvided = t('common.notProvided', { personality });
   const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: 140 });
   const router = useRouter();
   const reduceMotion = useReduceMotion();
@@ -826,7 +509,7 @@ export default function Argent() {
             title={t('argent.title', { personality })}
             subtitle={t('argent.subtitle', { personality })}
           />
-          <View style={{ paddingHorizontal: 18, paddingTop: 16 }}>
+          <View style={{ paddingHorizontal: spacing.gutter, paddingTop: spacing.intraGap }}>
             <ErrorRetry
               message={t('argent.dataError', { personality })}
               onRetry={refetchMainData}
@@ -891,9 +574,9 @@ export default function Argent() {
           subtitle={t('argent.subtitle', { personality })}
         />
 
-        <View style={{ paddingHorizontal: 18 }}>
+        <View style={{ paddingHorizontal: spacing.gutter }}>
           {/* ── Héros « trésorerie mobilisable » ────────────────────────────── */}
-          <View style={{ marginTop: 16 }}>
+          <View style={{ marginTop: spacing.intraGap }}>
             {heroSafe.data && !payGuidance.isLoading ? (
               <FadeIn index={0}>
                 <HeroMoneyCard
@@ -908,21 +591,24 @@ export default function Argent() {
                 />
               </FadeIn>
             ) : (
-              <HeroPlaceholder loading={heroSafe.isLoading || payGuidance.isLoading} />
+              <HeroMoneyCardPlaceholder
+                label={t('argent.heroLabel', { personality })}
+                loading={heroSafe.isLoading || payGuidance.isLoading}
+              />
             )}
           </View>
 
           {/* ── Compte NEUF : invitation (jamais un désert de « — ») — le CTA solde remplace
               la carte « confirme ton solde » (même geste, hiérarchie soignée). ─────────── */}
           {showWelcome ? (
-            <FadeIn index={1} style={{ marginTop: 14 }}>
+            <FadeIn index={1} style={{ marginTop: spacing.intraGap }}>
               <Card radius={22} padding={20} elevation="e2">
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
                   <IconTile tone="success" size={44} radius={14}>
                     <Ionicons name="sparkles" size={20} color={semantic.success} />
                   </IconTile>
                   <View style={{ flex: 1, minWidth: 0 }}>
-                    <Text style={[font('section'), { fontSize: 18, color: colors.ink800 }]}>
+                    <Text style={[font('section'), { color: colors.ink800 }]}>
                       {t('argent.emptyTitle', { personality })}
                     </Text>
                   </View>
@@ -952,13 +638,13 @@ export default function Argent() {
               </Card>
             </FadeIn>
           ) : balanceNeedsConfirmation ? (
-            <Card radius={18} padding={15} style={{ marginTop: 14 }}>
+            <Card radius={18} padding={15} style={{ marginTop: spacing.intraGap }}>
               <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 11 }}>
                 <IconTile tone="b2b" size={36} radius={11}>
                   <Feather name="credit-card" size={17} color={semantic.b2b} />
                 </IconTile>
                 <View style={{ flex: 1, minWidth: 0 }}>
-                  <Text style={[font('cardTitle'), { fontSize: 15, color: colors.ink800 }]}>
+                  <Text style={[font('cardTitle'), { color: colors.ink800 }]}>
                     {t('argent.balanceNeededTitle', { personality })}
                   </Text>
                   <Text
@@ -982,7 +668,7 @@ export default function Argent() {
                expliqué ligne par ligne (+entrées / −sorties). C'est exactement ce qui manquait
                au fondateur : le solde figé était honnête, il lui manquait sa moitié estimée. */
             <FadeIn index={1}>
-              <Card radius={18} padding={16} style={{ marginTop: 12 }}>
+              <Card radius={18} padding={16} style={{ marginTop: spacing.intraGap }}>
                 <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
                   <IconTile tone="success" size={38} radius={12}>
                     <Feather name="trending-up" size={17} color={semantic.success} />
@@ -1037,7 +723,7 @@ export default function Argent() {
           ) : bankBalance.data ? (
             /* Aucun mouvement depuis l'observation (ou projection indisponible) : l'estimé
                égalerait le constaté — le rendu historique reste, à l'identique. */
-            <Card radius={16} padding={13} style={{ marginTop: 12 }}>
+            <Card radius={16} padding={13} style={{ marginTop: spacing.intraGap }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                 <Feather name="check-circle" size={17} color={semantic.success} />
                 <Text style={[font('meta'), { color: colors.slate500, flex: 1 }]}>
@@ -1059,7 +745,7 @@ export default function Argent() {
           ) : null}
 
           {hasError ? (
-            <View style={{ marginTop: 14 }}>
+            <View style={{ marginTop: spacing.intraGap }}>
               <ErrorRetry
                 message={t('argent.dataError', { personality })}
                 onRetry={refetchMainData}
@@ -1075,7 +761,7 @@ export default function Argent() {
               accessibilityRole="button"
               accessibilityLabel={`${t('fiscal.entry.title', { personality })}. ${t('fiscal.entry.body', { personality })}`}
               onPress={fiscalFlow.openFlow}
-              style={({ pressed }) => [{ marginTop: 14 }, cardPressed(pressed)]}
+              style={({ pressed }) => [{ marginTop: spacing.intraGap }, cardPressed(pressed)]}
             >
               <Card radius={18} padding={15}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11 }}>
@@ -1083,7 +769,7 @@ export default function Argent() {
                     <Ionicons name="sparkles" size={16} color={semantic.b2g} />
                   </IconTile>
                   <View style={{ flex: 1, minWidth: 0 }}>
-                    <Text style={{ ...font('cardTitle'), fontSize: 14.5, color: colors.ink800 }}>
+                    <Text style={{ ...font('cardTitle'), color: colors.ink800 }}>
                       {t('fiscal.entry.title', { personality })}
                     </Text>
                     <Text
@@ -1102,7 +788,7 @@ export default function Argent() {
           ) : null}
 
           {/* ── Grand-livre « LE SOLDE MENT » ───────────────────────────────── */}
-          <Card radius={22} padding={18} elevation="e2" style={{ marginTop: 14 }}>
+          <Card radius={22} padding={18} elevation="e2" style={{ marginTop: spacing.intraGap }}>
             <View
               style={{
                 flexDirection: 'row',
@@ -1114,22 +800,24 @@ export default function Argent() {
               <Text style={[font('cardTitle'), { color: colors.ink800 }]}>
                 {t('argent.ledgerTitle', { personality })}
               </Text>
+              {/* Le message-signature porte la voix de BOB (variant 'ai' — arbitrage « badge
+                  le solde ment ») : c'est Bob qui pédagogise, pas un ton de typologie client. */}
               <StatusBadge
                 label={t('argent.soldeMent', { personality }).toUpperCase()}
-                variant="particulier"
+                variant="ai"
               />
             </View>
             {ledgerLoading ? (
               <>
-                <SkeletonMoneyRow variant="lead" />
-                <SkeletonMoneyRow />
-                <SkeletonMoneyRow />
-                <SkeletonMoneyRow />
-                <SkeletonMoneyRow />
-                <SkeletonMoneyRow variant="total" divider={false} />
+                <MoneyRowSkeleton variant="lead" />
+                <MoneyRowSkeleton />
+                <MoneyRowSkeleton />
+                <MoneyRowSkeleton />
+                <MoneyRowSkeleton />
+                <MoneyRowSkeleton variant="total" divider={false} />
               </>
             ) : (
-              <FadeIn index={1}>
+              <FadeIn index={2}>
                 {ledger.bankCents !== null ? (
                   <MoneyRow
                     label={t('argent.rowBank', { personality })}
@@ -1138,7 +826,7 @@ export default function Argent() {
                     icon={<Feather name="credit-card" size={17} color={colors.ink600} />}
                   />
                 ) : (
-                  <EmptyMoneyRow label={t('argent.rowBank', { personality })} variant="lead" />
+                  <MoneyRowEmpty valueA11yLabel={notProvided} label={t('argent.rowBank', { personality })} variant="lead" />
                 )}
                 {ledger.receivablesCents !== null ? (
                   <MoneyRow
@@ -1146,7 +834,7 @@ export default function Argent() {
                     amountCents={ledger.receivablesCents}
                   />
                 ) : (
-                  <EmptyMoneyRow label={t('argent.rowReceivables', { personality })} />
+                  <MoneyRowEmpty valueA11yLabel={notProvided} label={t('argent.rowReceivables', { personality })} />
                 )}
                 {ledger.chargesCents !== null ? (
                   <MoneyRow
@@ -1154,7 +842,7 @@ export default function Argent() {
                     amountCents={ledger.chargesCents}
                   />
                 ) : (
-                  <EmptyMoneyRow label={t('argent.rowCharges', { personality })} />
+                  <MoneyRowEmpty valueA11yLabel={notProvided} label={t('argent.rowCharges', { personality })} />
                 )}
                 {ledger.vatCents !== null ? (
                   <MoneyRow
@@ -1162,7 +850,7 @@ export default function Argent() {
                     amountCents={ledger.vatCents}
                   />
                 ) : (
-                  <EmptyMoneyRow label={t('argent.rowVat', { personality })} />
+                  <MoneyRowEmpty valueA11yLabel={notProvided} label={t('argent.rowVat', { personality })} />
                 )}
                 {/* Cotisations : provision URSSAF calculée pour une company micro à partir de
                     company+payments+asOf ; les autres situations restent indisponibles. */}
@@ -1172,7 +860,7 @@ export default function Argent() {
                     amountCents={ledger.cotisationsCents}
                   />
                 ) : (
-                  <EmptyMoneyRow label={t('argent.rowCotisations', { personality })} />
+                  <MoneyRowEmpty valueA11yLabel={notProvided} label={t('argent.rowCotisations', { personality })} />
                 )}
                 {ledger.totalCents !== null ? (
                   <MoneyRow
@@ -1182,7 +870,8 @@ export default function Argent() {
                     divider={false}
                   />
                 ) : (
-                  <EmptyMoneyRow
+                  <MoneyRowEmpty
+                    valueA11yLabel={notProvided}
                     label={t('argent.rowTotal', { personality })}
                     variant="total"
                     divider={false}
@@ -1197,7 +886,7 @@ export default function Argent() {
               période + montant + explain voix Bob (calculés dans @bob/core, jamais ici) +
               échéance. État absent → RIEN (pas de carte vide). */}
           {ledger.urssaf !== null ? (
-            <Card radius={20} padding={16} elevation="e2" style={{ marginTop: 14 }}>
+            <Card radius={20} padding={16} elevation="e2" style={{ marginTop: spacing.intraGap }}>
               <View
                 style={{
                   flexDirection: 'row',
@@ -1208,10 +897,7 @@ export default function Argent() {
               >
                 <Text
                   numberOfLines={1}
-                  style={[
-                    font('cardTitle'),
-                    { fontSize: 15.5, color: colors.ink800, flexShrink: 1 },
-                  ]}
+                  style={[font('cardTitle'), { color: colors.ink800, flexShrink: 1 }]}
                 >
                   {t('argent.urssafTitle', {
                     personality,
@@ -1227,9 +913,7 @@ export default function Argent() {
                   />
                 ) : null}
               </View>
-              <Text
-                style={[font('meta'), { fontSize: 11.5, color: colors.slate400, marginTop: 10 }]}
-              >
+              <Text style={[font('meta'), { color: colors.slate400, marginTop: 10 }]}>
                 {t('argent.urssafSetAside', { personality })}
               </Text>
               <View style={{ marginTop: 2 }}>
@@ -1240,12 +924,7 @@ export default function Argent() {
               >
                 {ledger.urssaf.explain}
               </Text>
-              <Text
-                style={[
-                  font('label', 600),
-                  { fontSize: 12.5, color: colors.ink800, marginTop: 10 },
-                ]}
-              >
+              <Text style={[font('label', 600), { color: colors.ink800, marginTop: 10 }]}>
                 {t('argent.urssafDeclareBy', {
                   personality,
                   params: { date: frShortDate(ledger.urssaf.declareBy) },
@@ -1256,12 +935,12 @@ export default function Argent() {
 
           {/* ── B5 — Retenue de garantie à récupérer (loi 71-584) : créance SUIVIE du tenant,
                dérivée des factures émises porteuses — la carte se tait sans retenue. ── */}
-          <View style={{ marginTop: 14 }}>
+          <View style={{ marginTop: spacing.intraGap }}>
             <RetenueSuiviCard />
           </View>
 
           {/* ── Prévision de tréso (scénarios × horizons LIVE) ──────────────── */}
-          <Card radius={22} padding={16} elevation="e2" style={{ marginTop: 14 }}>
+          <Card radius={22} padding={16} elevation="e2" style={{ marginTop: spacing.intraGap }}>
             <Text style={[font('cardTitle'), { color: colors.ink800 }]}>
               {t('argent.forecastTitle', { personality })}
             </Text>
@@ -1276,12 +955,12 @@ export default function Argent() {
             >
               {forecast.data ? (
                 <FadeIn
-                  index={2}
+                  index={3}
                   style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8 }}
                 >
                   <MoneyText cents={forecast.data.available} variant="big" color={bandTone} />
                   {band !== null ? (
-                    <Text style={[font('meta'), { fontSize: 12.5, color: bandTone }]}>
+                    <Text style={[font('meta'), { color: bandTone }]}>
                       {t(BAND_LABEL[band], { personality })}
                     </Text>
                   ) : null}
@@ -1292,19 +971,22 @@ export default function Argent() {
                 <Text style={{ ...font('bigNum'), color: colors.slate400 }}>—</Text>
               )}
             </View>
+            {/* Deux contrôles NOMMÉS distinctement (« Horizon » / « Scénario ») : au lecteur
+                d'écran, deux SegmentedControl au même nom sur LA carte financière étaient
+                indiscernables — faute à coût nul (critère VoiceOver Lot 1). */}
             <View style={{ marginTop: 12, marginBottom: 10 }}>
               <SegmentedControl
                 options={horizonOptions}
                 value={horizonKey}
                 onChange={setHorizonKey}
-                accessibilityLabel={t('argent.forecastTitle', { personality })}
+                accessibilityLabel={t('argent.horizonControlLabel', { personality })}
               />
             </View>
             <SegmentedControl
               options={scenarioOptions}
               value={scenario}
               onChange={setScenario}
-              accessibilityLabel={t('argent.forecastTitle', { personality })}
+              accessibilityLabel={t('argent.scenarioControlLabel', { personality })}
             />
             {forecast.data ? (
               <View
@@ -1357,16 +1039,16 @@ export default function Argent() {
 
           {/* ── À surveiller (liste risques si données) ─────────────────────── */}
           {agedLoading ? (
-            <View style={{ marginTop: 18 }}>
+            <View style={{ marginTop: spacing.sectionGap }}>
               <SectionHeader title={t('argent.watchTitle', { personality })} />
               <Card>
-                <SkeletonMoneyRow divider={false} />
+                <MoneyRowSkeleton divider={false} />
               </Card>
             </View>
           ) : risky.length > 0 ? (
-            <View style={{ marginTop: 18 }}>
+            <View style={{ marginTop: spacing.sectionGap }}>
               <SectionHeader title={t('argent.watchTitle', { personality })} />
-              <FadeIn index={3} style={{ gap: 11 }}>
+              <FadeIn index={4} style={{ gap: spacing.itemGap }}>
                 {risky.slice(0, 3).map(({ customer, overdueCents, maxDaysLate }) => (
                   <Card key={customer.id} radius={18} padding={14}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11 }}>
@@ -1375,10 +1057,7 @@ export default function Argent() {
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
                           <Text
                             numberOfLines={1}
-                            style={[
-                              font('button'),
-                              { fontSize: 14.5, color: colors.ink800, flexShrink: 1 },
-                            ]}
+                            style={[font('body', 700), { color: colors.ink800, flexShrink: 1 }]}
                           >
                             {customer.name}
                           </Text>
@@ -1387,12 +1066,7 @@ export default function Argent() {
                             variant="danger"
                           />
                         </View>
-                        <Text
-                          style={[
-                            font('meta'),
-                            { fontSize: 12.5, color: colors.slate400, marginTop: 1 },
-                          ]}
-                        >
+                        <Text style={[font('meta'), { color: colors.slate400, marginTop: 1 }]}>
                           {t('argent.watchOutstanding', {
                             personality,
                             params: { amount: formatEUR(overdueCents) },
@@ -1425,9 +1099,9 @@ export default function Argent() {
           <Card
             radius={20}
             padding={16}
-            style={{ marginTop: 16, backgroundColor: semantic.successBg }}
+            style={{ marginTop: spacing.intraGap, backgroundColor: semantic.successBg }}
           >
-            <Text style={[font('cardTitle'), { fontSize: 15.5, color: colors.ink800 }]}>
+            <Text style={[font('cardTitle'), { color: colors.ink800 }]}>
               {t('argent.reserveTitle', { personality })}
             </Text>
             <Text
@@ -1452,7 +1126,7 @@ export default function Argent() {
                     paddingHorizontal: 12,
                   }}
                 >
-                  <Text style={[font('meta'), { fontSize: 11.5, color: colors.slate400 }]}>
+                  <Text style={[font('meta'), { color: colors.slate400 }]}>
                     {t(key, { personality })}
                   </Text>
                   {ledgerLoading ? (
@@ -1464,7 +1138,6 @@ export default function Argent() {
                       style={[
                         font('cardTitle'),
                         {
-                          fontSize: 17,
                           color: cents !== null ? semantic.success : colors.slate400,
                           fontVariant: ['tabular-nums'],
                           marginTop: 1,
@@ -1480,7 +1153,7 @@ export default function Argent() {
           </Card>
 
           {/* ── Balance âgée clients (E5 — deriveAgedBalance @bob/core) ─────── */}
-          <View style={{ marginTop: 20 }}>
+          <View style={{ marginTop: spacing.sectionGap }}>
             <SectionHeader
               title={t('argent.agedTitle', { personality })}
               {...(aged.totalCents !== 0
@@ -1579,7 +1252,7 @@ export default function Argent() {
                     ]}
                   >
                     <Text
-                      style={{ ...font('body', 700), fontSize: 14, color: colors.ink800, flex: 1 }}
+                      style={{ ...font('body', 700), color: colors.ink800, flex: 1 }}
                       numberOfLines={1}
                     >
                       {line.customerName}
@@ -1622,12 +1295,12 @@ export default function Argent() {
           </View>
 
           {/* ── À venir — échéancier fiscal (C-EXP-UI1 : dates réelles, jamais de montant) ── */}
-          <View style={{ marginTop: 20 }}>
+          <View style={{ marginTop: spacing.sectionGap }}>
             <SectionHeader title={t('argent.upcomingTitle', { personality })} />
             {fiscal.isLoading ? (
               <Card radius={18} padding={0} style={{ paddingHorizontal: 16, paddingVertical: 4 }}>
-                <SkeletonDeadlineRow />
-                <SkeletonDeadlineRow last />
+                <DeadlineRowSkeleton />
+                <DeadlineRowSkeleton last />
               </Card>
             ) : fiscal.isError ? (
               // Bannière discrète : l'échéancier manque, le reste de l'écran reste utilisable.
@@ -1644,13 +1317,23 @@ export default function Argent() {
                 </Text>
               </Card>
             ) : (
-              <FadeIn index={5}>
+              <FadeIn index={4}>
                 <Card radius={18} padding={0} style={{ paddingHorizontal: 16, paddingVertical: 4 }}>
+                  {/* DeadlineRow kit : l'oreille entend AUSSI l'explication et le badge
+                      « à confirmer » (labels honnêtes, critère VoiceOver Lot 1). */}
                   {(fiscal.data ?? []).map((deadline, index, all) => (
-                    <FiscalDeadlineRow
+                    <DeadlineRow
                       key={deadline.id}
-                      deadline={deadline}
-                      personality={personality}
+                      dateLabel={frShortDate(deadline.date)}
+                      title={deadline.label}
+                      explain={deadline.explain}
+                      {...(deadline.confidence === 'assumed'
+                        ? {
+                            badgeLabel: t('argent.upcomingAssumed', {
+                              personality,
+                            }).toUpperCase(),
+                          }
+                        : {})}
                       last={index === all.length - 1}
                     />
                   ))}
@@ -1664,7 +1347,7 @@ export default function Argent() {
             accessibilityRole="button"
             accessibilityLabel={t('pilotage.title', { personality })}
             onPress={() => router.push('/pilotage')}
-            style={({ pressed }) => [{ marginTop: 20 }, cardPressed(pressed)]}
+            style={({ pressed }) => [{ marginTop: spacing.sectionGap }, cardPressed(pressed)]}
           >
             <Card>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11 }}>
@@ -1691,7 +1374,18 @@ export default function Argent() {
 
       <Fab onPress={() => router.push('/devis/new')} accessibilityLabel="Nouveau devis" />
 
-      <FirstTimeTip visible={tip.visible} onDismiss={tip.dismiss} />
+      {/* Coach-mark kit (TipCard, Lot 1) — persistance du dismiss inchangée (SecureStore). */}
+      <TipCard
+        visible={tip.visible}
+        eyebrow={t('argent.tipEyebrow', { personality })}
+        author={t('argent.tipAuthor', { personality })}
+        title={t('argent.tipTitle', { personality })}
+        body={t('argent.tipBody', { personality })}
+        ctaLabel={t('argent.tipCta', { personality })}
+        skipLabel={t('argent.tipSkip', { personality })}
+        onDismiss={tip.dismiss}
+        icon={<Ionicons name="sparkles" size={18} color={colors.surface} />}
+      />
       <BankBalanceSheet
         visible={balanceSheetVisible}
         personality={personality}
