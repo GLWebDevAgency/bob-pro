@@ -81,7 +81,11 @@ import {
   frContractDate,
   inclusivePeriodOf,
 } from '../../src/components/contract-fiche.logic';
-import { isExpectedMissingBankingInput } from '../../src/data/cashflow-banking-state';
+import {
+  cashflowProjectionWhenQualified,
+} from '../../src/data/cashflow-banking-state';
+import { authoritativeDataWhenHealthy } from '../../src/data/authoritative-query-state';
+import { deriveBalanceConfirmationState } from '../../src/finance/balance-confirmation-state';
 import { firstQueryErrorFacts } from '../../src/data/query-error-facts';
 import { useConfirm } from '../../src/components/ConfirmSheet';
 import { hasMeaningfulQuoteDraft, useQuoteDraft } from '../../src/quote-draft';
@@ -688,21 +692,61 @@ export default function Aujourdhui() {
   const insets = useSafeAreaInsets();
   const cashflow = useCashflow('realiste', 30);
   const bankBalance = useLatestBankBalance();
+  const bankBalanceSnapshot = authoritativeDataWhenHealthy(bankBalance);
+  const cashflowSnapshot = authoritativeDataWhenHealthy(cashflow);
+  const balanceConfirmation = deriveBalanceConfirmationState({
+    balance: {
+      failed: bankBalance.isError,
+      error: bankBalance.error,
+      loading: bankBalance.isLoading,
+    },
+    cashflow: [
+      {
+        failed: cashflow.isError,
+        error: cashflow.error,
+        data: cashflowSnapshot,
+      },
+    ],
+  });
+  const expectedBankBalanceMissing = balanceConfirmation.balanceNeedsConfirmation;
+  // Une réponse cashflow stale/none peut devancer le GET solde pendant un refetch. Elle invalide
+  // immédiatement le cache bancaire afin qu'aucun ancien montant ne reste au-dessus de l'état de
+  // récupération ou de confirmation.
+  const bankBalanceData = balanceConfirmation.cashflowInvalidatesBalance
+    ? undefined
+    : bankBalanceSnapshot;
+  // Une projection dépend du solde qualifié. Même si son propre cache n'a pas encore reçu
+  // l'erreur de refetch, elle cesse d'être affichable tant que le GET solde charge, manque ou
+  // refuse sa fraîcheur. Cela ferme aussi la course « cashflow zéro avant le 404 du solde ».
+  const cashflowData =
+    bankBalanceData === undefined || balanceConfirmation.cashflowHasUnexpectedFailure
+      ? undefined
+      : cashflowProjectionWhenQualified(cashflowSnapshot);
   // DEUX nombres, pas un seul : le solde CONSTATÉ (le fait, daté) et la POSITION ESTIMÉE qui y
   // ajoute les mouvements postérieurs. Affiché seul, le constaté figé se lisait comme un bug
   // (« j'encaisse, rien ne bouge »). `null` = rien de plus à montrer → rendu actuel inchangé.
   const cashPosition = useMemo(
-    () => deriveCashPositionDisplay({ balance: bankBalance.data, personality }),
-    [bankBalance.data, personality],
+    () => deriveCashPositionDisplay({ balance: bankBalanceData, personality }),
+    [bankBalanceData, personality],
   );
   const today = useTodayPriorities();
   // PR-12c — contrats du tenant (faits dérivés serveur) : indépendant du reste du briefing,
   // une erreur ici n'efface JAMAIS les autres priorités (et inversement).
   const contracts = useMaintenanceContracts();
   const quoteDraft = useQuoteDraft();
+  const todayPrioritiesAvailable = !today.isLoading && !today.isError;
+  const contractPrioritiesAvailable =
+    contracts.data !== undefined && !contracts.isLoading && !contracts.isError;
+  const prioritiesLoading =
+    today.isLoading ||
+    contracts.isLoading ||
+    (contracts.data === undefined && !contracts.isError);
+  const prioritiesFailed = today.isError || contracts.isError;
+  const prioritiesReady = !prioritiesLoading && !prioritiesFailed;
   // A2-C10 : mêmes queries que useTodayPriorities (cache partagé, coût nul) — la carte
   // relance a besoin de la facture RÉELLE pour encaisser avec les invariants du domaine.
   const invoices = useInvoices();
+  const invoicesData = authoritativeDataWhenHealthy(invoices);
   // C25 : fil de notifications réel (queries partagées avec /notifications — coût nul en plus).
   const notifications = useNotificationsFeed();
   // SPEC_EXPERT_FISCAL amendement 2 : Home = simple badge de fiabilité sur le montant, PAS de
@@ -746,7 +790,8 @@ export default function Aujourdhui() {
   // @bob/core, lecture BATCHÉE erratum n° 8 côté API). Fail-closed : capacité absente ou
   // requête en erreur → AUCUNE carte (jamais une alerte fabriquée) ; l'annulation d'une
   // facture couvrante rallume la carte toute seule (état réel, zéro code d'écran).
-  const contractPriorities: ContractInvoicePriority[] = (contracts.data ?? [])
+  const contractViews = contractPrioritiesAvailable ? (contracts.data ?? []) : [];
+  const contractPriorities: ContractInvoicePriority[] = contractViews
     .filter((view) => view.billingDue !== null)
     .map((view) => {
       const due = view.billingDue!;
@@ -763,7 +808,7 @@ export default function Aujourdhui() {
     });
   // PR-13 — renouvellement J-60/J-30 (interne) : dérivé du fait serveur `renewalAlert` —
   // UN palier (le plus récent), éteint si résilié. Rappel calendaire, après l'actionnable.
-  const renewalPriorities: ContractRenewalPriority[] = (contracts.data ?? [])
+  const renewalPriorities: ContractRenewalPriority[] = contractViews
     .filter((view) => view.contract.status === 'active' && view.renewalAlert !== null)
     .map((view) => ({
       kind: 'contrat_renouvellement' as const,
@@ -775,28 +820,34 @@ export default function Aujourdhui() {
     }));
   // Priorité basse (fin de liste) : un rappel de brouillon n'a jamais à évincer une vraie
   // urgence (relance en retard, facture finale à émettre).
-  const allPriorities: DisplayPriority[] = [
-    ...today.priorities,
-    ...contractPriorities,
-    ...renewalPriorities,
-    ...(draftPriority ? [draftPriority] : []),
-  ];
+  const displayableTodayPriorities = todayPrioritiesAvailable ? today.priorities : [];
+  // Pendant un premier chargement, le total reste inconnu : skeleton. Après une erreur, les
+  // priorités des autres sources déjà prouvées restent utiles, mais l'état vide demeure interdit
+  // et l'ErrorNotice signale que le briefing est incomplet.
+  const allPriorities: DisplayPriority[] = prioritiesLoading
+    ? []
+    : [
+        ...displayableTodayPriorities,
+        ...contractPriorities,
+        ...renewalPriorities,
+        ...(draftPriority ? [draftPriority] : []),
+      ];
 
   const displayed = allPriorities.slice(0, DISPLAY_CAP);
   const remaining = displayed.length;
-  const todayReady = !today.isLoading && !today.isError;
+  const todayReady = prioritiesReady;
   // Le contexte « écran d'accueil » inclut trésorerie, solde, fiscalité, notifications et
   // priorités. Bob ne publie donc aucune capacité financière à partir du seul briefing : la
   // photographie complète réellement visible doit avoir répondu, y compris le solde qualifié.
   const homeAgentDataReady =
-    todayReady &&
-    cashflow.data !== undefined &&
+    prioritiesReady &&
+    cashflowData !== undefined &&
     !cashflow.isError &&
-    bankBalance.data !== undefined &&
+    bankBalanceData !== undefined &&
     !bankBalance.isError &&
     fiscalFlow.profile !== undefined &&
     !fiscalFlow.isError &&
-    invoices.data !== undefined &&
+    invoicesData !== undefined &&
     !invoices.isError &&
     companyMe.data !== undefined &&
     !companyMe.isError &&
@@ -813,7 +864,7 @@ export default function Aujourdhui() {
       seen.add(key);
       entities.push(entity);
     };
-    for (const priority of today.priorities.slice(0, DISPLAY_CAP)) {
+    for (const priority of displayableTodayPriorities.slice(0, DISPLAY_CAP)) {
       if (priority.kind === 'relance') {
         add({
           type: 'invoice',
@@ -854,7 +905,7 @@ export default function Aujourdhui() {
           ]
         : [],
     };
-  }, [homeAgentDataReady, today.priorities]);
+  }, [homeAgentDataReady, today.isError, today.priorities]);
 
   // ── Parité vocale du rappel de brouillon (« continue mon devis en cours » / « supprime le
   // brouillon ») — refs pour une identité STABLE de l'affordance (même convention que
@@ -944,9 +995,9 @@ export default function Aujourdhui() {
   // anciennes colonnes score/outstanding du client ne sont jamais une autorité financière ici.
   const receivableKpis = useMemo(
     () =>
-      invoices.data
+      invoicesData
         ? deriveHomeReceivableKpis(
-            invoices.data.map((invoice) => ({
+            invoicesData.map((invoice) => ({
               id: invoice.id,
               companyId: invoice.companyId,
               kind: invoice.kind,
@@ -956,33 +1007,34 @@ export default function Aujourdhui() {
             })),
           )
         : null,
-    [invoices.data],
+    [invoicesData],
   );
   const owedCents = receivableKpis?.owedCents;
   const lateCents = receivableKpis?.lateCents;
   // Projection indicative à 30 jours : jamais assimilée à une fin de mois ni au solde observé.
-  const projection30Cents = cashflow.data?.available;
-  const primaryState = combineQueryStates(companyMe, invoices, today, notifications);
-  const expectedBankBalanceMissing =
-    bankBalance.isError && isExpectedMissingBankingInput(bankBalance.error);
-  const expectedCashflowMissing = cashflow.isError && isExpectedMissingBankingInput(cashflow.error);
-  const glanceReady = cashflow.data !== undefined && invoices.data !== undefined;
+  const projection30Cents = cashflowData?.available;
+  const primaryState = combineQueryStates(companyMe, invoices, today, contracts, notifications);
+  // Le cashflow ne peut masquer son erreur bancaire que si le GET solde confirme lui-même
+  // l'absence/péremption. Un `cashflow-banking-source` avec un solde nominal est un incident.
+  const cashflowAwaitsBalance =
+    expectedBankBalanceMissing && !balanceConfirmation.cashflowHasUnexpectedFailure;
+  const glanceReady = cashflowData !== undefined && invoicesData !== undefined;
   const glanceLoading =
     !glanceReady &&
-    ((cashflow.isLoading && cashflow.data === undefined) ||
-      (invoices.isLoading && invoices.data === undefined));
-  const glanceBlockingError =
-    (invoices.isError && invoices.data === undefined) ||
-    (cashflow.isError && cashflow.data === undefined && !expectedCashflowMissing);
-  const glanceMissingBankingInput = expectedCashflowMissing && cashflow.data === undefined;
+    ((bankBalance.isLoading && bankBalanceData === undefined) ||
+      (cashflow.isLoading && cashflowData === undefined) ||
+      (invoices.isLoading && invoicesData === undefined));
+  const glanceBlockingError = invoices.isError || balanceConfirmation.cashflowHasUnexpectedFailure;
+  const glanceMissingBankingInput = cashflowAwaitsBalance;
   const financialDataFailed =
-    (bankBalance.isError && !expectedBankBalanceMissing) ||
-    (cashflow.isError && !expectedCashflowMissing);
+    balanceConfirmation.balanceHasUnexpectedFailure ||
+    balanceConfirmation.cashflowHasUnexpectedFailure;
   const dataFailed = primaryState.failed || financialDataFailed || fiscalFlow.isError;
   const refreshing =
     cashflow.isRefetching ||
     bankBalance.isRefetching ||
     today.isRefetching ||
+    contracts.isRefetching ||
     invoices.isRefetching ||
     notifications.isRefetching ||
     companyMe.isRefetching ||
@@ -995,6 +1047,7 @@ export default function Aujourdhui() {
     void cashflow.refetch();
     void bankBalance.refetch();
     void invoices.refetch();
+    void contracts.refetch();
     notifications.refetchFeed();
   };
   // Le RETRY d'erreur relance TOUT (comportement historique) : une query en échec doit pouvoir
@@ -1046,12 +1099,16 @@ export default function Aujourdhui() {
           bellIcon={<Feather name="bell" size={20} color={colors.surface} />}
           // C25 v2 : pastille = NON-LUS du fil SERVEUR (GET /notifications, lu/non-lu persistés) —
           // même query que l'écran /notifications, jamais un point rouge inventé.
-          hasUnread={notifications.unreadCount !== null && notifications.unreadCount > 0}
+          hasUnread={
+            !notifications.isError &&
+            notifications.unreadCount !== null &&
+            notifications.unreadCount > 0
+          }
           onAvatarPress={() => setProfileMenuOpen(true)}
           onBellPress={() => router.push('/notifications')}
         />
 
-        {bankBalance.data ? (
+        {bankBalanceData ? (
           <FloatingBalanceCard
             label={
               cashPosition
@@ -1060,7 +1117,7 @@ export default function Aujourdhui() {
             }
             // Le héros devient la POSITION dès qu'un mouvement existe ; sans mouvement, l'estimé
             // égalerait le constaté et le rendu historique reste, à l'octet près.
-            amountCents={cashPosition ? cashPosition.estimatedCents : bankBalance.data.amountCents}
+            amountCents={cashPosition ? cashPosition.estimatedCents : bankBalanceData.amountCents}
             // Le FAIT ne disparaît jamais : il descend en voix de Bob, daté, à côté de l'estimé.
             voiceLine={
               cashPosition
@@ -1095,12 +1152,14 @@ export default function Aujourdhui() {
           <FloatingBalanceCardPlaceholder
             label={t('today.balanceLabel', { personality })}
             hint={t(
-              bankBalance.isError && !expectedBankBalanceMissing
+              financialDataFailed
                 ? 'today.balanceUnavailableHint'
                 : 'today.balanceMissingHint',
               { personality },
             )}
-            loading={bankBalance.isLoading}
+            loading={
+              bankBalance.isLoading && !expectedBankBalanceMissing && !financialDataFailed
+            }
             onPress={() =>
               router.push(
                 expectedBankBalanceMissing
@@ -1129,14 +1188,26 @@ export default function Aujourdhui() {
                   // Les 4 sources typées AppError de l'écran (les états composés — priorités,
                   // fiscalité, notifications — n'exposent pas d'erreur brute : sans fait, on
                   // n'invente NI code NI corrélation, le registre projette 500 honnête).
-                  const facts = firstQueryErrorFacts([companyMe, invoices, cashflow, bankBalance]);
+                  const facts = firstQueryErrorFacts([
+                    companyMe,
+                    invoices,
+                    {
+                      isError:
+                        cashflow.isError && balanceConfirmation.cashflowHasUnexpectedFailure,
+                      error: cashflow.error,
+                    },
+                    {
+                      isError: balanceConfirmation.balanceHasUnexpectedFailure,
+                      error: bankBalance.error,
+                    },
+                  ]);
                   return facts
                     ? { code: facts.code, correlationId: facts.correlationId, kind: facts.kind }
                     : { code: 'BOB-API-500' };
                 })()}
               />
               <Button
-                title="Réessayer"
+                title={t('today.retry', { personality })}
                 variant="secondary"
                 loading={refreshing}
                 onPress={retryAll}
@@ -1156,7 +1227,7 @@ export default function Aujourdhui() {
           <View>
             <SectionHeader
               title={t('today.sectionToday', { personality })}
-              {...(displayed.length > 0
+              {...(prioritiesReady && displayed.length > 0
                 ? {
                     action: (
                       <Text style={[font('label'), { color: colors.slate400 }]}>
@@ -1169,7 +1240,7 @@ export default function Aujourdhui() {
                 : {})}
             />
             {
-              today.isLoading ? (
+              prioritiesLoading ? (
                 <View style={{ gap: spacing.itemGap }}>
                   <SkeletonPriorityCard />
                   <SkeletonPriorityCard />
@@ -1183,7 +1254,7 @@ export default function Aujourdhui() {
                       priority={p}
                       invoice={
                         p.kind === 'relance'
-                          ? (invoices.data ?? []).find((i) => i.id === p.invoiceId)
+                          ? (invoicesData ?? []).find((i) => i.id === p.invoiceId)
                           : undefined
                       }
                       onCollected={(cents) =>
@@ -1197,7 +1268,7 @@ export default function Aujourdhui() {
                     />
                   ))}
                 </FadeIn>
-              ) : todayReady ? (
+              ) : prioritiesReady ? (
                 // 0 priorité : état vide de premier rang — un vrai moment positif (coche success),
                 // la voix de Bob, aucune carte fantôme.
                 <FadeIn index={0}>
@@ -1272,7 +1343,7 @@ export default function Aujourdhui() {
                     <KpiTile
                       style={KPI_TILE}
                       label={t('today.kpiVat', { personality })}
-                      {...(cashflow.data ? { amountCents: cashflow.data.vatDue } : {})}
+                      {...(cashflowData ? { amountCents: cashflowData.vatDue } : {})}
                       tone="warning"
                       icon={<CurrencyIcon color={semantic.warning} />}
                       onPress={() => router.push('/comptabilite')}

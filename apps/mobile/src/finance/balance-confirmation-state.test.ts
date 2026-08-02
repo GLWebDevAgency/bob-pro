@@ -31,8 +31,11 @@ describe('deriveBalanceConfirmationState — scénario du fondateur', () => {
     });
     expect(state).toEqual({
       balanceNeedsConfirmation: true,
+      balanceHasUnexpectedFailure: false,
       reason: 'stale',
       cashflowOnlyAwaitsBalance: true,
+      cashflowHasUnexpectedFailure: false,
+      cashflowInvalidatesBalance: true,
       confirmationIsPrimary: true,
     });
   });
@@ -44,6 +47,7 @@ describe('deriveBalanceConfirmationState — scénario du fondateur', () => {
     });
     expect(state.balanceNeedsConfirmation).toBe(true);
     expect(state.reason).toBe('unconfirmed');
+    expect(state.cashflowHasUnexpectedFailure).toBe(false);
     expect(state.confirmationIsPrimary).toBe(true);
   });
 
@@ -54,6 +58,7 @@ describe('deriveBalanceConfirmationState — scénario du fondateur', () => {
     });
     expect(state.balanceNeedsConfirmation).toBe(true); // la carte de confirmation reste possible…
     expect(state.cashflowOnlyAwaitsBalance).toBe(false); // …mais un incident se cache derrière
+    expect(state.cashflowHasUnexpectedFailure).toBe(true);
     expect(state.confirmationIsPrimary).toBe(false);
   });
 
@@ -64,8 +69,11 @@ describe('deriveBalanceConfirmationState — scénario du fondateur', () => {
     });
     expect(state).toEqual({
       balanceNeedsConfirmation: false,
+      balanceHasUnexpectedFailure: true,
       reason: null,
       cashflowOnlyAwaitsBalance: true,
+      cashflowHasUnexpectedFailure: false,
+      cashflowInvalidatesBalance: false,
       confirmationIsPrimary: false,
     });
   });
@@ -77,10 +85,67 @@ describe('deriveBalanceConfirmationState — scénario du fondateur', () => {
     expect(state.reason).toBeNull();
   });
 
+  it('solde OK + prérequis cashflow bancaire ⇒ incident incohérent, jamais absence masquée', () => {
+    const state = deriveBalanceConfirmationState({
+      balance: ok,
+      cashflow: [failed(CASHFLOW_SOURCE_503)],
+    });
+    expect(state.balanceNeedsConfirmation).toBe(false);
+    expect(state.cashflowOnlyAwaitsBalance).toBe(false);
+    expect(state.cashflowHasUnexpectedFailure).toBe(true);
+    expect(state.confirmationIsPrimary).toBe(false);
+    expect(state.cashflowInvalidatesBalance).toBe(true);
+  });
+
   it('solde stale mais cashflow encore SANS échec (données en cache) ⇒ premier plan possible côté dérivation', () => {
     // La composition d'écran garde le héros s'il a des données — la dérivation, elle, dit
     // seulement : « la seule cause d'indisponibilité est la confirmation ».
     const state = deriveBalanceConfirmationState({ balance: failed(STALE_503), cashflow: [ok] });
     expect(state.confirmationIsPrimary).toBe(true);
+  });
+
+  it('cashflow stale devance le GET solde encore nominal ⇒ cache solde invalidé et confirmation', () => {
+    const state = deriveBalanceConfirmationState({
+      balance: ok,
+      cashflow: [failed(STALE_503)],
+    });
+    expect(state.balanceNeedsConfirmation).toBe(true);
+    expect(state.reason).toBe('stale');
+    expect(state.cashflowInvalidatesBalance).toBe(true);
+    expect(state.cashflowHasUnexpectedFailure).toBe(false);
+    expect(state.confirmationIsPrimary).toBe(true);
+  });
+
+  it('bankingSource:none + solde nominal ⇒ incohérence bloquante, jamais projection zéro', () => {
+    const state = deriveBalanceConfirmationState({
+      balance: ok,
+      cashflow: [{ ...ok, data: { available: 0, bankingSource: 'none' } }],
+    });
+    expect(state.balanceNeedsConfirmation).toBe(false);
+    expect(state.cashflowInvalidatesBalance).toBe(true);
+    expect(state.cashflowHasUnexpectedFailure).toBe(true);
+    expect(state.confirmationIsPrimary).toBe(false);
+  });
+
+  it('bankingSource:none + solde 404 ⇒ confirmation attendue, pas incident', () => {
+    const state = deriveBalanceConfirmationState({
+      balance: failed(UNCONFIRMED_404),
+      cashflow: [{ ...ok, data: { available: 0, bankingSource: 'none' } }],
+    });
+    expect(state.balanceNeedsConfirmation).toBe(true);
+    expect(state.reason).toBe('unconfirmed');
+    expect(state.cashflowHasUnexpectedFailure).toBe(false);
+    expect(state.confirmationIsPrimary).toBe(true);
+  });
+
+  it('cashflow-banking-source avant la fin du GET solde ⇒ verdict encore en chargement', () => {
+    const state = deriveBalanceConfirmationState({
+      balance: { ...ok, loading: true },
+      cashflow: [failed(CASHFLOW_SOURCE_503)],
+    });
+    expect(state.balanceNeedsConfirmation).toBe(false);
+    expect(state.cashflowInvalidatesBalance).toBe(true);
+    expect(state.cashflowHasUnexpectedFailure).toBe(false);
+    expect(state.confirmationIsPrimary).toBe(false);
   });
 });

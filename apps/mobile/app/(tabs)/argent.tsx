@@ -15,8 +15,8 @@
  * ledger.urssaf) ; la réserve = buildLedgerView().reserve.
  * AUCUN repli fixtures — états premier rang (montée d'exigence 16/07) :
  * · loading → SKELETONS du socle @bob/ui, FIDÈLES à la géométrie finale (héros/ledger/échéancier),
- *   pulse subtil (reduce-motion : statique) ; le message d'erreur n'apparaît JAMAIS pendant le
- *   premier chargement ;
+ *   pulse subtil (reduce-motion : statique) tant qu'aucune erreur n'est établie ; une erreur
+ *   connue prime toujours une autre source encore en chargement ;
  * · compte NEUF (toutes sources vides) → état VIDE INVITANT (argent.empty*) avec CTA solde/devis,
  *   jamais un désert de « — » ;
  * · erreur réelle → ErrorRetry (retry MANUEL avec état pending visible ; le retry AUTO est borné
@@ -35,7 +35,7 @@
  *
  * Zéro hex/rgba : useTheme()/@bob/tokens. Zéro import de src/components/ui (ancien kit).
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Pressable,
   RefreshControl,
@@ -105,8 +105,8 @@ import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scro
 import { TabsScrollView } from '../../src/components/bob-tabs-scroll-view';
 import { BankBalanceSheet } from '../../src/components/BankBalanceSheet';
 import { RetenueSuiviCard } from '../../src/components/RetenueSuiviCard';
-import { hasBlockingAuthoritativeDataError } from '../../src/data/authoritative-query-state';
-import { isExpectedMissingBankingInput } from '../../src/data/cashflow-banking-state';
+import { authoritativeDataWhenHealthy } from '../../src/data/authoritative-query-state';
+import { cashflowProjectionWhenQualified } from '../../src/data/cashflow-banking-state';
 import { deriveBalanceConfirmationState } from '../../src/finance/balance-confirmation-state';
 
 /** Clé SecureStore du coach-mark « première fois » de cet écran. */
@@ -176,16 +176,15 @@ export default function Argent() {
   const [balanceSheetVisible, setBalanceSheetVisible] = useState(false);
   // Accueil → « Confirmer mon solde » : la feuille s'ouvre DÉJÀ ouverte à l'arrivée
   // (?confirmBalance=1) — le geste du fondateur ne se perd pas dans la navigation.
-  // Une seule fois par montage : la feuille refermée ne se rouvre pas dans le dos.
+  // Le paramètre est consommé puis retiré : une seconde navigation explicite dans la même
+  // session doit pouvoir rouvrir la feuille, sans qu'une fermeture manuelle la rouvre seule.
   const params = useLocalSearchParams<{ confirmBalance?: string }>();
-  const confirmBalanceParamConsumed = useRef(false);
+  const setRouteParams = router.setParams;
   useEffect(() => {
-    if (confirmBalanceParamConsumed.current) return;
-    if (params.confirmBalance === '1') {
-      confirmBalanceParamConsumed.current = true;
-      setBalanceSheetVisible(true);
-    }
-  }, [params.confirmBalance]);
+    if (params.confirmBalance !== '1') return;
+    setBalanceSheetVisible(true);
+    setRouteParams({ confirmBalance: undefined });
+  }, [params.confirmBalance, setRouteParams]);
 
   const [scenario, setScenario] = useState<Scenario>('realiste');
   const [horizonKey, setHorizonKey] = useState<HorizonKey>('30');
@@ -204,10 +203,68 @@ export default function Argent() {
   // à » = optimiste. Langage prudent (jamais « te verser ») — SPEC_EXPERT_FISCAL §V2 pt. 8.
   const heroSafe = useCashflow('prudent', 30);
   const heroUp = useCashflow('optimiste', 30);
+  const cash7Snapshot = authoritativeDataWhenHealthy(cash7);
+  const cash30Snapshot = authoritativeDataWhenHealthy(cash30);
+  const cash60Snapshot = authoritativeDataWhenHealthy(cash60);
+  const cash90Snapshot = authoritativeDataWhenHealthy(cash90);
+  const heroSafeSnapshot = authoritativeDataWhenHealthy(heroSafe);
+  const heroUpSnapshot = authoritativeDataWhenHealthy(heroUp);
+  const forecastSnapshot = authoritativeDataWhenHealthy(forecast);
+  const bankBalance = useLatestBankBalance();
+  const bankBalanceSnapshot = authoritativeDataWhenHealthy(bankBalance);
+
+  // ── SOLDE/PREVISIONS : UNE SEULE QUALIFICATION COHÉRENTE ────────────────────────────
+  // Les six projections et le GET solde peuvent répondre dans un ordre différent. Aucun montant
+  // n'est affichable avant la qualification du solde ; `bankingSource:none` reste un sentinel de
+  // transport, et un signal cashflow stale invalide le cache GET solde immédiatement.
+  const confirmation = deriveBalanceConfirmationState({
+    balance: {
+      failed: bankBalance.isError,
+      error: bankBalance.error,
+      loading: bankBalance.isLoading,
+    },
+    cashflow: [
+      { failed: cash7.isError, error: cash7.error, data: cash7Snapshot },
+      { failed: cash30.isError, error: cash30.error, data: cash30Snapshot },
+      { failed: cash60.isError, error: cash60.error, data: cash60Snapshot },
+      { failed: cash90.isError, error: cash90.error, data: cash90Snapshot },
+      { failed: heroSafe.isError, error: heroSafe.error, data: heroSafeSnapshot },
+      { failed: heroUp.isError, error: heroUp.error, data: heroUpSnapshot },
+    ],
+  });
+  const balanceNeedsConfirmation = confirmation.balanceNeedsConfirmation;
+  const bankBalanceData = confirmation.cashflowInvalidatesBalance
+    ? undefined
+    : bankBalanceSnapshot;
+  const cashflowDisplayQualified =
+    bankBalanceData !== undefined &&
+    !balanceNeedsConfirmation &&
+    !confirmation.cashflowHasUnexpectedFailure;
+  const cash7Data = cashflowDisplayQualified
+    ? cashflowProjectionWhenQualified(cash7Snapshot)
+    : undefined;
+  const cash30Data = cashflowDisplayQualified
+    ? cashflowProjectionWhenQualified(cash30Snapshot)
+    : undefined;
+  const cash60Data = cashflowDisplayQualified
+    ? cashflowProjectionWhenQualified(cash60Snapshot)
+    : undefined;
+  const cash90Data = cashflowDisplayQualified
+    ? cashflowProjectionWhenQualified(cash90Snapshot)
+    : undefined;
+  const heroSafeData = cashflowDisplayQualified
+    ? cashflowProjectionWhenQualified(heroSafeSnapshot)
+    : undefined;
+  const heroUpData = cashflowDisplayQualified
+    ? cashflowProjectionWhenQualified(heroUpSnapshot)
+    : undefined;
+  const forecastData = cashflowDisplayQualified
+    ? cashflowProjectionWhenQualified(forecastSnapshot)
+    : undefined;
   // Phase 1C : le langage (et, pour le micro confirmé, le montant) du héros s'adapte au profil
   // fiscal CONFIRMÉ — porte sur LE MÊME cashflow que celui affiché (prudent/30j), jamais un
   // scénario parallèle. Profil non confirmé → kind 'prudent' → mêmes clés qu'avant (zéro régression).
-  const payGuidance = useOwnerPayGuidance(heroSafe.data);
+  const payGuidance = useOwnerPayGuidance(heroSafeData);
   const guidance = payGuidance.guidance;
 
   // Grand-livre : les agrégats réels du client, dérivés en use case pur @bob/core.
@@ -229,18 +286,17 @@ export default function Argent() {
   // Encaissements datés : listPayments (socle E3). Données absentes → null honnête, inchangé.
   const companyMe = useCompanyMe();
   const payments = usePayments();
-  const bankBalance = useLatestBankBalance();
   const ledgerCompany = companyMe.data;
 
   // DEUX nombres : le constaté (fait daté) et la position estimée. `null` = rien de plus à
   // montrer (pas d'observation, projection indisponible, ou aucun mouvement) → rendu inchangé.
   const cashPosition = useMemo(
-    () => deriveCashPositionDisplay({ balance: bankBalance.data, personality }),
-    [bankBalance.data, personality],
+    () => deriveCashPositionDisplay({ balance: bankBalanceData, personality }),
+    [bankBalanceData, personality],
   );
   // Le grand-livre part de la POSITION ESTIMÉE, comme la projection serveur : le laisser sur le
   // solde brut aurait rejoué ICI le bug d'origine (« Disponible prudent » figé après encaissement).
-  const ledgerBankBalanceCents = cashPosition?.estimatedCents ?? bankBalance.data?.amountCents;
+  const ledgerBankBalanceCents = cashPosition?.estimatedCents ?? bankBalanceData?.amountCents;
 
   const ledger = useMemo(
     () =>
@@ -312,40 +368,29 @@ export default function Argent() {
       .sort((left, right) => right.overdueCents - left.overdueCents);
   }, [aged.byCustomer, customers.data]);
 
-  const series: CashflowSeriesPoint[] = [];
-  if (cash7.data) series.push({ horizon: 7, projection: cash7.data });
-  if (cash30.data) series.push({ horizon: 30, projection: cash30.data });
-  if (cash60.data) series.push({ horizon: 60, projection: cash60.data });
-  if (cash90.data) series.push({ horizon: 90, projection: cash90.data });
-  const band = cashflowBand(series, horizon);
-  const bandTone = band === 'creux' ? semantic.warning : semantic.success;
-
   // « À surveiller » : factures réellement échues, triées par reste dû échu.
   const risky = overdueCustomers;
   const topRisk = risky[0];
 
-  // ── SOLDE PÉRIMÉ → CONFIRMATION EN PREMIER PLAN (incident fondateur 02/08) ─────────────
-  // Discrimination STRICTE des causes dans un module PUR (balance-confirmation-state) :
-  // un refus de qualification (périmé/jamais confirmé — sur /bank-balance ET relayé par
-  // /cashflow) est un état ATTENDU, jamais une panne ; un VRAI incident garde l'erreur.
-  const confirmation = deriveBalanceConfirmationState({
-    balance: { failed: bankBalance.isError, error: bankBalance.error },
-    cashflow: [cash7, cash30, cash60, cash90, heroSafe, heroUp].map((query) => ({
-      failed: query.isError,
-      error: query.error,
-    })),
-  });
-  const balanceNeedsConfirmation = confirmation.balanceNeedsConfirmation;
-  const cashflowHasError =
-    cash7.isError ||
-    cash30.isError ||
-    cash60.isError ||
-    cash90.isError ||
-    heroSafe.isError ||
-    heroUp.isError;
+  const displayableForecastData = balanceNeedsConfirmation ? undefined : forecastData;
+  const series: CashflowSeriesPoint[] = [];
+  if (!balanceNeedsConfirmation && cash7Data) {
+    series.push({ horizon: 7, projection: cash7Data });
+  }
+  if (!balanceNeedsConfirmation && cash30Data) {
+    series.push({ horizon: 30, projection: cash30Data });
+  }
+  if (!balanceNeedsConfirmation && cash60Data) {
+    series.push({ horizon: 60, projection: cash60Data });
+  }
+  if (!balanceNeedsConfirmation && cash90Data) {
+    series.push({ horizon: 90, projection: cash90Data });
+  }
+  const band = cashflowBand(series, horizon);
+  const bandTone = band === 'creux' ? semantic.warning : semantic.success;
   const hasError =
-    (!confirmation.cashflowOnlyAwaitsBalance && cashflowHasError) ||
-    (bankBalance.isError && !balanceNeedsConfirmation) ||
+    confirmation.cashflowHasUnexpectedFailure ||
+    confirmation.balanceHasUnexpectedFailure ||
     invoices.isError ||
     expenses.isError ||
     entries.isError ||
@@ -356,56 +401,19 @@ export default function Argent() {
     fiscalFlow.isError ||
     payGuidance.isError;
 
-  // Un refetch peut échouer tout en laissant une photographie serveur antérieure dans le cache :
-  // elle reste une donnée réelle et l'écran l'affiche avec la bannière d'erreur ci-dessous. En
-  // revanche, si une source n'a JAMAIS répondu, aucune agrégation partielle/`[]`/zéro ne doit être
-  // rendue comme une vérité financière. L'écran devient alors intégralement fail-closed.
-  // INCIDENT FONDATEUR 02/08 : le 503 « bank-balance-stale » relayé par /cashflow n'était PAS
-  // reconnu ici (prédicat trop étroit isCashflowBankingInputMissing) — il devenait BLOQUANT et
-  // l'erreur plein écran ÉCRASAIT la confirmation. isExpectedMissingBankingInput couvre TOUTE
-  // entrée bancaire attendue (stale, jamais confirmée, source absente) ; un vrai incident
-  // (autre erreur) reste bloquant, inchangé.
-  const fatalDataError =
-    hasBlockingAuthoritativeDataError([
-      { isError: cash7.isError && !isExpectedMissingBankingInput(cash7.error), data: cash7.data },
-      {
-        isError: cash30.isError && !isExpectedMissingBankingInput(cash30.error),
-        data: cash30.data,
-      },
-      {
-        isError: cash60.isError && !isExpectedMissingBankingInput(cash60.error),
-        data: cash60.data,
-      },
-      {
-        isError: cash90.isError && !isExpectedMissingBankingInput(cash90.error),
-        data: cash90.data,
-      },
-      {
-        isError: heroSafe.isError && !isExpectedMissingBankingInput(heroSafe.error),
-        data: heroSafe.data,
-      },
-      {
-        isError: heroUp.isError && !isExpectedMissingBankingInput(heroUp.error),
-        data: heroUp.data,
-      },
-      invoices,
-      expenses,
-      entries,
-      customers,
-      companyMe,
-      payments,
-      fiscal,
-      { isError: fiscalFlow.isError, data: fiscalFlow.profile },
-    ]) ||
-    (bankBalance.isError && bankBalance.data === undefined && !balanceNeedsConfirmation);
+  // Un cache TanStack reste une photographie réelle, mais sa qualification a échoué : un montant
+  // financier ne peut donc plus être présenté comme actuel. Toute erreur non expliquée par la
+  // confirmation du solde bloque l'écran, que `data` contienne ou non une ancienne photographie.
+  const fatalDataError = hasError;
   const agentDataReady =
     !fatalDataError &&
-    cash7.data !== undefined &&
-    cash30.data !== undefined &&
-    cash60.data !== undefined &&
-    cash90.data !== undefined &&
-    heroSafe.data !== undefined &&
-    heroUp.data !== undefined &&
+    !balanceNeedsConfirmation &&
+    cash7Data !== undefined &&
+    cash30Data !== undefined &&
+    cash60Data !== undefined &&
+    cash90Data !== undefined &&
+    heroSafeData !== undefined &&
+    heroUpData !== undefined &&
     invoices.data !== undefined &&
     expenses.data !== undefined &&
     entries.data !== undefined &&
@@ -414,7 +422,7 @@ export default function Argent() {
     payments.data !== undefined &&
     fiscal.data !== undefined &&
     fiscalFlow.profile !== undefined &&
-    (bankBalance.data !== undefined || balanceNeedsConfirmation);
+    bankBalanceData !== undefined;
 
   // Bob voit exactement les clients avec une facture échue affichés à l'écran. Si UNE source
   // indispensable n'a jamais répondu, l'écran est une page de récupération : aucune capacité
@@ -482,9 +490,9 @@ export default function Argent() {
     fiscalFlow.isRefetching;
 
   // Premier chargement : tant qu'UNE source autoritative n'a pas fini son premier fetch,
-  // l'écran reste en SKELETONS — le message d'erreur n'apparaît JAMAIS pendant cette phase
-  // (grille fondateur : « pourquoi pas de skeletons ? »). isLoading ne couvre que le premier
-  // fetch (jamais les refetchs) : aucune source ne peut maintenir cet état indéfiniment.
+  // l'écran reste en SKELETONS tant qu'aucune erreur n'est établie. `fatalDataError` prime plus
+  // bas dès qu'une panne est connue, même si une autre source charge encore : aucun montant
+  // partiellement résolu ne fuit pendant cette fenêtre. isLoading ne couvre que le premier fetch.
   const initialSourcesLoading =
     ledgerLoading ||
     agedLoading ||
@@ -512,12 +520,11 @@ export default function Argent() {
   // jamais pendant le premier chargement (skeletons), jamais par-dessus l'invitation compte
   // neuf (qui porte déjà le CTA solde), jamais quand le héros a une donnée à montrer.
   const confirmationHeroShown =
-    confirmation.confirmationIsPrimary &&
-    !showWelcome &&
-    !initialSourcesLoading &&
-    heroSafe.data === undefined;
+    confirmation.confirmationIsPrimary && !showWelcome && !initialSourcesLoading;
 
-  if (fatalDataError && !initialSourcesLoading) {
+  // Une erreur déjà établie prime toujours un chargement encore en cours ailleurs : laisser le
+  // loading global gagner exposerait pendant cette fenêtre les autres montants déjà résolus.
+  if (fatalDataError) {
     return (
       <View style={{ flex: 1, backgroundColor: colors.bg }}>
         <ScrollView
@@ -557,14 +564,14 @@ export default function Argent() {
   // mélanger « upside optimiste » et « cotisations mises de côté » diluerait le message honnête.
   const heroCaption =
     (!guidance || guidance.kind === 'prudent') &&
-    heroSafe.data &&
-    heroUp.data &&
+    heroSafeData &&
+    heroUpData &&
     topRisk &&
-    heroUp.data.payout > heroSafe.data.payout
+    heroUpData.payout > heroSafeData.payout
       ? t('argent.heroUpside', {
           personality,
           params: {
-            upTo: formatEUR(heroUp.data.payout),
+            upTo: formatEUR(heroUpData.payout),
             name: topRisk.customer.name,
             amount: formatEUR(topRisk.overdueCents),
           },
@@ -607,7 +614,7 @@ export default function Argent() {
         <View style={{ paddingHorizontal: spacing.gutter }}>
           {/* ── Héros « trésorerie mobilisable » ────────────────────────────── */}
           <View style={{ marginTop: spacing.intraGap }}>
-            {heroSafe.data && !payGuidance.isLoading ? (
+            {!balanceNeedsConfirmation && heroSafeData && !payGuidance.isLoading ? (
               <FadeIn index={0}>
                 <HeroMoneyCard
                   label={
@@ -615,7 +622,7 @@ export default function Argent() {
                       ? t(guidance.headlineKey as I18nKey, { personality, params: guidance.params })
                       : t('argent.heroLabel', { personality })
                   }
-                  amountCents={guidance?.amountCents ?? heroSafe.data.payout}
+                  amountCents={guidance?.amountCents ?? heroSafeData.payout}
                   pill={t('argent.heroPill', { personality })}
                   caption={heroCaption}
                 />
@@ -663,7 +670,9 @@ export default function Argent() {
             ) : (
               <HeroMoneyCardPlaceholder
                 label={t('argent.heroLabel', { personality })}
-                loading={heroSafe.isLoading || payGuidance.isLoading}
+                loading={
+                  bankBalance.isLoading || heroSafe.isLoading || payGuidance.isLoading
+                }
               />
             )}
           </View>
@@ -692,7 +701,7 @@ export default function Argent() {
                   {t('argent.emptyBody', { personality })}
                 </Text>
                 <View style={{ gap: 10, marginTop: 16 }}>
-                  {bankBalance.data === undefined ? (
+                  {bankBalanceData === undefined ? (
                     <Button
                       title={t('argent.emptyCtaBalance', { personality })}
                       variant="primary"
@@ -701,7 +710,7 @@ export default function Argent() {
                   ) : null}
                   <Button
                     title={t('argent.emptyCtaQuote', { personality })}
-                    variant={bankBalance.data === undefined ? 'secondary' : 'primary'}
+                    variant={bankBalanceData === undefined ? 'secondary' : 'primary'}
                     onPress={() => router.push('/devis/new')}
                   />
                 </View>
@@ -734,7 +743,7 @@ export default function Argent() {
                 </View>
               </View>
             </Card>
-          ) : bankBalance.data && cashPosition ? (
+          ) : bankBalanceData && cashPosition ? (
             /* ── Position de trésorerie : DEUX nombres ─────────────────────────
                L'estimé est le héros, le CONSTATÉ DATÉ reste juste dessous, et l'écart est
                expliqué ligne par ligne (+entrées / −sorties). C'est exactement ce qui manquait
@@ -792,7 +801,7 @@ export default function Argent() {
                 </Pressable>
               </Card>
             </FadeIn>
-          ) : bankBalance.data ? (
+          ) : bankBalanceData ? (
             /* Aucun mouvement depuis l'observation (ou projection indisponible) : l'estimé
                égalerait le constaté — le rendu historique reste, à l'identique. */
             <Card radius={16} padding={13} style={{ marginTop: spacing.intraGap }}>
@@ -816,7 +825,7 @@ export default function Argent() {
             </Card>
           ) : null}
 
-          {hasError ? (
+          {hasError && !initialSourcesLoading ? (
             <View style={{ marginTop: spacing.intraGap }}>
               <ErrorRetry
                 message={t('argent.dataError', { personality })}
@@ -1025,19 +1034,23 @@ export default function Argent() {
                 minHeight: 28,
               }}
             >
-              {forecast.data ? (
+              {displayableForecastData ? (
                 <FadeIn
                   index={3}
                   style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8 }}
                 >
-                  <MoneyText cents={forecast.data.available} variant="big" color={bandTone} />
+                  <MoneyText
+                    cents={displayableForecastData.available}
+                    variant="big"
+                    color={bandTone}
+                  />
                   {band !== null ? (
                     <Text style={[font('meta'), { color: bandTone }]}>
                       {t(BAND_LABEL[band], { personality })}
                     </Text>
                   ) : null}
                 </FadeIn>
-              ) : forecast.isLoading ? (
+              ) : forecast.isLoading || bankBalance.isLoading ? (
                 <Skeleton width="38%" height={21} radius={7} />
               ) : (
                 <Text style={{ ...font('bigNum'), color: colors.slate400 }}>—</Text>
@@ -1060,7 +1073,7 @@ export default function Argent() {
               onChange={setScenario}
               accessibilityLabel={t('argent.scenarioControlLabel', { personality })}
             />
-            {forecast.data ? (
+            {displayableForecastData ? (
               <View
                 accessibilityRole="summary"
                 style={{
@@ -1071,36 +1084,40 @@ export default function Argent() {
                 }}
               >
                 <Text style={[font('meta'), { color: colors.slate500, lineHeight: 17 }]}>
-                  {forecast.data.basis.kind === 'dated_documents'
+                  {displayableForecastData.basis.kind === 'dated_documents'
                     ? t('argent.forecastBasisDated', {
                         personality,
                         params: {
-                          date: frShortDate(forecast.data.basis.horizonEnd),
-                          rate: forecast.data.basis.receivableCollectionRatePct,
+                          date: frShortDate(displayableForecastData.basis.horizonEnd),
+                          rate: displayableForecastData.basis.receivableCollectionRatePct,
                         },
                       })
                     : t('argent.forecastBasisLegacy', { personality })}
                 </Text>
-                {forecast.data.basis.kind === 'dated_documents' &&
-                forecast.data.basis.receivablesUndatedCents > 0 ? (
+                {displayableForecastData.basis.kind === 'dated_documents' &&
+                displayableForecastData.basis.receivablesUndatedCents > 0 ? (
                   <Text
                     style={[font('meta'), { color: colors.slate400, lineHeight: 17, marginTop: 4 }]}
                   >
                     {t('argent.forecastUndatedReceivables', {
                       personality,
-                      params: { amount: formatEUR(forecast.data.basis.receivablesUndatedCents) },
+                      params: {
+                        amount: formatEUR(displayableForecastData.basis.receivablesUndatedCents),
+                      },
                     })}
                   </Text>
                 ) : null}
-                {forecast.data.basis.kind === 'dated_documents' &&
-                forecast.data.basis.chargesUndatedIncludedCents > 0 ? (
+                {displayableForecastData.basis.kind === 'dated_documents' &&
+                displayableForecastData.basis.chargesUndatedIncludedCents > 0 ? (
                   <Text
                     style={[font('meta'), { color: colors.slate400, lineHeight: 17, marginTop: 4 }]}
                   >
                     {t('argent.forecastUndatedCharges', {
                       personality,
                       params: {
-                        amount: formatEUR(forecast.data.basis.chargesUndatedIncludedCents),
+                        amount: formatEUR(
+                          displayableForecastData.basis.chargesUndatedIncludedCents,
+                        ),
                       },
                     })}
                   </Text>
@@ -1461,7 +1478,7 @@ export default function Argent() {
       <BankBalanceSheet
         visible={balanceSheetVisible}
         personality={personality}
-        currentAmountCents={bankBalance.data?.amountCents ?? null}
+        currentAmountCents={bankBalanceData?.amountCents ?? null}
         onClose={() => setBalanceSheetVisible(false)}
       />
       {fiscalFlow.sheets}

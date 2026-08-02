@@ -55,10 +55,19 @@ vi.mock('react-native', () => ({
     sequence: vi.fn(() => ({})),
     timing: vi.fn(() => ({ start: vi.fn(), stop: vi.fn() })),
   },
-  Easing: { inOut: (f: unknown) => f, out: (f: unknown) => f, in: (f: unknown) => f, ease: {}, cubic: {} },
+  Easing: {
+    inOut: (f: unknown) => f,
+    out: (f: unknown) => f,
+    in: (f: unknown) => f,
+    ease: {},
+    cubic: {},
+  },
   ActivityIndicator: 'ActivityIndicator',
   Modal: 'Modal',
-  Platform: { OS: 'ios', select: (options: Record<string, unknown>) => options['ios'] ?? options['default'] },
+  Platform: {
+    OS: 'ios',
+    select: (options: Record<string, unknown>) => options['ios'] ?? options['default'],
+  },
   Dimensions: { get: () => ({ width: 390, height: 844 }) },
   Pressable: 'Pressable',
   RefreshControl: 'RefreshControl',
@@ -91,11 +100,17 @@ vi.mock('@expo/vector-icons', () => ({ Feather: 'Feather', Ionicons: 'Ionicons' 
 // ── Doublons d'app : routeur, feuilles, coutures — les DONNÉES restent réelles ────────────
 const hoisted = vi.hoisted(() => ({
   push: vi.fn(),
+  publishAgentContext: vi.fn(),
+  setParams: vi.fn((params: Record<string, string | undefined>) => {
+    if (params['confirmBalance'] === undefined) {
+      hoisted.searchParams.value = {};
+    }
+  }),
   searchParams: { value: {} as Record<string, string | undefined> },
 }));
 
 vi.mock('expo-router', () => ({
-  useRouter: () => ({ push: hoisted.push }),
+  useRouter: () => ({ push: hoisted.push, setParams: hoisted.setParams }),
   useLocalSearchParams: () => hoisted.searchParams.value,
 }));
 
@@ -177,7 +192,7 @@ vi.mock('../../../src/components/RetenueSuiviCard', () => ({
   RetenueSuiviCard: () => null,
 }));
 vi.mock('../../../src/agent', () => ({
-  usePublishAgentContext: vi.fn(),
+  usePublishAgentContext: hoisted.publishAgentContext,
 }));
 
 const { default: Argent } = await import('../argent');
@@ -230,6 +245,8 @@ const treeOf = (renderer: ReactTestRenderer): string =>
 
 beforeEach(() => {
   hoisted.push.mockClear();
+  hoisted.publishAgentContext.mockClear();
+  hoisted.setParams.mockClear();
   hoisted.searchParams.value = {};
   animatedLoop.mockClear();
   configure();
@@ -260,7 +277,10 @@ describe('SOLDE PÉRIMÉ — le scénario du fondateur, rejoué', () => {
         isError: true,
         error: { kind: 'not_found', entity: 'bank_balance_snapshot' },
       }),
-      cashflow: q({ isError: true, error: { kind: 'unavailable', service: 'cashflow-banking-source' } }),
+      cashflow: q({
+        isError: true,
+        error: { kind: 'unavailable', service: 'cashflow-banking-source' },
+      }),
     });
     const rendered = treeOf(await render());
     expect(rendered).toContain('Dis-moi ce qu’il y a vraiment en banque'); // argent.balanceNeededTitle
@@ -277,6 +297,123 @@ describe('SOLDE PÉRIMÉ — le scénario du fondateur, rejoué', () => {
     const renderer = await render();
     const sheet = renderer.root.findByType('BankBalanceSheet' as never);
     expect((sheet.props as { visible: boolean }).visible).toBe(true);
+    expect(hoisted.setParams).toHaveBeenCalledWith({ confirmBalance: undefined });
+  });
+
+  it('consomme le deep-link puis autorise une seconde ouverture dans le même montage', async () => {
+    hoisted.searchParams.value = { confirmBalance: '1' };
+    configure({
+      bankBalance: q({ isError: true, error: STALE_503 }),
+      cashflow: q({ isError: true, error: STALE_503 }),
+    });
+    const renderer = await render();
+    let sheet = renderer.root.findByType('BankBalanceSheet' as never);
+    expect((sheet.props as { visible: boolean }).visible).toBe(true);
+
+    await act(async () => {
+      (sheet.props as { onClose: () => void }).onClose();
+    });
+    expect(
+      (renderer.root.findByType('BankBalanceSheet' as never).props as { visible: boolean }).visible,
+    ).toBe(false);
+
+    // Le routeur a retiré le premier paramètre. Ce rendu intermédiaire réarme l'effet.
+    await act(async () => {
+      renderer.update(createElement(ThemeProvider, null, createElement(Argent)));
+    });
+    hoisted.searchParams.value = { confirmBalance: '1' };
+    await act(async () => {
+      renderer.update(createElement(ThemeProvider, null, createElement(Argent)));
+    });
+
+    sheet = renderer.root.findByType('BankBalanceSheet' as never);
+    expect((sheet.props as { visible: boolean }).visible).toBe(true);
+    expect(hoisted.setParams).toHaveBeenCalledTimes(2);
+  });
+
+  it('stale avec anciennes données en cache ⇒ confirmation, aucun ancien montant nominal', async () => {
+    configure({
+      bankBalance: q({
+        data: { amountCents: 8_765_400, position: null },
+        isError: true,
+        error: STALE_503,
+      }),
+      cashflow: q({ data: PROJECTION, isError: true, error: STALE_503 }),
+    });
+    const rendered = treeOf(await render());
+    expect(rendered).toContain('Ton solde a pris un coup de vieux');
+    expect(rendered).not.toContain('987');
+    expect(rendered).not.toContain('87 654');
+    expect(hoisted.publishAgentContext.mock.lastCall?.[0]).toMatchObject({
+      entities: [],
+      capabilities: [],
+    });
+  });
+
+  it('incident cashflow réel avec cache ⇒ récupération fail-closed, aucun ancien montant', async () => {
+    configure({
+      cashflow: q({
+        data: PROJECTION,
+        isError: true,
+        error: { kind: 'unavailable', service: 'database' },
+      }),
+    });
+    const rendered = treeOf(await render());
+    expect(rendered).toContain('Je n’arrive pas à lire tes comptes');
+    expect(rendered).not.toContain('987');
+  });
+
+  it('solde nominal + cashflow-banking-source ⇒ incident incohérent, jamais confirmation', async () => {
+    configure({
+      bankBalance: q({ data: { amountCents: 42_000, position: null } }),
+      cashflow: q({
+        isError: true,
+        error: { kind: 'unavailable', service: 'cashflow-banking-source' },
+      }),
+    });
+    const rendered = treeOf(await render());
+    expect(rendered).toContain('Je n’arrive pas à lire tes comptes');
+    expect(rendered).not.toContain('Confirmer mon solde');
+  });
+
+  it('cashflow stale devance le refetch solde avec cache ⇒ confirmation et ancien solde masqué', async () => {
+    configure({
+      bankBalance: q({
+        data: { amountCents: 8_765_400, position: null },
+        isRefetching: true,
+      }),
+      cashflow: q({ isError: true, error: STALE_503 }),
+    });
+    const rendered = treeOf(await render());
+    expect(rendered).toContain('Ton solde a pris un coup de vieux');
+    expect(rendered).not.toContain('87 654');
+    expect(rendered).not.toContain('Je n’arrive pas à lire tes comptes');
+  });
+
+  it('solde nominal + cashflow réussi bankingSource:none ⇒ récupération fail-closed', async () => {
+    configure({
+      bankBalance: q({ data: { amountCents: 42_000, position: null } }),
+      cashflow: q({ data: { ...PROJECTION, payout: 0, available: 0, bankingSource: 'none' } }),
+    });
+    const rendered = treeOf(await render());
+    expect(rendered).toContain('Je n’arrive pas à lire tes comptes');
+    expect(rendered).toContain('Réessayer');
+    expect(rendered).not.toContain('420');
+    expect(rendered).not.toContain('Confirmer mon solde');
+  });
+
+  it('solde 404 + cashflow réussi bankingSource:none ⇒ confirmation, jamais projection zéro', async () => {
+    configure({
+      bankBalance: q({
+        isError: true,
+        error: { kind: 'not_found', entity: 'bank_balance_snapshot' },
+      }),
+      cashflow: q({ data: { ...PROJECTION, payout: 0, available: 0, bankingSource: 'none' } }),
+    });
+    const rendered = treeOf(await render());
+    expect(rendered).toContain('Dis-moi ce qu’il y a vraiment en banque');
+    expect(rendered).toContain('Confirmer mon solde');
+    expect(rendered).not.toContain('Je n’arrive pas à lire tes comptes');
   });
 
   it('VRAIE panne cashflow (503 database, pas une qualification) ⇒ l’état d’erreur d’AVANT, inchangé — et jamais la confirmation', async () => {
@@ -302,7 +439,10 @@ describe('Les autres états de l’écran — welcome / nominal / chargement', (
         isError: true,
         error: { kind: 'not_found', entity: 'bank_balance_snapshot' },
       }),
-      cashflow: q({ isError: true, error: { kind: 'unavailable', service: 'cashflow-banking-source' } }),
+      cashflow: q({
+        isError: true,
+        error: { kind: 'unavailable', service: 'cashflow-banking-source' },
+      }),
     });
     const rendered = treeOf(await render());
     expect(rendered).toContain('Ton argent apparaîtra ici'); // argent.emptyTitle (pote)
@@ -324,8 +464,39 @@ describe('Les autres états de l’écran — welcome / nominal / chargement', (
     expect(rendered).not.toContain('Je n’arrive pas à lire tes comptes');
   });
 
+  it('cashflow déjà servi mais GET solde encore indéterminé ⇒ skeleton, aucun héros nominal', async () => {
+    configure({
+      bankBalance: q({ isLoading: true }),
+      cashflow: q({ data: PROJECTION }),
+    });
+    const rendered = treeOf(await render());
+    expect(rendered).toContain('Trésorerie mobilisable');
+    expect(rendered).not.toContain('987');
+    expect(rendered).not.toContain('Je n’arrive pas à lire tes comptes');
+  });
+
+  it('erreur connue pendant qu’une autre source charge ⇒ récupération immédiate, aucun montant', async () => {
+    configure({
+      bankBalance: q({ data: { amountCents: 42_000, position: null } }),
+      cashflow: q({
+        data: PROJECTION,
+        isError: true,
+        error: { kind: 'unavailable', service: 'database' },
+      }),
+      invoices: q({ isLoading: true }),
+    });
+    const rendered = treeOf(await render());
+    expect(rendered).toContain('Je n’arrive pas à lire tes comptes');
+    expect(rendered).toContain('Réessayer');
+    expect(rendered).not.toContain('987');
+    expect(rendered).not.toContain('420');
+  });
+
   it('NOMINAL : héros avec donnée réelle + grand-livre + prévision — ni erreur, ni confirmation', async () => {
-    configure({ cashflow: q({ data: PROJECTION }) });
+    configure({
+      bankBalance: q({ data: { amountCents: 500_000, position: null } }),
+      cashflow: q({ data: PROJECTION }),
+    });
     const rendered = treeOf(await render());
     expect(rendered).toContain('987'); // le payout du héros (98 700 → 987 €)
     expect(rendered).toContain('Trésorerie mobilisable'); // argent.heroLabel (pote)

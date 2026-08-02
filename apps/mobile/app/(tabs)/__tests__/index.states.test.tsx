@@ -50,10 +50,19 @@ vi.mock('react-native', () => ({
     sequence: vi.fn(() => ({})),
     timing: vi.fn(() => ({ start: vi.fn(), stop: vi.fn() })),
   },
-  Easing: { inOut: (f: unknown) => f, out: (f: unknown) => f, in: (f: unknown) => f, ease: {}, cubic: {} },
+  Easing: {
+    inOut: (f: unknown) => f,
+    out: (f: unknown) => f,
+    in: (f: unknown) => f,
+    ease: {},
+    cubic: {},
+  },
   ActivityIndicator: 'ActivityIndicator',
   Modal: 'Modal',
-  Platform: { OS: 'ios', select: (options: Record<string, unknown>) => options['ios'] ?? options['default'] },
+  Platform: {
+    OS: 'ios',
+    select: (options: Record<string, unknown>) => options['ios'] ?? options['default'],
+  },
   Dimensions: { get: () => ({ width: 390, height: 844 }) },
   Pressable: 'Pressable',
   RefreshControl: 'RefreshControl',
@@ -84,7 +93,7 @@ vi.mock('react-native-safe-area-context', () => ({
 vi.mock('@expo/vector-icons', () => ({ Feather: 'Feather', Ionicons: 'Ionicons' }));
 vi.mock('@bob/ai', () => ({ challengeFor: () => ({ level: 'none' }) }));
 
-const hoisted = vi.hoisted(() => ({ push: vi.fn() }));
+const hoisted = vi.hoisted(() => ({ push: vi.fn(), publishAgentContext: vi.fn() }));
 vi.mock('expo-router', () => ({ useRouter: () => ({ push: hoisted.push }) }));
 
 interface QueryDouble {
@@ -143,8 +152,12 @@ vi.mock('../../../src/quote-draft', () => ({
   hasMeaningfulQuoteDraft: () => false,
 }));
 vi.mock('../../../src/components/profile-menu-sheet', () => ({ ProfileMenuSheet: () => null }));
-vi.mock('../../../src/components/CollectInvoiceButton', () => ({ CollectInvoiceButton: () => null }));
-vi.mock('../../../src/components/ShareQuoteLinkButton', () => ({ ShareQuoteLinkButton: () => null }));
+vi.mock('../../../src/components/CollectInvoiceButton', () => ({
+  CollectInvoiceButton: () => null,
+}));
+vi.mock('../../../src/components/ShareQuoteLinkButton', () => ({
+  ShareQuoteLinkButton: () => null,
+}));
 vi.mock('../../../src/components/use-bob-aware-scroll-insets', () => ({
   useBobAwareScrollInsets: () => ({
     paddingBottom: 140,
@@ -161,7 +174,7 @@ vi.mock('../../../src/components/bob-tabs-scroll-view', async () => {
 });
 vi.mock('../../../src/engagement/ValueDigestCard', () => ({ LatestValueDigestCard: () => null }));
 vi.mock('../../../src/monetization/TrialReportCard', () => ({ LatestTrialReportCard: () => null }));
-vi.mock('../../../src/agent', () => ({ usePublishAgentContext: vi.fn() }));
+vi.mock('../../../src/agent', () => ({ usePublishAgentContext: hoisted.publishAgentContext }));
 vi.mock('../../../src/fiscal/use-fiscal-profile-flow', () => ({
   useFiscalProfileFlow: () => ({
     hasPending: false,
@@ -244,6 +257,7 @@ const treeOf = (renderer: ReactTestRenderer): string =>
 
 beforeEach(() => {
   hoisted.push.mockClear();
+  hoisted.publishAgentContext.mockClear();
   animatedLoop.mockClear();
   configure();
 });
@@ -262,6 +276,88 @@ describe('SOLDE EN ATTENTE DE CONFIRMATION — le même geste que l’écran Arg
     expect(rendered).toContain('Confirme ton solde dans Argent — je ne vais rien inventer.');
     // « En un coup d'œil » devient ACTIONNABLE : CTA vers la confirmation, pas un cul-de-sac.
     expect(rendered).toContain('Confirmer mon solde'); // today.confirmBalanceCta (pote)
+  });
+
+  it('stale avec anciennes données en cache ⇒ aucun ancien solde ni projection nominale', async () => {
+    configure({
+      bankBalance: q({
+        data: { amountCents: 8_765_400, position: null },
+        isError: true,
+        error: STALE_503,
+      }),
+      cashflow: q({
+        data: { available: 7_654_300, vatDue: 654_300 },
+        isError: true,
+        error: STALE_503,
+      }),
+    });
+    const rendered = treeOf(await render());
+    expect(rendered).toContain('Confirme ton solde dans Argent — je ne vais rien inventer.');
+    expect(rendered).not.toContain('87 654');
+    expect(rendered).not.toContain('76 543');
+    expect(rendered).not.toContain('6 543');
+    expect(hoisted.publishAgentContext.mock.lastCall?.[0]).toMatchObject({
+      entities: [],
+      capabilities: [],
+    });
+  });
+
+  it('solde 404 + cashflow réussi sans source ⇒ confirmation, jamais ErrorRetry ni faux zéro', async () => {
+    configure({
+      bankBalance: q({
+        isError: true,
+        error: { kind: 'not_found', entity: 'bank_balance_snapshot' },
+      }),
+      cashflow: q({
+        data: { available: 0, vatDue: 0, bankingSource: 'none' },
+      }),
+    });
+    const rendered = treeOf(await render());
+    expect(rendered).toContain('Confirme ton solde dans Argent — je ne vais rien inventer.');
+    expect(rendered).toContain('Confirmer mon solde');
+    expect(rendered).not.toContain('Je n’arrive pas à joindre le serveur');
+    expect(rendered).not.toContain('Projection à 30 jours');
+  });
+
+  it('course cashflow zéro avant résolution du solde ⇒ skeleton, aucun KPI nominal', async () => {
+    configure({
+      bankBalance: q({ isLoading: true }),
+      cashflow: q({ data: { available: 0, vatDue: 0, bankingSource: 'none' } }),
+    });
+    const rendered = treeOf(await render());
+    expect(rendered).toContain('Solde bancaire observé');
+    expect(rendered).not.toContain('Projection à 30 jours');
+    expect(rendered).not.toContain('Confirmer mon solde');
+    expect(rendered).not.toContain('Je n’arrive pas à joindre le serveur');
+  });
+
+  it('cashflow stale devance le refetch solde avec cache ⇒ confirmation, ancien solde masqué', async () => {
+    configure({
+      bankBalance: q({
+        data: { amountCents: 8_765_400, position: null },
+        isRefetching: true,
+      }),
+      cashflow: q({ isError: true, error: STALE_503 }),
+    });
+    const rendered = treeOf(await render());
+    expect(rendered).toContain('Confirme ton solde dans Argent — je ne vais rien inventer.');
+    expect(rendered).not.toContain('87 654');
+    expect(rendered).not.toContain('Je n’arrive pas à joindre le serveur');
+  });
+
+  it('solde nominal + cashflow réussi bankingSource:none ⇒ incohérence fail-closed', async () => {
+    configure({
+      bankBalance: q({ data: { amountCents: 42_000, position: null } }),
+      cashflow: q({
+        data: { available: 0, payout: 0, vatDue: 0, bankingSource: 'none' },
+      }),
+    });
+    const rendered = treeOf(await render());
+    expect(rendered).toContain('Je n’arrive pas à joindre le serveur');
+    expect(rendered).toContain('BOB-API-500');
+    expect(rendered).not.toContain('420');
+    expect(rendered).not.toContain('Projection à 30 jours');
+    expect(rendered).not.toContain('Confirmer mon solde');
   });
 
   it('le tap du héros navigue vers Argent AVEC la feuille de confirmation ouverte (?confirmBalance=1)', async () => {
@@ -298,6 +394,31 @@ describe('SOLDE EN ATTENTE DE CONFIRMATION — le même geste que l’écran Arg
     expect(rendered).toContain('Je n’arrive pas à relire ton solde'); // hint indisponible, PAS « confirme »
     expect(rendered).not.toContain('Confirmer mon solde');
   });
+
+  it('notification en panne + solde stale ⇒ code générique causal, jamais le 503 masqué', async () => {
+    configure({
+      notifications: notificationsDouble({ isError: true }),
+      bankBalance: q({ isError: true, error: STALE_503 }),
+      cashflow: q({ isError: true, error: STALE_503 }),
+    });
+    const rendered = treeOf(await render());
+    expect(rendered).toContain('BOB-API-500');
+    expect(rendered).not.toContain('BOB-API-503');
+  });
+
+  it('solde nominal + cashflow-banking-source ⇒ erreur, jamais confirmation silencieuse', async () => {
+    configure({
+      bankBalance: q({ data: { amountCents: 42_000, position: null } }),
+      cashflow: q({
+        isError: true,
+        error: { kind: 'unavailable', service: 'cashflow-banking-source' },
+      }),
+    });
+    const rendered = treeOf(await render());
+    expect(rendered).toContain('Je n’arrive pas à joindre le serveur');
+    expect(rendered).toContain('BOB-API-503');
+    expect(rendered).not.toContain('Confirmer mon solde');
+  });
 });
 
 describe('Les autres états du briefing — nominal / chargement', () => {
@@ -324,5 +445,78 @@ describe('Les autres états du briefing — nominal / chargement', () => {
     expect(rendered).not.toContain('Je n’arrive pas à joindre le serveur');
     expect(rendered).toContain('Solde bancaire observé'); // le label du placeholder héros
     expect(animatedLoop).not.toHaveBeenCalled();
+  });
+
+  it('contrats en chargement ⇒ priorités en skeleton, jamais faux « Rien d’urgent »', async () => {
+    configure({
+      bankBalance: q({ data: { amountCents: 500_000, position: null } }),
+      cashflow: q({ data: { available: 450_000, payout: 400_000, vatDue: 0 } }),
+      contracts: q({ data: [], isLoading: true }),
+    });
+    const rendered = treeOf(await render());
+    expect(rendered).not.toContain('Rien d’urgent. Profites-en.');
+    expect(rendered).not.toContain('Je n’arrive pas à joindre le serveur');
+  });
+
+  it('contrats sans snapshot ni erreur ⇒ état encore inconnu, jamais tableau vide nominal', async () => {
+    configure({
+      bankBalance: q({ data: { amountCents: 500_000, position: null } }),
+      cashflow: q({ data: { available: 450_000, payout: 400_000, vatDue: 0 } }),
+      contracts: q(),
+    });
+    const rendered = treeOf(await render());
+    expect(rendered).not.toContain('Rien d’urgent. Profites-en.');
+    expect(rendered).not.toContain('Je n’arrive pas à joindre le serveur');
+  });
+
+  it('contrats en erreur avec cache ⇒ erreur honnête, jamais faux all-clear ni contexte Bob', async () => {
+    configure({
+      bankBalance: q({ data: { amountCents: 500_000, position: null } }),
+      cashflow: q({ data: { available: 450_000, payout: 400_000, vatDue: 0 } }),
+      contracts: q({
+        data: [],
+        isError: true,
+        error: { kind: 'unavailable', service: 'database' },
+      }),
+    });
+    const rendered = treeOf(await render());
+    expect(rendered).toContain('Je n’arrive pas à joindre le serveur');
+    expect(rendered).toContain('Réessayer');
+    expect(rendered).not.toContain('Rien d’urgent. Profites-en.');
+    expect(hoisted.publishAgentContext.mock.lastCall?.[0]).toMatchObject({
+      entities: [],
+      capabilities: [],
+    });
+  });
+
+  it('briefing partiel ⇒ garde les priorités connues sans annoncer un total exhaustif', async () => {
+    configure({
+      bankBalance: q({ data: { amountCents: 500_000, position: null } }),
+      cashflow: q({ data: { available: 450_000, payout: 400_000, vatDue: 0 } }),
+      contracts: q({
+        data: [],
+        isError: true,
+        error: { kind: 'unavailable', service: 'database' },
+      }),
+      today: todayDouble({
+        priorities: [
+          {
+            kind: 'relance',
+            id: 'relance-invoice-1',
+            invoiceId: 'invoice-1',
+            customerId: 'customer-1',
+            customerName: 'Atelier Martin',
+            docNumber: 'F-2026-001',
+            amountCents: 12_000,
+            daysLate: 3,
+          },
+        ],
+      }),
+    });
+    const rendered = treeOf(await render());
+    expect(rendered).toContain('Atelier Martin');
+    expect(rendered).toContain('Je n’arrive pas à joindre le serveur');
+    expect(rendered).not.toContain('1 restant');
+    expect(rendered).not.toContain('Rien d’urgent. Profites-en.');
   });
 });

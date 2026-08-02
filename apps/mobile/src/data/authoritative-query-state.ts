@@ -5,6 +5,20 @@ export interface AuthoritativeQuerySnapshot<T> {
 }
 
 /**
+ * Rend une donnée autoritative uniquement tant que sa dernière qualification n'est pas en erreur.
+ *
+ * TanStack Query conserve volontairement une photographie antérieure pendant un refetch en échec.
+ * Cette photographie peut servir à une UI explicitement marquée « périmée », mais jamais à un
+ * montant financier présenté comme actuel. Les écrans financiers passent donc par ce garde avant
+ * tout calcul, rendu ou publication de contexte à Bob.
+ */
+export function authoritativeDataWhenHealthy<T>(
+  query: AuthoritativeQuerySnapshot<T>,
+): T | undefined {
+  return query.isError ? undefined : query.data;
+}
+
+/**
  * Vrai lorsqu'au moins une source n'a jamais livré de donnée serveur exploitable.
  *
  * Une erreur de rafraîchissement avec une photographie en cache ne rend pas cette photographie

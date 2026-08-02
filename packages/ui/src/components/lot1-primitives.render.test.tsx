@@ -23,6 +23,7 @@ import { MoneyRowEmpty, MoneyRowSkeleton } from './money-row';
 import { DeadlineRow, DeadlineRowSkeleton } from './deadline-row';
 import { SkeletonKpiTile, SkeletonPriorityCard } from './skeleton';
 import { TipCard } from './tip-card';
+import { ErrorRetry } from './ui-states';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -120,7 +121,9 @@ describe('FloatingBalanceCardPlaceholder — la géométrie du héros ne vit plu
     expect(rendered).toContain('"borderRadius":22');
     expect(rendered).toContain('"height":31'); // le skeleton du montant, à la taille du chiffre
     expect(rendered).not.toContain('"fontSize":31'); // pas de tiret au cran du montant en loading
-    expect(rendered).not.toContain('["Confirme ton solde dans Argent."]'); // hint non RENDU (a11y seulement)
+    expect(rendered).not.toContain('Confirme ton solde dans Argent.');
+    expect(rendered).toContain('"accessibilityLabel":"Solde bancaire observé"');
+    expect(rendered).toContain('"accessibilityState":{"busy":true}');
   });
 
   it('failed/missing : « — » honnête (jamais un montant inventé) + hint voix de Bob + a11y = hint', () => {
@@ -136,7 +139,16 @@ describe('FloatingBalanceCardPlaceholder — la géométrie du héros ne vit plu
     expect(rendered).toContain('—');
     expect(rendered).toContain('Solde indisponible. Réessaie dans Argent.');
     expect(rendered).toContain('"accessibilityLabel":"Solde indisponible. Réessaie dans Argent."');
+    expect(rendered).toContain('"accessibilityState":{"busy":false}');
     expect(rendered).toContain('"fontSize":31'); // le tiret au cran EXACT du montant héros
+  });
+});
+
+describe('ErrorRetry — le CTA appartient au catalogue i18n, pas à la primitive', () => {
+  it('rend la reprise générique issue de la personnalité courante', () => {
+    const rendered = tree(render(<ErrorRetry message="Incident" onRetry={() => {}} />));
+    expect(rendered).toContain('Réessayer');
+    expect(rendered).toContain('Incident');
   });
 });
 
