@@ -13,6 +13,11 @@ describe('moneyTypeKey', () => {
     expect(typeScale[moneyTypeKey('big')]).toMatchObject({ size: 21, weight: 800 });
   });
 
+  it('moneyHero → moneyHero (27/800 — cran Lot 0, héros d’écran)', () => {
+    expect(moneyTypeKey('moneyHero')).toBe('moneyHero');
+    expect(typeScale[moneyTypeKey('moneyHero')]).toMatchObject({ size: 27, weight: 800 });
+  });
+
   it('body → body', () => {
     expect(moneyTypeKey('body')).toBe('body');
   });

@@ -12,7 +12,7 @@ export type { MoneyVariant };
 export interface MoneyTextProps {
   /** Montant en centimes (formatEUR). */
   cents: number;
-  /** hero = 42/800 · big = 21/800 · body (défaut). */
+  /** hero = 42/800 · moneyHero = 27/800 (héros d'écran, Lot 0) · big = 21/800 · body (défaut). */
   variant?: MoneyVariant;
   /** Teinte (success/dangerVivid…) — défaut ink900. */
   color?: string;

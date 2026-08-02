@@ -20,6 +20,9 @@ export interface KpiTileProps {
   label: string;
   /** Montant en centimes (formatEURWhole, arrondi à l'euro) — absent : tuile vide « — ». */
   amountCents?: number;
+  /** Valeur NON monétaire déjà formatée (« 12 j » — Lot 4, fiche client) : prioritaire
+   *  sur `amountCents`, même cran bigNum teinté par tone. */
+  valueText?: string;
   /** Teinte du montant — danger = dangerVivid (retard/impayé). Défaut : ink (ink800). */
   tone?: KpiTone;
   /** Icône 16 injectée (aucune lib d'icônes dans @bob/ui). */
@@ -28,7 +31,7 @@ export interface KpiTileProps {
 }
 
 export function KpiTile({ style,
-  label, amountCents, tone = 'ink', icon, onPress }: KpiTileProps) {
+  label, amountCents, valueText, tone = 'ink', icon, onPress }: KpiTileProps) {
   const { colors, semantic, controls } = useTheme();
   const toneColor: Record<KpiTone, string> = {
     success: semantic.success,
@@ -36,8 +39,8 @@ export function KpiTile({ style,
     warning: semantic.warning,
     ink: colors.ink800,
   };
-  const empty = amountCents === undefined;
-  const amount = empty ? '—' : formatEURWhole(amountCents);
+  const empty = valueText === undefined && amountCents === undefined;
+  const amount = valueText ?? (amountCents === undefined ? '—' : formatEURWhole(amountCents));
 
   return (
     <PressableScale
