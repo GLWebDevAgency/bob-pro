@@ -12,18 +12,20 @@ import {
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { tradeToWorksiteTerminology } from '@bob/core';
-import { shadowNative } from '@bob/tokens';
 import { t } from '@bob/i18n';
 import {
+  BackHeader,
   Button,
   Card,
   EmptyState,
   ErrorRetry,
-  InnerScreenHeader,
+  HeaderIconButton,
+  PressableScale,
   SectionHeader,
   Sheet,
   Skeleton,
   SkeletonRow,
+  StaggeredList,
   StatusBadge,
   Toast,
   font,
@@ -31,9 +33,12 @@ import {
 } from '@bob/ui';
 import { useChantiers, useCreateChantier, useProfile, useSearchAddress } from '../src/data/hooks';
 import { usePublishAgentContext, type AgentContext } from '../src/agent';
-import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, PlusIcon } from '../src/components/icons';
+import { CheckIcon, ChevronRightIcon, PlusIcon } from '../src/components/icons';
 import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 import { ChantierRowCountBadges } from '../src/components/chantier-row-counts';
+import {
+  chantierRowCountsAccessibilityLabel,
+} from '../src/components/chantier-row-counts.logic';
 import { DEFAULT_WORKSITE_TERM, worksiteParamsFor } from '../src/lib/worksite-terminology';
 
 const SEARCH_DEBOUNCE_MS = 350;
@@ -44,7 +49,7 @@ function frDate(dateOnly: string): string {
 }
 
 export default function Chantiers() {
-  const { colors, semantic, theme, personality } = useTheme();
+  const { colors, controls, semantic, personality } = useTheme();
   const insets = useSafeAreaInsets();
   const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: insets.bottom + 40 });
   const router = useRouter();
@@ -146,54 +151,27 @@ export default function Chantiers() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <View style={{ paddingTop: insets.top + 10, paddingHorizontal: 16 }}>
-        <Pressable
-          onPress={() => router.back()}
-          accessibilityRole="button"
-          accessibilityLabel={t('chantiers.back', { personality })}
-          hitSlop={8}
-          style={({ pressed }) => ({
-            minHeight: 44,
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 4,
-            alignSelf: 'flex-start',
-            opacity: pressed ? 0.6 : 1,
-          })}
-        >
-          <ChevronLeftIcon color={colors.ink800} size={18} strokeWidth={2.2} />
-          <Text style={[font('label', 600), { fontSize: 15, color: colors.ink800 }]}>
-            {t('chantiers.back', { personality })}
-          </Text>
-        </Pressable>
-      </View>
-
-      <InnerScreenHeader
+      {/* Lot 4 : bloc retour + InnerScreenHeader → BackHeader kit (fin du sur-espace,
+          retours device fondateur) ; « + » → HeaderIconButton (squircle 44/13, géométrie
+          unifiée avec le carnet clients). */}
+      <BackHeader
+        backLabel={t('chantiers.back', { personality })}
+        onBack={() => router.back()}
         eyebrow={t('chantiers.eyebrow', { personality })}
         title={t('chantiers.title', { personality, params: worksiteParams })}
         subtitle={t('chantiers.subtitle', { personality })}
-        action={
-          ready ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={t('chantiers.add', { personality, params: worksiteParams })}
-              onPress={() => setCreateOpen(true)}
-              style={({ pressed }) => ({
-                width: 44,
-                height: 44,
-                borderRadius: 22,
-                backgroundColor: theme.ink,
-                alignItems: 'center',
-                justifyContent: 'center',
-                opacity: pressed ? 0.85 : 1,
-                transform: [{ scale: pressed ? 0.94 : 1 }],
-                ...shadowNative.e1,
-              })}
-            >
-              <PlusIcon color={colors.surface} size={20} />
-            </Pressable>
-          ) : undefined
-        }
+        {...(ready
+          ? {
+              action: (
+                <HeaderIconButton
+                  accessibilityLabel={t('chantiers.add', { personality, params: worksiteParams })}
+                  onPress={() => setCreateOpen(true)}
+                >
+                  <PlusIcon color={colors.surface} size={20} />
+                </HeaderIconButton>
+              ),
+            }
+          : {})}
       />
 
       <ScrollView
@@ -263,45 +241,63 @@ export default function Chantiers() {
         ) : (
           <View>
             <SectionHeader title={t('chantiers.listTitle', { personality, params: worksiteParams })} />
-            <View style={{ gap: 10 }}>
-              {list.map((chantier) => (
-                <Pressable
-                  key={chantier.id}
-                  accessibilityRole="button"
-                  accessibilityLabel={chantier.name}
-                  onPress={() => router.push(`/chantier/${chantier.id}`)}
-                  style={({ pressed }) => [{ minHeight: 44 }, pressed && { opacity: 0.85 }]}
-                >
-                  <Card>
-                    <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
-                      <View style={{ flex: 1 }}>
-                        <Text style={[font('cardTitle'), { color: colors.ink900 }]}>{chantier.name}</Text>
-                        {chantier.address ? (
-                          <Text style={[font('sub'), { color: colors.slate500, marginTop: 4 }]}>{chantier.address}</Text>
-                        ) : null}
-                        <Text style={[font('meta'), { color: colors.slate400, marginTop: 5 }]}>
-                          {t('chantiers.openedOn', {
-                            personality,
-                            params: { date: frDate(chantier.openedAt) },
-                          })}
-                        </Text>
-                        <ChantierRowCountBadges
-                          counts={{ noteCount: chantier.noteCount, photoCount: chantier.photoCount }}
-                          personality={personality}
-                        />
+            {/* Lot 4 : StaggeredList (cascade sobre fail-closed) + PressableScale (press
+                feedback standard) + chevron controls.chevron + label VoiceOver enrichi —
+                l'œil voit quatre faits (statut, date, compteurs), le lecteur d'écran aussi. */}
+            <StaggeredList itemStyle={{ marginBottom: 10 }}>
+              {list.map((chantier) => {
+                const statusLabel = t(
+                  chantier.status === 'open' ? 'chantiers.open' : 'chantiers.closed',
+                  { personality },
+                );
+                const countsLabel = chantierRowCountsAccessibilityLabel(
+                  { noteCount: chantier.noteCount, photoCount: chantier.photoCount },
+                  personality,
+                );
+                return (
+                  <PressableScale
+                    key={chantier.id}
+                    accessibilityRole="button"
+                    accessibilityLabel={[
+                      chantier.name,
+                      statusLabel,
+                      t('chantiers.openedOn', {
+                        personality,
+                        params: { date: frDate(chantier.openedAt) },
+                      }),
+                      countsLabel,
+                    ]
+                      .filter(Boolean)
+                      .join(', ')}
+                    onPress={() => router.push(`/chantier/${chantier.id}`)}
+                    style={{ minHeight: 44 }}
+                  >
+                    <Card>
+                      <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={[font('cardTitle'), { color: colors.ink900 }]}>{chantier.name}</Text>
+                          {chantier.address ? (
+                            <Text style={[font('sub'), { color: colors.slate500, marginTop: 4 }]}>{chantier.address}</Text>
+                          ) : null}
+                          <Text style={[font('meta'), { color: colors.slate400, marginTop: 5 }]}>
+                            {t('chantiers.openedOn', {
+                              personality,
+                              params: { date: frDate(chantier.openedAt) },
+                            })}
+                          </Text>
+                          <ChantierRowCountBadges
+                            counts={{ noteCount: chantier.noteCount, photoCount: chantier.photoCount }}
+                            personality={personality}
+                          />
+                        </View>
+                        <StatusBadge label={statusLabel} variant={chantier.status === 'open' ? 'b2b' : 'success'} />
+                        <ChevronRightIcon color={controls.chevron} size={14} strokeWidth={2} />
                       </View>
-                      <StatusBadge
-                        label={t(chantier.status === 'open' ? 'chantiers.open' : 'chantiers.closed', {
-                          personality,
-                        })}
-                        variant={chantier.status === 'open' ? 'b2b' : 'success'}
-                      />
-                      <ChevronRightIcon color={colors.slate300} size={14} strokeWidth={2} />
-                    </View>
-                  </Card>
-                </Pressable>
-              ))}
-            </View>
+                    </Card>
+                  </PressableScale>
+                );
+              })}
+            </StaggeredList>
           </View>
         )}
       </ScrollView>
