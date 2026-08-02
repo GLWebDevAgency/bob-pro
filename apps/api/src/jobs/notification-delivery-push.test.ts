@@ -19,7 +19,11 @@ const RELANCE_INPUT = {
   notification: { channel: 'email' as const, to: 'client@example.com', subject: 'Relance F-1', body: 'Merci de régler.' },
 };
 
-async function registerDevice(persistence: InMemoryPersistence, token: string): Promise<void> {
+async function registerDevice(
+  persistence: InMemoryPersistence,
+  token: string,
+  registeredAt?: string,
+): Promise<void> {
   const installationId = randomUUID();
   await persistence.devices.register({
     id: `dev-${token}`,
@@ -31,7 +35,12 @@ async function registerDevice(persistence: InMemoryPersistence, token: string): 
     bindingId: randomUUID(),
     bindingGeneration: 1,
     revocationSecretHash: 'a'.repeat(64),
-    now: '2026-07-03T10:00:00.000Z',
+    // UNE MINUTE AVANT LE PRÉSENT DU TEST — jamais un littéral qui vieillit : le service compare
+    // ce `now` au VRAI clock (SystemClock interne) contre PUSH_BINDING_TTL_MS = 30 j. L'ancien
+    // littéral '2026-07-03T10:00:00.000Z' a expiré le 2026-08-02 à 10:00 UTC et a fait détoner
+    // 4 tests d'un coup (aucun appareil éligible, push jamais envoyé). Sous vi.useFakeTimers,
+    // Date.now() est le présent GELÉ du test : les deux régimes restent valides.
+    now: registeredAt ?? new Date(Date.now() - 60_000).toISOString(),
   });
 }
 
@@ -413,7 +422,10 @@ describe('NotificationDeliveryService — canal push Expo (C25)', () => {
       vi.setSystemTime(new Date('2026-08-03T10:00:00.001Z'));
       const persistence = new InMemoryPersistence();
       const logger = makeLogger();
-      await registerDevice(persistence, 'ExponentPushToken[stale]');
+      // Enregistré le 03/07 10:00, présent gelé le 03/08 10:00:00.001 : 31 j + 1 ms — le seuil
+      // des 30 j (cutoff = présent − PUSH_BINDING_TTL_MS = 04/07 10:00:00.001) est dépassé.
+      // Les DEUX littéraux vivent côte à côte : ce test est le seul à vouloir un appareil périmé.
+      await registerDevice(persistence, 'ExponentPushToken[stale]', '2026-07-03T10:00:00.000Z');
       const notifier = { send: vi.fn<NotificationPort['send']>().mockResolvedValue(undefined) } satisfies NotificationPort;
       const push = { send: vi.fn() } as unknown as ExpoPushService;
       const service = new NotificationDeliveryService(
