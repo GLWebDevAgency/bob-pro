@@ -37,6 +37,7 @@ type Copy = Readonly<Record<Personality, string>>;
 const legacyFr = {
   'common.close': { pote: 'Fermer', pro: 'Fermer', direct: 'Fermer' },
   'common.cancel': { pote: 'Annuler', pro: 'Annuler', direct: 'Annuler' },
+  'common.retry': { pote: 'Réessayer', pro: 'Réessayer', direct: 'Réessayer' },
   // Valeur absente lue par un lecteur d'écran — « — » visuel, jamais « tiret » verbalisé.
   'common.notProvided': { pote: 'non renseigné', pro: 'non renseigné', direct: 'non renseigné' },
 
@@ -545,6 +546,11 @@ const legacyFr = {
     pote: 'Je n’arrive pas à joindre le serveur. On réessaie dans un instant ?',
     pro: 'Connexion impossible pour le moment. Veuillez réessayer dans un instant.',
     direct: 'Hors ligne. Réessaie.',
+  },
+  'today.retry': {
+    pote: 'Réessayer',
+    pro: 'Réessayer',
+    direct: 'Réessayer',
   },
 
   // ── C11 — écran « Argent » (copy pote = exacte du proto) ─────────────────────

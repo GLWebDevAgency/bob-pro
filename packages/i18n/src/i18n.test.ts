@@ -48,6 +48,18 @@ describe('i18n', () => {
     expect(t('today.subtitleNone', { personality: 'direct' })).toBe('RAS.');
   });
 
+  it('today.retry existe dans les 3 humeurs', () => {
+    for (const personality of ['pote', 'pro', 'direct'] as const) {
+      expect(t('today.retry', { personality })).toBe('Réessayer');
+    }
+  });
+
+  it('common.retry porte la reprise des primitives UI dans les 3 humeurs', () => {
+    for (const personality of ['pote', 'pro', 'direct'] as const) {
+      expect(t('common.retry', { personality })).toBe('Réessayer');
+    }
+  });
+
   it('today.payoutHint interpole {amount} sur les 3 humeurs (langage prudent — jamais « te verser »)', () => {
     expect(t('today.payoutHint', { params: { amount: '2 000,00 €' } })).toBe(
       '~2 000,00 € de trésorerie mobilisable, réserves gardées. Ta rémunération : à préciser avec ton statut.',

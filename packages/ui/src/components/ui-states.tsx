@@ -15,6 +15,7 @@
  */
 import type { ReactNode } from 'react';
 import { Text, View } from 'react-native';
+import { t } from '@bob/i18n';
 import { font, useTheme } from '../theme';
 import { Button } from './button';
 import { Card } from './card';
@@ -77,14 +78,19 @@ export function ErrorRetry({
   secondaryLabel,
   onSecondaryAction,
 }: ErrorRetryProps) {
-  const { colors, semantic } = useTheme();
+  const { colors, semantic, personality } = useTheme();
   return (
     <Card style={{ borderColor: semantic.danger, borderWidth: 1 }}>
       <Text accessibilityRole="alert" style={[font('sub'), { color: colors.ink900, lineHeight: 20 }]}>
         {message}
       </Text>
       <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
-        <Button title="Réessayer" variant="secondary" onPress={onRetry} loading={retrying} />
+        <Button
+          title={t('common.retry', { personality })}
+          variant="secondary"
+          onPress={onRetry}
+          loading={retrying}
+        />
         {onSecondaryAction && secondaryLabel ? (
           <Button title={secondaryLabel} variant="secondary" onPress={onSecondaryAction} />
         ) : null}
