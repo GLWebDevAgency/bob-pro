@@ -42,8 +42,10 @@ describe('contrat données autoritatives des écrans métier', () => {
     const source = screen('(tabs)/argent.tsx');
 
     expect(source).toContain('const agedLoading = invoices.isLoading || customers.isLoading');
-    expect(source).toContain('heroSafe.data && !payGuidance.isLoading');
+    expect(source).toContain('authoritativeDataWhenHealthy(heroSafe)');
+    expect(source).toContain('!balanceNeedsConfirmation && heroSafeData && !payGuidance.isLoading');
     expect(source).toContain('const agentDataReady =');
+    expect(source).toContain('!balanceNeedsConfirmation &&');
     expect(source).toContain('capabilities: agentDataReady');
   });
 
@@ -51,7 +53,11 @@ describe('contrat données autoritatives des écrans métier', () => {
     const source = screen('(tabs)/index.tsx');
 
     expect(source).toContain('const homeAgentDataReady =');
-    expect(source).toContain('bankBalance.data !== undefined');
+    expect(source).toContain('const bankBalanceSnapshot = authoritativeDataWhenHealthy(bankBalance)');
+    expect(source).toContain('balanceConfirmation.cashflowInvalidatesBalance');
+    expect(source).toContain('bankBalanceData !== undefined');
+    expect(source).toContain('const prioritiesReady = !prioritiesLoading && !prioritiesFailed');
+    expect(source).toContain('combineQueryStates(companyMe, invoices, today, contracts, notifications)');
     expect(source).toContain('fiscalFlow.profile !== undefined');
     expect(source).toContain('capabilities: homeAgentDataReady');
     expect(source).toContain('const glanceBlockingError =');

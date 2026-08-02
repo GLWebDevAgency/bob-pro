@@ -183,7 +183,8 @@ export function FloatingBalanceCardPlaceholder({
   return (
     <PressableScale
       accessibilityRole="button"
-      accessibilityLabel={hint}
+      accessibilityLabel={loading ? label : hint}
+      accessibilityState={{ busy: loading }}
       onPress={onPress}
       style={{
         marginTop: P.overlap,
