@@ -201,6 +201,26 @@ describe('Rôles journaux dédiés — fin du recyclage des typologies client', 
       JSON.stringify(`AC-0001. Fournitures Brico. ${TODAY_FR}. Achats.`).slice(1, -1),
     );
   });
+
+  it('carte Clôture : tuile-outil NEUTRE (documentTile) — l’intérim b2g de typologie est éteint', async () => {
+    const renderer = await render();
+    const card = findByLabel(renderer, 'Clôturer le mois');
+    expect(card).toBeDefined();
+    // SCOPÉ AU NŒUD : la tuile 34 pt DANS la carte porte le fond neutre du contenu
+    // (#F1F4F7), plus jamais b2gBg (#EDEAFE) — verdict Lot 5 P3, doctrine TONS RECYCLÉS.
+    const tiles = card!
+      .findAllByType('View' as never)
+      .map((view) => {
+        const style = (view.props as { style?: unknown }).style;
+        const flat = Array.isArray(style)
+          ? Object.assign({}, ...(style as object[]))
+          : ((style ?? {}) as Record<string, unknown>);
+        return flat as Record<string, unknown>;
+      })
+      .filter((style) => style['width'] === 34);
+    expect(tiles.length).toBe(1);
+    expect(tiles[0]?.['backgroundColor']).toBe('#F1F4F7'); // documentTile.bg
+  });
 });
 
 describe('États de premier rang', () => {

@@ -319,8 +319,11 @@ export default function Recherche() {
                     <ResultRow
                       key={`${p.source}-${p.id}`}
                       tile={
-                        <IconTile tone="b2b" size={34} radius={10}>
-                          <FileTextIcon color={semantic.b2b} size={16} />
+                        // Une pièce est du PAPIER : famille de contenu neutre documentTile,
+                        // comme la tuile documents — plus de typologie client recyclée
+                        // (doctrine TONS RECYCLÉS, verdict Lot 5 P3).
+                        <IconTile tone="document" size={34} radius={10}>
+                          <FileTextIcon color={documentTile.ink} size={16} />
                         </IconTile>
                       }
                       title={p.number ?? t('search.draftNumber', { personality })}

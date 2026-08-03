@@ -177,6 +177,15 @@ describe('Tuile documents — neutre, le vert reste à l’argent', () => {
     expect(rendered).toContain('"backgroundColor":"#F1F4F7"'); // documentTile.bg
     expect(rendered).not.toContain('"backgroundColor":"#EAF2EC"'); // plus de success recyclé
   });
+
+  it('la tuile de PIÈCE est elle aussi neutre (papier) — le b2b recyclé est éteint', async () => {
+    const rendered = treeOf(await render());
+    // Deux tuiles de contenu neutres : la pièce ET le document (verdict Lot 5 P3).
+    const neutralTiles = rendered.split('"backgroundColor":"#F1F4F7"').length - 1;
+    expect(neutralTiles).toBeGreaterThanOrEqual(2);
+    // Aucun b2bBg dans ces résultats : la cliente est b2g, la pièce n'emprunte plus b2b.
+    expect(rendered).not.toContain('"backgroundColor":"#E6EDF6"');
+  });
 });
 
 describe('SearchField kit — clear 44 pt, effacement effectif', () => {

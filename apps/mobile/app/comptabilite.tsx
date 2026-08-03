@@ -20,7 +20,7 @@ import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { formatEUR, summarizeAccountingEntries } from '@bob/core';
-import { journal, vault } from '@bob/tokens';
+import { documentTile, journal, vault } from '@bob/tokens';
 import { t, type I18nKey } from '@bob/i18n';
 import {
   Card,
@@ -465,8 +465,11 @@ export default function Comptabilite() {
             >
               <Card padding={15}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11 }}>
-                  <IconTile tone="b2g" size={34} radius={10}>
-                    <LockIcon color={semantic.b2g} size={15} strokeWidth={2} />
+                  {/* Carte-outil de clôture : famille de CONTENU neutre (documentTile —
+                      le dossier du comptable), plus jamais l'intérim b2g de typologie
+                      client (doctrine TONS RECYCLÉS, verdict Lot 5 P3). */}
+                  <IconTile tone="document" size={34} radius={10}>
+                    <LockIcon color={documentTile.ink} size={15} strokeWidth={2} />
                   </IconTile>
                   <View style={{ flex: 1, minWidth: 0 }}>
                     <Text style={[font('cardTitle'), { color: colors.ink800 }]}>
