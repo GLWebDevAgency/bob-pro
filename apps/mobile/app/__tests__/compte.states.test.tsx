@@ -261,12 +261,25 @@ describe('Onglet profil — états et langage de pression', () => {
 
   it('purge des tons : parrainage en matière marine (b2bBg), badge palier neutral, tuile fiscale document', async () => {
     const renderer = await render();
-    const referral = textNodeWith(renderer, 'Deviens ambassadeur')?.parent?.parent?.parent;
-    // Quel que soit le titre exact, on vérifie par la couleur : AUCUN aiBg hors canal Bob.
+    // SCOPÉ AU NŒUD (finding de la vérification : le b2bBg global était satisfait par
+    // l'IconTile intérieur — la carte pouvait perdre son fond sans rougir). On remonte du
+    // titre au PREMIER ancêtre qui pose un fond : c'est la carte, et ce doit être b2bBg.
+    const referralText = textNodeWith(renderer, 'Parraine un pote'); // account.referralTitle, humeur pote
+    expect(referralText).toBeDefined();
+    // La CHAÎNE D'ANCÊTRES du titre doit porter le fond marine : l'IconTile qui satisfaisait
+    // l'ancienne assertion globale est un FRÈRE du texte, jamais un ancêtre — ce scope reste
+    // donc discriminant (mutant « carte → surface » : la chaîne perd b2bBg et le test rougit).
+    const ancestorBgs: string[] = [];
+    let ancestor = referralText!.parent;
+    while (ancestor) {
+      const match = styleOf(ancestor).match(/"backgroundColor":"([^"]+)"/u);
+      if (match?.[1] !== undefined) ancestorBgs.push(match[1]);
+      ancestor = ancestor.parent;
+    }
+    expect(ancestorBgs).toContain(semantic.b2bBg);
+    // Et AUCUN aiBg hors canal Bob, à l'échelle de l'écran (négatif légitime par construction).
     const rendered = treeOf(renderer);
-    expect(referral === undefined || referral !== undefined).toBe(true);
     expect(rendered).not.toContain(`"backgroundColor":"${semantic.aiBg}"`);
-    expect(rendered).toContain(`"backgroundColor":"${semantic.b2bBg}"`); // la carte parrainage
     // Tuile 'document' (lineSoft) pour le profil fiscal + « À connecter » en warningInk.
     expect(rendered).toContain(`"backgroundColor":"${neutrals.lineSoft}"`);
     const toConnect = textNodeWith(renderer, 'À connecter');
@@ -293,7 +306,9 @@ describe('CARVE-OUT compliance — pied légal, version, zone dangereuse INTOUCH
       .findAllByType('Text' as never)
       .find((node) => (node.props as { children?: unknown }).children === 'Conditions d’utilisation');
     // Style HISTORIQUE conservé : la passe typo de la vague ne l'a PAS touché.
-    expect(styleOf(label!)).toContain('"fontSize":14');
+    // FRONTIÈRE EXACTE (finding : '"fontSize":14' est une sous-chaîne de 14.5 — le témoin
+    // laissait passer la migration au cran body). 14 suivi de virgule ou d'accolade, rien d'autre.
+    expect(styleOf(label!)).toMatch(/"fontSize":14[,}]/u);
     const contact = byLabel(renderer, 'Une question ? Écris-nous. support@bob.example');
     expect(contact).toBeDefined();
     const sub = contact!

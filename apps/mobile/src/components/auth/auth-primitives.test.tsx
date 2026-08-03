@@ -154,8 +154,13 @@ describe('AuthField — label meta white70, toggle de visibilité', () => {
 
   it('erreur : bord dangerVivid (graphique) — le reste de la géométrie ne bouge pas', async () => {
     const renderer = await render(createElement(AuthField, { label: 'Email', error: true }));
-    const rendered = JSON.stringify(renderer.toJSON());
-    expect(rendered).toContain('"borderColor":"#E5544B"');
-    expect(rendered).toContain('"borderWidth":1');
+    // SCOPÉ AU NŒUD (finding : le toContain global laissait le bord se poser sur n'importe
+    // quel sous-nœud). Le bord d'erreur vit sur le WRAPPER direct du TextInput.
+    const input = renderer.root.findByType('TextInput' as never);
+    const wrapperStyle = JSON.stringify((input.parent!.props as { style?: unknown }).style);
+    // semantic.dangerVivid — littéral recopié à la main (#E5544B) : si le token change, ce
+    // test DOIT rougir et forcer la relecture du bord d'erreur.
+    expect(wrapperStyle).toContain('"borderColor":"#E5544B"');
+    expect(wrapperStyle).toContain('"borderWidth":1');
   });
 });
