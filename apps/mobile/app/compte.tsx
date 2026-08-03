@@ -48,7 +48,8 @@ import {
   type PlanTier,
 } from '@bob/core';
 import { t, type I18nKey } from '@bob/i18n';
-import { shadowComponentsNative, shadowNative } from '@bob/tokens';
+import { shadowComponentsNative, spacing } from '@bob/tokens';
+import { bobErrorCode } from '@bob/api-client';
 import { featureLabel } from '../src/monetization/feature-labels';
 import {
   Avatar,
@@ -56,6 +57,8 @@ import {
   Card,
   EmptyState,
   ErrorRetry,
+  FILTER_CHIP_TINT_SHARE,
+  FadeIn,
   IconTile,
   SectionHeader,
   SegmentedControl,
@@ -64,12 +67,16 @@ import {
   SkeletonRow,
   StatusBadge,
   font,
+  mixTint,
   parseGradient,
+  useErrorSheet,
   useTheme,
+  type ErrorSheetFacts,
 } from '@bob/ui';
 import { useIdentity } from '../src/data/identity';
 import { useAuth } from '../src/data/auth';
 import {
+  appErrorMessage,
   useCompanyMe,
   useProfile,
   useBillingPortal,
@@ -84,6 +91,7 @@ import { ScreenHeader } from '../src/components/screen-header';
 import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 import { hasBlockingAuthoritativeDataError } from '../src/data/authoritative-query-state';
 import {
+  CheckIcon,
   ChevronRightIcon,
   CurrencyIcon,
   FileTextIcon,
@@ -144,7 +152,7 @@ function SubscriptionSkeleton({ label }: { label: string }) {
 }
 
 export default function Compte() {
-  const { colors, semantic, controls, overlays, radius, grad, personality } = useTheme();
+  const { colors, semantic, controls, overlays, radius, grad, theme, personality } = useTheme();
   const insets = useSafeAreaInsets();
   const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: insets.bottom + 34 });
   const router = useRouter();
@@ -170,6 +178,19 @@ export default function Compte() {
   // Diff « tu gagnes / tu perds » (SPEC pilier 2, décision 7) : offre touchée ≠ la sienne →
   // comparaison factuelle sous la grille ; second tap = désélection. AUCUNE souscription.
   const [comparedTier, setComparedTier] = useState<PaidTier | null>(null);
+  // Échecs de checkout/portail (mutations appelables au support) → ErrorSheet 2 faces —
+  // le Alert.alert('Oups') du hook partagé est banni par la grammaire d'erreur.
+  const { showErrorFacts, errorSheet } = useErrorSheet();
+  const mutationFacts = (e: unknown, message: string): ErrorSheetFacts => {
+    const err = (e ?? {}) as { code?: string; correlationId?: string; kind?: string };
+    return {
+      message,
+      code: err.code ?? bobErrorCode(e),
+      ...(err.correlationId !== undefined ? { correlationId: err.correlationId } : {}),
+      ...(err.kind !== undefined ? { kind: err.kind } : {}),
+      at: new Date().toISOString(),
+    };
+  };
 
   const view: AccountView = useMemo(
     () =>
@@ -261,7 +282,7 @@ export default function Compte() {
         subtitle={say('account.subtitle')}
       />
 
-      <View style={{ paddingHorizontal: 18, paddingTop: 14 }}>
+      <View style={{ paddingHorizontal: spacing.gutter, paddingTop: 14 }}>
         <SegmentedControl<AccountTab>
           options={[
             { key: 'profil', label: say('account.tabProfile') },
@@ -276,7 +297,7 @@ export default function Compte() {
       <ScrollView
         style={{ flex: 1 }}
         contentContainerStyle={{
-          paddingHorizontal: 18,
+          paddingHorizontal: spacing.gutter,
           paddingTop: 16,
           paddingBottom: bobScrollInsets.paddingBottom,
         }}
@@ -299,17 +320,21 @@ export default function Compte() {
           />
         }
       >
+        {/* Fade-through fail-closed au changement d'onglet (pattern client/[id]) — le FadeIn
+            kit rejoue au remontage (key) et s'éteint par construction sous reduce-motion. */}
+        <FadeIn key={tab}>
         {tab === 'profil' ? (
           <>
             {/* Identité — session signée + fiche société BDD uniquement. */}
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 13, marginBottom: 16 }}>
               <Avatar name={avatarName} size={54} />
               <View style={{ flex: 1 }}>
-                <Text style={[font('cardTitle'), { fontSize: 17, color: colors.ink900 }]}>
+                {/* 17 ad hoc → cran section (17/700 display) ; sous-titre slate500 (AA). */}
+                <Text style={[font('section'), { color: colors.ink900 }]}>
                   {displayName}
                 </Text>
                 {subline ? (
-                  <Text style={[font('sub'), { color: colors.slate400, marginTop: 2 }]}>{subline}</Text>
+                  <Text style={[font('sub'), { color: colors.slate500, marginTop: 2 }]}>{subline}</Text>
                 ) : null}
               </View>
             </View>
@@ -361,8 +386,8 @@ export default function Compte() {
                     <Text style={[font('sub'), { color: colors.slate400 }]}>{row.label}</Text>
                     <Text
                       style={[
-                        font('sub', 700),
-                        { fontSize: 14, color: colors.ink800, flexShrink: 1, textAlign: 'right' },
+                        font('body', 700),
+                        { color: colors.ink800, flexShrink: 1, textAlign: 'right' },
                         row.tabular ? { fontVariant: ['tabular-nums'] } : null,
                       ]}
                     >
@@ -382,117 +407,106 @@ export default function Compte() {
               // TODO tracé : construire un écran dédié de complétion post-inscription +
               // endpoint d'écriture (au-delà d'iban/bic, cf. PATCH /company/billing) le
               // jour où ce cas cesse d'être une exception.
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={`${say('account.companyEmptyTitle')}. ${say('account.companyEmptyBody')}`}
-                onPress={() => openExternalUrl(SUPPORT_MAILTO)}
-                style={[
-                  {
+              // Coquille Card kit + pressed state (les rangées de navigation étaient mortes
+              // au doigt) ; tuile 'document' — la fiche société est du CONTENU papier, pas du
+              // B2G (l'alias indigo est banni hors canal Bob).
+              <Card padding={15} style={{ marginBottom: 16 }}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`${say('account.companyEmptyTitle')}. ${say('account.companyEmptyBody')}`}
+                  onPress={() => openExternalUrl(SUPPORT_MAILTO)}
+                  style={({ pressed }) => ({
                     flexDirection: 'row',
                     alignItems: 'center',
                     gap: 13,
-                    backgroundColor: colors.surface,
-                    borderRadius: radius.cardLg,
-                    borderWidth: 1,
-                    borderColor: controls.cardBorder,
-                    padding: 15,
-                    marginBottom: 16,
-                  },
-                  shadowNative.e1,
-                ]}
+                    minHeight: 44,
+                    opacity: pressed ? 0.65 : 1,
+                  })}
+                >
+                  <IconTile tone="document" size={36} radius={11}>
+                    <FileTextIcon color={colors.slate500} size={18} />
+                  </IconTile>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[font('body', 700), { color: colors.ink800 }]}>
+                      {say('account.companyEmptyTitle')}
+                    </Text>
+                    <Text style={[font('meta'), { color: colors.slate500, marginTop: 1 }]}>
+                      {say('account.companyEmptyBody')}
+                    </Text>
+                  </View>
+                  <ChevronRightIcon color={colors.slate300} size={17} />
+                </Pressable>
+              </Card>
+            )}
+
+            {/* Facturation & modèles → écran C27 (réel) — coquille Card kit + pressed state. */}
+            <Card padding={15} style={{ marginBottom: 16 }}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={say('account.billingRow')}
+                onPress={() => router.push('/reglages-facturation')}
+                style={({ pressed }) => ({
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 11,
+                  minHeight: 44,
+                  opacity: pressed ? 0.65 : 1,
+                })}
               >
-                <IconTile tone="b2g" size={36} radius={11}>
-                  <FileTextIcon color={semantic.b2g} size={18} />
+                <IconTile tone="success" size={34} radius={11}>
+                  <FileTextIcon color={semantic.success} size={18} />
                 </IconTile>
                 <View style={{ flex: 1 }}>
-                  <Text style={[font('sub', 700), { fontSize: 14.5, color: colors.ink800 }]}>
-                    {say('account.companyEmptyTitle')}
+                  <Text style={[font('body', 600), { color: colors.ink800 }]}>
+                    {say('account.billingRow')}
                   </Text>
-                  <Text style={[font('meta'), { color: colors.slate400, marginTop: 1 }]}>
-                    {say('account.companyEmptyBody')}
+                  <Text style={[font('meta'), { color: colors.slate500, marginTop: 1 }]}>
+                    {say('account.billingRowSub')}
                   </Text>
                 </View>
                 <ChevronRightIcon color={colors.slate300} size={17} />
               </Pressable>
-            )}
+            </Card>
 
-            {/* Facturation & modèles → écran C27 (réel) */}
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={say('account.billingRow')}
-              onPress={() => router.push('/reglages-facturation')}
-              style={[
-                {
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: 11,
-                  backgroundColor: colors.surface,
-                  borderRadius: radius.cardLg,
-                  borderWidth: 1,
-                  borderColor: controls.cardBorder,
-                  padding: 15,
-                  marginBottom: 16,
-                },
-                shadowNative.e1,
-              ]}
-            >
-              <IconTile tone="success" size={34} radius={11}>
-                <FileTextIcon color={semantic.success} size={18} />
-              </IconTile>
-              <View style={{ flex: 1 }}>
-                <Text style={[font('sub', 600), { fontSize: 14.5, color: colors.ink800 }]}>
-                  {say('account.billingRow')}
-                </Text>
-                <Text style={[font('meta'), { color: colors.slate400, marginTop: 1 }]}>
-                  {say('account.billingRowSub')}
-                </Text>
-              </View>
-              <ChevronRightIcon color={colors.slate300} size={17} />
-            </Pressable>
-
-            {/* Mon profil fiscal → écran dédié (SPEC_EXPERT_FISCAL §UX FLOW amendement 5) */}
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`${say('fiscal.account.row')}. ${
-                fiscalFlow.hasPending
-                  ? say(
-                      fiscalFlow.remainingCount === 1 ? 'fiscal.account.rowSubPendingOne' : 'fiscal.account.rowSubPending',
-                      { count: fiscalFlow.remainingCount },
-                    )
-                  : say('fiscal.account.rowSubComplete')
-              }`}
-              onPress={() => router.push('/profil-fiscal')}
-              style={[
-                {
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: 11,
-                  backgroundColor: colors.surface,
-                  borderRadius: radius.cardLg,
-                  borderWidth: 1,
-                  borderColor: controls.cardBorder,
-                  padding: 15,
-                  marginBottom: 16,
-                },
-                shadowNative.e1,
-              ]}
-            >
-              <IconTile tone="b2g" size={34} radius={11}>
-                <CurrencyIcon color={semantic.b2g} size={18} />
-              </IconTile>
-              <View style={{ flex: 1 }}>
-                <Text style={[font('sub', 600), { fontSize: 14.5, color: colors.ink800 }]}>{say('fiscal.account.row')}</Text>
-                <Text style={[font('meta'), { color: colors.slate400, marginTop: 1 }]}>
-                  {fiscalFlow.hasPending
+            {/* Mon profil fiscal → écran dédié (SPEC_EXPERT_FISCAL §UX FLOW amendement 5) —
+                tuile 'document' : un profil déclaratif est du CONTENU, pas du B2G. */}
+            <Card padding={15} style={{ marginBottom: 16 }}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`${say('fiscal.account.row')}. ${
+                  fiscalFlow.hasPending
                     ? say(
                         fiscalFlow.remainingCount === 1 ? 'fiscal.account.rowSubPendingOne' : 'fiscal.account.rowSubPending',
                         { count: fiscalFlow.remainingCount },
                       )
-                    : say('fiscal.account.rowSubComplete')}
-                </Text>
-              </View>
-              <ChevronRightIcon color={colors.slate300} size={17} />
-            </Pressable>
+                    : say('fiscal.account.rowSubComplete')
+                }`}
+                onPress={() => router.push('/profil-fiscal')}
+                style={({ pressed }) => ({
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 11,
+                  minHeight: 44,
+                  opacity: pressed ? 0.65 : 1,
+                })}
+              >
+                <IconTile tone="document" size={34} radius={11}>
+                  <CurrencyIcon color={colors.slate500} size={18} />
+                </IconTile>
+                <View style={{ flex: 1 }}>
+                  <Text style={[font('body', 600), { color: colors.ink800 }]}>{say('fiscal.account.row')}</Text>
+                  <Text style={[font('meta'), { color: colors.slate500, marginTop: 1 }]}>
+                    {fiscalFlow.hasPending
+                      ? say(
+                          fiscalFlow.remainingCount === 1 ? 'fiscal.account.rowSubPendingOne' : 'fiscal.account.rowSubPending',
+                          { count: fiscalFlow.remainingCount },
+                        )
+                      : say('fiscal.account.rowSubComplete')}
+                  </Text>
+                </View>
+                <ChevronRightIcon color={colors.slate300} size={17} />
+              </Pressable>
+            </Card>
 
             <SectionHeader title={say('account.sectionConnections')} />
             <Card padding={15} style={{ marginBottom: 16 }}>
@@ -515,13 +529,14 @@ export default function Compte() {
                   ) : (
                     <PeopleIcon color={colors.ink600} size={19} strokeWidth={2} />
                   )}
-                  <Text style={[font('sub', 600), { fontSize: 14, color: colors.ink800, flex: 1 }]}>
+                  <Text style={[font('body', 600), { color: colors.ink800, flex: 1 }]}>
                     {say(CONNECTION_LABEL_KEYS[conn.key])}
                   </Text>
+                  {/* « À connecter » : warningInk (l'ambre nu ≈3,4:1 échouait en 12 px). */}
                   <Text
                     style={[
-                      font('label', 700),
-                      { fontSize: 12, color: conn.status === 'to_connect' ? semantic.warning : colors.slate400 },
+                      font('meta', 700),
+                      { color: conn.status === 'to_connect' ? semantic.warningInk : colors.slate500 },
                     ]}
                   >
                     {conn.status === 'to_connect' ? say('account.connToConnect') : say('account.connSoon')}
@@ -530,39 +545,41 @@ export default function Compte() {
               ))}
             </Card>
 
-            {/* Parrainage — teaser honnête : aucun flux de parrainage n'existe encore */}
-            <Card padding={15} style={{ marginBottom: 16, backgroundColor: semantic.aiBg, borderColor: semantic.aiBg }}>
+            {/* Parrainage — teaser honnête : aucun flux n'existe encore. Matière MARINE
+                (b2bBg) : ce n'est pas Bob qui parle — l'indigo est son canal EXCLUSIF. */}
+            <Card padding={15} style={{ marginBottom: 16, backgroundColor: semantic.b2bBg, borderColor: semantic.b2bBg }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 13 }}>
-                <IconTile tone="b2g" size={34} radius={11}>
-                  <Feather name="gift" size={18} color={semantic.ai} />
+                <IconTile tone="b2b" size={34} radius={11}>
+                  <Feather name="gift" size={18} color={semantic.b2b} />
                 </IconTile>
                 <View style={{ flex: 1 }}>
-                  <Text style={[font('sub', 700), { fontSize: 14.5, color: semantic.ai }]}>
+                  <Text style={[font('body', 700), { color: colors.ink800 }]}>
                     {say('account.referralTitle')}
                   </Text>
-                  <Text style={[font('meta'), { color: semantic.aiInk, marginTop: 1 }]}>
+                  <Text style={[font('meta'), { color: colors.slate500, marginTop: 1 }]}>
                     {say('account.referralSoon')}
                   </Text>
                 </View>
               </View>
             </Card>
 
-            {/* Équipe & rôles — badge BUSINESS (palier requis, constante produit) */}
+            {/* Équipe & rôles — badge du palier requis : 'neutral' (un palier d'abonnement
+                n'est pas une typologie client B2G). */}
             <Card padding={15} style={{ marginBottom: 16 }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11 }}>
                 <IconTile tone="b2b" size={34} radius={11}>
                   <PeopleIcon color={semantic.b2b} size={18} strokeWidth={2} />
                 </IconTile>
                 <View style={{ flex: 1 }}>
-                  <Text style={[font('sub', 600), { fontSize: 14.5, color: colors.ink800 }]}>
+                  <Text style={[font('body', 600), { color: colors.ink800 }]}>
                     {say('account.teamRow')}
                   </Text>
-                  <Text style={[font('meta'), { color: colors.slate400, marginTop: 1 }]}>
+                  <Text style={[font('meta'), { color: colors.slate500, marginTop: 1 }]}>
                     {say('account.teamRowSub')}
                   </Text>
                 </View>
                 <StatusBadge
-                  variant="b2g"
+                  variant="neutral"
                   label={PLAN_CATALOG[view.profile.team.requiredTier].label.toUpperCase()}
                 />
               </View>
@@ -623,20 +640,21 @@ export default function Compte() {
                 accessibilityRole="button"
                 accessibilityLabel={`${say('account.diagnosticRow')}. ${say('account.diagnosticRowSub')}`}
                 onPress={() => router.push('/diagnostic-technique')}
-                style={{
+                style={({ pressed }) => ({
                   flexDirection: 'row',
                   alignItems: 'center',
                   gap: 11,
                   paddingVertical: 13,
                   minHeight: 44,
-                }}
+                  opacity: pressed ? 0.65 : 1,
+                })}
               >
                 <Feather name="activity" color={colors.ink600} size={17} />
                 <View style={{ flex: 1 }}>
-                  <Text style={[font('sub', 600), { fontSize: 14, color: colors.ink800 }]}>
+                  <Text style={[font('body', 600), { color: colors.ink800 }]}>
                     {say('account.diagnosticRow')}
                   </Text>
-                  <Text style={[font('meta'), { color: colors.slate400, marginTop: 1 }]}>
+                  <Text style={[font('meta'), { color: colors.slate500, marginTop: 1 }]}>
                     {say('account.diagnosticRowSub')}
                   </Text>
                 </View>
@@ -744,12 +762,13 @@ export default function Compte() {
               >
                 <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
                   <View style={{ flexShrink: 1 }}>
-                    <Text style={[font('label'), { color: overlays.white66 }]}>
+                    <Text style={[font('label'), { color: overlays.white70 }]}>
                       {say('account.offerLabel')}
                     </Text>
-                    <Text style={[font('bigNum'), { fontSize: 24, color: colors.surface, marginTop: 2 }]}>
+                    {/* 24 ad hoc → cran wizardTitle (24/700 display) — l'échelle se protège. */}
+                    <Text style={[font('wizardTitle'), { color: colors.surface, marginTop: 2 }]}>
                       {offer.kind === 'early_access' ? say('account.offerEarlyAccess') : offer.label}
-                      <Text style={[font('label'), { color: overlays.white60 }]}>
+                      <Text style={[font('label'), { color: overlays.white70 }]}>
                         {'  '}
                         {formatEURWhole(offer.monthlyCents)}
                         {say('account.offerPerMonth')}
@@ -764,13 +783,13 @@ export default function Compte() {
                       paddingHorizontal: 10,
                     }}
                   >
-                    <Text style={[font('meta'), { fontSize: 11, color: semantic.successOnDark }]}>
+                    <Text style={[font('meta'), { color: semantic.successOnDark }]}>
                       {offer.kind === 'early_access' ? say('account.offerOpenPill') : offer.status}
                     </Text>
                   </View>
                 </View>
                 {offer.kind === 'early_access' ? (
-                  <Text style={[font('sub'), { fontSize: 12.5, color: overlays.white66, marginTop: 8 }]}>
+                  <Text style={[font('meta', 500), { color: overlays.white80, marginTop: 8, lineHeight: 18 }]}>
                     {say('account.offerEarlyBody')}
                   </Text>
                 ) : null}
@@ -782,15 +801,22 @@ export default function Compte() {
             {view.subscription.plans.length > 0 ? (
               <>
                 <SectionHeader title={say('account.sectionPlans')} />
-                {view.subscription.plans.map((plan) => (
+                {view.subscription.plans.map((plan) => {
+                  const compared = comparedTier === plan.tier;
+                  return (
                   <Card
                     key={plan.tier}
                     padding={16}
                     style={{
                       marginBottom: 11,
-                      ...(comparedTier === plan.tier
-                        ? { borderWidth: 1.5, borderColor: colors.ink600 }
-                        : {}),
+                      // Grammaire de sélection (arbitrage) : bordure d'épaisseur CONSTANTE
+                      // dont la COULEUR bascule vers theme.ink (fin du saut 0,5 px) + fond
+                      // teinté ink ~9 % + CheckIcon — jamais l'indigo de Bob.
+                      borderWidth: 1.5,
+                      borderColor: compared ? theme.ink : controls.cardBorder,
+                      backgroundColor: compared
+                        ? mixTint(colors.surface, theme.ink, FILTER_CHIP_TINT_SHARE)
+                        : colors.surface,
                     }}
                   >
                     <Pressable
@@ -798,13 +824,18 @@ export default function Compte() {
                         setComparedTier((current) => (current === plan.tier ? null : plan.tier))
                       }
                       accessibilityRole="button"
-                      accessibilityLabel={`${plan.label} — ${say('planDiff.gains')} / ${say('planDiff.losses')}`}
+                      accessibilityState={{ selected: compared }}
+                      accessibilityLabel={say('planDiff.compareWith', { plan: plan.label })}
                     >
                       <View style={{ flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 8 }}>
-                        <Text style={[font('section'), { color: colors.ink900 }]}>{plan.label}</Text>
-                        <Text style={[font('bigNum'), { fontSize: 20, color: colors.ink900 }]}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, flexShrink: 1 }}>
+                          {compared ? <CheckIcon color={theme.ink} size={15} strokeWidth={2.6} /> : null}
+                          <Text style={[font('section'), { color: colors.ink900 }]}>{plan.label}</Text>
+                        </View>
+                        {/* 20 ad hoc → cran sheetTitle (20/700 display). */}
+                        <Text style={[font('sheetTitle'), { color: colors.ink900 }]}>
                           {formatEURWhole(plan.monthlyCents)}
-                          <Text style={[font('meta'), { color: colors.slate300 }]}>{say('account.offerPerMonth')}</Text>
+                          <Text style={[font('meta'), { color: colors.slate500 }]}>{say('account.offerPerMonth')}</Text>
                         </Text>
                       </View>
                       <Text style={[font('label', 500), { color: colors.slate500, lineHeight: 21, marginBottom: 12 }]}>
@@ -835,13 +866,30 @@ export default function Compte() {
                         || (plan.cta === 'manage' && billingPortal.isPending)
                       }
                       onPress={() => {
-                        if (plan.cta === 'checkout') startCheckout.mutate(plan.tier);
-                        else if (plan.cta === 'manage') billingPortal.mutate();
-                        else if (plan.cta === 'store') openStoreSubscriptionManagement();
+                        // Échec de checkout/portail → ErrorSheet 2 faces (le hook n'a plus
+                        // d'Alert générique ; message serveur honnête + code + corrélation).
+                        if (plan.cta === 'checkout') {
+                          startCheckout.mutate(plan.tier, {
+                            onError: (e) =>
+                              showErrorFacts(
+                                t('errors.sheetTitle', { personality }),
+                                mutationFacts(e, appErrorMessage(e)),
+                              ),
+                          });
+                        } else if (plan.cta === 'manage') {
+                          billingPortal.mutate(undefined, {
+                            onError: (e) =>
+                              showErrorFacts(
+                                t('errors.sheetTitle', { personality }),
+                                mutationFacts(e, appErrorMessage(e)),
+                              ),
+                          });
+                        } else if (plan.cta === 'store') openStoreSubscriptionManagement();
                       }}
                     />
                   </Card>
-                ))}
+                  );
+                })}
               </>
             ) : null}
 
@@ -856,6 +904,8 @@ export default function Compte() {
               const diff = diffPlanChange(currentTier, comparedTier);
               const isDowngrade = TIER_ORDER.indexOf(comparedTier) < TIER_ORDER.indexOf(currentTier);
               return (
+                // Le diff surgit SOUS la grille : annoncé aux lecteurs d'écran à l'apparition.
+                <View accessibilityLiveRegion="polite">
                 <Card padding={16} style={{ marginBottom: 11 }}>
                   {diff.gained.length === 0 && diff.lost.length === 0 ? (
                     <Text style={[font('label', 500), { color: colors.slate500, lineHeight: 21 }]}>
@@ -908,11 +958,12 @@ export default function Compte() {
                     </Text>
                   ) : null}
                   {isDowngrade ? (
-                    <Text style={[font('meta'), { fontSize: 11.5, color: colors.slate500, marginTop: 8, lineHeight: 17 }]}>
+                    <Text style={[font('meta'), { color: colors.slate500, marginTop: 8, lineHeight: 17 }]}>
                       {say('planDiff.downgradeEffective')}
                     </Text>
                   ) : null}
                 </Card>
+                </View>
               );
             })()}
 
@@ -973,7 +1024,7 @@ export default function Compte() {
                         <Text style={[font('sub', 600), { color: colors.ink800 }]}>
                           {invoice.number ?? say('account.invoiceWithoutNumber')}
                         </Text>
-                        <Text style={[font('meta'), { color: colors.slate400, marginTop: 1 }]}>
+                        <Text style={[font('meta'), { color: colors.slate500, marginTop: 1 }]}>
                           {issuedDate} · {say(statusKey)}
                         </Text>
                       </View>
@@ -1004,6 +1055,9 @@ export default function Compte() {
                     borderBottomColor: colors.lineSoft,
                   }}
                 >
+                  {/* Fin des tons de typologie recyclés : assurance ('particulier') et
+                      comptable ('b2g') étaient des mensonges de teinte — les services non
+                      financiers passent en tuile 'document' neutre. */}
                   {service.key === 'online_payment' ? (
                     <IconTile tone="success" size={34} radius={10}>
                       <CurrencyIcon color={semantic.success} size={16} strokeWidth={2} />
@@ -1013,26 +1067,26 @@ export default function Compte() {
                       <TrendUpIcon color={semantic.b2b} size={16} strokeWidth={2} />
                     </IconTile>
                   ) : service.key === 'insurance' ? (
-                    <IconTile tone="particulier" size={34} radius={10}>
-                      <ShieldIcon color={semantic.particulier} size={16} strokeWidth={2} />
+                    <IconTile tone="document" size={34} radius={10}>
+                      <ShieldIcon color={colors.slate500} size={16} strokeWidth={2} />
                     </IconTile>
                   ) : (
-                    <IconTile tone="b2g" size={34} radius={10}>
-                      <PeopleIcon color={semantic.b2g} size={16} strokeWidth={2} />
+                    <IconTile tone="document" size={34} radius={10}>
+                      <PeopleIcon color={colors.slate500} size={16} strokeWidth={2} />
                     </IconTile>
                   )}
                   <View style={{ flex: 1 }}>
-                    <Text style={[font('sub', 600), { fontSize: 14, color: colors.ink800 }]}>
+                    <Text style={[font('body', 600), { color: colors.ink800 }]}>
                       {say(SERVICE_LABEL_KEYS[service.key].title)}
                     </Text>
-                    <Text style={[font('meta'), { color: colors.slate300, marginTop: 1 }]}>
+                    <Text style={[font('meta'), { color: colors.slate500, marginTop: 1 }]}>
                       {say(SERVICE_LABEL_KEYS[service.key].sub)}
                     </Text>
                   </View>
                   <Text
                     style={[
-                      font('label', 700),
-                      { fontSize: 12, color: service.status === 'active' ? semantic.success : colors.slate400 },
+                      font('meta', 700),
+                      { color: service.status === 'active' ? semantic.success : colors.slate500 },
                     ]}
                   >
                     {service.status === 'active' ? say('account.serviceActive') : say('account.serviceSoon')}
@@ -1044,7 +1098,9 @@ export default function Compte() {
             )}
           </>
         )}
+        </FadeIn>
       </ScrollView>
+      {errorSheet}
     </View>
   );
 }
