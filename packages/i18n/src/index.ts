@@ -431,6 +431,8 @@ const legacyFr = {
   },
   // Taux réduits travaux : l'éligibilité est RE-DEMANDÉE — le fait légal appartient à la
   // nouvelle pièce, jamais copié (suggestVatRate refuse sinon, refus actionnable).
+  // Lot 3 — chip d'en-tête de la QuestionSheet (l'Alert système 3 boutons est mort).
+  'devis.duplicateVatHeader': { pote: 'TVA', pro: 'TVA', direct: 'TVA' },
   'devis.duplicateEligibilityTitle': {
     pote: 'TVA réduite : toujours d’actualité ?',
     pro: 'Taux réduit : conditions à reconfirmer',
@@ -3923,6 +3925,12 @@ const legacyFr = {
   'ventes.filterAll': { pote: 'Tout', pro: 'Tout', direct: 'Tout' },
   'ventes.filterQuotes': { pote: 'Devis', pro: 'Devis', direct: 'Devis' },
   'ventes.filterInvoices': { pote: 'Factures', pro: 'Factures', direct: 'Factures' },
+  // Lot 3 — libellé accessible du SegmentedControl (kindFilter, ex-pilules indigo).
+  'ventes.filterKindLabel': {
+    pote: 'Filtrer : tout, devis ou factures',
+    pro: 'Filtrer : tout, devis ou factures',
+    direct: 'Filtrer devis/factures',
+  },
   'ventes.noResults': {
     pote: 'Rien ne colle à ta recherche — essaie un autre mot.',
     pro: 'Aucun résultat pour cette recherche.',
@@ -4180,6 +4188,22 @@ const legacyFr = {
     pote: 'Le brouillon de devis pour {name} sera définitivement supprimé. Cette action est irréversible.',
     pro: 'Le brouillon de devis pour {name} sera définitivement supprimé. Cette action est irréversible.',
     direct: 'Brouillon {name} supprimé pour de bon. Irréversible.',
+  },
+  // Lot 3 — le catch manquant de deletePersistedDraft (correction d'état sous freeze) :
+  // un échec réseau de suppression ne produit plus RIEN → ErrorSheet, jamais un échec muet.
+  'ventes.draftCard.deleteErrorTitle': {
+    pote: 'La suppression n’est pas passée',
+    pro: 'Suppression impossible',
+    direct: 'Suppression échouée',
+  },
+  // Lot 3 — BackHeader kit (règle : le bouton retour NOMME l'écran de destination).
+  // Pas de clé eyebrow : iso-information (verdict PR #61) — l'en-tête d'origine n'avait
+  // aucun texte au-dessus du titre, la migration n'en ajoute pas.
+  'ventes.back': { pote: 'Accueil', pro: 'Accueil', direct: 'Accueil' },
+  'ventes.headerTitle': {
+    pote: 'Devis & Factures',
+    pro: 'Devis & Factures',
+    direct: 'Devis & Factures',
   },
   'ventes.voiceDraftResume': {
     pote: 'Je rouvre ton brouillon.',
@@ -9898,6 +9922,14 @@ const legacyFr = {
   },
 
   // ── SPEC_SYSTEME_ERREUR — chrome ErrorNotice (les deux faces, §6) ──────────
+  // Verdict Lot 3 (PR #61, P3) : le titre GÉNÉRIQUE de l'ErrorSheet — « Oups » est banni
+  // par la grammaire d'erreur (plan DA 01/08) et le titre parle la personnalité comme
+  // tout le reste. Réservé aux échecs sans titre métier dédié (sinon, clé spécifique).
+  'errors.sheetTitle': {
+    pote: 'Ça n’est pas passé',
+    pro: 'L’action n’a pas abouti',
+    direct: 'Échec de l’action',
+  },
   'errors.noticeDetails': {
     pote: 'Détails techniques',
     pro: 'Détails techniques',

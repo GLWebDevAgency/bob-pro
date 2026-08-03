@@ -9,11 +9,14 @@
  * automatique : le connecteur Plateforme Agréée est l'item B8, hors V1.
  */
 import { useMemo, useState } from 'react';
-import { Alert, Linking, ScrollView, Share, Text, View } from 'react-native';
+import { Linking, ScrollView, Share, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { formatDateOnlyFr, parisDateOnly } from '@bob/core';
 import { t } from '@bob/i18n';
+// Papa vocal (plan Lot 3) : le suivi en 2 taps PENDANT le guidage vocal est le scénario
+// nominal — insets Bob-aware, StatusStrip pour le déclaré, checklist NEUTRE là où c'est
+// l'artisan qui agit (l'indigo disait « Bob s'en occupe » — précisément ce qu'il ne fait pas).
 import {
   Button,
   Card,
@@ -21,8 +24,11 @@ import {
   PressableScale,
   SkeletonCard,
   SkeletonHeader,
+  StaggeredList,
   StatusBadge,
+  StatusStrip,
   font,
+  useErrorSheet,
   useTheme,
 } from '@bob/ui';
 import {
@@ -34,7 +40,8 @@ import { useDocuments } from '../../../src/data/documents';
 import { useBobClient } from '../../../src/data/client';
 import { shareDocument } from '../../../src/lib/share-document';
 import { goBackOrHome } from '../../../src/lib/navigation';
-import { ChevronLeftIcon } from '../../../src/components/icons';
+import { useBobAwareScrollInsets } from '../../../src/components/use-bob-aware-scroll-insets';
+import { CheckIcon, ChevronLeftIcon } from '../../../src/components/icons';
 
 const CHORUS_URL = 'https://portail.chorus-pro.gouv.fr';
 
@@ -48,6 +55,10 @@ export default function FactureTransmissionGuide() {
   const documents = useDocuments();
   const record = useRecordInvoiceTransmission();
   const [suiviError, setSuiviError] = useState(false);
+  // Les CTA restent atteignables pendant que Bob guide le dépôt (orbe/feuille ouverte).
+  const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: 28 });
+  // Grammaire d'erreur : la feuille premium locale remplace les Alert.alert de partage.
+  const { showError, errorSheet } = useErrorSheet();
 
   const guide = invoice.data?.transmissionGuide;
   const transmission = invoice.data?.transmission ?? null;
@@ -62,12 +73,12 @@ export default function FactureTransmissionGuide() {
 
   const sharePdf = async (): Promise<void> => {
     if (pdfDoc === null) {
-      Alert.alert('Oups', t('guide.pdfMissing', { personality }));
+      showError(t('errors.sheetTitle', { personality }), t('guide.pdfMissing', { personality }));
       return;
     }
     const r = await client.documentDownloadUrl(pdfDoc.id);
     if (!r.ok) {
-      Alert.alert('Oups', t('piece.shareError', { personality }));
+      showError(t('errors.sheetTitle', { personality }), t('piece.shareError', { personality }));
       return;
     }
     const shared = await shareDocument({
@@ -75,8 +86,8 @@ export default function FactureTransmissionGuide() {
       filename: pdfDoc.filename,
       mimeType: pdfDoc.mimeType,
     });
-    if (shared === 'unavailable') Alert.alert('Oups', t('piece.shareUnavailable', { personality }));
-    else if (shared === 'error') Alert.alert('Oups', t('piece.shareError', { personality }));
+    if (shared === 'unavailable') showError(t('errors.sheetTitle', { personality }), t('piece.shareUnavailable', { personality }));
+    else if (shared === 'error') showError(t('errors.sheetTitle', { personality }), t('piece.shareError', { personality }));
   };
 
   const shareEngagementNumber = async (): Promise<void> => {
@@ -91,7 +102,7 @@ export default function FactureTransmissionGuide() {
     try {
       await Linking.openURL(url);
     } catch {
-      Alert.alert('Oups', appErrorMessage(new Error(url)));
+      showError(t('errors.sheetTitle', { personality }), appErrorMessage(new Error(url)));
     }
   };
 
@@ -108,9 +119,11 @@ export default function FactureTransmissionGuide() {
     return (
       <View style={{ flex: 1, backgroundColor: colors.bg }}>
         <SkeletonHeader onClose={() => router.back()} />
+        {/* Skeleton FIDÈLE aux 3 cartes réelles (checklist / actions / suivi). */}
         <View style={{ padding: 18, gap: 12 }}>
           <SkeletonCard contentLines={4} />
           <SkeletonCard contentLines={3} />
+          <SkeletonCard contentLines={2} />
         </View>
       </View>
     );
@@ -175,16 +188,28 @@ export default function FactureTransmissionGuide() {
 
       <ScrollView
         style={{ flex: 1 }}
-        contentContainerStyle={{ paddingHorizontal: 18, paddingBottom: insets.bottom + 28, gap: 12 }}
+        contentContainerStyle={{ paddingHorizontal: 18, paddingBottom: bobScrollInsets.paddingBottom, gap: 12 }}
+        scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
+        automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
       >
+        {/* StaggeredList d'entrée : les 3 cartes fondent en cascade (au montage seulement,
+            reduce-motion/préférence inconnue = apparition immédiate). */}
+        <StaggeredList>
         {/* Étapes VISUELLES numérotées — checklist serveur, état honnête de chaque prérequis. */}
         <Card radius={20} padding={16}>
           <Text style={[font('label', 700), { fontSize: 12, color: colors.slate400, marginBottom: 10 }]}>
             {t('guide.checklistTitle', { personality }).toUpperCase()}
           </Text>
           {guide.checklist.map((item, index) => {
+            // « À faire soi-même » = l'ARTISAN agit : ton NEUTRE (l'indigo disait « Bob
+            // s'en occupe » — faux ici) ; vérifié/à vérifier passent aux ENCRES AA
+            // (successInk/warningInk) — lisibles au soleil sur leur pastel.
             const tone =
-              item.done === true ? semantic.success : item.done === false ? semantic.warning : semantic.ai;
+              item.done === true
+                ? semantic.successInk
+                : item.done === false
+                  ? semantic.warningInk
+                  : colors.slate500;
             const stateLabel =
               item.done === true
                 ? t('guide.checkDone', { personality })
@@ -213,7 +238,7 @@ export default function FactureTransmissionGuide() {
                         ? semantic.successBg
                         : item.done === false
                           ? semantic.warningBg
-                          : semantic.aiBg,
+                          : colors.lineSoft,
                     alignItems: 'center',
                     justifyContent: 'center',
                     marginTop: 1,
@@ -225,7 +250,8 @@ export default function FactureTransmissionGuide() {
                   <Text style={[font('sub', 600), { color: colors.ink800, lineHeight: 19 }]}>
                     {item.label}
                   </Text>
-                  <Text style={[font('meta', 700), { fontSize: 11, color: tone, marginTop: 2 }]}>
+                  {/* Cran meta 12 (fin du 11 ad hoc) — l'arbitrage TYPO. */}
+                  <Text style={[font('meta', 700), { color: tone, marginTop: 2 }]}>
                     {stateLabel.toUpperCase()}
                   </Text>
                 </View>
@@ -274,21 +300,16 @@ export default function FactureTransmissionGuide() {
           </Text>
           <View style={{ gap: 8, marginTop: 12 }}>
             {transmission?.depositedAt != null ? (
-              <View
-                style={{
-                  borderRadius: 12,
-                  backgroundColor: semantic.successBg,
-                  paddingVertical: 11,
-                  paddingHorizontal: 13,
-                }}
-              >
-                <Text style={[font('sub', 700), { color: semantic.success }]}>
-                  {t('guide.depositedOn', {
-                    personality,
-                    params: { date: formatDateOnlyFr(transmission.depositedAt) },
-                  })}
-                </Text>
-              </View>
+              // StatusStrip avec CHECK : la même grammaire d'état que l'acompte de la pièce
+              // (encre AA successInk) — la chaîne devis → facture → dépôt parle d'une voix.
+              <StatusStrip
+                tone="success"
+                icon={<CheckIcon color={semantic.successInk} size={15} />}
+                label={t('guide.depositedOn', {
+                  personality,
+                  params: { date: formatDateOnlyFr(transmission.depositedAt) },
+                })}
+              />
             ) : (
               <Button
                 title={t('guide.markDeposited', { personality })}
@@ -298,21 +319,14 @@ export default function FactureTransmissionGuide() {
               />
             )}
             {transmission?.acceptedAt != null ? (
-              <View
-                style={{
-                  borderRadius: 12,
-                  backgroundColor: semantic.successBg,
-                  paddingVertical: 11,
-                  paddingHorizontal: 13,
-                }}
-              >
-                <Text style={[font('sub', 700), { color: semantic.success }]}>
-                  {t('guide.acceptedOn', {
-                    personality,
-                    params: { date: formatDateOnlyFr(transmission.acceptedAt) },
-                  })}
-                </Text>
-              </View>
+              <StatusStrip
+                tone="success"
+                icon={<CheckIcon color={semantic.successInk} size={15} />}
+                label={t('guide.acceptedOn', {
+                  personality,
+                  params: { date: formatDateOnlyFr(transmission.acceptedAt) },
+                })}
+              />
             ) : transmission?.depositedAt != null ? (
               <Button
                 title={t('guide.markAccepted', { personality })}
@@ -329,7 +343,10 @@ export default function FactureTransmissionGuide() {
             </Text>
           ) : null}
         </Card>
+        </StaggeredList>
       </ScrollView>
+      {/* Grammaire d'erreur : la feuille premium locale (plus aucun Alert natif à l'écran). */}
+      {errorSheet}
     </View>
   );
 }

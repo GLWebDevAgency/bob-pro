@@ -118,6 +118,18 @@ export * from './components/money-row';
 export * from './components/deadline-row';
 export * from './components/tip-card';
 export * from './components/segmented-control';
+// Lot 3 — ventes & pièces : chip de filtre actif (croix, cible 44, sélection ink),
+// rangée de pièce de vente, aperçu de message pré-rédigé.
+export * from './components/filter-chip';
+export {
+  FILTER_CHIP_HEIGHT,
+  FILTER_CHIP_TINT_SHARE,
+  filterChipColors,
+  type FilterChipColors,
+  type FilterChipPalette,
+} from './components/filter-chip.logic';
+export * from './components/piece-list-row';
+export * from './components/quote-preview-box';
 export * from './components/client-row';
 export * from './components/score';
 // Lot 4 — CRM terrain : fil rouge « couleur de l'argent » + visionneuse + interrupteur kit.

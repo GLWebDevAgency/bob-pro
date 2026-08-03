@@ -11,8 +11,9 @@ import { useState } from 'react';
 import { Text, TextInput, View } from 'react-native';
 import { isValidDateOnly, lastMonthRange, lastNMonthsRange, thisMonthRange, type DateOnly } from '@bob/core';
 import { t, type I18nKey } from '@bob/i18n';
-import { useTheme } from '@bob/ui';
-import { Chip, font } from './ui';
+// Extinction Lot 3 : Chip/font viennent du kit (mêmes teintes chipColors, press feedback
+// standard + état sélectionné annoncé en plus — le langage de pression unique).
+import { Chip, font, useTheme } from '@bob/ui';
 
 export type DatePresetKey = 'thisMonth' | 'lastMonth' | 'last2Months' | 'custom';
 

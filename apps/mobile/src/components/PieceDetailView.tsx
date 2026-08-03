@@ -25,7 +25,7 @@ import {
 import { conformityCard, patterns, pieceDetail, shadowNative } from '@bob/tokens';
 import { t, type Personality } from '@bob/i18n';
 import { useIdentity } from '../data/identity';
-import { StatusBadge, font, useTheme } from '@bob/ui';
+import { PressableScale, StatusBadge, StatusStrip, font, useTheme } from '@bob/ui';
 import {
   ChartIcon,
   ChevronRightIcon,
@@ -151,8 +151,10 @@ function LinkedCard({
     paddingHorizontal: 15,
     marginBottom: 14,
   };
+  // Lot 3 : une carte de navigation qui ne répond pas au doigt paraît cassée — le press
+  // feedback standard des surfaces (PressableScale), partagé devis/[id] ↔ facture/[id].
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel={`${label} ${value}`} {...(onPress ? { onPress } : {})}>
+    <PressableScale accessibilityRole="button" accessibilityLabel={`${label} ${value}`} {...(onPress ? { onPress } : {})}>
       {gradient ? (
         <LinearGradient colors={[...gradient]} start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 1 }} style={frame}>
           {content}
@@ -160,7 +162,7 @@ function LinkedCard({
       ) : (
         <View style={[frame, { backgroundColor: bg }]}>{content}</View>
       )}
-    </Pressable>
+    </PressableScale>
   );
 }
 
@@ -423,13 +425,14 @@ export function PieceDetailView({
             borderBottomColor: controls.ringTrack,
           }}
         >
+          {/* Lot 3 : croix Fermer 38 → 44 (cible tactile réelle, gants du chantier). */}
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Fermer"
             onPress={onClose}
             style={{
-              width: 38,
-              height: 38,
+              width: 44,
+              height: 44,
               borderRadius: 12,
               backgroundColor: colors.surface,
               borderWidth: 1,
@@ -733,44 +736,26 @@ export function PieceDetailView({
                   </Text>
                 </View>
                 {view.deposit ? (
-                  <View
-                    style={{
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      gap: 7,
-                      marginTop: 10,
-                      backgroundColor: semantic.successBg,
-                      borderRadius: 10,
-                      paddingVertical: 9,
-                      paddingHorizontal: 12,
-                    }}
-                  >
-                    <DepositIcon color={semantic.success} size={15} />
-                    <Text style={{ ...font('meta', 600), fontSize: 12.5, color: semantic.success, flex: 1 }}>
-                      {t('piece.deposit', {
+                  // StatusStrip (Lot 0/3) : LA grammaire d'état de l'acompte au dépôt Chorus —
+                  // encre foncée AA (successInk) au lieu du success nu.
+                  <View style={{ marginTop: 10 }}>
+                    <StatusStrip
+                      tone="success"
+                      icon={<DepositIcon color={semantic.successInk} size={15} />}
+                      label={t('piece.deposit', {
                         personality,
                         params: { pct: view.deposit.pct, amount: formatEUR(view.deposit.amountCents) },
                       })}
-                    </Text>
+                    />
                   </View>
                 ) : null}
                 {view.situationProgressPct !== null ? (
-                  <View
-                    style={{
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      gap: 7,
-                      marginTop: 10,
-                      backgroundColor: pieceDetail.situationBg,
-                      borderRadius: 10,
-                      paddingVertical: 9,
-                      paddingHorizontal: 12,
-                    }}
-                  >
-                    <ChartIcon color={semantic.b2b} size={15} />
-                    <Text style={{ ...font('meta', 600), fontSize: 12.5, color: semantic.b2b, flex: 1 }}>
-                      {t('piece.progress', { personality, params: { pct: view.situationProgressPct } })}
-                    </Text>
+                  <View style={{ marginTop: 10 }}>
+                    <StatusStrip
+                      tone="b2b"
+                      icon={<ChartIcon color={semantic.b2b} size={15} />}
+                      label={t('piece.progress', { personality, params: { pct: view.situationProgressPct } })}
+                    />
                   </View>
                 ) : null}
               </View>
@@ -804,21 +789,8 @@ export function PieceDetailView({
                 </Text>
               </View>
               {view.suivi.isPaid ? (
-                <View
-                  style={{
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    gap: 8,
-                    marginTop: 11,
-                    backgroundColor: semantic.successBg,
-                    borderRadius: 10,
-                    paddingVertical: 9,
-                    paddingHorizontal: 12,
-                  }}
-                >
-                  <Text style={{ ...font('meta', 600), fontSize: 12.5, color: semantic.success }}>
-                    {t('piece.paidDone', { personality })}
-                  </Text>
+                <View style={{ marginTop: 11 }}>
+                  <StatusStrip tone="success" label={t('piece.paidDone', { personality })} />
                 </View>
               ) : null}
             </PieceCard>
