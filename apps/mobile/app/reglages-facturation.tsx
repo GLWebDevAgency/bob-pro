@@ -19,36 +19,45 @@
  *    fichier) ; seul le DERNIER numéro réellement émis est affiché, décision déjà actée avant ce
  *    chantier et conservée ici.
  */
-import { useMemo, useState } from 'react';
-import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
+import { useCallback, useMemo, useState } from 'react';
+import { Pressable, ScrollView, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Feather } from '@expo/vector-icons';
-import { shadowNative, themes } from '@bob/tokens';
-import { t } from '@bob/i18n';
+import { shadowNative, spacing, themes } from '@bob/tokens';
+import { t, type I18nKey } from '@bob/i18n';
 import {
+  BackHeader,
   Card,
   Chip,
   ErrorRetry,
+  Eyebrow,
   SectionHeader,
   SegmentedControl,
   SkeletonCard,
   font,
+  useErrorSheet,
   useTheme,
+  type ErrorSheetFacts,
 } from '@bob/ui';
 import {
   Company,
   formatSiret,
   tradeProfile,
+  type CompanyBillingSettingsPatch,
   type CompanyRelancePolicy,
   type InvoicePdfAccentColor,
 } from '@bob/core';
-import type { InvoiceView } from '@bob/api-client';
+import { bobErrorCode, type InvoiceView } from '@bob/api-client';
 import { useCompanyMe, useInvoices, useUpdateCompanyProfile } from '../src/data/hooks';
 import { useBillingPrefs } from '../src/data/billing-prefs';
 import { companyCanIssue } from '../src/data/company-completeness';
-import { ChevronRightIcon, FileTextIcon } from '../src/components/icons';
-import { ScreenHeader } from '../src/components/screen-header';
+import {
+  AlertTriangleIcon,
+  CheckCircleIcon,
+  ChevronRightIcon,
+  EyeIcon,
+  FileTextIcon,
+} from '../src/components/icons';
 import { PressableRow } from '../src/components/pressable-row';
 import { SettingsToggle } from '../src/components/settings-toggle';
 import { IbanEditSheet } from '../src/components/billing/iban-edit-sheet';
@@ -87,12 +96,20 @@ function SoonPill() {
         alignSelf: 'flex-start',
       }}
     >
-      <Text style={[font('label', 700), { fontSize: 11, color: colors.slate500 }]}>
+      <Text style={[font('meta', 700), { color: colors.slate500 }]}>
         {t('reglages.soonBadge', { personality }).toUpperCase()}
       </Text>
     </View>
   );
 }
+
+/** Libellés i18n des swatches d'accent PDF — VoiceOver lisait les clés anglaises brutes. */
+const ACCENT_LABEL_KEY: Record<InvoicePdfAccentColor, I18nKey> = {
+  navy: 'reglages.accentNavy',
+  green: 'reglages.accentGreen',
+  purple: 'reglages.accentPurple',
+  orange: 'reglages.accentOrange',
+};
 
 const VALIDITY_PRESETS: readonly number[] = [15, 30, 45, 60];
 const DEPOSIT_PRESETS: readonly number[] = [0, 10, 20, 30, 40, 50];
@@ -132,10 +149,47 @@ export default function ReglagesFacturation() {
   const [legalSheetOpen, setLegalSheetOpen] = useState(false);
 
   const lastInvoice = useMemo(() => lastIssuedInvoice(invoices.data ?? []), [invoices.data]);
-  const loading = company.isLoading || invoices.isLoading || billingPrefs.isLoading;
-  const failed = company.isError || invoices.isError || billingPrefs.isError;
   const data = company.data ?? null;
   const prefs = billingPrefs.prefs;
+  // Doctrine blocking vs stale (patron compte.tsx, audit 03/08) : l'écran entier n'est bloqué
+  // que si une SOURCE est SANS données. Un échec de refetch (données en cache) → bannière
+  // stale ; un échec de MUTATION → ErrorSheet — plus jamais un ErrorRetry plein écran pour
+  // un tap de switch raté.
+  const blockingError =
+    (company.isError && company.data === undefined)
+    || (invoices.isError && invoices.data === undefined)
+    || (billingPrefs.queryIsError && prefs === null);
+  const sourcesReady = data !== null && prefs !== null && invoices.data !== undefined;
+  const loading = !sourcesReady && !blockingError;
+  const staleError =
+    sourcesReady && (company.isError || invoices.isError || billingPrefs.queryIsError);
+  const retryAll = (): void => {
+    void company.refetch();
+    void invoices.refetch();
+    void billingPrefs.refetch();
+  };
+  const retrying = company.isRefetching || invoices.isRefetching || billingPrefs.isRefetching;
+  // Échecs de MUTATION appelables au support → ErrorSheet 2 faces (code + corrélation).
+  const { showErrorFacts, errorSheet } = useErrorSheet();
+  const mutationFacts = useCallback((e: unknown, message: string): ErrorSheetFacts => {
+    const err = (e ?? {}) as { code?: string; correlationId?: string; kind?: string };
+    return {
+      message,
+      code: err.code ?? bobErrorCode(e),
+      ...(err.correlationId !== undefined ? { correlationId: err.correlationId } : {}),
+      ...(err.kind !== undefined ? { kind: err.kind } : {}),
+      at: new Date().toISOString(),
+    };
+  }, []);
+  const updatePrefs = (patch: CompanyBillingSettingsPatch): void => {
+    billingPrefs.update(patch, {
+      onError: (e) =>
+        showErrorFacts(
+          t('errors.sheetTitle', { personality }),
+          mutationFacts(e, t('reglages.saveError', { personality })),
+        ),
+    });
+  };
 
   // Company.of() revalide SIREN/SIRET (déjà valides en base) — uniquement pour réutiliser
   // isBtp()/isSociete() SANS dupliquer BTP_TRADES ni CAPITAL_LEGAL_FORMS ici (source unique :
@@ -166,7 +220,15 @@ export default function ReglagesFacturation() {
     if (!data || updateProfile.isPending) return;
     updateProfile.mutate(
       { trade: data.trade, vatRegime: segment === 'franchise' ? 'franchise' : 'reel_normal' },
-      { onError: () => Alert.alert(t('reglages.dataError', { personality })) },
+      {
+        // Changer de régime TVA est une mutation légale lourde : son échec est exactement le
+        // cas « appelable au support » — ErrorSheet 2 faces, plus jamais Alert.alert.
+        onError: (e) =>
+          showErrorFacts(
+            t('errors.sheetTitle', { personality }),
+            mutationFacts(e, t('reglages.saveError', { personality })),
+          ),
+      },
     );
   };
   const vatSegment: 'reel' | 'franchise' = data?.vatRegime === 'franchise' ? 'franchise' : 'reel';
@@ -179,7 +241,8 @@ export default function ReglagesFacturation() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScreenHeader
+      {/* BackHeader importé directement de @bob/ui — le réexport local est déprécié. */}
+      <BackHeader
         backLabel={t('reglages.back', { personality })}
         onBack={() => router.back()}
         eyebrow={t('reglages.eyebrow', { personality })}
@@ -190,7 +253,7 @@ export default function ReglagesFacturation() {
       <ScrollView
         style={{ flex: 1 }}
         contentContainerStyle={{
-          paddingHorizontal: 18,
+          paddingHorizontal: spacing.gutter,
           paddingTop: 14,
           paddingBottom: bobScrollInsets.paddingBottom,
         }}
@@ -208,18 +271,27 @@ export default function ReglagesFacturation() {
             <SkeletonCard height={120} contentLines={3} />
             <SkeletonCard height={210} contentLines={3} />
           </View>
-        ) : failed || !data || !prefs || isBtp === null || accentColor === null ? (
+        ) : blockingError || !data || !prefs || isBtp === null || accentColor === null ? (
+          // BLOQUANT : au moins une source n'a AUCUNE donnée — l'écran ne peut rien montrer
+          // d'honnête. Le spinner de retry couvre les TROIS sources (prefs comprises).
           <ErrorRetry
             message={t('reglages.dataError', { personality })}
-            onRetry={() => {
-              void company.refetch();
-              void invoices.refetch();
-              void billingPrefs.refetch();
-            }}
-            retrying={company.isRefetching || invoices.isRefetching}
+            onRetry={retryAll}
+            retrying={retrying}
           />
         ) : (
           <>
+            {staleError ? (
+              // STALE : un refetch a échoué mais tout est encore là — bannière + retry,
+              // les données en cache restent rendues (doctrine P0).
+              <View style={{ marginBottom: 14 }}>
+                <ErrorRetry
+                  message={t('reglages.dataError', { personality })}
+                  onRetry={retryAll}
+                  retrying={retrying}
+                />
+              </View>
+            ) : null}
             {/* Aperçu du même accent et des mêmes options que le renderer PDF serveur. */}
             <View
               style={{
@@ -251,7 +323,7 @@ export default function ReglagesFacturation() {
                         justifyContent: 'center',
                       }}
                     >
-                      <Text style={[font('cardTitle'), { fontSize: 15, color: colors.surface }]}>
+                      <Text style={[font('cardTitle'), { color: colors.surface }]}>
                         {data.name
                           .split(/\s+/)
                           .filter(Boolean)
@@ -263,7 +335,7 @@ export default function ReglagesFacturation() {
                     <View style={{ flexShrink: 1 }}>
                       <Text
                         numberOfLines={1}
-                        style={[font('sub', 700), { fontSize: 14.5, color: colors.ink900 }]}
+                        style={[font('body', 700), { color: colors.ink900 }]}
                       >
                         {data.name}
                       </Text>
@@ -275,8 +347,8 @@ export default function ReglagesFacturation() {
                   <View style={{ alignItems: 'flex-end' }}>
                     <Text
                       style={[
-                        font('label', 800),
-                        { fontSize: 15, color: accentColor, letterSpacing: 0.5 },
+                        font('body', 800),
+                        { color: accentColor, letterSpacing: 0.5 },
                       ]}
                     >
                       {t('reglages.previewInvoiceLabel', { personality })}
@@ -292,12 +364,14 @@ export default function ReglagesFacturation() {
                   </View>
                 </View>
                 <View style={{ height: 1, backgroundColor: colors.lineSoft, marginVertical: 13 }} />
-                <Text style={[font('meta'), { color: colors.slate300, lineHeight: 17 }]}>
+                {/* Fine print de l'aperçu : les mentions imprimées sur les factures méritent
+                    mieux que slate300 (≈2,1:1) — slate500, patron « métadonnées → slate500 ». */}
+                <Text style={[font('meta'), { color: colors.slate500, lineHeight: 17 }]}>
                   {`SIRET ${formatSiret(data.siret)}${data.rcsOrRm ? ` · ${data.rcsOrRm}` : ''} · ${previewTvaMention}`}
                 </Text>
                 {prefs.showRibOnInvoices && data.iban ? (
                   <Text
-                    style={[font('meta'), { color: colors.slate300, lineHeight: 17, marginTop: 4 }]}
+                    style={[font('meta'), { color: colors.slate500, lineHeight: 17, marginTop: 4 }]}
                   >
                     {`${t('reglages.ribIbanLabel', { personality })} ${maskedIban(data.iban)}${
                       data.bic ? ` · BIC ${data.bic}` : ''
@@ -306,7 +380,7 @@ export default function ReglagesFacturation() {
                 ) : null}
                 {prefs.showInsuranceOnInvoices && data.decennale ? (
                   <Text
-                    style={[font('meta'), { color: colors.slate300, lineHeight: 17, marginTop: 4 }]}
+                    style={[font('meta'), { color: colors.slate500, lineHeight: 17, marginTop: 4 }]}
                   >
                     {`${t(
                       isBtp ? 'reglages.insuranceDecennaleLabel' : 'reglages.insuranceRcProLabel',
@@ -325,8 +399,9 @@ export default function ReglagesFacturation() {
                 marginBottom: 6,
               }}
             >
-              <Feather name="eye" size={13} color={colors.slate400} />
-              <Text style={[font('label', 600), { fontSize: 11.5, color: colors.slate400 }]}>
+              {/* Icône maison (fin du mélange Feather/icons.tsx = deux graisses de trait). */}
+              <EyeIcon color={colors.slate400} size={13} />
+              <Text style={[font('meta', 600), { color: colors.slate400 }]}>
                 {t('reglages.previewLive', { personality })}
               </Text>
             </View>
@@ -339,6 +414,9 @@ export default function ReglagesFacturation() {
             {/* Bandeau d'alerte UNIQUEMENT quand l'émission est réellement bloquée — même
                 prédicat que le gate (companyCanIssue), jamais une alarme décorative. */}
             {!canIssue ? (
+              // Le message qui BLOQUE l'émission de factures était le moins lisible de
+              // l'écran (warning nu sur warningBg = 2,99:1) : titre + CTA passent en
+              // warningInk (5,25:1), l'icône graphique garde l'ambre vif (≥3:1).
               <View
                 accessible
                 accessibilityRole="alert"
@@ -351,8 +429,8 @@ export default function ReglagesFacturation() {
                 }}
               >
                 <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
-                  <Feather name="alert-triangle" size={14} color={semantic.warning} />
-                  <Text style={[font('sub', 700), { fontSize: 13.5, color: semantic.warning }]}>
+                  <AlertTriangleIcon size={14} color={semantic.warning} />
+                  <Text style={[font('sub', 700), { color: semantic.warningInk }]}>
                     {t('reglages.identityBlockingTitle', { personality })}
                   </Text>
                 </View>
@@ -369,7 +447,7 @@ export default function ReglagesFacturation() {
                     opacity: pressed ? 0.6 : 1,
                   })}
                 >
-                  <Text style={[font('label', 700), { fontSize: 13.5, color: semantic.warning }]}>
+                  <Text style={[font('sub', 700), { color: semantic.warningInk }]}>
                     {t('reglages.identityFixCta', { personality })}
                   </Text>
                 </Pressable>
@@ -449,10 +527,11 @@ export default function ReglagesFacturation() {
                   <Text
                     numberOfLines={2}
                     style={[
-                      font('sub', 700),
+                      font('body', 700),
                       {
-                        fontSize: 14,
-                        color: missing ? semantic.warning : colors.ink800,
+                        // « À compléter » lisible plein soleil : warningInk (l'ambre nu ≈3,4:1
+                        // échouait l'AA sur exactement les valeurs qui bloquent l'émission).
+                        color: missing ? semantic.warningInk : colors.ink800,
                         flexShrink: 1,
                         textAlign: 'right',
                       },
@@ -518,7 +597,7 @@ export default function ReglagesFacturation() {
             <Text
               style={[
                 font('meta'),
-                { color: colors.slate300, marginTop: -10, marginBottom: 18, lineHeight: 16 },
+                { color: colors.slate500, marginTop: -10, marginBottom: 18, lineHeight: 16 },
               ]}
             >
               {t('reglages.identityNotEditableNote', { personality })}
@@ -552,7 +631,6 @@ export default function ReglagesFacturation() {
                     style={[
                       font('sub', 700),
                       {
-                        fontSize: 13.5,
                         color: data.iban ? colors.ink800 : colors.slate400,
                         fontVariant: ['tabular-nums'],
                       },
@@ -567,7 +645,7 @@ export default function ReglagesFacturation() {
               </Pressable>
               <SettingsToggle
                 value={prefs.showRibOnInvoices}
-                onChange={(next) => billingPrefs.update({ showRibOnInvoices: next })}
+                onChange={(next) => updatePrefs({ showRibOnInvoices: next })}
                 disabled={billingPrefs.isPending || !data.iban}
                 title={t('reglages.ribToggleLabel', { personality })}
                 subtitle={t('reglages.ribToggleSub', { personality })}
@@ -576,7 +654,7 @@ export default function ReglagesFacturation() {
             <Text
               style={[
                 font('meta'),
-                { color: colors.slate300, marginTop: -10, marginBottom: 18, lineHeight: 16 },
+                { color: colors.slate500, marginTop: -10, marginBottom: 18, lineHeight: 16 },
               ]}
             >
               {t('reglages.ribOnPdfNote', { personality })}
@@ -594,6 +672,9 @@ export default function ReglagesFacturation() {
                 onChange={setVatRegime}
                 accessibilityLabel={t('reglages.sectionVat', { personality })}
               />
+              {/* Encart pédagogique du régime — texte identique, encre successInk (le vert nu
+                  frôlait l'AA) et coche maison. L'option LegalHint kit (loi + pourquoi +
+                  source) attend une copy légale validée : hors de cette vague (déclaré). */}
               <View
                 style={{
                   flexDirection: 'row',
@@ -605,17 +686,11 @@ export default function ReglagesFacturation() {
                   marginTop: 12,
                 }}
               >
-                <Feather
-                  name="check-circle"
-                  size={14}
-                  color={semantic.success}
-                  style={{ marginTop: 2 }}
-                />
+                <View style={{ marginTop: 2 }}>
+                  <CheckCircleIcon size={14} color={semantic.success} />
+                </View>
                 <Text
-                  style={[
-                    font('meta'),
-                    { fontSize: 12.5, color: semantic.success, lineHeight: 18, flex: 1 },
-                  ]}
+                  style={[font('meta'), { color: semantic.successInk, lineHeight: 18, flex: 1 }]}
                 >
                   {t(
                     vatSegment === 'franchise'
@@ -627,13 +702,12 @@ export default function ReglagesFacturation() {
               </View>
             </Card>
             <Card style={{ marginBottom: 18 }}>
-              <Text style={[font('label', 700), { fontSize: 12, color: colors.slate400 }]}>
-                {t('reglages.mentionsPreviewTitle', { personality }).toUpperCase()}
-              </Text>
+              {/* L'uppercase manuel réinventait Eyebrow — le kit porte le cran (12/700). */}
+              <Eyebrow>{t('reglages.mentionsPreviewTitle', { personality })}</Eyebrow>
               {lastInvoice !== null && lastInvoice.mentions.length > 0 ? (
                 <View style={{ marginTop: 8, gap: 6 }}>
                   {lastInvoice.number !== null ? (
-                    <Text style={[font('meta', 600), { fontSize: 12.5, color: colors.ink800 }]}>
+                    <Text style={[font('meta', 600), { color: colors.ink800 }]}>
                       {lastInvoice.number}
                     </Text>
                   ) : null}
@@ -646,7 +720,7 @@ export default function ReglagesFacturation() {
                       <Text
                         style={[
                           font('meta'),
-                          { fontSize: 12.5, color: colors.slate500, lineHeight: 19, flex: 1 },
+                          { color: colors.slate500, lineHeight: 19, flex: 1 },
                         ]}
                       >
                         {mention}
@@ -688,7 +762,7 @@ export default function ReglagesFacturation() {
                       { personality },
                     )}
                   </Text>
-                  <Text style={[font('sub', 700), { fontSize: 14, color: colors.ink800 }]}>
+                  <Text style={[font('body', 700), { color: colors.ink800 }]}>
                     {`${data.decennale.insurer} · n°${data.decennale.policyNo}`}
                   </Text>
                 </View>
@@ -711,7 +785,7 @@ export default function ReglagesFacturation() {
               )}
               <SettingsToggle
                 value={prefs.showInsuranceOnInvoices}
-                onChange={(next) => billingPrefs.update({ showInsuranceOnInvoices: next })}
+                onChange={(next) => updatePrefs({ showInsuranceOnInvoices: next })}
                 disabled={billingPrefs.isPending || !data.decennale}
                 title={t(
                   isBtp ? 'reglages.insuranceToggleLabelBtp' : 'reglages.insuranceToggleLabelOther',
@@ -726,7 +800,7 @@ export default function ReglagesFacturation() {
             <Text
               style={[
                 font('meta'),
-                { color: colors.slate300, marginTop: -10, marginBottom: 18, lineHeight: 16 },
+                { color: colors.slate500, marginTop: -10, marginBottom: 18, lineHeight: 16 },
               ]}
             >
               {t('reglages.insuranceOnPdfNote', { personality })}
@@ -754,8 +828,8 @@ export default function ReglagesFacturation() {
                 </Text>
                 <Text
                   style={[
-                    font('label', 700),
-                    { fontSize: 14.5, color: colors.ink900, fontVariant: ['tabular-nums'] },
+                    font('body', 700),
+                    { color: colors.ink900, fontVariant: ['tabular-nums'] },
                   ]}
                 >
                   {lastInvoice?.number ?? t('reglages.noNumberYet', { personality })}
@@ -779,7 +853,7 @@ export default function ReglagesFacturation() {
                     onPress={
                       billingPrefs.isPending
                         ? undefined
-                        : () => billingPrefs.update({ defaultQuoteValidityDays: days })
+                        : () => updatePrefs({ defaultQuoteValidityDays: days })
                     }
                   />
                 ))}
@@ -801,7 +875,7 @@ export default function ReglagesFacturation() {
                     onPress={
                       billingPrefs.isPending
                         ? undefined
-                        : () => billingPrefs.update({ defaultDepositPercent: pct })
+                        : () => updatePrefs({ defaultDepositPercent: pct })
                     }
                   />
                 ))}
@@ -822,7 +896,7 @@ export default function ReglagesFacturation() {
                     onPress={
                       billingPrefs.isPending
                         ? undefined
-                        : () => billingPrefs.update({ defaultInvoicePaymentTermsDays: days })
+                        : () => updatePrefs({ defaultInvoicePaymentTermsDays: days })
                     }
                   />
                 ))}
@@ -832,7 +906,8 @@ export default function ReglagesFacturation() {
                   accessibilityRole="alert"
                   style={[
                     font('meta'),
-                    { color: semantic.warning, lineHeight: 17, marginBottom: 16 },
+                    // warningInk : le message qui conditionne l'émission, lisible plein soleil.
+                    { color: semantic.warningInk, lineHeight: 17, marginBottom: 16 },
                   ]}
                 >
                   {t('reglages.paymentTermsRequired', { personality })}
@@ -850,17 +925,20 @@ export default function ReglagesFacturation() {
                     key={swatch}
                     accessibilityRole="button"
                     accessibilityState={{ selected: prefs.pdfAccentColor === swatch }}
-                    accessibilityLabel={swatch}
+                    // VoiceOver français lisait « navy »/« green » : libellés i18n.
+                    accessibilityLabel={t(ACCENT_LABEL_KEY[swatch], { personality })}
                     hitSlop={6}
                     disabled={billingPrefs.isPending}
-                    onPress={() => billingPrefs.update({ pdfAccentColor: swatch })}
+                    onPress={() => updatePrefs({ pdfAccentColor: swatch })}
                     style={{
                       width: 34,
                       height: 34,
                       borderRadius: 17,
                       backgroundColor: accentSwatchColor[swatch],
-                      borderWidth: prefs.pdfAccentColor === swatch ? 3 : 0,
-                      borderColor: colors.ink900,
+                      // Anneau d'épaisseur CONSTANTE : la couleur bascule, la géométrie jamais
+                      // (l'anneau 0→3 px faisait vibrer la rangée au tap).
+                      borderWidth: 3,
+                      borderColor: prefs.pdfAccentColor === swatch ? colors.ink900 : 'transparent',
                       opacity: billingPrefs.isPending ? 0.55 : 1,
                     }}
                   />
@@ -868,7 +946,7 @@ export default function ReglagesFacturation() {
               </View>
             </Card>
             <Text
-              style={[font('meta'), { color: colors.slate300, marginBottom: 22, lineHeight: 16 }]}
+              style={[font('meta'), { color: colors.slate500, marginBottom: 22, lineHeight: 16 }]}
             >
               {t('reglages.defaultsNote', { personality })}
             </Text>
@@ -882,7 +960,7 @@ export default function ReglagesFacturation() {
                 subtitle={t('reglages.relanceAutoSubtitle', { personality })}
                 value={prefs.relanceAutoEnabled}
                 disabled={billingPrefs.isPending}
-                onChange={(next) => billingPrefs.update({ relanceAutoEnabled: next })}
+                onChange={(next) => updatePrefs({ relanceAutoEnabled: next })}
               />
               <Text style={[font('sub'), { color: colors.slate500, marginTop: 14, marginBottom: 9 }]}>
                 {t('reglages.relanceCadenceLabel', { personality })}
@@ -906,7 +984,7 @@ export default function ReglagesFacturation() {
                       onPress={
                         billingPrefs.isPending
                           ? undefined
-                          : () => billingPrefs.update({ relancePolicy: preset.policy })
+                          : () => updatePrefs({ relancePolicy: preset.policy })
                       }
                     />
                   );
@@ -925,7 +1003,7 @@ export default function ReglagesFacturation() {
               </Text>
             </Card>
             <Text
-              style={[font('meta'), { color: colors.slate300, marginBottom: 22, lineHeight: 16 }]}
+              style={[font('meta'), { color: colors.slate500, marginBottom: 22, lineHeight: 16 }]}
             >
               {t('reglages.relanceNote', { personality })}
             </Text>
@@ -958,6 +1036,7 @@ export default function ReglagesFacturation() {
           />
         </>
       ) : null}
+      {errorSheet}
     </View>
   );
 }

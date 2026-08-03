@@ -9422,6 +9422,18 @@ const legacyFr = {
     pro: 'Impossible de charger les réglages. Veuillez réessayer.',
     direct: 'Réglages injoignables. Réessaie.',
   },
+  // Échec d'ÉCRITURE d'un réglage (vague hors-lots) : les données restent affichées, la
+  // feuille d'erreur porte ce message — jamais un ErrorRetry plein écran pour un switch raté.
+  'reglages.saveError': {
+    pote: 'Je n’ai pas pu enregistrer ce réglage. Tes valeurs actuelles restent en place.',
+    pro: 'Le réglage n’a pas pu être enregistré. Les valeurs actuelles restent appliquées.',
+    direct: 'Enregistrement KO. Rien n’a bougé.',
+  },
+  // Swatches d'accent PDF (vague hors-lots) : VoiceOver lisait les clés anglaises brutes.
+  'reglages.accentNavy': { pote: 'Marine', pro: 'Marine', direct: 'Marine' },
+  'reglages.accentGreen': { pote: 'Vert', pro: 'Vert', direct: 'Vert' },
+  'reglages.accentPurple': { pote: 'Violet', pro: 'Violet', direct: 'Violet' },
+  'reglages.accentOrange': { pote: 'Orange', pro: 'Orange', direct: 'Orange' },
   // Le libellé nomme l'écran de destination — reglages-facturation ET profil-fiscal ne sont
   // ouverts QUE depuis Compte (compte.tsx), la clé partagée reste donc correcte pour les deux.
   'reglages.back': { pote: 'Compte', pro: 'Compte', direct: 'Compte' },
