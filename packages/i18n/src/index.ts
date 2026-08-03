@@ -10019,6 +10019,18 @@ const legacyFr = {
     pro: '{count} échec(s) conservé(s) (maximum {max}).',
     direct: '{count}/{max} échecs.',
   },
+  // Statut d'une entrée du journal — sorti du code en dur (vague hors-lots) : tout texte
+  // visible passe par la voix de Bob, même sur l'écran support.
+  'diagtech.noResponse': {
+    pote: 'sans réponse',
+    pro: 'sans réponse',
+    direct: 'sans réponse',
+  },
+  'diagtech.httpStatus': {
+    pote: 'HTTP {status}',
+    pro: 'HTTP {status}',
+    direct: 'HTTP {status}',
+  },
 
   // ── Mon compte — accès au diagnostic technique ─────────────────────────────
   'account.diagnosticRow': {
