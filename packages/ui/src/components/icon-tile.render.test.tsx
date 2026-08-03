@@ -6,7 +6,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { ThemeProvider } from '../theme';
-import { IconTile } from './icon-tile';
+import { IconTile, type IconTileTone } from './icon-tile';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -15,7 +15,7 @@ vi.mock('react-native', () => ({
   View: 'View',
 }));
 
-function renderTile(tone: Parameters<typeof IconTile>[0]['tone']): ReactTestRenderer {
+function renderTile(tone: IconTileTone): ReactTestRenderer {
   let renderer!: ReactTestRenderer;
   act(() => {
     renderer = create(

@@ -52,6 +52,23 @@ export interface StatusBadgeColors {
   bg: string;
 }
 
+/**
+ * RÔLE DE COULEUR DÉDIÉ (Lot 5, arbitrage TONS RECYCLÉS du plan DA 01/08) — la paire
+ * {ink, bg} d'un rôle tokens (`journal.ventes`, `expenseCategory.carburant`…). Le badge et
+ * la pastille cessent de MENTIR sur la typologie (« particulier » ne signifie plus
+ * « journal achats ») : l'écran passe le rôle, le composant peint — mêmes primitives,
+ * contrat d'usage honnête, évolution possible rôle par rôle.
+ */
+export interface StatusColorRole {
+  readonly ink: string;
+  readonly bg: string;
+}
+
+/** Un rôle peint texte/icône = ink, fond = bg. Pure — un échange ink/bg est un mutant mort. */
+export function statusBadgeRoleColors(role: StatusColorRole): StatusBadgeColors {
+  return { fg: role.ink, bg: role.bg };
+}
+
 /** Redlines §Fondations : fontSize 11 / 700 · padding 2/7 · radius 6. */
 export const BADGE_FONT_SIZE = 11;
 export const BADGE_FONT_WEIGHT = '700' as const;
