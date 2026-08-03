@@ -4,13 +4,18 @@
  * (400 ms ease-out) UNIQUEMENT si la préférence reduce-motion est résolue à 'inactive'
  * (useReduceMotionPreference tri-état).
  *
- * FAIL-CLOSED PAR CONSTRUCTION :
+ * FAIL-CLOSED PAR CONSTRUCTION — et FIGÉ AU MONTAGE (verdict Lot 5, P1) :
  * · préférence `unknown` ou `active` → la barre est un View STATIQUE à `n%` dès la première
  *   frame (l'information est LÀ sans le mouvement — dataviz honnête, doctrine tab bar v2) ;
- * · la poussée 0→n% ne s'engage QUE quand la préférence est résolue à 'inactive' (en
- *   pratique : dans la frame qui suit le montage — la lecture AccessibilityInfo est native) ;
- * · une bascule `inactive` → `active` en vol coupe l'animation : retour au statique, état
- *   final identique au pixel dans les trois états.
+ * · la décision d'animer est prise UNE FOIS, à la première frame (ratchetTrendBarsMotion,
+ *   même garde que le `started` de FadeIn) : une résolution TARDIVE à 'inactive' ne fait
+ *   JAMAIS retomber la largeur déjà peinte pour rejouer la poussée depuis 0 — la valeur
+ *   vraie affichée est irréversible (sonde du verdict : FRAME1 42 % → FRAME2 0, corrigé) ;
+ * · une bascule `active` en vol coupe l'animation, définitivement pour ce montage ;
+ * · ceinture ET bretelles : l'Animated.Value démarre à `target`, jamais à 0 — même le
+ *   premier pixel animé est la valeur vraie.
+ * Coût assumé (arbitrage FAIL-CLOSED MOTION, Lot 0) : un montage ouvert pendant la fenêtre
+ * d'ignorance reste statique — l'état final est identique au pixel dans tous les cas.
  * Consommateurs (Lot 5) : pilotage (série facturé/encaissé, parts des top clients).
  */
 import { useEffect, useRef } from 'react';
@@ -18,11 +23,13 @@ import { Animated, Easing, View, type StyleProp, type ViewStyle } from 'react-na
 import { useTheme } from '../theme';
 import { useReduceMotionPreference } from '../hooks/use-accessibility-preference';
 import {
+  TREND_BARS_ANIMATION_MS,
   TREND_BAR_DEFAULT_HEIGHT,
   TREND_BAR_DEFAULT_RADIUS,
   TREND_BARS_DEFAULT_GAP,
   clampTrendBarPct,
-  resolveTrendBarsMotion,
+  ratchetTrendBarsMotion,
+  type TrendBarsMotion,
 } from './trend-bars.logic';
 
 export interface TrendBarSpec {
@@ -57,7 +64,9 @@ function TrendBarFill({
   readonly durationMs: number;
 }) {
   const target = clampTrendBarPct(pct);
-  const progress = useRef(new Animated.Value(0)).current;
+  // Démarre à la VALEUR VRAIE, jamais à 0 (verdict Lot 5) : si la bascule statique →
+  // animé devait survenir, le premier pixel animé serait déjà la largeur honnête.
+  const progress = useRef(new Animated.Value(target)).current;
   useEffect(() => {
     if (!animated) {
       // Statique : aucun timer — et une bascule en vol coupe l'animation en cours.
@@ -101,7 +110,13 @@ export function TrendBars({
 }: TrendBarsProps) {
   const { colors } = useTheme();
   const preference = useReduceMotionPreference();
-  const motion = resolveTrendBarsMotion(preference);
+  // Décision FIGÉE au montage (ratchet une seule direction) : une première frame statique
+  // est définitive — la largeur peinte ne retombe jamais ; 'active' en vol coupe, sans retour.
+  const grantedRef = useRef<boolean | null>(null);
+  grantedRef.current = ratchetTrendBarsMotion(grantedRef.current, preference);
+  const motion: TrendBarsMotion = grantedRef.current
+    ? { animated: true, durationMs: TREND_BARS_ANIMATION_MS }
+    : { animated: false, durationMs: 0 };
 
   return (
     <View style={[{ gap: TREND_BARS_DEFAULT_GAP }, style]}>

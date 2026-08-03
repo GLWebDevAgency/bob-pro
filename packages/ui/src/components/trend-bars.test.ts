@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import {
   TREND_BARS_ANIMATION_MS,
   clampTrendBarPct,
+  ratchetTrendBarsMotion,
   resolveTrendBarsMotion,
 } from './trend-bars.logic';
 
@@ -22,6 +23,31 @@ describe('resolveTrendBarsMotion — fail-closed par construction', () => {
   it("'inactive' (résolue : pas de réduction) ⇒ animé, 400 ms exactement", () => {
     expect(resolveTrendBarsMotion('inactive')).toEqual({ animated: true, durationMs: 400 });
     expect(TREND_BARS_ANIMATION_MS).toBe(400);
+  });
+});
+
+describe('ratchetTrendBarsMotion — la décision est FIGÉE au montage, une seule direction', () => {
+  it('première frame (granted null) : la décision suit la préférence courante', () => {
+    expect(ratchetTrendBarsMotion(null, 'unknown')).toBe(false);
+    expect(ratchetTrendBarsMotion(null, 'active')).toBe(false);
+    expect(ratchetTrendBarsMotion(null, 'inactive')).toBe(true);
+  });
+
+  it("LE mutant du verdict : première frame statique + résolution tardive 'inactive' ⇒ RESTE statique", () => {
+    // granted=false (frame 1 sous ignorance) puis préférence résolue 'inactive' : jamais
+    // de ré-armement — la largeur vraie déjà peinte ne retombe pas pour rejouer la poussée.
+    expect(ratchetTrendBarsMotion(false, 'inactive')).toBe(false);
+  });
+
+  it("bascule 'active' en vol : l'animation accordée est coupée, définitivement", () => {
+    expect(ratchetTrendBarsMotion(true, 'active')).toBe(false);
+    expect(ratchetTrendBarsMotion(true, 'unknown')).toBe(false);
+    // Et une fois coupée, le retour à 'inactive' ne la ré-arme jamais dans ce montage.
+    expect(ratchetTrendBarsMotion(false, 'inactive')).toBe(false);
+  });
+
+  it('accordée au montage et préférence toujours inactive ⇒ reste accordée', () => {
+    expect(ratchetTrendBarsMotion(true, 'inactive')).toBe(true);
   });
 });
 

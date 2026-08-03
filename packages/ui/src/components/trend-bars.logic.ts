@@ -35,6 +35,27 @@ export function resolveTrendBarsMotion(preference: PreferenceState): TrendBarsMo
 }
 
 /**
+ * RATCHET FIGÉ AU MONTAGE (verdict Lot 5, P1) — le droit d'animer se décide UNE fois, à la
+ * première frame, et ne peut ensuite qu'être RETIRÉ, jamais rendu :
+ * · `granted === null` (première frame) → la décision est celle de la préférence courante ;
+ * · une frame statique (ignorance ou réduction) est DÉFINITIVE pour ce montage — une
+ *   résolution tardive à 'inactive' ne rejoue jamais la poussée : la largeur vraie déjà
+ *   peinte ne retombe JAMAIS à 0 (sonde du verdict : FRAME1 42 % → FRAME2 0) ;
+ * · une bascule 'active' en vol coupe l'animation, et la coupure est définitive — pas de
+ *   ré-armement qui repeindrait une valeur intermédiaire périmée.
+ * Même arbitrage que la garde `started` de FadeIn (FAIL-CLOSED MOTION, Lot 0) — coût
+ * assumé : un montage ouvert sous ignorance reste statique, l'information est là au pixel.
+ */
+export function ratchetTrendBarsMotion(
+  granted: boolean | null,
+  preference: PreferenceState,
+): boolean {
+  const live = resolveTrendBarsMotion(preference).animated;
+  if (granted === null) return live;
+  return granted && live;
+}
+
+/**
  * Borne une part en % sur [0, 100] — jamais une barre négative, jamais un dépassement de
  * piste, et un NaN/Infinity (division par un max nul en amont) devient 0 : la dataviz
  * honnête ne dessine rien plutôt qu'un mensonge.
