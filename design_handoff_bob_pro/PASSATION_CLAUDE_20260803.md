@@ -227,3 +227,78 @@ adversariale** avant merge. Le journal complet du verdict :
 
 Son workflow (`wf_ef4555a4-f09`) n'avait pas rendu son verdict à la coupure — **même consigne** :
 lire son journal, et si le verdict n'y est pas, relancer une vérification adversariale avant tout merge.
+
+---
+
+## AMENDEMENT 2 — verdict du Lot 3 (PR #61) : `CORRIGER` également
+
+Le workflow de vérification du Lot 3 a rendu son verdict après l'amendement 1. **Les DEUX PR de lots
+ouvertes sont donc à corriger avant merge** — aucune n'est mergeable en l'état.
+
+### Verdict : `CORRIGER` — `conformePlan: true`, `mappingProuve: true`, `grammaireErreurTenue: true`,
+`jalonTenu: false` (attendu, voir plus bas), `mutantsTousRouges: false`
+
+Rituel du vérificateur intégralement vert et particulièrement large : `turbo test --force` 15/15
+tâches, **10 187 tests verts** (mobile 1953, api 2917, core 3118, ui 476…), typecheck 17/17 à froid,
+lint 9/9, flags-matrix 19/19, aucun statut de spec promu, aucun chemin interdit touché, TTC sticky
+absent, `src/components/ui/index.tsx` non supprimé. **8/8 mutants déclarés rejoués rouges.**
+Ce sont **6 mutants du vérificateur restés VERTS** et deux tests faux-verts qui bloquent.
+
+#### P1 — bloquants
+
+1. **`app/__tests__/ventes.states.test.tsx` — la doctrine phare du lot (« l'indigo rendu à Bob »)
+   n'est verrouillée que sur 1 nœud sur 3.** L'assertion positive porte sur `#E0E6EE` (présent
+   partout ailleurs) et le `not.toContain('#F1EBFA')` est scopé au seul Pressable d'une facture.
+   Deux des trois purges d'indigo peuvent être annulées sans qu'un test rougisse (mutants A et C
+   survivants : bouton filtres actifs → `semantic.ai`, chip de nature → `semantic.ai`). La branche
+   « filtre actif » n'est de surcroît **jamais rendue** par la suite.
+2. **`app/facture/__tests__/detail.states.test.tsx` — test faux-vert** sur une intervention nommée
+   du plan (« relance en attente b2b → neutral ») : l'unique assertion de couleur porte sur
+   `#5B6B7B` (slate500, encre courante de la moitié de l'écran). Le mutant qui repeint le badge en
+   `b2b` survit. Et durcir naïvement en `not.toContain('#1B3A63')` fait rougir le code **non muté** :
+   seule une assertion **scopée au nœud du badge** peut prouver quoi que ce soit.
+
+#### P2 — à traiter dans le même passage
+
+- **Cibles tactiles non verrouillées** alors que le plan en fait un critère de preuve : mutants
+  « croix `PieceDetailView` 44→38 » et « chips liées 28→20 » survivants.
+- **Régression a11y sur le `kindFilter` de `ventes.tsx`** : l'état *désactivé* n'est plus annoncé
+  pendant le chargement (enveloppe `pointerEvents='none'` + `opacity` au lieu de `disabled` +
+  `accessibilityState`) — VoiceOver présente trois onglets actionnables qui ne répondent pas. Le
+  risque « sémantique radiogroup » nommé par le plan a été contourné, pas levé.
+- **Parité vocale** revendiquée mais prouvée d'un seul côté (le `SegmentedControl` reflète-t-il bien
+  le state ? non vérifié).
+- **Casse des badges** : affirmation fausse (« casse au composant ») — c'est le `.toUpperCase()` du
+  site d'appel qui a disparu ; effet visible non déclaré, non couvert.
+- **Information visible ajoutée** malgré la revendication d'iso-information : `BackHeader` impose un
+  eyebrow, `ventes.tsx` affiche donc « Ventes » là où il n'y avait rien.
+- **Changement de comportement non listé** sur `devis/[id].tsx` : le chemin des ajustements de TVA a
+  été re-séquencé (alerte non bloquante + navigation immédiate → séquence différente).
+
+#### P3
+
+- `PieceListRow` livré, exporté, testé… et **sans aucun consommateur** : deuxième source de vérité
+  pour la même rangée, sous feature freeze.
+- Le titre **« Oups » survit en littéral français codé en dur** dans 22 appels `showError…` — la
+  grammaire d'erreur est tenue au sens du grep (`Alert.alert` éradiqué) mais le mot banni reste.
+- La table de mapping prouve l'identité des **noms** de variante, pas des **teintes** (seule
+  l'entrée `ai` a une preuve de teinte).
+
+#### Jalon d'extinction — non atteint, et c'est normal
+
+4 importateurs de `src/components/ui` subsistent : `documents/[id].tsx`, `scan-document.tsx`,
+`src/documents/document-insight-card.tsx` (**périmètre exact du Lot 2**, non encore livré) et
+`ThinkingIndicator.tsx` (consommé par `assistant.tsx`, **lane GPT**). Le jalon se refermera
+mécaniquement au merge du Lot 2. Tout le périmètre du Lot 3 est purgé.
+
+### Instruction de reprise — les deux lots
+
+Pour **chaque** PR (#61 Lot 3, #60 Lot 5) : reprendre sa branche, solder les P1 puis les P2/P3,
+**chaque correctif avec son témoin vu mourir** (les findings donnent les mutants exacts à tuer),
+relancer le rituel complet, puis **re-vérification adversariale** avant merge. Journaux complets :
+`subagents/workflows/wf_ef4555a4-f09/journal.jsonl` (Lot 3) et `wf_bcc1ae72-887/journal.jsonl` (Lot 5).
+
+**Leçon transverse des deux verdicts** — à appliquer dès l'écriture des tests du Lot 2 : une
+assertion `toContain('<hex>')` sur l'arbre entier ne prouve presque jamais ce qu'elle prétend
+(le même hex vit ailleurs dans l'écran). **Scoper l'assertion au nœud**, et vérifier qu'un mutant
+qui annule l'intervention fait bien rougir *ce* test.
