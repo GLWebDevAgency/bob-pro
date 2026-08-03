@@ -16,7 +16,7 @@ function asPrincipal<T>(principal: Principal, fn: () => T): T {
   return requestContext.run({ correlationId: 'document-view-link-test', principal }, fn);
 }
 
-function makeService() {
+function makeService(options: { supportsExtendedPayloads?: boolean } = {}) {
   const persistence = new InMemoryPersistence();
   for (const companyId of [MERCIER_PROPS.id, 'company-intrus']) {
     void persistence.subscriptions.startTrial({
@@ -32,12 +32,14 @@ function makeService() {
       renderPdfFixture(`invoice:${data.number}`, facturX?.xml)),
     renderQuote: vi.fn(async (data) => renderPdfFixture(`quote:${data.number}`)),
   };
+  const notificationEnqueue = vi.fn(async (input: { notification: unknown }) => ({
+    id: 'job-1',
+    status: 'pending' as const,
+    notification: input.notification,
+  }));
   const notificationDelivery = {
-    enqueue: vi.fn(async (input: { notification: unknown }) => ({
-      id: 'job-1',
-      status: 'pending',
-      notification: input.notification,
-    })),
+    supportsExtendedPayloads: () => options.supportsExtendedPayloads ?? true,
+    enqueue: notificationEnqueue,
     tryDeliver: vi.fn(async () => true),
   } as unknown as NotificationDeliveryService;
   const logger = {
@@ -63,7 +65,7 @@ function makeService() {
     undefined,
     new InMemoryDocumentStorage(),
   );
-  return { service, persistence, renderer };
+  return { service, persistence, renderer, notificationEnqueue };
 }
 
 async function createSentQuote(service: BackendService): Promise<string> {
@@ -180,6 +182,31 @@ describe('Lien public de VISUALISATION — devis', () => {
 });
 
 describe('Lien public de VISUALISATION — facture', () => {
+  it('release A refuse l’envoi avant de révoquer un lien public déjà partagé', async () => {
+    vi.stubEnv('SIGN_WEB_BASE_URL', 'https://view.bob.test');
+    const { service, persistence, notificationEnqueue } = makeService({
+      supportsExtendedPayloads: false,
+    });
+    await persistence.seed();
+    await asPrincipal(MERCIER, async () => {
+      const invoiceId = await createIssuedInvoice(service);
+      const existing = await service.createInvoiceViewLink(invoiceId);
+      if (!existing.ok) throw new Error('fixture lien KO');
+      const token = decodeURIComponent(existing.value.viewUrl.split('/view/')[1]!);
+      const enqueueCountBefore = notificationEnqueue.mock.calls.length;
+
+      const sent = await service.sendInvoice(invoiceId);
+
+      expect(sent).toEqual({
+        ok: false,
+        error: { kind: 'unavailable', service: 'notification-payload-v3-rollout' },
+      });
+      expect(notificationEnqueue).toHaveBeenCalledTimes(enqueueCountBefore);
+      await expect(service.publicDocumentView(token)).resolves.toMatchObject({ ok: true });
+    });
+    vi.unstubAllEnvs();
+  });
+
   it('crée le lien pour une facture ÉMISE et résout la vue publique', async () => {
     vi.stubEnv('SIGN_WEB_BASE_URL', 'https://view.bob.test');
     const { service, persistence } = makeService();

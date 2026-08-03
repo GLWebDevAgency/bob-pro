@@ -61,6 +61,9 @@ function makeService(options?: {
   /** PR-01 : un renderer RÉEL (fixture pdf-lib) quand le test a besoin d'archives complètes —
    * l'envoi de facture joint le PDF ARCHIVÉ vérifié octet à octet (fail-closed sinon). */
   pdfRenderer?: PdfRendererPort;
+  /** Capacité du contrat payload V3. Les tests verticaux post-cutover la gardent ouverte ;
+   * la fermeture Release A est prouvée séparément avant tout effet de bord. */
+  supportsExtendedPayloads?: boolean;
 }) {
   const p = new InMemoryPersistence();
   // Ce harness exerce des capacités Business : chaque tenant utilisé possède une ligne
@@ -86,6 +89,7 @@ function makeService(options?: {
   } as unknown as AppLogger;
   // Outbox stubée « pending » : sendQuote enfile mais n'atteint jamais un tiers dans la transaction test.
   const notificationDelivery = {
+    supportsExtendedPayloads: () => options?.supportsExtendedPayloads ?? true,
     enqueue: vi.fn(async (input: { notification: unknown }) => ({
       id: 'job-1',
       status: 'pending',
@@ -1337,8 +1341,8 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
     vi.setSystemTime(new Date('2026-07-13T10:00:00.000Z'));
     try {
       const { service, p } = makeService();
-      const oldId = 'notif-before-preview';
-      const newId = 'notif-after-preview';
+      const oldId = '0753f5f0-1427-4d92-8a24-57b27714f739';
+      const newId = 'f6730884-d952-4e17-850f-f8ee063078cc';
       await p.notificationJobs.enqueue({
         id: oldId,
         companyId: MERCIER_PROPS.id,

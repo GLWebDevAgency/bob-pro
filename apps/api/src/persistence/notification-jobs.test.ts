@@ -1,12 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import type { NotificationPort } from '@bob/core';
 import { NotificationDeliveryService } from '../jobs/notification-delivery.service';
 import { ScheduledTenantDirectory } from '../jobs/tenant-directory';
 import type { AppLogger } from '../observability/logger';
 import { InMemoryNotificationJobRepository } from './in-memory';
 import {
+  NOTIFICATION_PAYLOAD_INTEGRITY_ERROR,
+  NOTIFICATION_PAYLOAD_QUARANTINE_AT,
   embargoScheduledPaymentDedupeKey,
+  isLegacyNotificationPayloadSealed,
+  notificationPayloadFingerprint,
   quoteIdOfEmbargoScheduledPaymentDedupeKey,
+  type NotificationJob,
 } from './notification-jobs';
 import { InMemoryPersistence } from './persistence.testing';
 
@@ -15,13 +21,41 @@ const logger = {
   warn: vi.fn(),
 } as unknown as AppLogger;
 
+function jobId(label: string): string {
+  const hex = createHash('sha256').update(label).digest('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
 describe('InMemoryNotificationJobRepository', () => {
+  it('ferme toute extension que l’empreinte V1 ne scelle pas', () => {
+    const minimal = {
+      channel: 'email' as const,
+      to: 'client@example.com',
+      subject: 'Facture',
+      body: 'Bonjour',
+    };
+    const fingerprint = notificationPayloadFingerprint(minimal);
+    expect(isLegacyNotificationPayloadSealed(minimal, fingerprint)).toBe(true);
+    expect(isLegacyNotificationPayloadSealed({ ...minimal, senderName: 'Fly Services' }, fingerprint))
+      .toBe(false);
+    expect(isLegacyNotificationPayloadSealed(minimal, `${fingerprint}-altéré`)).toBe(false);
+    expect(isLegacyNotificationPayloadSealed(
+      { channel: 'sms', to: '+33600000000', subject: 'Rappel', body: 'Bonjour', idempotencyKey: 42 },
+      notificationPayloadFingerprint({
+        channel: 'sms',
+        to: '+33600000000',
+        subject: 'Rappel',
+        body: 'Bonjour',
+      }),
+    )).toBe(false);
+  });
+
   it('enqueue de façon idempotente et liste les jobs dus par tenant', async () => {
     const repo = new InMemoryNotificationJobRepository();
     const notification = { channel: 'email' as const, to: 'client@example.com', subject: 'Devis', body: 'Lien' };
 
     await repo.enqueue({
-      id: 'job-1',
+      id: jobId('job-1'),
       companyId: 'co-1',
       kind: 'quote-signature',
       dedupeKey: 'quote:q-1:token:h-1',
@@ -29,7 +63,7 @@ describe('InMemoryNotificationJobRepository', () => {
       now: '2026-07-01T10:00:00.000Z',
     });
     await expect(repo.enqueue({
-      id: 'job-duplicate',
+      id: jobId('job-duplicate'),
       companyId: 'co-1',
       kind: 'quote-signature',
       dedupeKey: 'quote:q-1:token:h-1',
@@ -37,7 +71,7 @@ describe('InMemoryNotificationJobRepository', () => {
       now: '2026-07-01T10:01:00.000Z',
     })).rejects.toThrow('désigne déjà un autre contenu');
     await repo.enqueue({
-      id: 'job-other-tenant',
+      id: jobId('job-other-tenant'),
       companyId: 'co-2',
       kind: 'quote-signature',
       dedupeKey: 'quote:q-1:token:h-1',
@@ -47,7 +81,146 @@ describe('InMemoryNotificationJobRepository', () => {
 
     const due = await repo.listDue('co-1', '2026-07-01T10:01:00.000Z', 10);
     expect(due).toHaveLength(1);
-    expect(due[0]!).toMatchObject({ id: 'job-1', status: 'pending', subject: 'Devis' });
+    expect(due[0]!).toMatchObject({ id: jobId('job-1'), status: 'pending', subject: 'Devis' });
+  });
+
+  it('quarantaine les payloads étendus sans affamer le job valide suivant', async () => {
+    const repo = new InMemoryNotificationJobRepository();
+    const persisted = repo as unknown as { map: Map<string, NotificationJob> };
+    for (const [index, label] of ['invalid-a', 'invalid-b', 'valid'].entries()) {
+      const id = jobId(label);
+      await repo.enqueue({
+        id,
+        companyId: 'co-1',
+        kind: 'invoice-relance',
+        dedupeKey: `invoice:inv-${index}:relance:auto:v1:cordial`,
+        notification: {
+          channel: 'email',
+          to: 'client@example.com',
+          subject: `Relance ${index}`,
+          body: 'Merci.',
+        },
+        now: `2026-07-01T10:00:0${index}.000Z`,
+      });
+    }
+    for (const label of ['invalid-a', 'invalid-b']) {
+      const id = jobId(label);
+      const current = persisted.map.get(id);
+      if (!current?.notification) throw new Error(`fixture absente: ${id}`);
+      persisted.map.set(id, {
+        ...current,
+        notification: { ...current.notification, senderName: 'Champ non scellé' },
+      });
+    }
+
+    await expect(repo.listDue('co-1', '2026-07-01T11:00:00.000Z', 1)).resolves.toEqual([
+      expect.objectContaining({ id: jobId('valid') }),
+    ]);
+    await expect(repo.findById('co-1', jobId('invalid-a'))).resolves.toMatchObject({
+      status: 'failed',
+      notification: null,
+      nextAttemptAt: NOTIFICATION_PAYLOAD_QUARANTINE_AT,
+      lastError: NOTIFICATION_PAYLOAD_INTEGRITY_ERROR,
+    });
+  });
+
+  it('quarantaine un payload recomputé qui diverge de l’enveloppe autoritaire', async () => {
+    const repo = new InMemoryNotificationJobRepository();
+    const persisted = repo as unknown as { map: Map<string, NotificationJob> };
+    await repo.enqueue({
+      id: jobId('job-authority'),
+      companyId: 'co-1',
+      kind: 'invoice-relance',
+      dedupeKey: 'invoice:inv-authority:relance:auto:v1:cordial',
+      notification: {
+        channel: 'email',
+        to: 'client@example.com',
+        subject: 'Relance',
+        body: 'Merci.',
+      },
+      now: '2026-07-01T10:00:00.000Z',
+    });
+    const current = persisted.map.get(jobId('job-authority'));
+    if (!current?.notification) throw new Error('fixture absente');
+    const altered = { ...current.notification, to: 'intrus@example.com' };
+    persisted.map.set(current.id, {
+      ...current,
+      notification: altered,
+      payloadFingerprint: notificationPayloadFingerprint(altered),
+    });
+
+    await expect(repo.listDue('co-1', '2026-07-01T11:00:00.000Z', 1)).resolves.toEqual([]);
+    await expect(repo.findById('co-1', current.id)).resolves.toMatchObject({
+      status: 'failed',
+      notification: null,
+      lastError: NOTIFICATION_PAYLOAD_INTEGRITY_ERROR,
+    });
+  });
+
+  it('quarantaine un payload NULL avec la même sémantique que Prisma', async () => {
+    const repo = new InMemoryNotificationJobRepository();
+    const persisted = repo as unknown as { map: Map<string, NotificationJob> };
+    await repo.enqueue({
+      id: jobId('job-null-payload'),
+      companyId: 'co-1',
+      kind: 'invoice-relance',
+      dedupeKey: 'invoice:inv-null:relance:auto:v1:cordial',
+      notification: {
+        channel: 'email',
+        to: 'client@example.com',
+        subject: 'Relance',
+        body: 'Merci.',
+      },
+      now: '2026-07-01T10:00:00.000Z',
+    });
+    const current = persisted.map.get(jobId('job-null-payload'));
+    if (!current) throw new Error('fixture absente');
+    persisted.map.set(current.id, { ...current, notification: null });
+
+    await expect(repo.listDue('co-1', '2026-07-01T11:00:00.000Z', 1)).resolves.toEqual([]);
+    await expect(repo.findById('co-1', current.id)).resolves.toMatchObject({
+      status: 'failed',
+      notification: null,
+      nextAttemptAt: NOTIFICATION_PAYLOAD_QUARANTINE_AT,
+      lastError: NOTIFICATION_PAYLOAD_INTEGRITY_ERROR,
+    });
+  });
+
+  it('quarantaine une clé email non-UUID même recalculée et égale à l’identifiant', async () => {
+    const repo = new InMemoryNotificationJobRepository();
+    const persisted = repo as unknown as { map: Map<string, NotificationJob> };
+    const validId = jobId('job-corrupted-provider-key');
+    await repo.enqueue({
+      id: validId,
+      companyId: 'co-1',
+      kind: 'invoice-relance',
+      dedupeKey: 'invoice:inv-corrupted-key:relance:auto:v1:cordial',
+      notification: {
+        channel: 'email',
+        to: 'client@example.com',
+        subject: 'Relance',
+        body: 'Merci.',
+      },
+      now: '2026-07-01T10:00:00.000Z',
+    });
+    const current = persisted.map.get(validId);
+    if (!current?.notification) throw new Error('fixture absente');
+    const corruptedId = 'job-non-uuid';
+    const corrupted = { ...current.notification, idempotencyKey: corruptedId };
+    persisted.map.delete(validId);
+    persisted.map.set(corruptedId, {
+      ...current,
+      id: corruptedId,
+      notification: corrupted,
+      payloadFingerprint: notificationPayloadFingerprint(corrupted),
+    });
+
+    await expect(repo.listDue('co-1', '2026-07-01T11:00:00.000Z', 1)).resolves.toEqual([]);
+    await expect(repo.findById('co-1', corruptedId)).resolves.toMatchObject({
+      status: 'failed',
+      notification: null,
+      lastError: NOTIFICATION_PAYLOAD_INTEGRITY_ERROR,
+    });
   });
 
   it('cancelByDedupeKey : pending -> cancelled, payload purgé, jamais relisté ni réactivé, hors du fil', async () => {
@@ -63,7 +236,7 @@ describe('InMemoryNotificationJobRepository', () => {
       body: 'Invite de paiement planifiée.',
     };
     const job = await repo.enqueue({
-      id: 'job-embargo',
+      id: jobId('job-embargo'),
       companyId: 'co-1',
       kind: 'embargo-scheduled-payment',
       dedupeKey,
@@ -94,7 +267,7 @@ describe('InMemoryNotificationJobRepository', () => {
     expect(unread.unreadCount).toBe(0);
     // Un ré-enqueue ne RESSUSCITE jamais une intention révoquée (parité Prisma).
     const reenqueued = await repo.enqueue({
-      id: 'job-embargo-retry',
+      id: jobId('job-embargo-retry'),
       companyId: 'co-1',
       kind: 'embargo-scheduled-payment',
       dedupeKey,
@@ -109,7 +282,7 @@ describe('InMemoryNotificationJobRepository', () => {
   it('retrouve un job par id uniquement dans son tenant', async () => {
     const repo = new InMemoryNotificationJobRepository();
     await repo.enqueue({
-      id: 'job-contextuel',
+      id: jobId('job-contextuel'),
       companyId: 'co-1',
       kind: 'invoice-relance',
       dedupeKey: 'invoice:inv-contextuelle:relance:auto:v1:cordial',
@@ -122,14 +295,14 @@ describe('InMemoryNotificationJobRepository', () => {
       now: '2026-07-01T10:00:00.000Z',
     });
 
-    await expect(repo.findById('co-1', 'job-contextuel')).resolves.toMatchObject({
-      id: 'job-contextuel',
+    await expect(repo.findById('co-1', jobId('job-contextuel'))).resolves.toMatchObject({
+      id: jobId('job-contextuel'),
       companyId: 'co-1',
       subject: 'Relance F-2026-0042',
       notification: { body: 'La facture reste due.' },
     });
-    await expect(repo.findById('co-2', 'job-contextuel')).resolves.toBeNull();
-    await expect(repo.findById('co-1', 'job-absent')).resolves.toBeNull();
+    await expect(repo.findById('co-2', jobId('job-contextuel'))).resolves.toBeNull();
+    await expect(repo.findById('co-1', jobId('job-absent'))).resolves.toBeNull();
   });
 
   it('fige plus de 50 non-lues au cutoff, exclut le futur et rejoue sans effet', async () => {
@@ -137,7 +310,7 @@ describe('InMemoryNotificationJobRepository', () => {
     const cutoff = '2026-07-01T12:00:00.000Z';
     for (let index = 0; index < 75; index += 1) {
       await repo.enqueue({
-        id: `job-batch-${index}`,
+        id: jobId(`job-batch-${index}`),
         companyId: 'co-1',
         kind: 'invoice-relance',
         dedupeKey: `invoice:inv-batch-${index}:relance:manual:2026-07-01`,
@@ -150,7 +323,7 @@ describe('InMemoryNotificationJobRepository', () => {
         now: `2026-07-01T11:${String(index % 60).padStart(2, '0')}:00.000Z`,
       });
     }
-    await repo.markRead('job-batch-0', 'co-1', '2026-07-01T11:30:00.000Z');
+    await repo.markRead(jobId('job-batch-0'), 'co-1', '2026-07-01T11:30:00.000Z');
 
     await expect(repo.previewUnread('co-1', cutoff)).resolves.toEqual({
       unreadCount: 74,
@@ -159,7 +332,7 @@ describe('InMemoryNotificationJobRepository', () => {
     // Ces lignes arrivent APRÈS l'aperçu. Même celle qui partage exactement son milliseconde
     // reste hors de la portée, car le cutoff est une borne exclusive.
     await repo.enqueue({
-      id: 'job-at-cutoff',
+      id: jobId('job-at-cutoff'),
       companyId: 'co-1',
       kind: 'invoice-relance',
       dedupeKey: 'invoice:inv-at:relance:manual:2026-07-01',
@@ -167,7 +340,7 @@ describe('InMemoryNotificationJobRepository', () => {
       now: cutoff,
     });
     await repo.enqueue({
-      id: 'job-after-cutoff',
+      id: jobId('job-after-cutoff'),
       companyId: 'co-1',
       kind: 'invoice-relance',
       dedupeKey: 'invoice:inv-after:relance:manual:2026-07-01',
@@ -175,7 +348,7 @@ describe('InMemoryNotificationJobRepository', () => {
       now: '2026-07-01T12:00:00.001Z',
     });
     await repo.enqueue({
-      id: 'job-other-company',
+      id: jobId('job-other-company'),
       companyId: 'co-2',
       kind: 'invoice-relance',
       dedupeKey: 'invoice:inv-other:relance:manual:2026-07-01',
@@ -197,15 +370,15 @@ describe('InMemoryNotificationJobRepository', () => {
       unreadCount: 0,
       throughCreatedAt: cutoff,
     });
-    await expect(repo.findById('co-1', 'job-at-cutoff')).resolves.toMatchObject({ readAt: null });
-    await expect(repo.findById('co-1', 'job-after-cutoff')).resolves.toMatchObject({ readAt: null });
-    await expect(repo.findById('co-2', 'job-other-company')).resolves.toMatchObject({ readAt: null });
+    await expect(repo.findById('co-1', jobId('job-at-cutoff'))).resolves.toMatchObject({ readAt: null });
+    await expect(repo.findById('co-1', jobId('job-after-cutoff'))).resolves.toMatchObject({ readAt: null });
+    await expect(repo.findById('co-2', jobId('job-other-company'))).resolves.toMatchObject({ readAt: null });
   });
 
   it('préserve le premier readAt lors de deux lectures individuelles concurrentes', async () => {
     const repo = new InMemoryNotificationJobRepository();
     await repo.enqueue({
-      id: 'job-concurrent-read',
+      id: jobId('job-concurrent-read'),
       companyId: 'co-1',
       kind: 'invoice-relance',
       dedupeKey: 'invoice:inv-concurrent:relance:manual:2026-07-01',
@@ -214,8 +387,8 @@ describe('InMemoryNotificationJobRepository', () => {
     });
 
     const [first, second] = await Promise.all([
-      repo.markRead('job-concurrent-read', 'co-1', '2026-07-01T10:01:00.000Z'),
-      repo.markRead('job-concurrent-read', 'co-1', '2026-07-01T10:02:00.000Z'),
+      repo.markRead(jobId('job-concurrent-read'), 'co-1', '2026-07-01T10:01:00.000Z'),
+      repo.markRead(jobId('job-concurrent-read'), 'co-1', '2026-07-01T10:02:00.000Z'),
     ]);
 
     expect(first?.readAt).toBe('2026-07-01T10:01:00.000Z');
@@ -225,7 +398,7 @@ describe('InMemoryNotificationJobRepository', () => {
   it('un ré-enqueue immuable ne réactive pas une notification déjà lue après le snapshot', async () => {
     const repo = new InMemoryNotificationJobRepository();
     const input = {
-      id: 'job-read-reenqueue',
+      id: jobId('job-read-reenqueue'),
       companyId: 'co-1',
       kind: 'invoice-relance' as const,
       dedupeKey: 'invoice:inv-read:relance:manual:2026-07-01',
@@ -236,7 +409,7 @@ describe('InMemoryNotificationJobRepository', () => {
     await repo.markRead(input.id, input.companyId, '2026-07-01T10:01:00.000Z');
     const preview = await repo.previewUnread(input.companyId, '2026-07-01T10:02:00.000Z');
 
-    await repo.enqueue({ ...input, id: 'unused-new-id', now: '2026-07-01T10:03:00.000Z' });
+    await repo.enqueue({ ...input, id: jobId('unused-new-id'), now: '2026-07-01T10:03:00.000Z' });
 
     await expect(repo.findById(input.companyId, input.id)).resolves.toMatchObject({
       readAt: '2026-07-01T10:01:00.000Z',
@@ -249,7 +422,7 @@ describe('InMemoryNotificationJobRepository', () => {
   it('efface le payload après livraison réussie', async () => {
     const repo = new InMemoryNotificationJobRepository();
     const input = {
-      id: 'job-1',
+      id: jobId('job-1'),
       companyId: 'co-1',
       kind: 'quote-signature' as const,
       dedupeKey: 'quote:q-1:token:h-1',
@@ -259,21 +432,21 @@ describe('InMemoryNotificationJobRepository', () => {
     await repo.enqueue(input);
     const lease = '2026-07-01T10:05:00.000Z';
     const token = 'lease-token-1';
-    expect(await repo.claimForDelivery('job-1', 'co-1', input.now, input.now, lease, token)).toMatchObject({
+    expect(await repo.claimForDelivery(jobId('job-1'), 'co-1', input.now, input.now, lease, token)).toMatchObject({
       outcome: 'claimed',
     });
-    expect(await repo.markDone('job-1', 'co-1', token, '2026-07-01T10:00:05.000Z')).toBe(true);
-    expect(await repo.markDone('job-1', 'co-1', token, '2026-07-01T10:00:06.000Z')).toBe(false);
+    expect(await repo.markDone(jobId('job-1'), 'co-1', token, '2026-07-01T10:00:05.000Z')).toBe(true);
+    expect(await repo.markDone(jobId('job-1'), 'co-1', token, '2026-07-01T10:00:06.000Z')).toBe(false);
 
     expect(await repo.listDue('co-1', '2026-07-01T11:00:00.000Z', 10)).toHaveLength(0);
-    const replay = await repo.enqueue({ ...input, id: 'job-replay', now: '2026-07-01T11:00:00.000Z' });
-    expect(replay).toMatchObject({ id: 'job-1', status: 'done', notification: null });
+    const replay = await repo.enqueue({ ...input, id: jobId('job-replay'), now: '2026-07-01T11:00:00.000Z' });
+    expect(replay).toMatchObject({ id: jobId('job-1'), status: 'done', notification: null });
   });
 
   it('accorde un lease à un seul worker puis rend le job récupérable à expiration', async () => {
     const repo = new InMemoryNotificationJobRepository();
     await repo.enqueue({
-      id: 'job-lease',
+      id: jobId('job-lease'),
       companyId: 'co-1',
       kind: 'invoice-relance',
       dedupeKey: 'invoice:inv-1:relance:auto:v1:cordial',
@@ -283,7 +456,7 @@ describe('InMemoryNotificationJobRepository', () => {
 
     expect(
       await repo.claimForDelivery(
-        'job-lease',
+        jobId('job-lease'),
         'co-1',
         '2026-07-01T10:00:00.000Z',
         '2026-07-01T10:00:00.000Z',
@@ -293,7 +466,7 @@ describe('InMemoryNotificationJobRepository', () => {
     ).toMatchObject({ outcome: 'claimed' });
     expect(
       await repo.claimForDelivery(
-        'job-lease',
+        jobId('job-lease'),
         'co-1',
         '2026-07-01T10:00:00.000Z',
         '2026-07-01T10:00:01.000Z',
@@ -305,7 +478,7 @@ describe('InMemoryNotificationJobRepository', () => {
     const nextLease = '2026-07-01T10:10:00.000Z';
     expect(
       await repo.claimForDelivery(
-        'job-lease',
+        jobId('job-lease'),
         'co-1',
         '2026-07-01T10:00:00.000Z',
         '2026-07-01T10:05:00.000Z',
@@ -313,24 +486,24 @@ describe('InMemoryNotificationJobRepository', () => {
         'lease-token-2',
       ),
     ).toMatchObject({ outcome: 'claimed' });
-    expect(await repo.markDone('job-lease', 'co-1', 'lease-token-1', '2026-07-01T10:05:01.000Z')).toBe(
+    expect(await repo.markDone(jobId('job-lease'), 'co-1', 'lease-token-1', '2026-07-01T10:05:01.000Z')).toBe(
       false,
     );
     await repo.markFailed(
-      'job-lease',
+      jobId('job-lease'),
       'co-1',
       'lease-token-1',
       '2026-07-01T10:05:01.000Z',
       60_000,
       'ancien worker',
     );
-    expect(await repo.markDone('job-lease', 'co-1', 'lease-token-2', '2026-07-01T10:05:02.000Z')).toBe(true);
+    expect(await repo.markDone(jobId('job-lease'), 'co-1', 'lease-token-2', '2026-07-01T10:05:02.000Z')).toBe(true);
   });
 
   it('refuse une collision de dedupeKey et ne raccourcit pas un lease actif', async () => {
     const repo = new InMemoryNotificationJobRepository();
     const base = {
-      id: 'job-lease',
+      id: jobId('job-lease'),
       companyId: 'co-1',
       kind: 'invoice-relance' as const,
       dedupeKey: 'invoice:inv-1:relance:auto:v1:cordial',
@@ -346,11 +519,11 @@ describe('InMemoryNotificationJobRepository', () => {
 
     await expect(repo.enqueue({
       ...base,
-      id: 'job-new-id',
+      id: jobId('job-new-id'),
       notification: { ...base.notification, subject: 'Ne doit pas remplacer' },
       now: '2026-07-01T10:01:00.000Z',
     })).rejects.toThrow('désigne déjà un autre contenu');
-    const reenqueued = await repo.enqueue({ ...base, id: 'job-new-id', now: '2026-07-01T10:01:00.000Z' });
+    const reenqueued = await repo.enqueue({ ...base, id: jobId('job-new-id'), now: '2026-07-01T10:01:00.000Z' });
 
     expect(reenqueued).toMatchObject({ id: base.id, subject: 'Initial', nextAttemptAt: lease });
     expect(
@@ -369,7 +542,7 @@ describe('InMemoryNotificationJobRepository', () => {
   it('à l’instant exact d’expiration, le successeur fence l’ancien worker sans muter le payload', async () => {
     const repo = new InMemoryNotificationJobRepository();
     const base = {
-      id: 'job-expiry',
+      id: jobId('job-expiry'),
       companyId: 'co-1',
       kind: 'invoice-relance' as const,
       dedupeKey: 'invoice:inv-expiry:relance:auto:v1:cordial',
@@ -398,7 +571,7 @@ describe('InMemoryNotificationJobRepository', () => {
   it('quarantaine un résultat provider incertain hors TTL et ne le reliste plus', async () => {
     const repo = new InMemoryNotificationJobRepository();
     const base = {
-      id: 'job-uncertain',
+      id: jobId('job-uncertain'),
       companyId: 'co-1',
       kind: 'invoice-relance' as const,
       dedupeKey: 'invoice:inv-uncertain:relance:auto:v1:cordial',

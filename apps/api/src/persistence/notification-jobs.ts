@@ -5,6 +5,30 @@ import { type Notification } from '@bob/core';
  *  reçu…) — le job ne sera JAMAIS livré ni relivré, et ne compte plus dans le fil/les non-lus. */
 export type NotificationJobStatus = 'pending' | 'done' | 'failed' | 'cancelled';
 
+/** Quarantaine durable : le payload reste représenté par son job/audit mais ne peut plus être
+ * repris automatiquement. Release A refuse toute extension non scellée par l'empreinte V1. */
+export const NOTIFICATION_PAYLOAD_QUARANTINE_AT = '9999-12-31T23:59:59.999Z';
+export const NOTIFICATION_PAYLOAD_INTEGRITY_ERROR =
+  '[manual-review:payload-integrity-invalid] Payload notification inconnu, étendu ou altéré.';
+export const NOTIFICATION_DUE_SCAN_MAX_PAGES = 4;
+export const LEGACY_NOTIFICATION_PAYLOAD_FIELDS = [
+  'channel',
+  'to',
+  'subject',
+  'body',
+  'idempotencyKey',
+] as const;
+const legacyNotificationPayloadFieldSet = new Set<string>(LEGACY_NOTIFICATION_PAYLOAD_FIELDS);
+const PROVIDER_UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export interface LegacyNotificationPayloadAuthority {
+  jobId: string;
+  channel: Notification['channel'];
+  recipient: string;
+  subject: string;
+}
+
 /** Clé de déduplication du job « encaissement programmé » (embargo L221-10) — SOURCE UNIQUE
  *  partagée entre la programmation (scheduleEmbargoPayment), l'annulation (rétractation) et la
  *  garde de livraison : jamais trois recettes qui dérivent. */
@@ -106,6 +130,92 @@ export function notificationPayloadFingerprint(notification: Notification): stri
       notification.body,
     ]))
     .digest('hex')}`;
+}
+
+/** Contrat transitoire de release A : les workers V1 ne livrent que leur forme minimale exacte.
+ * Un champ moderne serait sinon silencieusement supprimé par le décodeur avant le provider. */
+export function sealedLegacyNotificationFromUnknown(
+  value: unknown,
+  persistedFingerprint: string | null,
+  authority?: LegacyNotificationPayloadAuthority,
+): Notification | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  const hasUnsupportedExtension = Object.keys(candidate).some(
+    (field) => !legacyNotificationPayloadFieldSet.has(field),
+  );
+  if (hasUnsupportedExtension) return null;
+  const { channel, to, subject, body, idempotencyKey } = candidate;
+  if (
+    (channel !== 'email' && channel !== 'sms')
+    || typeof to !== 'string'
+    || typeof subject !== 'string'
+    || typeof body !== 'string'
+    || (idempotencyKey !== undefined && typeof idempotencyKey !== 'string')
+  ) {
+    return null;
+  }
+  if (
+    authority !== undefined
+    && (
+      channel !== authority.channel
+      || to !== authority.recipient
+      || subject !== authority.subject
+      || (
+        channel === 'email'
+        && (
+          idempotencyKey !== authority.jobId
+          || !PROVIDER_UUID_PATTERN.test(authority.jobId)
+        )
+      )
+    )
+  ) {
+    return null;
+  }
+  const notification: Notification = {
+    channel,
+    to,
+    subject,
+    body,
+    ...(typeof idempotencyKey === 'string' ? { idempotencyKey } : {}),
+  };
+  return persistedFingerprint === notificationPayloadFingerprint(notification)
+    ? notification
+    : null;
+}
+
+export function isLegacyNotificationPayloadSealed(
+  notification: unknown,
+  persistedFingerprint: string | null,
+  authority?: LegacyNotificationPayloadAuthority,
+): boolean {
+  return sealedLegacyNotificationFromUnknown(notification, persistedFingerprint, authority) !== null;
+}
+
+/** Le repository possède l'invariant provider : un appel direct au port reçoit la même clé
+ * immuable que le service d'outbox. Une clé explicite divergente ou mal typée reste refusée. */
+export function normalizeLegacyNotificationForEnqueue(
+  notification: Notification,
+  authority: LegacyNotificationPayloadAuthority,
+): Notification {
+  const normalized: Notification =
+    notification.channel === 'email' && notification.idempotencyKey === undefined
+      ? { ...notification, idempotencyKey: authority.jobId }
+      : { ...notification };
+  const sealed = sealedLegacyNotificationFromUnknown(
+    normalized,
+    notificationPayloadFingerprint(normalized),
+    authority,
+  );
+  if (sealed === null) throw new NotificationPayloadContractUnavailableError();
+  return sealed;
+}
+
+export class NotificationPayloadContractUnavailableError extends Error {
+  constructor() {
+    super('Le contrat de livraison étendu est temporairement fermé pendant son déploiement sûr.');
+    this.name = 'NotificationPayloadContractUnavailableError';
+  }
 }
 
 export class NotificationDedupeConflictError extends Error {

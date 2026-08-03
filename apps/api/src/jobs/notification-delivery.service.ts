@@ -12,6 +12,9 @@ import {
 import type { Persistence } from '../persistence/persistence';
 import { PERSISTENCE } from '../persistence/persistence-token';
 import {
+  NotificationPayloadContractUnavailableError,
+  isLegacyNotificationPayloadSealed,
+  notificationPayloadFingerprint,
   quoteIdOfEmbargoScheduledPaymentDedupeKey,
   type DeliverableNotificationJob,
   type NotificationJob,
@@ -52,6 +55,12 @@ type DeliveryAttemptOutcome = 'sent' | 'skipped' | 'failed';
 
 @Injectable()
 export class NotificationDeliveryService {
+  /** Release A : le worker V1 ne sait livrer que le payload historique scellé. Cette capacité
+   * bascule à true avec la release V3, jamais via un faux succès `queued`. */
+  supportsExtendedPayloads(): boolean {
+    return false;
+  }
+
   private readonly clock = new SystemClock();
 
   constructor(
@@ -85,6 +94,14 @@ export class NotificationDeliveryService {
     /** Livraison PLANIFIÉE (première tentative à cet instant) — encaissement J+7 embargo L221-10. */
     notBefore?: string;
   }): Promise<NotificationJob> {
+    if (
+      !isLegacyNotificationPayloadSealed(
+        input.notification,
+        notificationPayloadFingerprint(input.notification),
+      )
+    ) {
+      throw new NotificationPayloadContractUnavailableError();
+    }
     const now = this.clock.now();
     const id = randomUUID();
     // La clé provider est créée UNE fois avec l'entrée d'outbox et persiste sur tous les

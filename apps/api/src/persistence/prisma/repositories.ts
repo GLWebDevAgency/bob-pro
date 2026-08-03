@@ -61,7 +61,12 @@ import {
 } from '../document-archive-jobs';
 import {
   NotificationDedupeConflictError,
+  NOTIFICATION_DUE_SCAN_MAX_PAGES,
+  NOTIFICATION_PAYLOAD_INTEGRITY_ERROR,
+  NOTIFICATION_PAYLOAD_QUARANTINE_AT,
+  normalizeLegacyNotificationForEnqueue,
   notificationPayloadFingerprint,
+  sealedLegacyNotificationFromUnknown,
   type DeliverableNotificationJob,
   type EnqueueNotificationJobInput,
   type NotificationDeliveryClaim,
@@ -1521,39 +1526,18 @@ export class PrismaDocumentArchiveJobRepository implements DocumentArchiveJobRep
   }
 }
 
-const PROVIDER_UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
 function notificationFromJson(
   value: Prisma.JsonValue | null,
-  expectedJobId: string,
+  expected: { jobId: string; channel: string; recipient: string; subject: string },
+  persistedFingerprint: string | null,
 ): NotificationJob['notification'] {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
-  const candidate = value as Record<string, unknown>;
-  const channel = candidate.channel;
-  const to = candidate.to;
-  const subject = candidate.subject;
-  const body = candidate.body;
-  const idempotencyKey = candidate.idempotencyKey;
-  if (
-    (channel !== 'email' && channel !== 'sms') ||
-    typeof to !== 'string' ||
-    typeof subject !== 'string' ||
-    typeof body !== 'string' ||
-    (channel === 'email' &&
-      (typeof idempotencyKey !== 'string' ||
-        !PROVIDER_UUID_PATTERN.test(idempotencyKey) ||
-        idempotencyKey !== expectedJobId))
-  ) {
-    return null;
-  }
-  return {
-    channel,
-    to,
-    subject,
-    body,
-    ...(typeof idempotencyKey === 'string' ? { idempotencyKey } : {}),
-  };
+  if (expected.channel !== 'email' && expected.channel !== 'sms') return null;
+  return sealedLegacyNotificationFromUnknown(value, persistedFingerprint, {
+    jobId: expected.jobId,
+    channel: expected.channel,
+    recipient: expected.recipient,
+    subject: expected.subject,
+  });
 }
 
 function notificationJobRowToView(row: {
@@ -1576,6 +1560,12 @@ function notificationJobRowToView(row: {
   createdAt: Date;
   updatedAt: Date;
 }): NotificationJob {
+  const notification = notificationFromJson(row.payload, {
+    jobId: row.id,
+    channel: row.channel,
+    recipient: row.recipient,
+    subject: row.subject,
+  }, row.payloadFingerprint);
   return {
     id: row.id,
     companyId: row.companyId,
@@ -1584,7 +1574,7 @@ function notificationJobRowToView(row: {
     channel: row.channel as NotificationJob['channel'],
     recipient: row.recipient,
     subject: row.subject,
-    notification: notificationFromJson(row.payload, row.id),
+    notification,
     payloadFingerprint: row.payloadFingerprint,
     status: row.status as NotificationJob['status'],
     attempts: row.attempts,
@@ -1606,10 +1596,13 @@ export class PrismaNotificationJobRepository implements NotificationJobRepositor
   constructor(private readonly prisma: PrismaService) {}
 
   async enqueue(input: EnqueueNotificationJobInput): Promise<NotificationJob> {
-    const payloadFingerprint = notificationPayloadFingerprint(input.notification);
-    if (input.notification.channel === 'email' && input.notification.idempotencyKey !== input.id) {
-      throw new Error('La clé provider email doit être égale à l’identifiant immuable du job.');
-    }
+    const notification = normalizeLegacyNotificationForEnqueue(input.notification, {
+      jobId: input.id,
+      channel: input.notification.channel,
+      recipient: input.notification.to,
+      subject: input.notification.subject,
+    });
+    const payloadFingerprint = notificationPayloadFingerprint(notification);
     const existing = await this.prisma.client().notificationJob.findUnique({
       where: {
         uniq_notification_job: {
@@ -1661,10 +1654,10 @@ export class PrismaNotificationJobRepository implements NotificationJobRepositor
           companyId: input.companyId,
           kind: input.kind,
           dedupeKey: input.dedupeKey,
-          channel: input.notification.channel,
-          recipient: input.notification.to,
-          subject: input.notification.subject,
-          payload: input.notification as unknown as Prisma.InputJsonValue,
+          channel: notification.channel,
+          recipient: notification.to,
+          subject: notification.subject,
+          payload: notification as unknown as Prisma.InputJsonValue,
           payloadFingerprint,
           status: 'pending',
           attempts: 0,
@@ -1703,17 +1696,55 @@ export class PrismaNotificationJobRepository implements NotificationJobRepositor
     now: string,
     limit: number,
   ): Promise<DeliverableNotificationJob[]> {
-    const rows = await this.prisma.client().notificationJob.findMany({
-      where: {
-        companyId,
-        status: { in: ['pending', 'failed'] },
-        nextAttemptAt: { lte: new Date(now) },
-        NOT: { payload: { equals: Prisma.AnyNull } },
-      },
-      orderBy: [{ nextAttemptAt: 'asc' }, { createdAt: 'asc' }],
-      take: limit,
-    });
-    return rows.map(notificationJobRowToView).filter(isDeliverableNotificationJob);
+    const safeLimit = Math.max(1, Math.min(limit, 100));
+    const observedAt = new Date(now);
+    const deliverable: DeliverableNotificationJob[] = [];
+    const seenIds: string[] = [];
+    for (
+      let page = 0;
+      page < NOTIFICATION_DUE_SCAN_MAX_PAGES && deliverable.length < safeLimit;
+      page += 1
+    ) {
+      const requestedTake = safeLimit - deliverable.length;
+      const rows = await this.prisma.client().notificationJob.findMany({
+        where: {
+          companyId,
+          status: { in: ['pending', 'failed'] },
+          nextAttemptAt: { lte: observedAt },
+          ...(seenIds.length === 0 ? {} : { id: { notIn: [...seenIds] } }),
+        },
+        orderBy: [{ nextAttemptAt: 'asc' }, { createdAt: 'asc' }],
+        take: requestedTake,
+      });
+      if (rows.length === 0) break;
+      for (const row of rows) {
+        seenIds.push(row.id);
+        const view = notificationJobRowToView(row);
+        if (isDeliverableNotificationJob(view)) {
+          deliverable.push(view);
+          continue;
+        }
+        await this.prisma.client().notificationJob.updateMany({
+          where: {
+            id: row.id,
+            companyId,
+            status: { in: ['pending', 'failed'] },
+            nextAttemptAt: { lte: observedAt },
+            updatedAt: row.updatedAt,
+          },
+          data: {
+            payload: Prisma.DbNull,
+            status: 'failed',
+            nextAttemptAt: new Date(NOTIFICATION_PAYLOAD_QUARANTINE_AT),
+            leaseToken: null,
+            lastError: NOTIFICATION_PAYLOAD_INTEGRITY_ERROR,
+            updatedAt: observedAt,
+          },
+        });
+      }
+      if (rows.length < requestedTake) break;
+    }
+    return deliverable;
   }
 
   async claimForDelivery(
