@@ -2696,6 +2696,12 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
       }
       if (init?.method === 'DELETE') {
         expect(String(url)).toBe(`https://api.bob.test/voice/realtime/calls/${sessionHandle}`);
+        expect(JSON.parse(String(init.body))).toEqual({
+          version: 1,
+          terminationSource: 'automatic_failure',
+          lastSuccessfulCheckpoint: 'bootstrap_acknowledged',
+          failureCode: 'remote_description_rejected',
+        });
         return new Response(JSON.stringify({ ended: true }), { headers: { 'content-type': 'application/json' } });
       }
       if (init?.method === 'PUT') {
@@ -2780,7 +2786,12 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
       contextRevision: 7,
       contextDigest,
     });
-    const ended = await client.hangupRealtimeVoiceCall(sessionHandle);
+    const ended = await client.hangupRealtimeVoiceCall(sessionHandle, undefined, {
+      version: 1,
+      terminationSource: 'automatic_failure',
+      lastSuccessfulCheckpoint: 'bootstrap_acknowledged',
+      failureCode: 'remote_description_rejected',
+    });
 
     expect(config).toMatchObject({ ok: true, value: { available: true, transport: 'webrtc' } });
     expect(call).toMatchObject({ ok: true, value: { answerSdp } });

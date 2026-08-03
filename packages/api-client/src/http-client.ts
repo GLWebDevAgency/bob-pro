@@ -12,6 +12,7 @@ import {
   isCustomPrestationId,
   parseIanaTimeZone,
   parseCustomPrestation,
+  parseRealtimeVoiceClientTerminationDiagnostic,
 } from '@bob/core';
 import type {
   Result,
@@ -134,6 +135,7 @@ import type {
   RealtimeVoiceResumeTicketInput,
   RealtimeVoiceResumeTicketResult,
   RealtimeVoiceContextUpdate,
+  RealtimeVoiceClientTerminationDiagnostic,
   RealtimeVoiceControlAcknowledgement,
   RealtimeVoiceControlReference,
   RealtimeVoiceSpeechCancellationInput,
@@ -3091,11 +3093,24 @@ export class HttpBobClient implements BobClient {
       signal,
     );
   }
-  hangupRealtimeVoiceCall(sessionHandle: string, signal?: AbortSignal) {
+  hangupRealtimeVoiceCall(
+    sessionHandle: string,
+    signal?: AbortSignal,
+    diagnostic?: RealtimeVoiceClientTerminationDiagnostic,
+  ) {
+    if (
+      diagnostic !== undefined
+      && parseRealtimeVoiceClientTerminationDiagnostic(diagnostic) === null
+    ) {
+      return invalidRealtimeSpeechInput<{ ended: true }>(
+        'diagnostic',
+        'Le diagnostic terminal Bob Live est invalide.',
+      );
+    }
     return this.req<{ ended: true }>(
       'DELETE',
       `/voice/realtime/calls/${encodeURIComponent(sessionHandle)}`,
-      undefined,
+      diagnostic,
       undefined,
       (value) => (isRecord(value) && value.ended === true ? { ended: true } : null),
       REALTIME_BOOTSTRAP_TIMEOUT_MS,

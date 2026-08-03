@@ -8,6 +8,7 @@ import {
   appRateLimited,
   appUnavailable,
   ok,
+  parseRealtimeVoiceClientTerminationDiagnostic,
   type AppError,
   type Result,
 } from '@bob/core';
@@ -1639,7 +1640,10 @@ export class RealtimeVoiceService {
     return { ok: false, error: appUnavailable('bob-live-mistral-reconciliation', 5) };
   }
 
-  async hangup(sessionHandle: string): Promise<Result<{ ended: true }, AppError>> {
+  async hangup(
+    sessionHandle: string,
+    diagnosticBody?: unknown,
+  ): Promise<Result<{ ended: true }, AppError>> {
     const principal = getPrincipal();
     if (!principal?.userId || !principal.companyId || !this.settings.safetySecret) {
       return { ok: false, error: appForbidden('Session utilisateur et espace de travail requis.') };
@@ -1648,6 +1652,31 @@ export class RealtimeVoiceService {
       return {
         ok: false,
         error: { kind: 'validation', issues: [{ field: 'sessionHandle', message: 'Identifiant de session invalide.' }] },
+      };
+    }
+    // Android/OkHttp conserve parfois `content-type: application/json` sur un DELETE sans
+    // payload ; express.json matérialise alors le corps historique en `{}`. Cet objet vide exact
+    // signifie « ancien client sans diagnostic », jamais un diagnostic permissif.
+    const diagnosticAbsent = diagnosticBody === undefined
+      || (
+        typeof diagnosticBody === 'object'
+        && diagnosticBody !== null
+        && !Array.isArray(diagnosticBody)
+        && Object.keys(diagnosticBody).length === 0
+      );
+    const clientDiagnostic = diagnosticAbsent
+      ? null
+      : parseRealtimeVoiceClientTerminationDiagnostic(diagnosticBody);
+    if (!diagnosticAbsent && clientDiagnostic === null) {
+      return {
+        ok: false,
+        error: {
+          kind: 'validation',
+          issues: [{
+            field: 'diagnostic',
+            message: 'Le diagnostic terminal Bob Live est invalide.',
+          }],
+        },
       };
     }
 
@@ -1691,6 +1720,15 @@ export class RealtimeVoiceService {
       }
       if (detachedTermination !== 'not_found') detachedTermination.settle('confirmed');
       return ok({ ended: true });
+    }
+    // Seul le claim atomique non nul prouve qu'une session de ce principal existait et que
+    // cette requête possède sa terminaison. Un UUID inconnu ou un replay ne doit jamais pouvoir
+    // fabriquer une fausse preuve client dans le journal d'audit.
+    if (clientDiagnostic !== null) {
+      this.logger.audit('bob.live.client.termination', {
+        sessionHandle,
+        ...clientDiagnostic,
+      });
     }
 
     try {

@@ -18,6 +18,7 @@ import {
   type RealtimeTransportMetrics,
   type RealtimeTransportState,
   type RealtimeTurnSettlementStatus,
+  type RealtimeClientDiagnosticUpdate,
   type VoiceConversationTransport,
 } from './realtime-transport';
 
@@ -125,6 +126,10 @@ export class RealtimeAuditedConversationTransport implements VoiceConversationTr
     return this.uplink.takeAgentMissionSession();
   }
 
+  reportClientDiagnostic(update: RealtimeClientDiagnosticUpdate): void {
+    this.uplink.reportClientDiagnostic?.(update);
+  }
+
   subscribe(listener: (event: RealtimeTransportEvent) => void): () => void {
     this.listeners.add(listener);
     this.safeNotify(listener, { type: 'state', state: this.currentState });
@@ -143,6 +148,10 @@ export class RealtimeAuditedConversationTransport implements VoiceConversationTr
     const audioLease = this.uplink.getProcessAudioLease();
     const speechSourcePolicy = this.uplink.getSpeechSourcePolicy();
     if (!sessionHandle || !audioLease || audioLease.mode !== 'realtime' || !speechSourcePolicy) {
+      this.reportClientDiagnostic({
+        type: 'failure',
+        failureCode: 'audited_downlink_binding_rejected',
+      });
       await this.uplink.close('fallback');
       throw new RealtimeTransportError('bootstrap_failed');
     }
@@ -162,10 +171,21 @@ export class RealtimeAuditedConversationTransport implements VoiceConversationTr
         ?? new RealtimeAuditedSpeechPlayerController(dependencies);
       this.player = player;
       this.unsubscribePlayer = player.subscribe((event) => this.onPlayerEvent(event));
-      void player.start().catch(() => this.failAuditedDownlink('audited_speech_runtime_failed'));
+      this.reportClientDiagnostic({ type: 'checkpoint', checkpoint: 'audited_player_created' });
+      void player.start().catch(() => {
+        this.reportClientDiagnostic({
+          type: 'failure',
+          failureCode: 'audited_player_runtime_failed',
+        });
+        this.failAuditedDownlink('audited_speech_runtime_failed');
+      });
       // READY signifie désormais uplink + downlink audité composés, jamais le seul peer provider.
       this.emit({ type: 'state', state: this.currentState });
     } catch {
+      this.reportClientDiagnostic({
+        type: 'failure',
+        failureCode: 'audited_player_creation_failed',
+      });
       await this.uplink.close('fallback');
       throw new RealtimeTransportError('bootstrap_failed');
     }
@@ -312,12 +332,22 @@ export class RealtimeAuditedConversationTransport implements VoiceConversationTr
       }
       return;
     }
+    // Le player de production transforme ses exceptions en événement fermé puis résout start().
+    // Cette branche — et non le seul catch de start() — porte donc la panne native réelle.
+    this.reportClientDiagnostic({
+      type: 'failure',
+      failureCode: 'audited_player_runtime_failed',
+    });
     this.failAuditedDownlink(`audited_speech_${event.code}`);
   }
 
   private reportProviderDownlinkDrift(): void {
     if (this.driftReported) return;
     this.driftReported = true;
+    this.reportClientDiagnostic({
+      type: 'failure',
+      failureCode: 'provider_connection_failed',
+    });
     this.settlePendingTurns('failed');
     this.emit({ type: 'error', code: 'provider_downlink_rejected' });
     this.emit({ type: 'fallback', reason: 'provider_error' });
@@ -326,6 +356,12 @@ export class RealtimeAuditedConversationTransport implements VoiceConversationTr
   private failAuditedDownlink(code: string): void {
     if (this.closed || this.auditedFailureReported) return;
     this.auditedFailureReported = true;
+    // Les erreurs player spécifiques gagnent avant cet appel. Pour les timeouts, conflits de
+    // terminal et commits invalides, ce code fermé conserve au moins la frontière auditée exacte.
+    this.reportClientDiagnostic({
+      type: 'failure',
+      failureCode: 'audited_pipeline_failed',
+    });
     this.clearResponseStartTimeout();
     this.uplink.setMicrophoneEnabled(false);
     this.settlePendingTurns('failed');

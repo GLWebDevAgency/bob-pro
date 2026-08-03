@@ -8,6 +8,7 @@ import {
   type RealtimeVoiceConfig,
 } from '@bob/api-client';
 import type { RealtimeResilienceEvent } from '../realtime/realtime-resilience-orchestrator';
+import type { RealtimeClientDiagnosticUpdate } from '../realtime/realtime-transport';
 import {
   AgentMissionRuntimeOwner,
   type AgentMissionRuntimeBridge,
@@ -154,6 +155,7 @@ function harness(
   } = {},
 ) {
   const log: string[] = input.log ?? [];
+  const diagnostics: RealtimeClientDiagnosticUpdate[] = [];
   const negotiated = input.negotiation ?? NEGOTIATION;
   const effectiveAgentMissionRuntime =
     input.agentMissionRuntime
@@ -230,6 +232,7 @@ function harness(
         agentMissionSession = null;
         return session;
       },
+      reportClientDiagnostic: (update) => diagnostics.push(update),
       ...(input.synchronizeContext === undefined ? {} : {
         synchronizePublishedContext: async (
           fence: import('./realtime-driver').RealtimePublishedFence,
@@ -350,7 +353,13 @@ function harness(
     },
     hooks,
   );
-  return { controller, log, emit: (event: RealtimeResilienceEvent) => emit(event), external };
+  return {
+    controller,
+    log,
+    diagnostics,
+    emit: (event: RealtimeResilienceEvent) => emit(event),
+    external,
+  };
 }
 
 const readyState = {
@@ -826,7 +835,7 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
       const log: string[] = [];
       const realtimeSessionId = '00000000-0000-4000-8000-000000000045';
       const mission = missionSessionStub(log, 'mission-provider-refused', realtimeSessionId);
-      const { controller, emit } = harness({
+      const { controller, diagnostics, emit } = harness({
         log,
         handle: realtimeSessionId,
         agentMissionSessions: [mission],
@@ -848,6 +857,10 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
       expect(log.filter((entry) => entry === 'mission-provider-refused:dispose')).toHaveLength(1);
       expect(log).toContain('orchestrator:stop');
       expect(log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+      expect(diagnostics).toContainEqual({
+        type: 'failure',
+        failureCode: 'mission_adoption_failed',
+      });
     },
   );
 
@@ -878,7 +891,7 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
         return true;
       },
     };
-    const { controller, emit } = harness({
+    const { controller, diagnostics, emit } = harness({
       log,
       handle: realtimeSessionId,
       agentMissionSessions: [mission],
@@ -904,6 +917,12 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     );
     expect(log.indexOf(`runtime:confirm:${realtimeSessionId}:r1:${CONTEXT.screen.name}`))
       .toBeLessThan(log.indexOf('mic:true'));
+    expect(diagnostics).toEqual([
+      { type: 'checkpoint', checkpoint: 'mission_adopted' },
+      { type: 'checkpoint', checkpoint: 'context_put_started' },
+      { type: 'checkpoint', checkpoint: 'context_confirmed' },
+      { type: 'checkpoint', checkpoint: 'microphone_opened' },
+    ]);
 
     await controller.stop('user');
     expect(log).not.toContain('mission-owned:dispose');
@@ -960,7 +979,7 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     const log: string[] = [];
     const realtimeSessionId = '10000000-0000-4000-8000-000000000002';
     const mission = missionSessionStub(log, 'mission-lost', realtimeSessionId);
-    const { controller, emit } = harness({
+    const { controller, diagnostics, emit } = harness({
       log,
       handle: realtimeSessionId,
       agentMissionSessions: [mission],
@@ -985,6 +1004,10 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     expect(log).toContain('orchestrator:stop');
     expect(log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
     expect(mission.disposed).toBe(false);
+    expect(diagnostics).toContainEqual({
+      type: 'failure',
+      failureCode: 'mission_context_confirmation_failed',
+    });
   });
 
   it('interdit le repli legacy demandé après adoption d’une capability Mission', async () => {
@@ -1235,6 +1258,10 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     expect(failing.log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
     expect(failing.log).toContain('failed-closed:provider_error');
     expect(failing.log).not.toContain('mic:true');
+    expect(failing.diagnostics).toContainEqual({
+      type: 'failure',
+      failureCode: 'context_publish_failed',
+    });
   });
 
   it('attend la fence WSS après le PUT et échoue fermé avant le micro si elle est refusée', async () => {
@@ -1258,6 +1285,10 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     expect(refused.log).toContain('orchestrator:stop');
     expect(refused.log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
     expect(refused.log).toContain('failed-closed:provider_error');
+    expect(refused.diagnostics).toContainEqual({
+      type: 'failure',
+      failureCode: 'context_synchronization_failed',
+    });
   });
 
   it('commit semi-duplex : finalise l’utterance sans stopper puis passe en traitement', async () => {
@@ -1457,6 +1488,10 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     expect(h.log).toContain('orchestrator:stop');
     expect(h.log.some((entry) => entry.startsWith('nav:'))).toBe(false);
     expect(h.log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+    expect(h.diagnostics).toContainEqual({
+      type: 'failure',
+      failureCode: 'provider_connection_failed',
+    });
   });
 
   it('applique une navigation rejouée du même tour exactement une fois', async () => {

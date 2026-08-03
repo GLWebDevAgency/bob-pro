@@ -58,6 +58,16 @@ export interface RealtimeTransportMetrics {
 
 export type RealtimeTurnSettlementStatus = 'done' | 'cancelled' | 'failed';
 
+export type RealtimeClientDiagnosticUpdate =
+  | {
+      readonly type: 'checkpoint';
+      readonly checkpoint: import('@bob/core').RealtimeVoiceClientCheckpoint;
+    }
+  | {
+      readonly type: 'failure';
+      readonly failureCode: import('@bob/core').RealtimeVoiceClientFailureCode;
+    };
+
 export type RealtimeTransportEvent =
   | { type: 'state'; state: RealtimeTransportState }
   | { type: 'connectivity'; state: 'connected' | 'disconnected' }
@@ -114,6 +124,11 @@ export interface VoiceConversationTransport {
    * Le transport reste propriétaire jusqu'à cette remise et la détruit lui-même sur tout échec.
    */
   takeAgentMissionSession(): import('@bob/api-client').RealtimeAgentMissionSession | null;
+  /**
+   * Journal local fermé, propagé au transport propriétaire puis envoyé avec le hangup.
+   * Il n'accepte aucune donnée libre et ne déclenche jamais lui-même une requête réseau.
+   */
+  reportClientDiagnostic?(update: RealtimeClientDiagnosticUpdate): void;
   connect(input?: { signal?: AbortSignal }): Promise<void>;
   sendUserText(text: string): boolean;
   setMicrophoneEnabled(enabled: boolean): void;

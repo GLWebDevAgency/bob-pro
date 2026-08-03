@@ -134,10 +134,23 @@ describe('RealtimeVoiceController', () => {
   it('expose un hangup opaque idempotent', async () => {
     const hangup = vi.fn(async () => ({ ok: true as const, value: { ended: true as const } }));
     const controller = new RealtimeVoiceController(serviceStub({ hangup }));
+    const diagnostic = {
+      version: 1 as const,
+      terminationSource: 'automatic_failure' as const,
+      lastSuccessfulCheckpoint: 'remote_description_set' as const,
+      failureCode: 'transceiver_rejected' as const,
+    };
 
-    await expect(controller.hangup('00000000-0000-4000-8000-000000000001', responseStub()))
+    await expect(controller.hangup(
+      '00000000-0000-4000-8000-000000000001',
+      responseStub(),
+      diagnostic,
+    ))
       .resolves.toEqual({ ended: true });
-    expect(hangup).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000001');
+    expect(hangup).toHaveBeenCalledWith(
+      '00000000-0000-4000-8000-000000000001',
+      diagnostic,
+    );
   });
 
   it('délègue le reçu Mission sans body et sans refléter la capability', async () => {

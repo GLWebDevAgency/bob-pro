@@ -335,4 +335,5 @@ export * from './application/fiscal/derive-owner-pay-guidance';
 export * from './observability/telemetry-scrubbing';
 export * from './observability/voice-trace';
 export * from './observability/realtime-voice-trace';
+export * from './observability/realtime-voice-client-diagnostic';
 export * from './observability/crash-reporting-region';

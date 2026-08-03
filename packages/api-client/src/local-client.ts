@@ -153,6 +153,7 @@ import {
   // tâche de chantier persistée en démo : proposition null honnête (parité serveur stricte).
   proposeSituationFromChantier,
   parseQuoteDraftPayload,
+  parseRealtimeVoiceClientTerminationDiagnostic,
   QUOTE_DRAFT_PAYLOAD_VERSION,
   type ClockPort,
   type IdGeneratorPort,
@@ -297,6 +298,7 @@ import type {
   RealtimeVoiceResumeTicketInput,
   RealtimeVoiceResumeTicketResult,
   RealtimeVoiceContextUpdate,
+  RealtimeVoiceClientTerminationDiagnostic,
   RealtimeVoiceControlAcknowledgement,
   RealtimeVoiceControlReference,
   RealtimeVoiceSpeechCancellationInput,
@@ -1594,7 +1596,20 @@ export class LocalBobClient implements BobClient {
   async hangupRealtimeVoiceCall(
     _sessionHandle: string,
     _signal?: AbortSignal,
+    _diagnostic?: RealtimeVoiceClientTerminationDiagnostic,
   ): Promise<Result<{ ended: true }, AppError>> {
+    if (
+      _diagnostic !== undefined
+      && parseRealtimeVoiceClientTerminationDiagnostic(_diagnostic) === null
+    ) {
+      return err({
+        kind: 'validation',
+        issues: [{
+          field: 'diagnostic',
+          message: 'Le diagnostic terminal Bob Live est invalide.',
+        }],
+      });
+    }
     return ok({ ended: true });
   }
 
