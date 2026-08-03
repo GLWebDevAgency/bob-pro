@@ -22,7 +22,7 @@ import {
   type ExpenseProps,
   type PaymentMethod,
 } from '@bob/core';
-import { expenseCategory } from '@bob/tokens';
+import { documentTile, expenseCategory } from '@bob/tokens';
 import { t, type I18nKey } from '@bob/i18n';
 import {
   Button,
@@ -385,7 +385,11 @@ export default function Depenses() {
             {/* HÉROS MATIÈRE (Lot 5, planche « matière argent ») : la dette fournisseurs
                 vivante teinte la carte — voile warningBg si reste à payer > 0 (le pendant
                 « sortant » du vert comptable), neutre à zéro. Montant en MoneyText
-                moneyHero (27/800), mini-stats en KpiTile kit. */}
+                moneyHero (27/800), mini-stats en KpiTile kit.
+                AA SOUS LE VOILE (verdict Lot 5, P1 n°2) : sur warningBg, semantic.warning
+                tombe à 2,99:1 (< 3:1 gros texte) et slate400 à 2,59:1 — montant ET eyebrow
+                passent à semantic.warningInk (5,25:1, l'encre créée au Lot 0 pour ce cas
+                exact) dès que le voile est actif ; teintes neutres inchangées à zéro. */}
             <View style={{ paddingTop: 16, paddingHorizontal: 18 }}>
               <Card
                 radius={20}
@@ -394,14 +398,19 @@ export default function Depenses() {
                   ? { style: { backgroundColor: semantic.warningBg } }
                   : {})}
               >
-                <Text style={[font('eyebrow'), { color: colors.slate400 }]}>
+                <Text
+                  style={[
+                    font('eyebrow'),
+                    { color: summary.toPayCents > 0 ? semantic.warningInk : colors.slate400 },
+                  ]}
+                >
                   {t('dep.toPay', { personality })}
                 </Text>
                 <View style={{ marginTop: 3 }}>
                   <MoneyText
                     cents={summary.toPayCents}
                     variant="moneyHero"
-                    color={summary.toPayCents > 0 ? semantic.warning : colors.ink900}
+                    color={summary.toPayCents > 0 ? semantic.warningInk : colors.ink900}
                   />
                 </View>
                 <Text
@@ -416,17 +425,21 @@ export default function Depenses() {
                     ? t('dep.toPayCountOne', { personality })
                     : t('dep.toPayCount', { personality, params: { count: summary.toPayCount } })}
                 </Text>
+                {/* ISO-INFORMATION (feature freeze, verdict Lot 5 P2) : ces chiffres sont
+                    FISCAUX (décaissé, TVA déductible) — l'écran affichait les centimes
+                    avant le lot, ils restent. formatEUR via valueText : le canon euros
+                    entiers de KpiTile vaut pour les agrégats de briefing, pas ici. */}
                 <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
                   <KpiTile
                     style={{ flex: 1 }}
                     label={t('dep.paidMonth', { personality })}
-                    amountCents={summary.paidThisMonthCents}
+                    valueText={formatEUR(summary.paidThisMonthCents)}
                     tone="ink"
                   />
                   <KpiTile
                     style={{ flex: 1 }}
                     label={t('dep.vatMonth', { personality })}
-                    amountCents={summary.vatDeductibleThisMonthCents}
+                    valueText={formatEUR(summary.vatDeductibleThisMonthCents)}
                     tone="success"
                   />
                 </View>
@@ -525,9 +538,12 @@ export default function Depenses() {
                             variant={
                               legacyUnverified
                                 ? 'warning'
+                                // « À payer » est un ÉTAT actionnable, pas une typologie
+                                // client : variant warning (mêmes pixels que l'ex-
+                                // 'particulier', contrat honnête — doctrine TONS RECYCLÉS).
                                 : expense.status === 'paid'
                                   ? 'success'
-                                  : 'particulier'
+                                  : 'warning'
                             }
                           />
                         </View>
@@ -624,8 +640,10 @@ export default function Depenses() {
                               onPress={() => router.push(`/chantier/${expenseChantierId}`)}
                               style={{ minHeight: 48, flex: 1, flexDirection: 'row', alignItems: 'center', gap: 12 }}
                             >
-                              <IconTile tone="b2b" size={40} radius={12}>
-                                <FolderSmallIcon color={semantic.b2b} size={19} />
+                              {/* Dossier de chantier = famille de CONTENU neutre (documentTile,
+                                  arbitrage TONS RECYCLÉS) — le b2b restait une typologie client. */}
+                              <IconTile tone="document" size={40} radius={12}>
+                                <FolderSmallIcon color={documentTile.ink} size={19} />
                               </IconTile>
                               <Text style={[font('sub'), { color: colors.ink900, flex: 1, fontWeight: '700' }]} numberOfLines={1}>
                                 {expenseChantierName !== null
@@ -658,8 +676,8 @@ export default function Depenses() {
                             onPress={() => setChantierTarget(expense)}
                             style={{ minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 8 }}
                           >
-                            <IconTile tone="b2b" size={40} radius={12}>
-                              <FolderSmallIcon color={semantic.b2b} size={19} />
+                            <IconTile tone="document" size={40} radius={12}>
+                              <FolderSmallIcon color={documentTile.ink} size={19} />
                             </IconTile>
                             <Text style={[font('sub'), { color: colors.ink900, flex: 1, fontWeight: '700' }]}>
                               {t('docs.linkChantierCta', { personality })}

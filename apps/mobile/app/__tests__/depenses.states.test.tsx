@@ -10,9 +10,10 @@
  * · EmptyState, rangée retour kit 44 pt. Dates relatives au présent.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, create, type ReactTestRenderer } from 'react-test-renderer';
+import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import { createElement } from 'react';
-import { ThemeProvider } from '@bob/ui';
+import { formatEUR } from '@bob/core';
+import { ThemeProvider, contrastRatio } from '@bob/ui';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -177,6 +178,46 @@ function findByLabel(renderer: ReactTestRenderer, label: string) {
     .find((node) => (node.props as { accessibilityLabel?: string }).accessibilityLabel === label);
 }
 
+/** Aplati un style RN (objet ou tableau imbriqué) — le DERNIER gagne, comme au runtime. */
+type FlatStyle = Record<string, unknown>;
+function flatStyle(style: unknown): FlatStyle {
+  if (Array.isArray(style)) {
+    return style.reduce<FlatStyle>((acc, entry) => ({ ...acc, ...flatStyle(entry) }), {});
+  }
+  return style !== null && typeof style === 'object' ? { ...(style as FlatStyle) } : {};
+}
+
+/**
+ * SCOPÉ AU NŒUD (verdict Lot 5, P1 n°3 — la pastille catégorie et le badge partagent les
+ * mêmes hex que le héros : une assertion sur l'arbre entier ne prouve RIEN du héros) :
+ * · le MONTANT héros = l'unique Text au cran moneyHero (fontSize 27) de l'écran ;
+ * · sa CARTE = l'ancêtre le plus proche au borderRadius 20 (la Card radius={20} du héros) ;
+ * · l'EYEBROW = le Text « À payer » DANS cette carte.
+ */
+function heroNodes(renderer: ReactTestRenderer) {
+  const amount = renderer.root
+    .findAllByType('Text' as never)
+    .find((node) => flatStyle((node.props as { style?: unknown }).style)['fontSize'] === 27);
+  expect(amount).toBeDefined();
+  let card: ReactTestInstance | null = amount!.parent;
+  while (
+    card !== null &&
+    flatStyle((card.props as { style?: unknown }).style)['borderRadius'] !== 20
+  ) {
+    card = card.parent;
+  }
+  expect(card).not.toBeNull();
+  const eyebrow = card!
+    .findAllByType('Text' as never)
+    .find((node) => (node.props as { children?: unknown }).children === 'À payer');
+  expect(eyebrow).toBeDefined();
+  return {
+    amountColor: flatStyle((amount!.props as { style?: unknown }).style)['color'] as string,
+    cardBg: flatStyle((card!.props as { style?: unknown }).style)['backgroundColor'] as string,
+    eyebrowColor: flatStyle((eyebrow!.props as { style?: unknown }).style)['color'] as string,
+  };
+}
+
 function paymentSheet(renderer: ReactTestRenderer) {
   const sheets = renderer.root.findAllByType('ExpensePaymentSheet' as never);
   expect(sheets.length).toBe(1); // JAMAIS deux feuilles empilées
@@ -187,25 +228,34 @@ beforeEach(() => {
   configure();
 });
 
-describe('PLANCHE « matière argent » — le héros dette', () => {
-  it('dette > 0 ⇒ voile warningBg (#FBF0DF) + moneyHero 27 teinté warning (#C77A12)', async () => {
-    const rendered = treeOf(await render());
-    expect(rendered).toContain('"backgroundColor":"#FBF0DF"');
-    expect(rendered).toContain('"fontSize":27');
-    expect(rendered).toContain('"color":"#C77A12"');
+describe('PLANCHE « matière argent » — le héros dette, SCOPÉ AU NŒUD', () => {
+  it('dette > 0 ⇒ LA carte héros porte le voile warningBg, LE montant est warningInk AA', async () => {
+    const { amountColor, cardBg, eyebrowColor } = heroNodes(await render());
+    // Le voile est sur la carte du héros elle-même — pas sur une pastille voisine.
+    expect(cardBg).toBe('#FBF0DF'); // semantic.warningBg (mutant N1 : suppression du voile)
+    // Le montant héros est teinté par l'état — encre AA du Lot 0, plus jamais 2,99:1.
+    expect(amountColor).toBe('#8A5A12'); // semantic.warningInk (mutant N2 : jamais teinté)
+    expect(eyebrowColor).toBe('#8A5A12'); // l'eyebrow quitte slate400 (2,59:1) sous le voile
+    // Contraste MESURÉ sur le nœud (WCAG 2.x) : ≥ 3:1 gros texte, ≥ 4,5:1 petit texte.
+    expect(contrastRatio(amountColor, cardBg)).toBeGreaterThanOrEqual(3);
+    expect(contrastRatio(eyebrowColor, cardBg)).toBeGreaterThanOrEqual(4.5);
   });
 
-  it('dette à zéro ⇒ carte neutre (pas de voile), montant ink900', async () => {
+  it('dette à zéro ⇒ LA carte héros est neutre (surface), montant ink900, eyebrow slate400', async () => {
     configure({ expenses: q({ data: [PAID] }) });
-    const rendered = treeOf(await render());
-    expect(rendered).not.toContain('"backgroundColor":"#FBF0DF"');
-    expect(rendered).toContain('"fontSize":27');
+    const { amountColor, cardBg, eyebrowColor } = heroNodes(await render());
+    expect(cardBg).toBe('#FFFFFF'); // neutrals.surface — aucun voile résiduel
+    expect(amountColor).toBe('#0C2340'); // colors.ink900
+    expect(eyebrowColor).toBe('#8A99A8'); // colors.slate400 (hiérarchie neutre conservée)
   });
 
-  it('mini-stats en KpiTile kit (labels + montants entiers)', async () => {
+  it('mini-stats en KpiTile kit — AVEC les centimes (iso-information, chiffres fiscaux)', async () => {
     const rendered = treeOf(await render());
     expect(rendered).toContain('Payé ce mois-ci');
     expect(rendered).toContain('TVA récupérable du mois');
+    // formatEUR, jamais l'arrondi à l'euro : 240,00 € décaissés, 55,00 € de TVA (fixtures).
+    expect(rendered).toContain(JSON.stringify(formatEUR(24_000)).slice(1, -1));
+    expect(rendered).toContain(JSON.stringify(formatEUR(5_500)).slice(1, -1));
   });
 });
 
@@ -285,10 +335,33 @@ describe('Toast — l’échec chantier dit la vérité', () => {
 });
 
 describe('Rôles catégories dédiés & états', () => {
-  it('pastille carburant au rôle expenseCategory.carburant (#FBF0DF), sans typologie client', async () => {
-    const rendered = treeOf(await render());
-    expect(rendered).toContain('Brico Dépôt');
-    expect(rendered).toContain('"backgroundColor":"#FBF0DF"'); // expenseCategory.carburant.bg
+  it('pastille carburant au rôle expenseCategory.carburant — scopée à la tuile 34 pt', async () => {
+    const renderer = await render();
+    expect(treeOf(renderer)).toContain('Brico Dépôt');
+    // La TUILE de catégorie elle-même (IconTile 34) porte le fond du rôle — assertion
+    // scopée : le voile du héros partage le même hex et ne peut plus la satisfaire.
+    const tile = renderer.root.findAllByType('View' as never).find((node) => {
+      const style = flatStyle((node.props as { style?: unknown }).style);
+      return style['width'] === 34 && style['backgroundColor'] === '#FBF0DF';
+    });
+    expect(tile).toBeDefined(); // expenseCategory.carburant.bg
+  });
+
+  it('lien chantier en famille de contenu neutre (documentTile) — plus de typologie b2b', async () => {
+    const renderer = await render();
+    // La tuile dossier (40 pt) du lien chantier : fond lineSoft #F1F4F7 — scopée à SA
+    // taille ; plus AUCUNE tuile 40 pt en b2bBg (la pastille materiel 34 pt garde
+    // légitimement sa primitive partagée via le rôle expenseCategory.materiel).
+    const tiles40 = renderer.root.findAllByType('View' as never).filter((node) => {
+      const style = flatStyle((node.props as { style?: unknown }).style);
+      return style['width'] === 40;
+    });
+    expect(tiles40.length).toBeGreaterThan(0);
+    const backgrounds = tiles40.map(
+      (node) => flatStyle((node.props as { style?: unknown }).style)['backgroundColor'],
+    );
+    expect(backgrounds).toContain('#F1F4F7'); // documentTile.bg
+    expect(backgrounds).not.toContain('#E6EDF6'); // semantic.b2bBg éteint sur le lien chantier
   });
 
   it('aucune dépense ⇒ EmptyState voix de Bob', async () => {
