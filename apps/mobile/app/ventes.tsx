@@ -21,6 +21,7 @@ import {
   ErrorRetry,
   FilterChip,
   MoneyText,
+  PieceListRow,
   PressableScale,
   SectionHeader,
   SegmentedControl,
@@ -413,11 +414,13 @@ export default function Ventes() {
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       {/* Lot 3 : bloc retour + titre ad hoc → BackHeader kit (voile v2 hérité, retour 44 pt
-          nommé « Accueil », i18n « Devis & Factures ») — mêmes textes qu'avant, en clés. */}
+          nommé « Accueil », i18n « Devis & Factures ») — mêmes textes qu'avant, en clés.
+          ISO-INFORMATION (verdict PR #61, P2) : PAS d'eyebrow — l'en-tête d'origine n'avait
+          aucun texte au-dessus du titre, la migration n'en ajoute pas (slot rendu optionnel
+          au kit précisément pour ça). */}
       <BackHeader
         backLabel={t('ventes.back', { personality })}
         onBack={() => router.back()}
-        eyebrow={t('ventes.eyebrow', { personality })}
         title={t('ventes.headerTitle', { personality })}
       />
 
@@ -439,26 +442,27 @@ export default function Ventes() {
           {/* PURGE DE L'INDIGO DÉVOYÉ (plan DA 01/08, Lot 3) : le kindFilter parle le
               SegmentedControl kit — l'indigo redevient le canal EXCLUSIF « Bob agit ».
               Le state ventes.filterKind est STRICTEMENT conservé (parité vocale) ; tant
-              que les données ne sont pas servies, le contrôle est inerte (garde onChange
-              + voile 0.5), exactement comme les anciennes pilules désactivées. */}
-          <View
-            pointerEvents={ventesDataReady ? 'auto' : 'none'}
-            style={{ opacity: ventesDataReady ? 1 : 0.5 }}
-          >
-            <SegmentedControl
-              options={[
-                { key: 'all', label: t('ventes.filterAll', { personality }) },
-                { key: 'quotes', label: t('ventes.filterQuotes', { personality }) },
-                { key: 'invoices', label: t('ventes.filterInvoices', { personality }) },
-              ]}
-              value={kindFilter}
-              onChange={(key) => {
-                if (!ventesDataReady) return;
-                setKindFilter(key);
-              }}
-              accessibilityLabel={t('ventes.filterKindLabel', { personality })}
-            />
-          </View>
+              que les données ne sont pas servies, le contrôle est inerte ET ANNONCÉ tel
+              (verdict PR #61, P2 a11y) : `disabled` du kit → chaque onglet porte
+              accessibilityState.disabled, comme les anciennes pilules — plus jamais une
+              enveloppe pointerEvents='none' muette pour VoiceOver. La garde onChange reste
+              en double verrou. Sémantique tablist/tab + selected+disabled : décision
+              documentée au kit (segmented-control.tsx) — le point « radiogroup » du plan
+              est levé par là, pas contourné. */}
+          <SegmentedControl
+            options={[
+              { key: 'all', label: t('ventes.filterAll', { personality }) },
+              { key: 'quotes', label: t('ventes.filterQuotes', { personality }) },
+              { key: 'invoices', label: t('ventes.filterInvoices', { personality }) },
+            ]}
+            value={kindFilter}
+            onChange={(key) => {
+              if (!ventesDataReady) return;
+              setKindFilter(key);
+            }}
+            accessibilityLabel={t('ventes.filterKindLabel', { personality })}
+            disabled={!ventesDataReady}
+          />
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
             <TextInput
               value={query}
@@ -618,7 +622,12 @@ export default function Ventes() {
                       {t('ventes.draftCard.subtitle', { personality })}
                     </Text>
                   </View>
-                  {/* Casse au composant (StatusBadge 11/700) — fin du .toUpperCase() ad hoc. */}
+                  {/* ÉCART DE CASSE DÉCLARÉ (verdict PR #61, P2) : le .toUpperCase() ad hoc
+                      du site legacy a disparu et StatusBadge ne transforme PAS la casse —
+                      le badge affiche « Brouillon » (libellé i18n tel quel), plus
+                      « BROUILLON ». Assumé : les badges de LISTE du même écran étaient déjà
+                      en casse de phrase (« Signé », « À transmettre ») — l'uppercase du seul
+                      brouillon était l'anomalie. Témoin : ventes.states.test. */}
                   <StatusBadge label={t('ventes.draftCard.badge', { personality })} variant="warning" />
                 </View>
                 <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
@@ -685,61 +694,54 @@ export default function Ventes() {
                     const badge = QUOTE_BADGE[q.status];
                     return (
                       <Card key={q.id}>
-                        <Pressable
+                        {/* Rangée = PieceListRow kit (verdict PR #61, P3) : UNE source de
+                            vérité pour le gabarit — ventes n'injecte que la sémantique
+                            (MoneyText ttc, badge par la table figée, chips liées). */}
+                        <PieceListRow
+                          title={q.number ?? 'Brouillon'}
+                          subtitle={nameOf(q.customerId)}
+                          {...(q.validUntil !== null
+                            ? { meta: t('ventes.validUntil', { personality, params: { date: frDateLabel(q.validUntil) } }) }
+                            : {})}
+                          {...(invoicesOfQuote(q.id).length > 0
+                            ? {
+                                chips: (
+                                  // Chips liées : NAVIGATION, pas « Bob agit » — l'indigo rendu à
+                                  // Bob, ton neutre (parité chip devis des cartes facture) ;
+                                  // cible ≥ 28 pt + hitSlop 8 (→ 44) + press feedback standard.
+                                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+                                    {invoicesOfQuote(q.id).map((li) => (
+                                      <PressableScale
+                                        key={li.id}
+                                        accessibilityRole="button"
+                                        accessibilityLabel={`Facture ${li.number ?? ''}`}
+                                        hitSlop={8}
+                                        onPress={() => router.push(`/facture/${li.id}`)}
+                                        style={{
+                                          minHeight: 28,
+                                          minWidth: 28,
+                                          justifyContent: 'center',
+                                          borderWidth: 1,
+                                          borderColor: colors.line,
+                                          borderRadius: 999,
+                                          paddingHorizontal: 9,
+                                          paddingVertical: 3,
+                                        }}
+                                      >
+                                        <Text style={[font('meta', 600), { color: colors.slate500 }]}>
+                                          {li.number ?? '—'} · {formatEUR(li.totals.netToPay)}
+                                        </Text>
+                                      </PressableScale>
+                                    ))}
+                                  </View>
+                                ),
+                              }
+                            : {})}
+                          amount={<MoneyText cents={q.totals.ttc} />}
+                          status={<StatusBadge label={badge.label} variant={statusBadgeVariantForLegacyTone(badge.tone)} />}
                           onPress={() => router.push(`/devis/${q.id}`)}
-                          accessibilityRole="button"
                           accessibilityLabel={`Devis ${q.number ?? 'brouillon'} — ${nameOf(q.customerId)}`}
-                          style={({ pressed }) => ({
-                            flexDirection: 'row',
-                            justifyContent: 'space-between',
-                            alignItems: 'flex-start',
-                            opacity: pressed ? 0.65 : 1,
-                          })}
-                        >
-                          <View style={{ flex: 1, paddingRight: 12 }}>
-                            <Text style={[font('cardTitle'), { color: colors.ink900 }]}>{q.number ?? 'Brouillon'}</Text>
-                            <Text style={[font('meta'), { color: colors.slate400, marginTop: 2 }]}>{nameOf(q.customerId)}</Text>
-                            {q.validUntil !== null ? (
-                              <Text style={[font('meta'), { color: colors.slate400, marginTop: 2 }]}>
-                                {t('ventes.validUntil', { personality, params: { date: frDateLabel(q.validUntil) } })}
-                              </Text>
-                            ) : null}
-                            {invoicesOfQuote(q.id).length > 0 ? (
-                              // Chips liées : NAVIGATION, pas « Bob agit » — l'indigo rendu à
-                              // Bob, ton neutre (parité chip devis des cartes facture) ;
-                              // cible ≥ 28 pt + hitSlop 8 (→ 44) + press feedback standard.
-                              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
-                                {invoicesOfQuote(q.id).map((li) => (
-                                  <PressableScale
-                                    key={li.id}
-                                    accessibilityRole="button"
-                                    accessibilityLabel={`Facture ${li.number ?? ''}`}
-                                    hitSlop={8}
-                                    onPress={() => router.push(`/facture/${li.id}`)}
-                                    style={{
-                                      minHeight: 28,
-                                      minWidth: 28,
-                                      justifyContent: 'center',
-                                      borderWidth: 1,
-                                      borderColor: colors.line,
-                                      borderRadius: 999,
-                                      paddingHorizontal: 9,
-                                      paddingVertical: 3,
-                                    }}
-                                  >
-                                    <Text style={[font('meta', 600), { color: colors.slate500 }]}>
-                                      {li.number ?? '—'} · {formatEUR(li.totals.netToPay)}
-                                    </Text>
-                                  </PressableScale>
-                                ))}
-                              </View>
-                            ) : null}
-                          </View>
-                          <View style={{ alignItems: 'flex-end', gap: 6 }}>
-                            <MoneyText cents={q.totals.ttc} />
-                            <StatusBadge label={badge.label} variant={statusBadgeVariantForLegacyTone(badge.tone)} />
-                          </View>
-                        </Pressable>
+                        />
                         {hasQuoteActions(q) ? (
                           <View style={{ marginTop: 12 }}>
                             <QuoteActions
@@ -825,30 +827,22 @@ export default function Ventes() {
                     // Assiette = netToPay (acompte si depositPct) : montant réellement encaissable sur la facture.
                     const remaining = Math.max(0, inv.totals.netToPay - inv.paid);
                     const showRemaining = remaining > 0 && remaining !== inv.totals.netToPay;
+                    const dateLine = [
+                      inv.issuedAt ? t('ventes.issuedOn', { personality, params: { date: frDateLabel(inv.issuedAt) } }) : null,
+                      inv.dueAt ? t('ventes.dueOn', { personality, params: { date: frDateLabel(inv.dueAt) } }) : null,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ');
                     return (
                       <Card key={inv.id}>
-                        <Pressable
-                          onPress={() => router.push(`/facture/${inv.id}`)}
-                          accessibilityRole="button"
-                          accessibilityLabel={`Facture ${inv.number ?? 'brouillon'} — ${nameOf(inv.customerId)}`}
-                          style={({ pressed }) => ({
-                            flexDirection: 'row',
-                            justifyContent: 'space-between',
-                            alignItems: 'flex-start',
-                            opacity: pressed ? 0.65 : 1,
-                          })}
-                        >
-                          <View style={{ flex: 1, paddingRight: 12 }}>
-                            <Text style={[font('cardTitle'), { color: colors.ink900 }]}>{inv.number ?? 'Brouillon'}</Text>
-                            <Text style={[font('meta'), { color: colors.slate400, marginTop: 2 }]}>{nameOf(inv.customerId)}</Text>
-                            <Text style={[font('meta'), { color: colors.slate400, marginTop: 2 }]}>
-                              {[
-                                inv.issuedAt ? t('ventes.issuedOn', { personality, params: { date: frDateLabel(inv.issuedAt) } }) : null,
-                                inv.dueAt ? t('ventes.dueOn', { personality, params: { date: frDateLabel(inv.dueAt) } }) : null,
-                              ]
-                                .filter(Boolean)
-                                .join(' · ')}
-                            </Text>
+                        {/* Rangée = PieceListRow kit (verdict PR #61, P3) : même source de
+                            vérité que les cartes devis — la ligne de dates vide n'imprime
+                            plus de Text fantôme (seul delta, assumé au composant). */}
+                        <PieceListRow
+                          title={inv.number ?? 'Brouillon'}
+                          subtitle={nameOf(inv.customerId)}
+                          {...(dateLine !== '' ? { meta: dateLine } : {})}
+                          chips={
                             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
                               {/* Chip de nature : information neutre — l'indigo rendu à Bob ;
                                   ≥ 28 pt, cran meta 12 (fin du 11 ad hoc). */}
@@ -910,18 +904,24 @@ export default function Ventes() {
                                 </PressableScale>
                               ) : null}
                             </View>
-                          </View>
-                          <View style={{ alignItems: 'flex-end', gap: 6 }}>
-                            {/* Règle acompte (mémoire billing-nettopay-ceiling) : la liste montre CE QUE
-                                CETTE FACTURE FACTURE (netToPay) — jamais le TTC du document total (un
-                                acompte 30 % de 1 386 € affichait « 1 386 € » et ouvrait… 415,80 €). */}
+                          }
+                          amount={
+                            // Règle acompte (mémoire billing-nettopay-ceiling) : la liste montre CE QUE
+                            // CETTE FACTURE FACTURE (netToPay) — jamais le TTC du document total (un
+                            // acompte 30 % de 1 386 € affichait « 1 386 € » et ouvrait… 415,80 €).
                             <MoneyText cents={inv.totals.netToPay} />
-                            {showRemaining ? (
-                              <Text style={[font('meta'), { color: colors.slate500 }]}>À encaisser {formatEUR(remaining)}</Text>
-                            ) : null}
-                            <StatusBadge label={badge.label} variant={statusBadgeVariantForLegacyTone(badge.tone)} />
-                          </View>
-                        </Pressable>
+                          }
+                          {...(showRemaining
+                            ? {
+                                belowAmount: (
+                                  <Text style={[font('meta'), { color: colors.slate500 }]}>À encaisser {formatEUR(remaining)}</Text>
+                                ),
+                              }
+                            : {})}
+                          status={<StatusBadge label={badge.label} variant={statusBadgeVariantForLegacyTone(badge.tone)} />}
+                          onPress={() => router.push(`/facture/${inv.id}`)}
+                          accessibilityLabel={`Facture ${inv.number ?? 'brouillon'} — ${nameOf(inv.customerId)}`}
+                        />
                         {hasInvoiceActions(inv) ? (
                           <View style={{ marginTop: 12 }}>
                             <InvoiceActions invoice={inv} />

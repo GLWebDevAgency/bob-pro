@@ -209,7 +209,7 @@ export default function FactureDetail() {
     try {
       await detachPo.mutateAsync({ invoiceId: id, expectedRevision: invoice.data?.revision ?? 1 });
     } catch (error) {
-      showError('Oups', purchaseOrderErrorMessage(error, t('po.saveError', { personality })));
+      showError(t('errors.sheetTitle', { personality }), purchaseOrderErrorMessage(error, t('po.saveError', { personality })));
     }
   };
 
@@ -392,7 +392,7 @@ export default function FactureDetail() {
             message: `Bonjour, voici le lien pour consulter la facture${invoice.data?.number ? ` ${invoice.data.number}` : ''} : ${result.viewUrl}`,
           });
         } catch {
-          showError('Oups', t('piece.shareLinkError', { personality }));
+          showError(t('errors.sheetTitle', { personality }), t('piece.shareLinkError', { personality }));
         }
       }
     : null;
@@ -417,7 +417,7 @@ export default function FactureDetail() {
     ? async (): Promise<void> => {
         const r = await client.documentDownloadUrl(pdfDoc.id);
         if (!r.ok) {
-          showError('Oups', t('piece.shareError', { personality }));
+          showError(t('errors.sheetTitle', { personality }), t('piece.shareError', { personality }));
           return;
         }
         const shared = await shareDocument({
@@ -426,8 +426,8 @@ export default function FactureDetail() {
           mimeType: pdfDoc.mimeType,
         });
         if (shared === 'unavailable')
-          showError('Oups', t('piece.shareUnavailable', { personality }));
-        else if (shared === 'error') showError('Oups', t('piece.shareError', { personality }));
+          showError(t('errors.sheetTitle', { personality }), t('piece.shareUnavailable', { personality }));
+        else if (shared === 'error') showError(t('errors.sheetTitle', { personality }), t('piece.shareError', { personality }));
       }
     : null;
 
@@ -556,7 +556,7 @@ export default function FactureDetail() {
           depositedAt: parisDateOnly(),
         });
       } catch (error) {
-        showError('Oups', appErrorMessage(error));
+        showError(t('errors.sheetTitle', { personality }), appErrorMessage(error));
       }
     })();
   // B8 : réassurance à l'étape « Facturer le solde » — le devis parent porte un bon de

@@ -73,12 +73,12 @@ export default function FactureTransmissionGuide() {
 
   const sharePdf = async (): Promise<void> => {
     if (pdfDoc === null) {
-      showError('Oups', t('guide.pdfMissing', { personality }));
+      showError(t('errors.sheetTitle', { personality }), t('guide.pdfMissing', { personality }));
       return;
     }
     const r = await client.documentDownloadUrl(pdfDoc.id);
     if (!r.ok) {
-      showError('Oups', t('piece.shareError', { personality }));
+      showError(t('errors.sheetTitle', { personality }), t('piece.shareError', { personality }));
       return;
     }
     const shared = await shareDocument({
@@ -86,8 +86,8 @@ export default function FactureTransmissionGuide() {
       filename: pdfDoc.filename,
       mimeType: pdfDoc.mimeType,
     });
-    if (shared === 'unavailable') showError('Oups', t('piece.shareUnavailable', { personality }));
-    else if (shared === 'error') showError('Oups', t('piece.shareError', { personality }));
+    if (shared === 'unavailable') showError(t('errors.sheetTitle', { personality }), t('piece.shareUnavailable', { personality }));
+    else if (shared === 'error') showError(t('errors.sheetTitle', { personality }), t('piece.shareError', { personality }));
   };
 
   const shareEngagementNumber = async (): Promise<void> => {
@@ -102,7 +102,7 @@ export default function FactureTransmissionGuide() {
     try {
       await Linking.openURL(url);
     } catch {
-      showError('Oups', appErrorMessage(new Error(url)));
+      showError(t('errors.sheetTitle', { personality }), appErrorMessage(new Error(url)));
     }
   };
 

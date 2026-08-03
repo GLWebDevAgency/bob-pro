@@ -5,9 +5,11 @@
  *  · le flux TVA « Refaire ce devis » parle QuestionSheet + LegalHint — Alert.alert n'est
  *    PLUS JAMAIS appelé, et les 3 branches runDuplicate produisent des payloads
  *    BYTE-IDENTIQUES à l'historique (context/standardRateForReducedLines exacts) ;
- *  · grammaire d'erreur : un échec de duplication ouvre l'ErrorSheet (« Oups » en feuille
- *    Bob, plus la modale système grise) ;
- *  · ajustement TVA à la copie : la navigation ATTEND la fermeture de la feuille ;
+ *  · grammaire d'erreur : un échec de duplication ouvre l'ErrorSheet au titre i18n
+ *    errors.sheetTitle (« Oups » est BANNI — verdict PR #61 P3), plus la modale système ;
+ *  · ajustement TVA à la copie : la navigation ATTEND la fermeture de la feuille —
+ *    ÉCART DE COMPORTEMENT DÉCLARÉ vs legacy (Alert non bloquant + push immédiat), décision
+ *    documentée au site d'appel (l'alerte flottait par-dessus l'écran d'arrivée) ;
  *  · états : chargement (skeletons), erreur réseau (retry + fermer), introuvable.
  * Préférences motion/transparence NON RÉSOLUES pendant tout le fichier (fail-closed kit).
  */
@@ -262,7 +264,7 @@ describe('Flux TVA de duplication — QuestionSheet + LegalHint, jamais l’Aler
     expect(payload).not.toHaveProperty('context');
   });
 
-  it('échec de duplication ⇒ ErrorSheet « Oups » + message discriminé — plus la modale grise', async () => {
+  it('échec de duplication ⇒ ErrorSheet au titre i18n de la grammaire (« Oups » BANNI, verdict PR #61 P3) + message discriminé', async () => {
     duplicateDouble.mutateAsync = vi.fn(() => Promise.reject(new Error('duplication refusée')));
     const renderer = await render();
     await act(async () => {
@@ -272,12 +274,14 @@ describe('Flux TVA de duplication — QuestionSheet + LegalHint, jamais l’Aler
       pressByLabel(renderer, 'Non — TVA 20 %');
     });
     const rendered = treeOf(renderer);
-    expect(rendered).toContain('Oups');
+    // errors.sheetTitle (pote) — le littéral français codé en dur a disparu du site d'appel.
+    expect(rendered).toContain('Ça n’est pas passé');
+    expect(rendered).not.toContain('Oups');
     expect(rendered).toContain('msg:duplication refusée');
     expect(alertSpy).not.toHaveBeenCalled();
   });
 
-  it('TVA ajustée à la copie ⇒ la navigation ATTEND la fermeture de la feuille (doctrine « traced »)', async () => {
+  it('TVA ajustée à la copie ⇒ la navigation ATTEND la fermeture de la feuille (ÉCART DÉCLARÉ vs Alert legacy non bloquant, doctrine « traced »)', async () => {
     duplicateDouble.mutateAsync = vi.fn(() =>
       Promise.resolve({ quoteId: 'q2', vatAdjustments: [{ lineId: 'l1' }] }),
     );

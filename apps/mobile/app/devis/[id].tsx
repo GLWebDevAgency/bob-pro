@@ -311,7 +311,7 @@ export default function DevisDetail() {
     try {
       await detachPo.mutateAsync({ quoteId: id, expectedRevision: quote.data?.revision ?? 1 });
     } catch (error) {
-      showError('Oups', purchaseOrderErrorMessage(error, t('po.saveError', { personality })));
+      showError(t('errors.sheetTitle', { personality }), purchaseOrderErrorMessage(error, t('po.saveError', { personality })));
     }
   };
   // B8/R7 : pont voix → écran — la voix OUVRE la même feuille que le bouton, jamais la mutation.
@@ -347,8 +347,14 @@ export default function DevisDetail() {
         idempotencyKey: `refaire:${id}:${Date.now()}`,
       });
       if (created.vatAdjustments.length > 0) {
-        // La navigation vers le brouillon créé attend la FERMETURE de la feuille (doctrine
-        // embargo « traced ») : l'utilisateur lit l'ajustement TVA avant d'arriver dessus.
+        // ÉCART DE COMPORTEMENT DÉCLARÉ (verdict PR #61, P2 — décision, pas un silence) :
+        // le legacy affichait un Alert système NON bloquant PUIS naviguait immédiatement —
+        // l'alerte flottait par-dessus l'écran d'arrivée. Une feuille appartient à SON écran :
+        // la navigation attend désormais sa fermeture (même doctrine que l'embargo « traced »).
+        // Second écart assumé : la feuille (useErrorSheet) porte ici une INFO de succès
+        // (« devis dupliqué, TVA ajustée ») — chrome neutre, pas d'iconographie d'échec ;
+        // un canal de feuille d'info dédié serait une feature nouvelle, interdite sous freeze.
+        // Témoin : detail.states.test « la navigation ATTEND la fermeture de la feuille ».
         showError(
           t('devis.duplicateDone', { personality }),
           t('devis.duplicateVatAdjusted', {
@@ -361,7 +367,7 @@ export default function DevisDetail() {
       }
       router.push(`/devis/${created.quoteId}`);
     } catch (error) {
-      showError('Oups', appErrorMessage(error));
+      showError(t('errors.sheetTitle', { personality }), appErrorMessage(error));
     }
   };
   const handleDuplicate = (): void => {
@@ -616,7 +622,7 @@ export default function DevisDetail() {
     ? async (): Promise<void> => {
         const r = await client.documentDownloadUrl(pdfDoc.id);
         if (!r.ok) {
-          showError('Oups', t('piece.shareError', { personality }));
+          showError(t('errors.sheetTitle', { personality }), t('piece.shareError', { personality }));
           return;
         }
         const shared = await shareDocument({
@@ -625,8 +631,8 @@ export default function DevisDetail() {
           mimeType: pdfDoc.mimeType,
         });
         if (shared === 'unavailable')
-          showError('Oups', t('piece.shareUnavailable', { personality }));
-        else if (shared === 'error') showError('Oups', t('piece.shareError', { personality }));
+          showError(t('errors.sheetTitle', { personality }), t('piece.shareUnavailable', { personality }));
+        else if (shared === 'error') showError(t('errors.sheetTitle', { personality }), t('piece.shareError', { personality }));
       }
     : null;
   // Lien public de VISUALISATION (canal universel, sans e-mail) — tout statut sauf brouillon
@@ -640,7 +646,7 @@ export default function DevisDetail() {
             message: `Bonjour, voici le lien pour consulter le devis${quote.data?.number ? ` ${quote.data.number}` : ''} : ${result.viewUrl}`,
           });
         } catch {
-          showError('Oups', t('piece.shareLinkError', { personality }));
+          showError(t('errors.sheetTitle', { personality }), t('piece.shareLinkError', { personality }));
         }
       }
     : null;
@@ -726,7 +732,10 @@ export default function DevisDetail() {
                 <Card style={{ marginBottom: 12 }}>
                   <SectionHeader title={t('devis.relanceCardTitle', { personality })} />
                   <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8 }}>
-                    {/* Casse au composant (StatusBadge 11/700) — fin du .toUpperCase() ad hoc. */}
+                    {/* ÉCART DE CASSE DÉCLARÉ (verdict PR #61, P2) : StatusBadge ne
+                        transforme PAS la casse — le libellé i18n s'affiche tel quel
+                        (« J+15 »/« J+30 », insensibles à la casse ici). Le .toUpperCase()
+                        legacy du site d'appel est retiré, pas « déplacé au composant ». */}
                     <StatusBadge
                       label={t(
                         relancePrompt.palier === 'j30'

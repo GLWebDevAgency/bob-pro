@@ -1,9 +1,11 @@
 /**
  * PieceListRow — rangée de pièce de vente (Lot 3, plan DA 01/08 « 1er commit du lot ») :
  * titre (n°) + client + méta (dates) + chips liées à gauche ; montant + statut à droite.
- * Gabarit EXACT des cartes de ventes.tsx (extinction legacy partie 2) — resservira à la
+ * CONSOMMÉE par les cartes devis ET factures de ventes.tsx (verdict PR #61, P3 : une seule
+ * source de vérité pour la rangée — plus de gabarit inline dupliqué) ; resservira à la
  * recherche. Montant/badge/chips sont INJECTÉS (MoneyText, StatusBadge…) : la rangée fige
- * la géométrie, jamais la sémantique.
+ * la géométrie, jamais la sémantique. Seule différence assumée vs l'inline historique :
+ * une ligne de dates VIDE ne rend plus un nœud Text fantôme (meta '' est masqué).
  */
 import type { ReactNode } from 'react';
 import { Pressable, Text, View } from 'react-native';

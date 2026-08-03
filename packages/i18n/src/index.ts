@@ -4197,8 +4197,9 @@ const legacyFr = {
     direct: 'Suppression échouée',
   },
   // Lot 3 — BackHeader kit (règle : le bouton retour NOMME l'écran de destination).
+  // Pas de clé eyebrow : iso-information (verdict PR #61) — l'en-tête d'origine n'avait
+  // aucun texte au-dessus du titre, la migration n'en ajoute pas.
   'ventes.back': { pote: 'Accueil', pro: 'Accueil', direct: 'Accueil' },
-  'ventes.eyebrow': { pote: 'Ventes', pro: 'Ventes', direct: 'Ventes' },
   'ventes.headerTitle': {
     pote: 'Devis & Factures',
     pro: 'Devis & Factures',
@@ -9906,6 +9907,14 @@ const legacyFr = {
   },
 
   // ── SPEC_SYSTEME_ERREUR — chrome ErrorNotice (les deux faces, §6) ──────────
+  // Verdict Lot 3 (PR #61, P3) : le titre GÉNÉRIQUE de l'ErrorSheet — « Oups » est banni
+  // par la grammaire d'erreur (plan DA 01/08) et le titre parle la personnalité comme
+  // tout le reste. Réservé aux échecs sans titre métier dédié (sinon, clé spécifique).
+  'errors.sheetTitle': {
+    pote: 'Ça n’est pas passé',
+    pro: 'L’action n’a pas abouti',
+    direct: 'Échec de l’action',
+  },
   'errors.noticeDetails': {
     pote: 'Détails techniques',
     pro: 'Détails techniques',

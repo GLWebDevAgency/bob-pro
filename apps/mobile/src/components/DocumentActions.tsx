@@ -308,8 +308,10 @@ function EmbargoPromptSheet({
 }
 
 // Verrou : `busy` (state) pilote spinner/disabled ; `lock` (ref) bloque un 2e tap avant tout re-render.
-// L'échec inattendu remonte dans la feuille d'erreur premium du composant appelant (plus d'Alert natif).
-function useActionLock(showError: ErrorSheetHandle['showError']) {
+// L'échec inattendu remonte dans la feuille d'erreur premium du composant appelant (plus d'Alert natif),
+// sous le titre générique i18n de la grammaire — « Oups » est banni (verdict PR #61, P3), le titre
+// est fourni par l'appelant qui a la personnalité en main.
+function useActionLock(showError: ErrorSheetHandle['showError'], genericErrorTitle: string) {
   const [busy, setBusy] = useState<string | null>(null);
   const lock = useRef(false);
   const run = async (key: string, fn: () => Promise<unknown>): Promise<void> => {
@@ -319,7 +321,7 @@ function useActionLock(showError: ErrorSheetHandle['showError']) {
     try {
       await fn();
     } catch (e) {
-      showError('Oups', appErrorMessage(e));
+      showError(genericErrorTitle, appErrorMessage(e));
     } finally {
       lock.current = false;
       setBusy(null);
@@ -385,7 +387,7 @@ export const QuoteActions = forwardRef<
   // Feuille d'erreur premium locale (plus aucun Alert natif dans le flow) — partagée par le
   // verrou d'action et les remontées embargo/génération.
   const { showError, errorSheet } = useErrorSheet();
-  const { busy, run } = useActionLock(showError);
+  const { busy, run } = useActionLock(showError, t('errors.sheetTitle', { personality }));
   const confirm = useConfirm();
   // Gate entreprise complète — ne concerne QUE le premier envoi (état brouillon), cf. doc du
   // gate en tête de fichier. `undefined` (pas encore chargé) est traité comme incomplet : on ne
@@ -478,7 +480,7 @@ export const QuoteActions = forwardRef<
         // responsabilisé en second niveau) — toute autre erreur garde le message générique.
         const prompt = embargoPromptOf(e, mode);
         if (prompt === null) {
-          showError('Oups', appErrorMessage(e));
+          showError(t('errors.sheetTitle', { personality }), appErrorMessage(e));
           return;
         }
         setEmbargoStage('choice');
@@ -503,7 +505,7 @@ export const QuoteActions = forwardRef<
           }),
         );
       } catch (e) {
-        showError('Oups', appErrorMessage(e));
+        showError(t('errors.sheetTitle', { personality }), appErrorMessage(e));
       }
     });
 
@@ -526,7 +528,7 @@ export const QuoteActions = forwardRef<
           () => markGenerated(prompt.mode, out.invoiceId),
         );
       } catch (e) {
-        showError('Oups', appErrorMessage(e));
+        showError(t('errors.sheetTitle', { personality }), appErrorMessage(e));
       }
     });
 
@@ -1061,11 +1063,11 @@ export function InvoiceActions({
   const scheduleEmbargo = useScheduleEmbargoPayment();
   const sendInvoice = useSendInvoice();
   // Feuille d'erreur premium locale (plus aucun Alert natif dans le flow encaissement/émission).
+  const { semantic, personality, colors: themeColors, theme } = useTheme();
   const { showError, errorSheet } = useErrorSheet();
-  const { busy, lock, run } = useActionLock(showError);
+  const { busy, lock, run } = useActionLock(showError, t('errors.sheetTitle', { personality }));
   const confirm = useConfirm();
   const client = useBobClient();
-  const { semantic, personality, colors: themeColors, theme } = useTheme();
   // Gates de l'émission (entreprise incomplète, conditions de paiement) — feuille locale unique.
   const [gate, setGate] = useState<GateSpec | null>(null);
   // Embargo L221-10 à l'ÉMISSION (l'acte qui rend la pièce opposable et permet le lien de
@@ -1141,7 +1143,7 @@ export function InvoiceActions({
       );
       if (prompt === null) {
         clearIssueDecision();
-        showError('Oups', appErrorMessage(error));
+        showError(t('errors.sheetTitle', { personality }), appErrorMessage(error));
         return;
       }
       setIssueDecision(nextDecision);
@@ -1235,7 +1237,7 @@ export function InvoiceActions({
           }),
         );
       } catch (e) {
-        showError('Oups', appErrorMessage(e));
+        showError(t('errors.sheetTitle', { personality }), appErrorMessage(e));
       }
     });
 
@@ -1274,7 +1276,7 @@ export function InvoiceActions({
       onSelect={(values) => {
         const category = parseInvoiceOperationCategoryChoice(values[0]);
         if (category === null) {
-          showError('Oups', t('piece.operationCategory.invalid', { personality }));
+          showError(t('errors.sheetTitle', { personality }), t('piece.operationCategory.invalid', { personality }));
           return;
         }
         setOperationCategoryOpen(false);
@@ -1447,7 +1449,7 @@ export function InvoiceActions({
               ),
             );
           } catch (e) {
-            showError('Oups', appErrorMessage(e));
+            showError(t('errors.sheetTitle', { personality }), appErrorMessage(e));
           }
         });
       })();
