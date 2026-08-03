@@ -7,13 +7,31 @@
  * L'aperçu comptable (fonctionnalité réelle antérieure) est conservé sous les mentions.
  */
 import { useMemo, useRef, useState } from 'react';
-import { Alert, Linking, Pressable, Share, Text, TextInput, View } from 'react-native';
+import { Linking, Pressable, Share, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { buildPieceView, formatDateOnlyFr, normalizeVoiceText, parisDateOnly, type PieceLinkedRef, type PurchaseOrderRefInput } from '@bob/core';
 import { challengeFor } from '@bob/ai';
+import { spacing } from '@bob/tokens';
 import { t } from '@bob/i18n';
-import { Card, ErrorRetry, SectionHeader, Sheet, Skeleton, SkeletonCard, SkeletonHeader, StatusBadge, font, useTheme } from '@bob/ui';
-import { Button } from '@bob/ui';
+// Grammaire d'erreur (plan DA 01/08) : plus JAMAIS Alert.alert « Oups » — useErrorSheet ;
+// la grammaire d'ÉTAT parle StatusStrip (« jamais transmise » en TÊTE de colonne, ambre).
+import {
+  Button,
+  Card,
+  DateField,
+  ErrorRetry,
+  FadeIn,
+  SectionHeader,
+  Sheet,
+  Skeleton,
+  SkeletonCard,
+  SkeletonHeader,
+  StatusBadge,
+  StatusStrip,
+  font,
+  useErrorSheet,
+  useTheme,
+} from '@bob/ui';
 import { dueLineForInvoice } from '../../src/components/customer-terms.logic';
 import {
   useAttachInvoicePurchaseOrder,
@@ -50,6 +68,7 @@ import {
   hasInvoiceActions,
   isCollectible,
 } from '../../src/components/DocumentActions';
+import { CheckIcon } from '../../src/components/icons';
 import { AccountingLinesView } from '../../src/components/AccountingLinesView';
 import { PieceDetailView } from '../../src/components/PieceDetailView';
 import { PurchaseOrderCard, PurchaseOrderSheet } from '../../src/components/PurchaseOrderSection';
@@ -69,7 +88,7 @@ const PO_REVERSIBLE = { mutating: true, outbound: false, riskTier: 'reversible' 
 
 export default function FactureDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { personality, colors, semantic, controls } = useTheme();
+  const { personality, colors, semantic } = useTheme();
   const router = useRouter();
   const client = useBobClient();
   const invoice = useInvoice(id);
@@ -102,6 +121,8 @@ export default function FactureDetail() {
   //    tant que la facture est BROUILLON (jamais un avoir : figé depuis la facture d'origine),
   //    figé à l'émission (lecture seule, mention visible). ──
   const confirm = useConfirm();
+  // Grammaire d'erreur : la feuille premium locale remplace TOUS les Alert.alert de l'écran.
+  const { showError, errorSheet } = useErrorSheet();
   const attachPo = useAttachInvoicePurchaseOrder();
   const detachPo = useDetachInvoicePurchaseOrder();
   // PR-02 — déclaration « envoyée le » du canal email (le déclaratif chorus/portail existait déjà).
@@ -188,7 +209,7 @@ export default function FactureDetail() {
     try {
       await detachPo.mutateAsync({ invoiceId: id, expectedRevision: invoice.data?.revision ?? 1 });
     } catch (error) {
-      Alert.alert('Oups', purchaseOrderErrorMessage(error, t('po.saveError', { personality })));
+      showError(t('errors.sheetTitle', { personality }), purchaseOrderErrorMessage(error, t('po.saveError', { personality })));
     }
   };
 
@@ -371,7 +392,7 @@ export default function FactureDetail() {
             message: `Bonjour, voici le lien pour consulter la facture${invoice.data?.number ? ` ${invoice.data.number}` : ''} : ${result.viewUrl}`,
           });
         } catch {
-          Alert.alert('Oups', t('piece.shareLinkError', { personality }));
+          showError(t('errors.sheetTitle', { personality }), t('piece.shareLinkError', { personality }));
         }
       }
     : null;
@@ -396,7 +417,7 @@ export default function FactureDetail() {
     ? async (): Promise<void> => {
         const r = await client.documentDownloadUrl(pdfDoc.id);
         if (!r.ok) {
-          Alert.alert('Oups', t('piece.shareError', { personality }));
+          showError(t('errors.sheetTitle', { personality }), t('piece.shareError', { personality }));
           return;
         }
         const shared = await shareDocument({
@@ -405,8 +426,8 @@ export default function FactureDetail() {
           mimeType: pdfDoc.mimeType,
         });
         if (shared === 'unavailable')
-          Alert.alert('Oups', t('piece.shareUnavailable', { personality }));
-        else if (shared === 'error') Alert.alert('Oups', t('piece.shareError', { personality }));
+          showError(t('errors.sheetTitle', { personality }), t('piece.shareUnavailable', { personality }));
+        else if (shared === 'error') showError(t('errors.sheetTitle', { personality }), t('piece.shareError', { personality }));
       }
     : null;
 
@@ -535,7 +556,7 @@ export default function FactureDetail() {
           depositedAt: parisDateOnly(),
         });
       } catch (error) {
-        Alert.alert('Oups', appErrorMessage(error));
+        showError(t('errors.sheetTitle', { personality }), appErrorMessage(error));
       }
     })();
   // B8 : réassurance à l'étape « Facturer le solde » — le devis parent porte un bon de
@@ -583,7 +604,7 @@ export default function FactureDetail() {
                   paddingHorizontal: 12,
                 }}
               >
-                <Text style={{ ...font('meta', 600), fontSize: 12.5, color: semantic.success, flex: 1 }}>
+                <Text style={{ ...font('meta', 600), color: semantic.success, flex: 1 }}>
                   {t('po.carriedToInvoice', {
                     personality,
                     params: { number: nextStepPurchaseOrder.number },
@@ -609,30 +630,16 @@ export default function FactureDetail() {
         ) : null
       }
       extra={
-        <>
-        {dueLine !== null ? (
-          // B4 — l'échéance dérivée des conditions du client, visible dès l'émission.
+        // FadeIn sur la colonne extra (parité devis/[id]) — au montage seulement ;
+        // rythme vertical sur le token itemGap (l'empilement flush n'était pas un canon).
+        <FadeIn style={{ gap: spacing.itemGap }}>
+        {showNeverTransmitted ? (
+          // PR-02 — émise, JAMAIS transmise : LE risque cash — StatusStrip ambre en TÊTE de
+          // colonne (il domine visuellement) + la sortie déclarative (la pièce est peut-être
+          // partie par un autre canal — WhatsApp, courrier — que Bob ne voit pas).
           <Card>
-            <Text style={{ ...font('sub', 700), color: colors.ink800, fontVariant: ['tabular-nums'] }}>
-              {dueLine}
-            </Text>
-          </Card>
-        ) : null}
-        {emailSentLine !== null ? (
-          // PR-02 — transmission PROUVÉE (outbox) ou DÉCLARÉE (« envoyée le ») du canal email.
-          <Card>
-            <Text style={[font('meta', 700), { fontSize: 12.5, color: semantic.success }]}>
-              {emailSentLine}
-            </Text>
-          </Card>
-        ) : showNeverTransmitted ? (
-          // PR-02 — émise, JAMAIS transmise : l'état honnête + la sortie déclarative (la pièce
-          // est peut-être partie par un autre canal — WhatsApp, courrier — que Bob ne voit pas).
-          <Card>
-            <Text style={[font('sub', 700), { color: semantic.warning }]}>
-              {t('facture.neverTransmitted', { personality })}
-            </Text>
-            <Text style={[font('meta', 500), { fontSize: 12.5, color: colors.slate400, marginTop: 4 }]}>
+            <StatusStrip tone="warning" label={t('facture.neverTransmitted', { personality })} />
+            <Text style={[font('meta', 500), { color: colors.slate400, marginTop: 8 }]}>
               {t('facture.neverTransmittedHint', { personality })}
             </Text>
             <Button
@@ -645,6 +652,15 @@ export default function FactureDetail() {
               onPress={markSentToday}
             />
           </Card>
+        ) : null}
+        {dueLine !== null ? (
+          // B4 — l'échéance dérivée des conditions du client : bandeau d'état NEUTRE
+          // (même grammaire StatusStrip que le reste de la chaîne devis → dépôt).
+          <StatusStrip tone="neutral" label={dueLine} />
+        ) : null}
+        {emailSentLine !== null ? (
+          // PR-02 — transmission PROUVÉE (outbox) ou DÉCLARÉE (« envoyée le ») du canal email.
+          <StatusStrip tone="success" icon={<CheckIcon color={semantic.successInk} size={15} />} label={emailSentLine} />
         ) : null}
         {transmissionGuide !== null ? (
           // Canal chorus/portail : ENTRÉE du guide de dépôt pas-à-pas + état du suivi déclaré.
@@ -662,10 +678,12 @@ export default function FactureDetail() {
               })}
             >
               <View style={{ flex: 1 }}>
-                <Text style={[font('cardTitle'), { fontSize: 15, color: colors.ink900 }]}>
+                {/* Purge typo (arbitrage : AUCUNE demi-taille) : les 15/12.5/12 ad hoc
+                    s'arrondissent aux crans cardTitle 16 / meta 12. */}
+                <Text style={[font('cardTitle'), { color: colors.ink900 }]}>
                   {t('guide.entryTitle', { personality })}
                 </Text>
-                <Text style={[font('meta', 500), { fontSize: 12.5, color: colors.slate400, marginTop: 2 }]}>
+                <Text style={[font('meta', 500), { color: colors.slate400, marginTop: 2 }]}>
                   {t(
                     transmissionGuide.channel === 'chorus'
                       ? 'guide.entrySubtitleChorus'
@@ -674,7 +692,7 @@ export default function FactureDetail() {
                   )}
                 </Text>
                 {inv.transmission?.depositedAt != null ? (
-                  <Text style={[font('meta', 700), { fontSize: 12, color: semantic.success, marginTop: 4 }]}>
+                  <Text style={[font('meta', 700), { color: semantic.success, marginTop: 4 }]}>
                     {inv.transmission.acceptedAt != null
                       ? t('guide.acceptedOn', {
                           personality,
@@ -710,17 +728,18 @@ export default function FactureDetail() {
                   style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}
                 >
                   <View style={{ flex: 1 }}>
-                    <Text style={[font('sub', 600), { fontSize: 13.5, color: colors.ink800 }]} numberOfLines={1}>
+                    <Text style={[font('sub', 600), { color: colors.ink800 }]} numberOfLines={1}>
                       {entry.title}
                     </Text>
-                    <Text style={[font('meta', 500), { fontSize: 12, color: colors.slate400, marginTop: 1 }]}>
+                    <Text style={[font('meta', 500), { color: colors.slate400, marginTop: 1 }]}>
                       {formatDateOnlyFr(entry.createdAt.slice(0, 10))}
                     </Text>
                   </View>
+                  {/* « En attente » n'est pas un fait B2B : badge NEUTRE (plan Lot 3). */}
                   <StatusBadge
                     label={t(relanceHistoryStatusKey(entry.status), { personality })}
                     variant={
-                      entry.status === 'done' ? 'success' : entry.status === 'failed' ? 'danger' : 'b2b'
+                      entry.status === 'done' ? 'success' : entry.status === 'failed' ? 'danger' : 'neutral'
                     }
                   />
                 </View>
@@ -784,7 +803,7 @@ export default function FactureDetail() {
                 onPress={openPeriodSheet}
               />
             ) : inv.servicePeriod != null ? (
-              <Text style={[font('meta', 500), { fontSize: 12.5, color: colors.slate400, marginTop: 6 }]}>
+              <Text style={[font('meta', 500), { color: colors.slate400, marginTop: 6 }]}>
                 {t('facture.contractPeriodFrozen', { personality })}
               </Text>
             ) : null}
@@ -841,7 +860,7 @@ export default function FactureDetail() {
           </Card>
         ) : null
         }
-        </>
+        </FadeIn>
       }
     />
     <PurchaseOrderSheet
@@ -869,38 +888,24 @@ export default function FactureDetail() {
         {t('facture.contractPeriodSheetTitle', { personality })}
       </Text>
       <View style={{ gap: 8 }}>
+        {/* FormField/DateField kit : label VISIBLE PERSISTANT (plus un placeholder seul,
+            hostile aux gants et aux interruptions) + masque AAAA-MM-JJ purement visuel. */}
         {(
           [
             { key: 'start' as const, labelKey: 'facture.contractPeriodStartField' as const },
             { key: 'end' as const, labelKey: 'facture.contractPeriodEndField' as const },
           ]
         ).map((field) => (
-          <TextInput
+          <DateField
             key={field.key}
+            label={t(field.labelKey, { personality })}
             value={periodDraft?.[field.key] ?? ''}
-            onChangeText={(value) => {
+            onChangeText={(masked) => {
               setPeriodError(null);
               setPeriodDraft((current) =>
-                current === null ? current : { ...current, [field.key]: value },
+                current === null ? current : { ...current, [field.key]: masked },
               );
             }}
-            placeholder={t(field.labelKey, { personality })}
-            placeholderTextColor={colors.slate400}
-            accessibilityLabel={t(field.labelKey, { personality })}
-            autoCapitalize="none"
-            style={[
-              font('body'),
-              {
-                minHeight: 44,
-                borderWidth: 1,
-                borderColor: controls.cardBorder,
-                borderRadius: 12,
-                paddingHorizontal: 12,
-                color: colors.ink800,
-                backgroundColor: colors.surface,
-                fontVariant: ['tabular-nums'],
-              },
-            ]}
           />
         ))}
         {periodError ? (
@@ -915,6 +920,8 @@ export default function FactureDetail() {
         />
       </View>
     </Sheet>
+    {/* Grammaire d'erreur : la feuille premium locale (plus aucun Alert natif à l'écran). */}
+    {errorSheet}
     </>
   );
 }

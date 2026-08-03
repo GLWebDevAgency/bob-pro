@@ -9,9 +9,9 @@ import { useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { t, type I18nKey } from '@bob/i18n';
-import { Skeleton, useTheme } from '@bob/ui';
+// Extinction Lot 3 : font vient du kit (mêmes crans, vraies familles chargées).
+import { Skeleton, font, useTheme } from '@bob/ui';
 import type { SalesDocumentSuggestion, SalesDocumentSuggestionKind } from '@bob/core';
-import { font } from './ui';
 
 const MAX_RECENT = 5;
 

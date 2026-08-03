@@ -27,7 +27,10 @@ export interface BackHeaderProps {
    * « Fermer » quand cet écran a été ouvert depuis une modale/feuille). */
   backLabel: string;
   onBack: () => void;
-  eyebrow: string;
+  /** OPTIONNEL depuis le Lot 3 (verdict PR #61, iso-information) : une migration d'en-tête
+   * ad hoc → BackHeader ne doit pas IMPOSER une ligne de texte qui n'existait pas dans
+   * l'écran d'origine. Absent = aucun nœud eyebrow rendu (InnerScreenHeader le masque). */
+  eyebrow?: string;
   title: string;
   subtitle?: string;
   action?: ReactNode;
@@ -79,7 +82,7 @@ export function BackHeader({ backLabel, onBack, eyebrow, title, subtitle, action
       {/* Spreads conditionnels = exigence exactOptionalPropertyTypes du paquet ; pour React,
           `subtitle={undefined}` et « absent » sont le MÊME props — l'arbre rendu ne change pas. */}
       <InnerScreenHeader
-        eyebrow={eyebrow}
+        {...(eyebrow !== undefined ? { eyebrow } : {})}
         title={title}
         {...(subtitle !== undefined ? { subtitle } : {})}
         {...(action !== undefined ? { action } : {})}

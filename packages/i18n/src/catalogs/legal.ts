@@ -191,6 +191,25 @@ export const legalFr = {
     direct: 'Info au bon moment. Le choix reste le tien.',
   },
 
+  // ── Taux réduits travaux (art. 279-0 bis / 278-0 bis A du CGI) — « Refaire ce devis » ──
+  // L'éligibilité appartient à la NOUVELLE pièce : re-demandée au point de décision, jamais
+  // copiée. In-line = BÉNÉFICE (un taux réduit certifié est incontestable), pas la menace.
+  'legal.vatReduced.inline': {
+    pote: 'Confirmer les conditions rend ta TVA réduite incontestable — c’est le fait légal du NOUVEAU devis.',
+    pro: 'Confirmer les conditions rend le taux réduit incontestable : ce fait légal appartient au nouveau devis.',
+    direct: 'Conditions confirmées = taux réduit incontestable.',
+  },
+  'legal.vatReduced.law': {
+    pote: 'La TVA à 10 % vaut pour les travaux dans un logement achevé depuis plus de 2 ans, et 5,5 % pour la rénovation énergétique. Ces conditions doivent être vraies et certifiées pour CHAQUE devis. Si le taux réduit est appliqué à tort, le complément de TVA est dû — et c’est souvent l’artisan qui le paie.',
+    pro: 'Le taux de 10 % s’applique aux travaux dans les logements achevés depuis plus de deux ans, et 5,5 % aux travaux de rénovation énergétique. Ces conditions doivent être remplies et certifiées pour chaque devis. Un taux réduit appliqué à tort rend le complément de TVA exigible, généralement à la charge de l’artisan.',
+    direct: '10 % : logement > 2 ans. 5,5 % : rénov énergétique. Conditions certifiées à CHAQUE devis. Taux à tort = complément de TVA dû.',
+  },
+  'legal.vatReduced.why': {
+    pote: 'Bob repose la question à chaque copie au lieu de recopier l’ancienne réponse : le fait légal reste vrai, daté, et ta facture ne peut pas être redressée pour un taux hérité.',
+    pro: 'Bob repose la question à chaque duplication plutôt que de recopier l’ancienne réponse : le fait légal reste exact et daté, et la pièce ne peut être redressée pour un taux hérité.',
+    direct: 'Re-demandé à chaque copie. Jamais un taux hérité.',
+  },
+
   // ── N° d'immatriculation RCS / RM (art. R123-237 c. com.) ────────────────────
   // Affiché AU POINT DE DÉCISION : la feuille d'édition de l'identité légale, là où l'artisan
   // saisit le numéro qui débloque l'émission. In-line = BÉNÉFICE (facture incontestable), pas

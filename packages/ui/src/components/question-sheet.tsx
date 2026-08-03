@@ -5,7 +5,7 @@
  * description (client, montant, conséquence). Composé sur Sheet (bottom sheet maison).
  * Composant PUR UI : textes fournis par l'appelant (i18n côté app), zéro hex (useTheme).
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Pressable, Text, View } from 'react-native';
 import { useTheme, font } from '../theme';
 import { Sheet } from './sheet';
@@ -39,6 +39,12 @@ export interface QuestionSheetProps {
    * même feuille. Compat ascendante : absent = comportement historique.
    */
   readonly busy?: boolean;
+  /**
+   * Pédagogie au point de décision (Lot 3, additive) : nœud rendu SOUS les options —
+   * l'emplacement de la LegalHint quand la question porte un fait légal (éligibilité TVA
+   * réduite…). Absent = arbre historique STRICTEMENT inchangé.
+   */
+  readonly hint?: ReactNode;
   /** Libellé du bouton de validation (multi ou choix unique confirmé) — i18n côté app. */
   readonly confirmLabel: string;
   /** Libellé du geste d'échappement « autre / préciser » — i18n côté app. */
@@ -60,6 +66,7 @@ export function QuestionSheet({
   multiSelect = false,
   confirmSingle = false,
   busy = false,
+  hint,
   confirmLabel,
   otherLabel,
   onClose,
@@ -176,6 +183,8 @@ export function QuestionSheet({
           );
         })}
       </View>
+
+      {hint !== undefined ? <View style={{ marginTop: 2 }}>{hint}</View> : null}
 
       {questionConfirmVisible(mode) ? (
         <View style={{ marginTop: 4 }}>

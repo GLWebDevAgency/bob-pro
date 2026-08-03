@@ -6,7 +6,7 @@ import type { AccountingPreviewLine, QuoteView, InvoiceView } from '@bob/api-cli
 import { formatDateOnlyFr, type FrenchOperationCategory } from '@bob/core';
 import { challengeFor, buildActionDiff } from '@bob/ai';
 import { t } from '@bob/i18n';
-import { DeleteIconButton, LegalHint, QuestionSheet, Sheet, font, useTheme } from '@bob/ui';
+import { Button, DeleteIconButton, LegalHint, QuestionSheet, Sheet, StatusBadge, font, useTheme } from '@bob/ui';
 import {
   useCompanyMe,
   useCompanyBillingSettings,
@@ -31,7 +31,6 @@ import {
   shouldAdviseRemoteSignature,
   type EmbargoPrompt,
 } from '../lib/embargo-prompt';
-import { Button, Badge } from './ui';
 import { useConfirm } from './ConfirmSheet';
 import { useErrorSheet, type ErrorSheetHandle } from './ErrorSheet';
 import { useBobClient } from '../data/client';
@@ -309,8 +308,10 @@ function EmbargoPromptSheet({
 }
 
 // Verrou : `busy` (state) pilote spinner/disabled ; `lock` (ref) bloque un 2e tap avant tout re-render.
-// L'échec inattendu remonte dans la feuille d'erreur premium du composant appelant (plus d'Alert natif).
-function useActionLock(showError: ErrorSheetHandle['showError']) {
+// L'échec inattendu remonte dans la feuille d'erreur premium du composant appelant (plus d'Alert natif),
+// sous le titre générique i18n de la grammaire — « Oups » est banni (verdict PR #61, P3), le titre
+// est fourni par l'appelant qui a la personnalité en main.
+function useActionLock(showError: ErrorSheetHandle['showError'], genericErrorTitle: string) {
   const [busy, setBusy] = useState<string | null>(null);
   const lock = useRef(false);
   const run = async (key: string, fn: () => Promise<unknown>): Promise<void> => {
@@ -320,7 +321,7 @@ function useActionLock(showError: ErrorSheetHandle['showError']) {
     try {
       await fn();
     } catch (e) {
-      showError('Oups', appErrorMessage(e));
+      showError(genericErrorTitle, appErrorMessage(e));
     } finally {
       lock.current = false;
       setBusy(null);
@@ -386,7 +387,7 @@ export const QuoteActions = forwardRef<
   // Feuille d'erreur premium locale (plus aucun Alert natif dans le flow) — partagée par le
   // verrou d'action et les remontées embargo/génération.
   const { showError, errorSheet } = useErrorSheet();
-  const { busy, run } = useActionLock(showError);
+  const { busy, run } = useActionLock(showError, t('errors.sheetTitle', { personality }));
   const confirm = useConfirm();
   // Gate entreprise complète — ne concerne QUE le premier envoi (état brouillon), cf. doc du
   // gate en tête de fichier. `undefined` (pas encore chargé) est traité comme incomplet : on ne
@@ -479,7 +480,7 @@ export const QuoteActions = forwardRef<
         // responsabilisé en second niveau) — toute autre erreur garde le message générique.
         const prompt = embargoPromptOf(e, mode);
         if (prompt === null) {
-          showError('Oups', appErrorMessage(e));
+          showError(t('errors.sheetTitle', { personality }), appErrorMessage(e));
           return;
         }
         setEmbargoStage('choice');
@@ -504,7 +505,7 @@ export const QuoteActions = forwardRef<
           }),
         );
       } catch (e) {
-        showError('Oups', appErrorMessage(e));
+        showError(t('errors.sheetTitle', { personality }), appErrorMessage(e));
       }
     });
 
@@ -527,7 +528,7 @@ export const QuoteActions = forwardRef<
           () => markGenerated(prompt.mode, out.invoiceId),
         );
       } catch (e) {
-        showError('Oups', appErrorMessage(e));
+        showError(t('errors.sheetTitle', { personality }), appErrorMessage(e));
       }
     });
 
@@ -831,7 +832,7 @@ export const QuoteActions = forwardRef<
       >
         <Text
           numberOfLines={2}
-          style={{ ...font('meta', 600), fontSize: 12, color: semantic.success, flex: 1 }}
+          style={{ ...font('meta', 600), color: semantic.success, flex: 1 }}
         >
           {t('po.carriedToInvoice', {
             personality,
@@ -845,9 +846,11 @@ export const QuoteActions = forwardRef<
     if (!depositPathAvailable && linked.hasDepositInvoice) {
       return (
         <View style={{ gap: 8 }}>
-          <Badge
+          {/* Extinction Lot 3 : Badge legacy → StatusBadge via la table FIGÉE du Lot 0
+              (STATUS_BADGE_VARIANT_BY_LEGACY_TONE — 'warning' → 'warning'). */}
+          <StatusBadge
             label={t('piece.advanceRecoveryUnavailableTitle', { personality })}
-            tone="warning"
+            variant="warning"
           />
           <Text style={[font('meta'), { color: colors.slate500, lineHeight: 18 }]}>
             {t('piece.advanceRecoveryUnavailableBody', { personality })}
@@ -859,13 +862,13 @@ export const QuoteActions = forwardRef<
     // État (c) : la finale existe déjà — plus rien à générer.
     if (invoiceCtaState === 'final_draft_pending' || invoiceCtaState === 'final_exists') {
       return (
-        <Badge
+        <StatusBadge
           label={
             invoiceCtaState === 'final_draft_pending'
               ? 'Facture brouillon prête'
               : 'Facture générée'
           }
-          tone={invoiceCtaState === 'final_draft_pending' ? 'warning' : 'success'}
+          variant={invoiceCtaState === 'final_draft_pending' ? 'warning' : 'success'}
         />
       );
     }
@@ -873,7 +876,7 @@ export const QuoteActions = forwardRef<
     // État (b) : acompte lié SANS finale — LE bug R3 (mode:'final' explicite obligatoire, sinon
     // l'inférence retombe sur 'deposit' déjà facturé et renvoie l'existante sans rien créer).
     if (invoiceCtaState === 'deposit_draft_pending') {
-      return <Badge label="Acompte brouillon à vérifier" tone="warning" />;
+      return <StatusBadge label="Acompte brouillon à vérifier" variant="warning" />;
     }
     if (invoiceCtaState === 'generate_final') {
       return (
@@ -1060,11 +1063,11 @@ export function InvoiceActions({
   const scheduleEmbargo = useScheduleEmbargoPayment();
   const sendInvoice = useSendInvoice();
   // Feuille d'erreur premium locale (plus aucun Alert natif dans le flow encaissement/émission).
+  const { semantic, personality, colors: themeColors, theme } = useTheme();
   const { showError, errorSheet } = useErrorSheet();
-  const { busy, lock, run } = useActionLock(showError);
+  const { busy, lock, run } = useActionLock(showError, t('errors.sheetTitle', { personality }));
   const confirm = useConfirm();
   const client = useBobClient();
-  const { semantic, personality, colors: themeColors, theme } = useTheme();
   // Gates de l'émission (entreprise incomplète, conditions de paiement) — feuille locale unique.
   const [gate, setGate] = useState<GateSpec | null>(null);
   // Embargo L221-10 à l'ÉMISSION (l'acte qui rend la pièce opposable et permet le lien de
@@ -1140,7 +1143,7 @@ export function InvoiceActions({
       );
       if (prompt === null) {
         clearIssueDecision();
-        showError('Oups', appErrorMessage(error));
+        showError(t('errors.sheetTitle', { personality }), appErrorMessage(error));
         return;
       }
       setIssueDecision(nextDecision);
@@ -1234,7 +1237,7 @@ export function InvoiceActions({
           }),
         );
       } catch (e) {
-        showError('Oups', appErrorMessage(e));
+        showError(t('errors.sheetTitle', { personality }), appErrorMessage(e));
       }
     });
 
@@ -1273,7 +1276,7 @@ export function InvoiceActions({
       onSelect={(values) => {
         const category = parseInvoiceOperationCategoryChoice(values[0]);
         if (category === null) {
-          showError('Oups', t('piece.operationCategory.invalid', { personality }));
+          showError(t('errors.sheetTitle', { personality }), t('piece.operationCategory.invalid', { personality }));
           return;
         }
         setOperationCategoryOpen(false);
@@ -1446,7 +1449,7 @@ export function InvoiceActions({
               ),
             );
           } catch (e) {
-            showError('Oups', appErrorMessage(e));
+            showError(t('errors.sheetTitle', { personality }), appErrorMessage(e));
           }
         });
       })();
@@ -1539,7 +1542,8 @@ export function InvoiceActions({
       {/* ── PR-09 — choix du destinataire (contacts du client + e-mail de la fiche) : le
            récap confirmé reste le SEUL point d'envoi — annuler = rien n'est parti. ── */}
       <Sheet visible={recipientSheetOpen} onClose={() => setRecipientSheetOpen(false)}>
-        <Text style={[font('pageTitle'), { fontSize: 20, color: themeColors.ink900 }]}>
+        {/* Cran sheetTitle du Lot 0 — fin de la recomposition pageTitle + fontSize 20. */}
+        <Text style={[font('sheetTitle'), { color: themeColors.ink900 }]}>
           {t('facture.sendRecipientTitle', { personality })}
         </Text>
         <Text style={[font('sub'), { color: themeColors.slate500, lineHeight: 19, marginTop: 4, marginBottom: 12 }]}>

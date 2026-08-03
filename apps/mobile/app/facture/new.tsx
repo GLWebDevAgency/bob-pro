@@ -46,6 +46,7 @@ import {
   Card,
   Chip,
   EmptyState,
+  ErrorNotice,
   ErrorRetry,
   FadeIn,
   LegalHint,
@@ -66,6 +67,7 @@ import {
   useCustomers,
   useProfile,
 } from '../../src/data/hooks';
+import { firstQueryErrorFacts, type QueryErrorFacts } from '../../src/data/query-error-facts';
 import { DEFAULT_WORKSITE_TERM, worksiteParamsFor } from '../../src/lib/worksite-terminology';
 import { useCatalogue } from '../../src/data/catalogue';
 import { useConfirm } from '../../src/components/ConfirmSheet';
@@ -157,6 +159,9 @@ export default function FactureDirecteNew() {
   const [state, setState] = useState<FactureDirecteState>(startFactureDirecte);
   const [guardMsg, setGuardMsg] = useState<string | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
+  // Faits de l'échec serveur (code du registre fermé + corrélation) — la face développeur
+  // de l'ErrorNotice ; null tant qu'aucun refus (jamais un code inventé).
+  const [serverFacts, setServerFacts] = useState<QueryErrorFacts | null>(null);
 
   // Saisie de ligne (présentation pure — la validation vit dans le modèle/le domaine).
   const [lineLabel, setLineLabel] = useState('');
@@ -294,6 +299,7 @@ export default function FactureDirecteNew() {
       });
       if (!ok) return;
       setServerError(null);
+      setServerFacts(null);
       const out = await compose.mutateAsync({
         ...payload,
         // PR-08 — site choisi au picker : appartenance tenant PROUVÉE serveur (anti-IDOR).
@@ -301,8 +307,10 @@ export default function FactureDirecteNew() {
       });
       router.replace(`/facture/${out.invoiceId}`);
     } catch (error) {
-      // 422 serveur (urgence A3bis, garde B7, TVA revalidée…) affiché TEL QUEL — état honnête.
+      // 422 serveur (urgence A3bis, garde B7, TVA revalidée…) affiché TEL QUEL — état honnête,
+      // + les FAITS (code du registre fermé, corrélation) pour la face développeur.
       setServerError(appErrorMessage(error));
+      setServerFacts(firstQueryErrorFacts([{ isError: true, error }]));
     } finally {
       submitInFlight.current = false;
     }
@@ -397,7 +405,7 @@ export default function FactureDirecteNew() {
               {/* FadeIn en cascade à l'entrée de l'étape — même langage motion que
                   Aujourd'hui/Ventes (au montage seulement, reduce-motion respecté). */}
               <FadeIn index={0} style={{ gap: 12 }}>
-                <Text style={[font('screenH1'), { fontSize: 24, color: colors.ink900 }]}>
+                <Text style={[font('wizardTitle'), { color: colors.ink900 }]}>
                   {t('devis.clientTitle', { personality })}
                 </Text>
                 <Text style={[font('sub'), { color: colors.slate500, marginBottom: 4 }]}>
@@ -452,7 +460,9 @@ export default function FactureDirecteNew() {
                           minHeight: 44,
                           backgroundColor: colors.surface,
                           borderRadius: radius.cardLg,
-                          borderWidth: selected ? 2 : 1,
+                          // borderWidth CONSTANT 2 (plan Lot 3) : fin du saut d'1 px à la
+                          // sélection — seule la COULEUR bascule (canon contrat/new, Lot 4).
+                          borderWidth: 2,
                           borderColor: selected ? theme.ink : controls.cardBorder,
                           paddingVertical: 13,
                           paddingHorizontal: 14,
@@ -583,7 +593,7 @@ export default function FactureDirecteNew() {
           {state.step === 'lignes' ? (
             <>
               <FadeIn index={0}>
-                <Text style={[font('screenH1'), { fontSize: 24, color: colors.ink900 }]}>
+                <Text style={[font('wizardTitle'), { color: colors.ink900 }]}>
                   {t('fd.stepLines', { personality })}
                 </Text>
               </FadeIn>
@@ -809,7 +819,7 @@ export default function FactureDirecteNew() {
           {state.step === 'recap' ? (
             <>
               <FadeIn index={0}>
-                <Text style={[font('screenH1'), { fontSize: 24, color: colors.ink900 }]}>
+                <Text style={[font('wizardTitle'), { color: colors.ink900 }]}>
                   {t('fd.recapTitle', { personality })}
                 </Text>
               </FadeIn>
@@ -847,7 +857,19 @@ export default function FactureDirecteNew() {
 
               <FadeIn index={2}>
               <Card radius={18} padding={16}>
-                {state.lines.map((line, index) => (
+                {state.lines.map((line, index) => {
+                  // CORRECTION (plan Lot 3) : le récap affiche le montant NET de ligne —
+                  // MÊME formule que l'étape 2 — pour que la vérité visuelle SOMME vers le
+                  // total (un montant brut à côté d'une remise attaquait la confiance).
+                  const gross = Math.round(line.qty * line.unitPriceHT);
+                  const net =
+                    gross -
+                    (line.discount
+                      ? line.discount.type === 'percent'
+                        ? Math.round((gross * line.discount.value) / 100)
+                        : Math.min(line.discount.cents, gross)
+                      : 0);
+                  return (
                   <View
                     key={`${line.label}-${index}`}
                     style={{
@@ -867,10 +889,11 @@ export default function FactureDirecteNew() {
                       ) : null}
                     </Text>
                     <Text style={{ ...font('sub', 600), color: colors.ink800, fontVariant: ['tabular-nums'] }}>
-                      {formatEUR(Math.round(line.qty * line.unitPriceHT))}
+                      {formatEUR(net)}
                     </Text>
                   </View>
-                ))}
+                  );
+                })}
 
                 {/* Remise globale — « je t'arrondis à… » au moment du récap. */}
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 }}>
@@ -973,17 +996,25 @@ export default function FactureDirecteNew() {
               </FadeIn>
 
               {serverError ? (
-                <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.danger }]}>
-                  {serverError}
-                </Text>
+                // Refus serveur (urgence A3bis, garde B7, TVA revalidée…) : ErrorNotice
+                // 2 faces — rôle alert + liveRegion PORTÉS par le composant, code du
+                // registre fermé + corrélation quand l'AppError les donne.
+                <ErrorNotice
+                  message={serverError}
+                  code={serverFacts?.code ?? 'BOB-API-500'}
+                  {...(serverFacts?.correlationId != null
+                    ? { correlationId: serverFacts.correlationId }
+                    : {})}
+                  {...(serverFacts?.kind != null ? { kind: serverFacts.kind } : {})}
+                />
               ) : null}
             </>
           ) : null}
 
           {guardMsg ? (
-            <Text accessibilityRole="alert" accessibilityLiveRegion="polite" style={[font('sub'), { color: semantic.danger }]}>
-              {guardMsg}
-            </Text>
+            // Garde LOCALE du wizard (client requis, lignes, TVA…) : même refus de validation
+            // que le serveur projetterait — BOB-API-422 du registre fermé, jamais inventé.
+            <ErrorNotice message={guardMsg} code="BOB-API-422" />
           ) : null}
         </ScrollView>
 

@@ -20,7 +20,9 @@ import { HeaderVeil } from './header-veil';
 import { DEFAULT_HEADER_VEIL_HEIGHT } from './header-veil.logic';
 
 export interface InnerScreenHeaderProps {
-  eyebrow: string;
+  /** OPTIONNEL depuis le Lot 3 (verdict PR #61, iso-information) : absent = aucun nœud
+   * eyebrow — les migrations d'en-têtes ad hoc n'ajoutent pas de texte non demandé. */
+  eyebrow?: string;
   title: string;
   subtitle?: string;
   action?: ReactNode;
@@ -38,9 +40,11 @@ export function InnerScreenHeader({ eyebrow, title, subtitle, action, compact = 
   return (
     <View style={[styles.root, compact ? styles.rootCompact : null]}>
       <View style={styles.texts}>
-        <Text style={[font('eyebrow'), { color: colors.slate400 }]} accessibilityRole="text">
-          {eyebrow}
-        </Text>
+        {eyebrow !== undefined ? (
+          <Text style={[font('eyebrow'), { color: colors.slate400 }]} accessibilityRole="text">
+            {eyebrow}
+          </Text>
+        ) : null}
         <Text
           style={[font('pageTitle'), styles.title, { color: colors.ink800 }]}
           accessibilityRole="header"
