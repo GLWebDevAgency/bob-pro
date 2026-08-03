@@ -8518,6 +8518,9 @@ const legacyFr = {
     pro: '{name} représente {share} % de l’activité : une dépendance à surveiller.',
     direct: '{name} : {share} % du CA. Dépendance.',
   },
+  // Badge textuel de l'alerte de concentration (Lot 5) — annoncé tel quel par VoiceOver,
+  // là où « ! » ne disait rien ; warning = l'actionnable (arbitrage BADGE du plan DA).
+  'pilotage.concentrationBadge': { pote: 'Risque', pro: 'Risque', direct: 'Risque' },
   'pilotage.noClients': {
     pote: 'Pas encore de facturation sur les 12 derniers mois.',
     pro: 'Aucune facturation sur les 12 derniers mois.',

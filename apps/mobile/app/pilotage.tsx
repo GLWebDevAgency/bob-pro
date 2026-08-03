@@ -11,23 +11,27 @@ import { useMemo, type ReactNode } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
 import {
   deriveBusinessReview,
   formatEUR,
   type BusinessReview,
   type ExpenseCategory,
 } from '@bob/core';
-import { patterns } from '@bob/tokens';
+import { shadowComponentsNative, vault } from '@bob/tokens';
 import { t, type I18nKey } from '@bob/i18n';
 import {
   Card,
   EmptyState,
   ErrorRetry,
   InnerScreenHeader,
+  MoneyText,
   SectionHeader,
   SkeletonCard,
   StaggeredList,
   StatusBadge,
+  StickyBackRow,
+  TrendBars,
   font,
   useTheme,
 } from '@bob/ui';
@@ -42,7 +46,7 @@ import {
 import { PaywallCard, useEntitlement } from '../src/monetization/paywall';
 import { combineQueryStates } from '../src/data/query-state';
 import { usePublishAgentContext, type AgentContext } from '../src/agent';
-import { ChevronLeftIcon, ChevronRightIcon } from '../src/components/icons';
+import { ChevronRightIcon } from '../src/components/icons';
 import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 
 const MONTHS = [
@@ -274,29 +278,21 @@ export default function Pilotage() {
                   {formatEUR(point.invoicedHtCents)} · {formatEUR(point.collectedTtcCents)}
                 </Text>
               </View>
-              <View style={{ gap: 3 }}>
-                {/* Facturé (ink600) / encaissé (success) — contraste net, plus deux bleus proches. */}
-                <View style={{ height: 7, borderRadius: 4, backgroundColor: colors.lineSoft, overflow: 'hidden' }}>
-                  <View
-                    style={{
-                      height: '100%',
-                      width: `${Math.round((Math.max(0, point.invoicedHtCents) / max) * 100)}%`,
-                      borderRadius: 4,
-                      backgroundColor: colors.ink600,
-                    }}
-                  />
-                </View>
-                <View style={{ height: 7, borderRadius: 4, backgroundColor: colors.lineSoft, overflow: 'hidden' }}>
-                  <View
-                    style={{
-                      height: '100%',
-                      width: `${Math.round((Math.max(0, point.collectedTtcCents) / max) * 100)}%`,
-                      borderRadius: 4,
-                      backgroundColor: semantic.success,
-                    }}
-                  />
-                </View>
-              </View>
+              {/* Facturé (ink600) / encaissé (success) — TrendBars kit : barres qui poussent
+                  400 ms ease-out, statiques dès la première frame tant que la préférence
+                  motion n'est pas résolue (fail-closed par construction, Lot 5). */}
+              <TrendBars
+                bars={[
+                  {
+                    pct: Math.round((Math.max(0, point.invoicedHtCents) / max) * 100),
+                    color: colors.ink600,
+                  },
+                  {
+                    pct: Math.round((Math.max(0, point.collectedTtcCents) / max) * 100),
+                    color: semantic.success,
+                  },
+                ]}
+              />
             </View>
           );
         })}
@@ -376,16 +372,13 @@ export default function Pilotage() {
           </Text>
         </View>
         {progressPct !== null && progressPct !== undefined ? (
-          <View style={{ height: 4, borderRadius: 2, backgroundColor: colors.lineSoft, overflow: 'hidden', marginTop: 6 }}>
-            <View
-              style={{
-                height: '100%',
-                width: `${Math.min(100, Math.max(0, progressPct))}%`,
-                borderRadius: 2,
-                backgroundColor: progressColor ?? colors.slate400,
-              }}
-            />
-          </View>
+          // Part de classement — même primitive TrendBars (le clamp [0,100] vit au kit).
+          <TrendBars
+            bars={[{ pct: progressPct, color: progressColor ?? colors.slate400 }]}
+            height={4}
+            radius={2}
+            style={{ marginTop: 6 }}
+          />
         ) : null}
       </View>
     );
@@ -395,7 +388,7 @@ export default function Pilotage() {
     if (r.coverage.firstMonth === null) {
       return (
         <Card>
-          <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19 }]}>{t('pilotage.empty', { personality })}</Text>
+          <EmptyState body={t('pilotage.empty', { personality })} />
         </Card>
       );
     }
@@ -405,48 +398,57 @@ export default function Pilotage() {
       // Cascade sobre : chaque carte du bilan fond en entrant (40 ms/rang, cap 8) —
       // les wrappers FadeIn restent des enfants directs du conteneur gap:14 (zéro saut).
       <StaggeredList>
-        {/* Mois en cours — isopérimètre, jamais de % plein-mois */}
+        {/* Mois en cours — HÉROS MATIÈRE (Lot 5, planche « matière argent ») : recette
+            HeroMoneyCard (radius 24, padding 20, ombre heroMoney) sur la matière verte
+            monthReady ; l'ENCAISSÉ est le chiffre-héros (MoneyText moneyHero 27/800,
+            success), le facturé passe second. Isopérimètre, jamais de % plein-mois. */}
         {section(
           'pilotage.sectionMonth',
-          <Card>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: colors.ink600 }} />
-                  <Text style={[font('meta'), { color: colors.slate400 }]}>
-                    {t('pilotage.invoicedLabel', { personality })} · {t('pilotage.atDay', { personality, params: { day: String(cur.atDay) } })}
-                  </Text>
+          <View style={[{ borderRadius: 24 }, shadowComponentsNative.heroMoney]}>
+            <LinearGradient
+              colors={[vault.monthReadyTop, vault.monthReadyBottom]}
+              start={{ x: 0.5, y: 0 }}
+              end={{ x: 0.5, y: 1 }}
+              style={{
+                borderRadius: 24,
+                borderWidth: 1,
+                borderColor: vault.monthReadyBorder,
+                padding: 20,
+              }}
+            >
+              {/* Encaissé : la bonne nouvelle du mois — le héros. */}
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: semantic.success }} />
+                <Text style={[font('meta'), { color: colors.slate400 }]}>{t('pilotage.collectedLabel', { personality })}</Text>
+              </View>
+              <View style={{ marginTop: 2 }}>
+                <MoneyText cents={cur.collectedTtcCents} variant="moneyHero" color={semantic.success} />
+              </View>
+              <Text style={[font('meta'), { color: colors.slate400, marginTop: 2 }]}>{t('pilotage.collectedHint', { personality })}</Text>
+              <View style={{ height: 1, backgroundColor: vault.monthReadyBorder, marginVertical: 10 }} />
+              {/* Facturé : montant neutre (ink900) + delta isopérimètre. */}
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: colors.ink600 }} />
+                    <Text style={[font('meta'), { color: colors.slate400 }]}>
+                      {t('pilotage.invoicedLabel', { personality })} · {t('pilotage.atDay', { personality, params: { day: String(cur.atDay) } })}
+                    </Text>
+                  </View>
+                  <View style={{ marginTop: 2 }}>
+                    <MoneyText cents={cur.invoicedHtCents} variant="big" />
+                  </View>
+                  <Text style={[font('meta'), { color: colors.slate400, marginTop: 2 }]}>{t('pilotage.invoicedHint', { personality })}</Text>
                 </View>
-                {/* Facturé : montant neutre (ink900) — la bonne nouvelle du mois, c'est l'encaissé. */}
-                <Text style={{ ...font('bigNum'), fontSize: 26, color: colors.ink900, marginTop: 2, fontVariant: ['tabular-nums'] }}>
-                  {formatEUR(cur.invoicedHtCents)}
-                </Text>
-                <Text style={[font('meta'), { color: colors.slate400, marginTop: 2 }]}>{t('pilotage.invoicedHint', { personality })}</Text>
+                {cur.invoicedDeltaBps !== null ? (
+                  <StatusBadge label={`${pctFromBps(cur.invoicedDeltaBps)} %`} variant={cur.invoicedDeltaBps >= 0 ? 'success' : 'danger'} />
+                ) : null}
               </View>
               {cur.invoicedDeltaBps !== null ? (
-                <StatusBadge label={`${pctFromBps(cur.invoicedDeltaBps)} %`} variant={cur.invoicedDeltaBps >= 0 ? 'success' : 'danger'} />
+                <Text style={[font('meta'), { color: colors.slate400, marginTop: 4 }]}>{t('pilotage.isoCompare', { personality })}</Text>
               ) : null}
-            </View>
-            {cur.invoicedDeltaBps !== null ? (
-              <Text style={[font('meta'), { color: colors.slate400, marginTop: 4 }]}>{t('pilotage.isoCompare', { personality })}</Text>
-            ) : null}
-            <View style={{ height: 1, backgroundColor: colors.lineSoft, marginVertical: 10 }} />
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' }}>
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: semantic.success }} />
-                  <Text style={[font('meta'), { color: colors.slate400 }]}>{t('pilotage.collectedLabel', { personality })}</Text>
-                </View>
-                <Text style={[font('meta'), { color: colors.slate400, marginTop: 2 }]}>{t('pilotage.collectedHint', { personality })}</Text>
-              </View>
-              {/* Encaissé : la bonne nouvelle du mois — success + pastille de fond discrète. */}
-              <View style={{ backgroundColor: semantic.successBg, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3 }}>
-                <Text style={{ ...font('cardTitle'), fontSize: 18, color: semantic.success, fontVariant: ['tabular-nums'] }}>
-                  {formatEUR(cur.collectedTtcCents)}
-                </Text>
-              </View>
-            </View>
-          </Card>,
+            </LinearGradient>
+          </View>,
         )}
 
         {/* Tendance — mois clos + cumul annuel gated par la couverture */}
@@ -525,7 +527,8 @@ export default function Pilotage() {
               <Text style={[font('sub'), { color: semantic.success, lineHeight: 19 }]}>{t('pilotage.dsoAllCollected', { personality })}</Text>
             ) : (
               <>
-                <Text style={{ ...font('bigNum'), fontSize: 26, color: colors.ink900, fontVariant: ['tabular-nums'] }}>
+                {/* Chiffre-héros de la carte — cran moneyHero (27/800, Lot 0), fin du 26 ad hoc. */}
+                <Text style={{ ...font('moneyHero'), color: colors.ink900, fontVariant: ['tabular-nums'] }}>
                   {t('pilotage.dsoDays', { personality, params: { days: String(r.dso.days) } })}
                 </Text>
                 <Text style={[font('meta'), { color: colors.slate400, marginTop: 3, lineHeight: 17 }]}>{t('pilotage.dsoHint', { personality })}</Text>
@@ -553,7 +556,7 @@ export default function Pilotage() {
               </Text>
             ) : (
               <>
-                <Text style={{ ...font('bigNum'), fontSize: 26, color: r.collection.collectedRateBps90d >= 8_000 ? semantic.success : r.collection.collectedRateBps90d >= 5_000 ? semantic.warning : semantic.danger, fontVariant: ['tabular-nums'] }}>
+                <Text style={{ ...font('moneyHero'), color: r.collection.collectedRateBps90d >= 8_000 ? semantic.success : r.collection.collectedRateBps90d >= 5_000 ? semantic.warning : semantic.danger, fontVariant: ['tabular-nums'] }}>
                   {t('pilotage.collectionRate', {
                     personality,
                     params: { pct: String(Math.round(r.collection.collectedRateBps90d / 100)) },
@@ -624,7 +627,7 @@ export default function Pilotage() {
           'pilotage.sectionTopClients',
           <Card>
             {r.topClients.lines.length === 0 ? (
-              <Text style={[font('sub'), { color: colors.slate500 }]}>{t('pilotage.noClients', { personality })}</Text>
+              <EmptyState body={t('pilotage.noClients', { personality })} />
             ) : (
               <>
                 {r.topClients.lines.map((line, index) => (
@@ -655,7 +658,9 @@ export default function Pilotage() {
                 ) : null}
                 {r.topClients.concentrationAlert && r.topClients.lines[0] && r.topClients.top1ShareBps !== null ? (
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8, paddingTop: 10, borderTopWidth: 1, borderTopColor: colors.lineSoft }}>
-                    <StatusBadge label="!" variant="particulier" />
+                    {/* « Risque » textuel (Lot 5) : annoncé par VoiceOver, warning = l'actionnable —
+                        un « ! » en ton particulier ne disait ni le risque ni à qui. */}
+                    <StatusBadge label={t('pilotage.concentrationBadge', { personality })} variant="warning" />
                     <Text style={[font('meta'), { color: colors.slate500, flex: 1, lineHeight: 17 }]}>
                       {t('pilotage.concentration', {
                         personality,
@@ -678,7 +683,7 @@ export default function Pilotage() {
           'pilotage.sectionTopExpenses',
           <Card>
             {r.topExpenses.lines.length === 0 ? (
-              <Text style={[font('sub'), { color: colors.slate500 }]}>{t('pilotage.noExpenses', { personality })}</Text>
+              <EmptyState body={t('pilotage.noExpenses', { personality })} />
             ) : (
               r.topExpenses.lines.map((line, index) => (
                 <RankRow
@@ -732,25 +737,13 @@ export default function Pilotage() {
         automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
         scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
       >
-        <View
-          style={{
-            paddingTop: insets.top + 10,
-            paddingHorizontal: 16,
-            paddingBottom: 8,
-            backgroundColor: patterns.bottomTabBar.fade[1],
-          }}
-        >
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={t('pilotage.back', { personality })}
-            onPress={() => router.back()}
-            hitSlop={8}
-            style={{ flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start', minHeight: 34 }}
-          >
-            <ChevronLeftIcon color={colors.ink800} size={18} strokeWidth={2.2} />
-            <Text style={[font('label', 600), { fontSize: 15, color: colors.ink800 }]}>{t('pilotage.back', { personality })}</Text>
-          </Pressable>
-        </View>
+        {/* Rangée retour kit (Lot 5) : cible 44 pt (était 34 ad hoc) + voile de dissolution —
+            le MÊME mécanisme HeaderVeil que les headers, fail-closed par construction. */}
+        <StickyBackRow
+          backLabel={t('pilotage.back', { personality })}
+          onBack={() => router.back()}
+          veil
+        />
 
         <InnerScreenHeader
           eyebrow={t('pilotage.eyebrow', { personality })}
