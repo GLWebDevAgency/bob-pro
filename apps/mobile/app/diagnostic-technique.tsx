@@ -7,13 +7,19 @@
  * Sobriété assumée : lecture seule, partage en un geste (texte composé SANS PII — le journal
  * n'a par construction ni cause, ni message, ni donnée client), et purge locale. Zéro hex :
  * useTheme()/@bob/tokens uniquement.
+ *
+ * Vague hors-lots (audit 03/08) : header FIXE hors du scroll (anatomie des écrans frères),
+ * journal non lu ≠ journal vide (jamais « aucun échec » avant la première lecture), purge via
+ * ConfirmSheet kit et échec de partage en Toast danger — la grammaire d'erreur de la maison
+ * ne s'arrête pas aux écrans support.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, RefreshControl, ScrollView, Share, Text, View } from 'react-native';
+import { RefreshControl, ScrollView, Share, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { spacing } from '@bob/tokens';
 import { t, type I18nKey } from '@bob/i18n';
-import { Button, Card, SectionHeader, font, useTheme } from '@bob/ui';
+import { BackHeader, Button, Card, SectionHeader, Skeleton, Toast, font, useTheme } from '@bob/ui';
 import { shortCorrelationId } from '@bob/api-client';
 import {
   ERROR_JOURNAL_MAX_ENTRIES,
@@ -24,18 +30,25 @@ import {
   type ErrorJournalEntry,
 } from '../src/data/error-journal';
 import { resolveCrashReporterConfig } from '../src/observability/crash-reporter';
-import { ScreenHeader } from '../src/components/screen-header';
+import { useConfirm } from '../src/components/ConfirmSheet';
 
 function JournalRow({ entry, isLast }: { entry: ErrorJournalEntry; isLast: boolean }) {
-  const { colors, controls } = useTheme();
+  const { colors, personality } = useTheme();
   const time = journalEntryTime(entry.at);
+  const statusLine =
+    entry.status === null
+      ? t('diagtech.noResponse', { personality })
+      : t('diagtech.httpStatus', { personality, params: { status: entry.status } });
   return (
     <View
-      accessibilityLabel={`${entry.code}, ${time}, ${entry.method} ${entry.path}`}
+      // `accessible` rend le label composé RÉELLEMENT annoncé (une View nue ne regroupe pas
+      // ses enfants pour VoiceOver/TalkBack — le résumé restait lu morceau par morceau).
+      accessible
+      accessibilityLabel={`${entry.code}, ${time}, ${entry.method} ${entry.path}, ${statusLine}`}
       style={{
         paddingVertical: 10,
         borderBottomWidth: isLast ? 0 : 1,
-        borderBottomColor: controls.cardBorder,
+        borderBottomColor: colors.lineSoft,
       }}
     >
       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -48,8 +61,21 @@ function JournalRow({ entry, isLast }: { entry: ErrorJournalEntry; isLast: boole
       <Text selectable style={[font('meta'), { color: colors.slate400, marginTop: 2 }]}>
         {entry.correlationId ? shortCorrelationId(entry.correlationId) : '—'}
         {' · '}
-        {entry.status === null ? 'sans réponse' : `HTTP ${entry.status}`}
+        {statusLine}
       </Text>
+    </View>
+  );
+}
+
+/** Silhouette d'UNE rangée de journal pendant la lecture async — jamais « aucun échec ». */
+function JournalRowSkeleton() {
+  return (
+    <View style={{ paddingVertical: 10, gap: 6 }}>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+        <Skeleton height={13} width="34%" radius={6} />
+        <Skeleton height={11} width="18%" radius={6} />
+      </View>
+      <Skeleton height={11} width="58%" radius={6} />
     </View>
   );
 }
@@ -58,14 +84,18 @@ export default function DiagnosticTechniqueScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { colors, personality } = useTheme();
+  const confirm = useConfirm();
   const say = useCallback(
     (key: I18nKey, params?: Readonly<Record<string, string | number>>): string =>
       t(key, { personality, ...(params ? { params } : {}) }),
     [personality],
   );
 
-  const [entries, setEntries] = useState<readonly ErrorJournalEntry[]>([]);
+  // `null` = journal PAS ENCORE LU (lecture async) : une source absente n'est jamais une
+  // collection vide — l'écran n'affirme « aucun échec » qu'après la première résolution.
+  const [entries, setEntries] = useState<readonly ErrorJournalEntry[] | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [dangerToast, setDangerToast] = useState<string | null>(null);
   // Résolu UNE fois : dit si le canal de crash de CE build est vivant (DSN UE hors dev).
   const crashChannelActive = useMemo(() => resolveCrashReporterConfig() !== null, []);
 
@@ -85,42 +115,53 @@ export default function DiagnosticTechniqueScreen() {
 
   const onShare = useCallback(async () => {
     try {
-      await Share.share({ message: journalShareText(entries) });
+      await Share.share({ message: journalShareText(entries ?? []) });
     } catch {
-      Alert.alert(say('diagtech.shareUnavailable'));
+      // Échec éphémère non actionnable → Toast danger (grammaire d'erreur, jamais Alert).
+      setDangerToast(say('diagtech.shareUnavailable'));
     }
   }, [entries, say]);
 
-  const onClear = useCallback(() => {
-    Alert.alert(say('diagtech.clearConfirmTitle'), say('diagtech.clearConfirmBody'), [
-      { text: t('common.cancel', { personality }), style: 'cancel' },
-      {
-        text: say('diagtech.clearConfirmYes'),
-        style: 'destructive',
-        onPress: () => {
-          void clearJournal().then(reload);
-        },
-      },
-    ]);
-  }, [personality, reload, say]);
+  const onClear = useCallback(async () => {
+    // ConfirmSheet kit (challenge tap, destructive) — même feuille que les flux manuel/vocal.
+    const accepted = await confirm({
+      title: say('diagtech.clearConfirmTitle'),
+      message: say('diagtech.clearConfirmBody'),
+      challenge: { kind: 'tap' },
+      destructive: true,
+    });
+    if (!accepted) return;
+    await clearJournal();
+    await reload();
+  }, [confirm, reload, say]);
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
+      {/* Header FIXE hors du scroll — l'anatomie des écrans frères (le retour ne disparaît
+          jamais au défilement), BackHeader kit importé directement de @bob/ui. */}
+      <BackHeader
+        backLabel={say('reglages.back')}
+        onBack={() => router.back()}
+        eyebrow={say('diagtech.eyebrow')}
+        title={say('diagtech.title')}
+        subtitle={say('diagtech.subtitle')}
+      />
       <ScrollView
+        style={{ flex: 1 }}
         contentContainerStyle={{
-          paddingHorizontal: 18,
+          paddingHorizontal: spacing.gutter,
+          paddingTop: 14,
           paddingBottom: insets.bottom + 28,
         }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={colors.ink800}
+            colors={[colors.ink800]}
+          />
+        }
       >
-        <ScreenHeader
-          backLabel={say('reglages.back')}
-          onBack={() => router.back()}
-          eyebrow={say('diagtech.eyebrow')}
-          title={say('diagtech.title')}
-          subtitle={say('diagtech.subtitle')}
-        />
-
         <SectionHeader title={say('diagtech.channelTitle')} />
         <Card padding={15} style={{ marginBottom: 16 }}>
           <Text style={[font('sub'), { color: colors.ink800, lineHeight: 19 }]}>
@@ -130,7 +171,9 @@ export default function DiagnosticTechniqueScreen() {
 
         <SectionHeader title={say('diagtech.sectionJournal')} />
         <Card padding={15} style={{ marginBottom: 12 }}>
-          {entries.length === 0 ? (
+          {entries === null ? (
+            <JournalRowSkeleton />
+          ) : entries.length === 0 ? (
             <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19 }]}>
               {say('diagtech.empty')}
             </Text>
@@ -153,7 +196,7 @@ export default function DiagnosticTechniqueScreen() {
           )}
         </Card>
 
-        {entries.length > 0 ? (
+        {entries !== null && entries.length > 0 ? (
           <View style={{ flexDirection: 'row', gap: 10 }}>
             <Button
               title={say('diagtech.share')}
@@ -165,11 +208,18 @@ export default function DiagnosticTechniqueScreen() {
               title={say('diagtech.clear')}
               variant="secondary"
               style={{ flex: 1 }}
-              onPress={onClear}
+              onPress={() => void onClear()}
             />
           </View>
         ) : null}
       </ScrollView>
+
+      <Toast
+        message={dangerToast ?? ''}
+        visible={dangerToast !== null}
+        tone="danger"
+        onHide={() => setDangerToast(null)}
+      />
     </View>
   );
 }

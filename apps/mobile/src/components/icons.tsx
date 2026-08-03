@@ -404,3 +404,37 @@ export function PencilIcon({ color, size = 17, strokeWidth = 2 }: IconProps) {
     </Svg>
   );
 }
+
+/* ── Vague hors-lots (réglages facturation) — fin du mélange Feather/maison :
+      une seule famille de trait à l'écran (faute déjà purgée en L2). ─────────── */
+
+/** Œil — aperçu vivant (13/2, ligne « aperçu » des réglages facturation). */
+export function EyeIcon({ color, size = 13, strokeWidth = 2 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" stroke={color} strokeWidth={strokeWidth} {...common}>
+      <Path d="M2.06 12.35a1 1 0 0 1 0-.7C3.42 8.1 7.35 5 12 5s8.58 3.1 9.94 6.65a1 1 0 0 1 0 .7C20.58 15.9 16.65 19 12 19s-8.58-3.1-9.94-6.65Z" />
+      <Circle cx={12} cy={12} r={3} />
+    </Svg>
+  );
+}
+
+/** Triangle d'alerte — bandeau bloquant (14/2, émission de factures verrouillée). */
+export function AlertTriangleIcon({ color, size = 14, strokeWidth = 2 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" stroke={color} strokeWidth={strokeWidth} {...common}>
+      <Path d="M21.73 18l-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+      <Path d="M12 9v4" />
+      <Path d="M12 17h.01" />
+    </Svg>
+  );
+}
+
+/** Coche cerclée — encart pédagogique du régime TVA (14/2). */
+export function CheckCircleIcon({ color, size = 14, strokeWidth = 2 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" stroke={color} strokeWidth={strokeWidth} {...common}>
+      <Circle cx={12} cy={12} r={10} />
+      <Path d="M9 12l2 2 4-4" />
+    </Svg>
+  );
+}

@@ -33,24 +33,30 @@ import {
   type RelanceTone,
   type UpcomingDueEntry,
 } from '@bob/core';
-import type { NotificationView } from '@bob/api-client';
+import { bobErrorCode, type NotificationView } from '@bob/api-client';
+import { spacing } from '@bob/tokens';
 import { PERSONALITY_LABELS, t, type I18nKey, type Personality } from '@bob/i18n';
 import {
   Avatar,
+  BackHeader,
   Button,
   Card,
   EmptyState,
   ErrorRetry,
   IconTile,
-  InnerScreenHeader,
   SectionHeader,
   Skeleton,
   SkeletonRow,
+  StaggeredList,
   StatusBadge,
+  StatusStrip,
   Toast,
   font,
+  useErrorSheet,
   useTheme,
+  type ErrorSheetFacts,
   type StatusBadgeVariant,
+  type ToastTone,
 } from '@bob/ui';
 import {
   useMarkNotificationRead,
@@ -66,17 +72,17 @@ import { useConfirm } from '../src/components/ConfirmSheet';
 import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 import {
   CalendarIcon,
-  CheckIcon,
-  ChevronLeftIcon,
   ChevronRightIcon,
   SendIcon,
   ShieldIcon,
 } from '../src/components/icons';
 
-// ── Ton → pastel/badge (réf §showRelances : cordial ambre, ferme/mise en demeure rouge) ──
+// ── Ton → pastel/badge. Les tons de TYPOLOGIE CLIENT ne se recyclent jamais (arbitrage
+// TONS RECYCLÉS) : cordial = 'warning' (même pixel ambre que l'ancien alias 'particulier'),
+// neutre = 'neutral' (état calme, plus jamais « B2B ») — ferme/MED restent danger. ──
 const TONE_BADGE: Record<RelanceTone, StatusBadgeVariant> = {
-  cordial: 'particulier',
-  neutre: 'b2b',
+  cordial: 'warning',
+  neutre: 'neutral',
   ferme: 'danger',
   miseendemeure: 'danger',
 };
@@ -105,8 +111,22 @@ function relanceProof(entry: RelancePlanEntry): string {
   return [entry.invoiceId, entry.amountCents, entry.daysLate, entry.tone, entry.docNumber ?? ''].join('|');
 }
 
-function toneColor(tone: RelanceTone, semantic: { particulier: string; b2b: string; danger: string }): string {
-  return TONE_BADGE[tone] === 'danger' ? semantic.danger : TONE_BADGE[tone] === 'b2b' ? semantic.b2b : semantic.particulier;
+/** Teinte de l'ICÔNE d'une relance (pastille pastel, ≥3:1 graphique — jamais du texte). */
+function toneIconColor(
+  tone: RelanceTone,
+  palette: { warning: string; danger: string; neutral: string },
+): string {
+  const variant = TONE_BADGE[tone];
+  return variant === 'danger' ? palette.danger : variant === 'neutral' ? palette.neutral : palette.warning;
+}
+
+/** Encre TEXTE d'une relance — l'ambre s'écrit warningInk (AA petit texte), le neutre slate. */
+function toneTextColor(
+  tone: RelanceTone,
+  palette: { warningInk: string; danger: string; neutral: string },
+): string {
+  const variant = TONE_BADGE[tone];
+  return variant === 'danger' ? palette.danger : variant === 'neutral' ? palette.neutral : palette.warningInk;
 }
 
 // ── Expertise par facture échue (C-EXP-UI1 — données du moteur, ZÉRO calcul ici) ──
@@ -115,7 +135,7 @@ function toneColor(tone: RelanceTone, semantic: { particulier: string; b2b: stri
 function prescriptionDisplay(
   prescription: NonNullable<RelancePlanEntry['prescription']>,
   personality: Personality,
-  palette: { success: string; warning: string; danger: string; far: string },
+  palette: { success: string; warning: string; warningInk: string; danger: string; far: string },
 ): { dot: string; color: string; weight: 500 | 600 | 700; text: string } {
   const date = frDate(prescription.deadline);
   switch (prescription.urgency) {
@@ -136,8 +156,10 @@ function prescriptionDisplay(
       };
     case 'a_surveiller':
       return {
+        // La pastille (graphique ≥3:1) garde l'ambre vif ; le TEXTE passe en warningInk —
+        // l'ambre nu sur blanc ≈ 3,4:1 échouait l'AA petit texte (audit 03/08).
         dot: palette.warning,
-        color: palette.warning,
+        color: palette.warningInk,
         weight: 600,
         text: t('relance.prescriptionLost', { personality, params: { date } }),
       };
@@ -175,6 +197,7 @@ function ExpertiseMeta({ entry, personality }: { entry: RelancePlanEntry; person
       ? prescriptionDisplay(prescription, personality, {
           success: semantic.success,
           warning: semantic.warning,
+          warningInk: semantic.warningInk,
           danger: semantic.danger,
           far: colors.slate400,
         })
@@ -184,7 +207,8 @@ function ExpertiseMeta({ entry, personality }: { entry: RelancePlanEntry; person
   return (
     <View style={{ marginTop: 8, gap: 4 }}>
       {penaltiesLine !== null ? (
-        <Text style={[font('meta', 600), { color: semantic.warning, fontVariant: ['tabular-nums'] }]}>
+        // warningInk : les pénalités juridiques en petit texte sur blanc — AA 5,25:1.
+        <Text style={[font('meta', 600), { color: semantic.warningInk, fontVariant: ['tabular-nums'] }]}>
           {penaltiesLine}
         </Text>
       ) : null}
@@ -224,10 +248,17 @@ function DueRelanceCard({
     <Card>
       <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
         <IconTile tone={TONE_BADGE[entry.tone]} size={34} radius={11}>
-          <SendIcon color={toneColor(entry.tone, semantic)} size={16} />
+          <SendIcon
+            color={toneIconColor(entry.tone, {
+              warning: semantic.warning,
+              danger: semantic.danger,
+              neutral: colors.slate500,
+            })}
+            size={16}
+          />
         </IconTile>
         <View style={{ flex: 1 }}>
-          <Text style={[font('label', 600), { fontSize: 14, color: colors.ink800 }]}>
+          <Text style={[font('body', 600), { color: colors.ink800 }]}>
             {t('notif.itemRelanceTitle', { personality, params: { name } })}
           </Text>
           <Text style={[font('meta'), { color: colors.slate500, marginTop: 2 }]}>
@@ -241,7 +272,7 @@ function DueRelanceCard({
       </View>
       {/* C-EXP-UI1 : pénalités courues + chrono de prescription — chiffrés par le moteur. */}
       <ExpertiseMeta entry={entry} personality={personality} />
-      <View style={{ flexDirection: 'row', gap: 8, marginTop: 13 }}>
+      <View style={{ flexDirection: 'row', gap: 8, marginTop: spacing.intraGap }}>
         <Button
           title={t('notif.actionView', { personality })}
           variant="secondary"
@@ -278,12 +309,17 @@ function FeedItemCard({
   const statusKey: I18nKey =
     item.status === 'done' ? 'notif.feedDone' : item.status === 'failed' ? 'notif.feedFailed' : 'notif.feedPending';
   const statusColor = item.status === 'failed' ? semantic.danger : colors.slate500;
+  const statusLine = `${t(statusKey, { personality })} · ${frDate(item.createdAt.slice(0, 10))}`;
+  const unread = item.readAt === null;
   return (
     <Card padding={13}>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={item.title}
-        accessibilityState={{ selected: item.readAt === null }}
+        // Papa vocal : l'item se comprend à l'oreille — titre, statut, date, et « non lue »
+        // en TEXTE (accessibilityState.selected détourné faisait annoncer « sélectionné »).
+        accessibilityLabel={`${item.title}, ${statusLine}${
+          unread ? `, ${t('notif.a11yUnread', { personality })}` : ''
+        }`}
         onPress={() => onPress(item)}
         style={({ pressed }) => ({
           flexDirection: 'row',
@@ -292,21 +328,21 @@ function FeedItemCard({
           opacity: pressed ? 0.65 : 1,
         })}
       >
-        <IconTile tone={item.status === 'failed' ? 'danger' : 'b2g'} size={34} radius={11}>
-          <SendIcon color={item.status === 'failed' ? semantic.danger : semantic.b2g} size={16} />
+        {/* Le fil, c'est BOB qui a agi (relances du cron) : canal indigo déclaré 'ai' —
+            jamais l'alias b2g (même pixel, contrat de sens différent). */}
+        <IconTile tone={item.status === 'failed' ? 'danger' : 'ai'} size={34} radius={11}>
+          <SendIcon color={item.status === 'failed' ? semantic.danger : semantic.ai} size={16} />
         </IconTile>
         <View style={{ flex: 1 }}>
           <Text
             numberOfLines={1}
-            style={[font('label', item.readAt === null ? 700 : 600), { fontSize: 14, color: colors.ink800 }]}
+            style={[font('body', unread ? 700 : 600), { color: colors.ink800 }]}
           >
             {item.title}
           </Text>
-          <Text style={[font('meta'), { color: statusColor, marginTop: 2 }]}>
-            {`${t(statusKey, { personality })} · ${frDate(item.createdAt.slice(0, 10))}`}
-          </Text>
+          <Text style={[font('meta'), { color: statusColor, marginTop: 2 }]}>{statusLine}</Text>
         </View>
-        {item.readAt === null ? (
+        {unread ? (
           <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: semantic.ai }} />
         ) : (
           <ChevronRightIcon color={controls.chevron} size={15} />
@@ -323,11 +359,16 @@ function UpcomingDueCard({ entry, personality }: { entry: UpcomingDueEntry; pers
   const doc = displayDoc(entry.docNumber, entry.invoiceId);
   const name = entry.customerName || doc;
   const subKey: I18nKey = entry.inDays === 0 ? 'notif.itemDueToday' : 'notif.itemDueSub';
+  const subLine = t(subKey, {
+    personality,
+    params: { doc, amount: formatEURWhole(entry.amountCents), days: entry.inDays },
+  });
   return (
     <Card padding={13}>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={t('notif.itemDueTitle', { personality, params: { name } })}
+        // Papa vocal : titre + pièce + montant + échéance dans la même annonce.
+        accessibilityLabel={`${t('notif.itemDueTitle', { personality, params: { name } })}, ${subLine}`}
         onPress={() => router.push(`/facture/${entry.invoiceId}`)}
         style={({ pressed }) => ({
           flexDirection: 'row',
@@ -340,15 +381,10 @@ function UpcomingDueCard({ entry, personality }: { entry: UpcomingDueEntry; pers
           <CalendarIcon color={semantic.particulier} size={16} />
         </IconTile>
         <View style={{ flex: 1 }}>
-          <Text style={[font('label', 600), { fontSize: 14, color: colors.ink800 }]}>
+          <Text style={[font('body', 600), { color: colors.ink800 }]}>
             {t('notif.itemDueTitle', { personality, params: { name } })}
           </Text>
-          <Text style={[font('meta'), { color: colors.slate500, marginTop: 2 }]}>
-            {t(subKey, {
-              personality,
-              params: { doc, amount: formatEURWhole(entry.amountCents), days: entry.inDays },
-            })}
-          </Text>
+          <Text style={[font('meta'), { color: colors.slate500, marginTop: 2 }]}>{subLine}</Text>
         </View>
         <ChevronRightIcon color={controls.chevron} size={15} />
       </Pressable>
@@ -373,10 +409,26 @@ function ScheduledRelanceRow({ entry, personality }: { entry: RelancePlanEntry; 
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
         <Avatar name={name} size={40} />
         <View style={{ flex: 1 }}>
-          <Text style={[font('label', 600), { fontSize: 14, color: colors.ink800 }]}>{name}</Text>
-          <Text style={[font('meta', 600), { color: toneColor(entry.tone, semantic), marginTop: 2 }]}>{line}</Text>
+          <Text style={[font('body', 600), { color: colors.ink800 }]}>{name}</Text>
+          <Text
+            style={[
+              font('meta', 600),
+              {
+                // Texte petit sur blanc : l'ambre s'écrit warningInk (AA), le graphique garde
+                // l'ambre vif ailleurs (pastilles/points).
+                color: toneTextColor(entry.tone, {
+                  warningInk: semantic.warningInk,
+                  danger: semantic.danger,
+                  neutral: colors.slate500,
+                }),
+                marginTop: 2,
+              },
+            ]}
+          >
+            {line}
+          </Text>
         </View>
-        <Text style={[font('label', 700), { fontSize: 14, color: colors.ink800, fontVariant: ['tabular-nums'] }]}>
+        <Text style={[font('body', 700), { color: colors.ink800, fontVariant: ['tabular-nums'] }]}>
           {formatEURWhole(entry.amountCents)}
         </Text>
       </View>
@@ -395,7 +447,7 @@ function SkeletonNotif() {
         <Skeleton height={11} width="66%" radius={6} />
         <Skeleton height={11} width="52%" radius={6} />
       </View>
-      <View style={{ flexDirection: 'row', gap: 8, marginTop: 13 }}>
+      <View style={{ flexDirection: 'row', gap: 8, marginTop: spacing.intraGap }}>
         <Skeleton height={34} width={86} radius={11} />
         <Skeleton height={34} width={96} radius={11} />
       </View>
@@ -405,7 +457,7 @@ function SkeletonNotif() {
 
 function NotificationsSkeleton() {
   return (
-    <View style={{ gap: 10 }}>
+    <View style={{ gap: spacing.itemGap }}>
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', minHeight: 28 }}>
         <Skeleton height={17} width="38%" radius={8} />
         <Skeleton height={28} width={92} radius={11} />
@@ -428,7 +480,9 @@ function PushConsentCard({
 }: {
   consent: PushPermissionConsent;
   personality: Personality;
-  onToast: (message: string) => void;
+  // Tone du feedback : success (activé), danger (échec réel) — les messages de RÉASSURANCE
+  // (« ton fil reste disponible ici ») restent SANS glyphe : ni coche mensongère, ni croix.
+  onToast: (message: string, tone?: ToastTone) => void;
 }) {
   const { colors, semantic } = useTheme();
   const { surface, state } = consent;
@@ -473,11 +527,11 @@ function PushConsentCard({
           : await consent.requestFromUser();
 
     if (outcome === 'registered' || outcome === 'granted') {
-      onToast(t('notif.pushEnabledToast', { personality }));
+      onToast(t('notif.pushEnabledToast', { personality }), 'success');
     } else if (outcome === 'denied' || outcome === 'blocked') {
       onToast(t('notif.pushDeniedToast', { personality }));
     } else if (outcome === 'unavailable') {
-      onToast(t('notif.pushErrorToast', { personality }));
+      onToast(t('notif.pushErrorToast', { personality }), 'danger');
     } else if (outcome === 'refreshed') {
       AccessibilityInfo.announceForAccessibility(
         `${t('notif.pushPrimerTitle', { personality })}. ${t('notif.pushPrimerBody', { personality })}`,
@@ -494,19 +548,21 @@ function PushConsentCard({
     <Card
       elevation={surface === 'primer' ? 'e2' : 'e1'}
       padding={surface === 'primer' ? 16 : 13}
-      style={surface === 'primer' ? { borderColor: semantic.b2g } : undefined}
+      style={surface === 'primer' ? { borderColor: semantic.ai } : undefined}
     >
       <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
-        <IconTile tone={surface === 'recovery' ? 'particulier' : 'b2g'} size={34} radius={11}>
-          <SendIcon color={surface === 'recovery' ? semantic.particulier : semantic.b2g} size={16} />
+        {/* C'est BOB qui préviendra : canal indigo déclaré 'ai' (l'alias b2g est banni) ;
+            'recovery' garde l'ambre d'attention. */}
+        <IconTile tone={surface === 'recovery' ? 'particulier' : 'ai'} size={34} radius={11}>
+          <SendIcon color={surface === 'recovery' ? semantic.particulier : semantic.ai} size={16} />
         </IconTile>
         <View style={{ flex: 1, gap: 3 }}>
           {surface === 'primer' ? (
-            <Text style={[font('eyebrow'), { color: semantic.b2g }]}>
+            <Text style={[font('eyebrow'), { color: semantic.ai }]}>
               {t('notif.pushPrimerEyebrow', { personality })}
             </Text>
           ) : null}
-          <Text accessibilityLiveRegion="polite" style={[font('label', 700), { color: colors.ink800, fontSize: 15 }]}>
+          <Text accessibilityLiveRegion="polite" style={[font('body', 700), { color: colors.ink800 }]}>
             {t(copy.title, { personality })}
           </Text>
           <Text selectable accessibilityLiveRegion="polite" style={[font('sub'), { color: colors.slate500, lineHeight: 20 }]}>
@@ -539,7 +595,7 @@ function PushConsentCard({
 }
 
 export default function Notifications() {
-  const { colors, semantic, personality } = useTheme();
+  const { colors, semantic, controls, personality } = useTheme();
   const insets = useSafeAreaInsets();
   const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: insets.bottom + 34 });
   const router = useRouter();
@@ -551,7 +607,28 @@ export default function Notifications() {
   const markAllRead = useMarkNotificationsReadThrough();
   const sendRelance = useSendRelance();
   const pushConsent = usePushPermissionConsent();
-  const [toast, setToast] = useState<string | null>(null);
+  // Toast typé par TONE (grammaire d'erreur Lot 0) : coche verte = succès, croix danger =
+  // échec, sans tone = information neutre — la coche unique mentait sur les échecs.
+  const [toast, setToast] = useState<{ readonly message: string; readonly tone?: ToastTone } | null>(
+    null,
+  );
+  const notify = useCallback(
+    (message: string, tone?: ToastTone) => setToast(tone === undefined ? { message } : { message, tone }),
+    [],
+  );
+  // Échecs de MUTATION appelables au support (envoi de relance, tout-marquer-lu) → ErrorSheet
+  // kit 2 faces avec code court + corrélation, jamais un simple toast.
+  const { showErrorFacts, errorSheet } = useErrorSheet();
+  const mutationFacts = useCallback((e: unknown, message: string): ErrorSheetFacts => {
+    const err = (e ?? {}) as { code?: string; correlationId?: string; kind?: string };
+    return {
+      message,
+      code: err.code ?? bobErrorCode(e),
+      ...(err.correlationId !== undefined ? { correlationId: err.correlationId } : {}),
+      ...(err.kind !== undefined ? { kind: err.kind } : {}),
+      at: new Date().toISOString(),
+    };
+  }, []);
   const serverSnapshotReady = feed.unreadCount !== null;
   const blockingError = feed.isError && !serverSnapshotReady;
   const feedFresh = serverSnapshotReady && !feed.isLoading && !feed.isError;
@@ -612,7 +689,7 @@ export default function Notifications() {
   const openFeedItem = (item: NotificationView): void => {
     if (feedFresh && item.readAt === null) {
       markRead.mutate(item.id, {
-        onError: () => setToast(t('notif.markReadError', { personality })),
+        onError: () => notify(t('notif.markReadError', { personality }), 'danger'),
       });
     }
     const route = parseAllowlistedPushRoute(item.route);
@@ -625,11 +702,12 @@ export default function Notifications() {
     const refreshed = await unreadPreview.refetch();
     const preview = refreshed.data;
     if (refreshed.isError || preview === undefined) {
-      setToast(t('notif.markAllError', { personality }));
+      // Échec de LECTURE (preview) : éphémère retryable → toast danger.
+      notify(t('notif.markAllError', { personality }), 'danger');
       return;
     }
     if (preview.unreadCount === 0) {
-      setToast(t('notif.markAllNoop', { personality }));
+      notify(t('notif.markAllNoop', { personality }));
       return;
     }
     const confirmBodyKey: I18nKey =
@@ -651,14 +729,20 @@ export default function Notifications() {
             : result.updatedCount === 1
               ? 'notif.markAllSuccessOne'
               : 'notif.markAllSuccess';
-        setToast(
+        notify(
           t(successKey, {
             personality,
             params: { count: result.updatedCount },
           }),
+          result.updatedCount === 0 ? undefined : 'success',
         );
       },
-      onError: () => setToast(t('notif.markAllError', { personality })),
+      // Échec de la COMMANDE : appelable au support → ErrorSheet 2 faces (corrélation).
+      onError: (e) =>
+        showErrorFacts(
+          t('errors.sheetTitle', { personality }),
+          mutationFacts(e, t('notif.markAllError', { personality })),
+        ),
     });
   };
 
@@ -683,47 +767,35 @@ export default function Notifications() {
       !feedFreshRef.current
       || dueRelanceProofsRef.current.get(entry.invoiceId) !== relanceProof(entry)
     ) {
-      setToast(t('notif.dataError', { personality }));
+      notify(t('notif.dataError', { personality }), 'danger');
       feed.refetch();
       return;
     }
     sendRelance.mutate(entry.invoiceId, {
       onSuccess: (result) =>
-        setToast(
+        notify(
           t(result.status === 'done' ? 'relance.sentToast' : 'relance.queuedToast', {
             personality,
             params: { name },
           }),
+          'success',
         ),
-      onError: () => setToast(t('relance.sendError', { personality })),
+      // Un envoi de relance raté = L'échec appelable au support (envoi réel sortant).
+      onError: (e) =>
+        showErrorFacts(
+          t('errors.sheetTitle', { personality }),
+          mutationFacts(e, t('relance.sendError', { personality })),
+        ),
     });
   };
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <View style={{ paddingTop: insets.top + 10, paddingHorizontal: 16 }}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={t('notif.back', { personality })}
-          onPress={() => router.back()}
-          hitSlop={8}
-          style={({ pressed }) => ({
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 4,
-            alignSelf: 'flex-start',
-            minHeight: 44,
-            opacity: pressed ? 0.6 : 1,
-          })}
-        >
-          <ChevronLeftIcon color={colors.ink800} size={18} strokeWidth={2.2} />
-          <Text style={[font('label', 600), { fontSize: 15, color: colors.ink800 }]}>
-            {t('notif.back', { personality })}
-          </Text>
-        </Pressable>
-      </View>
-
-      <InnerScreenHeader
+      {/* BackHeader kit — dernier écran hors lane à réimplémenter le duo back-row +
+          InnerScreenHeader (sur-espace retour→titre absorbé par le composant promu). */}
+      <BackHeader
+        backLabel={t('notif.back', { personality })}
+        onBack={() => router.back()}
         eyebrow={t('notif.eyebrow', { personality })}
         title={t('notif.title', { personality })}
         subtitle={t('notif.subtitle', { personality })}
@@ -732,10 +804,10 @@ export default function Notifications() {
       <ScrollView
         style={{ flex: 1 }}
         contentContainerStyle={{
-          paddingHorizontal: 18,
+          paddingHorizontal: spacing.gutter,
           paddingTop: 14,
           paddingBottom: bobScrollInsets.paddingBottom,
-          gap: 14,
+          gap: spacing.intraGap,
         }}
         automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
         scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
@@ -750,7 +822,7 @@ export default function Notifications() {
         }
       >
         {pushConsent.surface === 'primer' ? (
-          <PushConsentCard consent={pushConsent} personality={personality} onToast={setToast} />
+          <PushConsentCard consent={pushConsent} personality={personality} onToast={notify} />
         ) : null}
         {!serverSnapshotReady && !blockingError ? (
           <NotificationsSkeleton />
@@ -763,16 +835,16 @@ export default function Notifications() {
         ) : feed.isLoading ? (
           <NotificationsSkeleton />
         ) : staleFeed ? (
-          <View style={{ gap: 14 }}>
+          <View style={{ gap: spacing.intraGap }}>
             <ErrorRetry
-            message={t('notif.dataError', { personality })}
-            onRetry={feed.refetch}
-            retrying={feed.isRefetching}
-          />
+              message={t('notif.dataError', { personality })}
+              onRetry={feed.refetch}
+              retrying={feed.isRefetching}
+            />
             {feed.items.length > 0 ? (
               <View>
                 <SectionHeader title={t('notif.sectionFeed', { personality })} />
-                <View style={{ gap: 10 }}>
+                <View style={{ gap: spacing.itemGap }}>
                   {feed.items.map((item) => (
                     <FeedItemCard key={item.id} item={item} personality={personality} onPress={openFeedItem} />
                   ))}
@@ -786,7 +858,11 @@ export default function Notifications() {
             <EmptyState body={t('notif.empty', { personality })} />
           </Card>
         ) : (
-          <View style={{ gap: 20 }}>
+          <View style={{ gap: spacing.sectionGap }}>
+            {/* Cascade d'entrée fail-closed (signature des écrans frères) : chaque section fond
+                en entrant AU premier rendu du contenu — éteinte par construction sous
+                reduce-motion (FadeIn kit), jamais rejouée par un refetch. */}
+            <StaggeredList>
             {feed.items.length > 0 ? (
               <View>
                 <SectionHeader
@@ -811,7 +887,7 @@ export default function Notifications() {
                     ) : undefined
                   }
                 />
-                <View style={{ gap: 10 }}>
+                <View style={{ gap: spacing.itemGap }}>
                   {feed.items.map((item) => (
                     <FeedItemCard key={item.id} item={item} personality={personality} onPress={openFeedItem} />
                   ))}
@@ -822,7 +898,7 @@ export default function Notifications() {
             {feed.due.length > 0 ? (
               <View>
                 <SectionHeader title={t('notif.sectionDue', { personality })} />
-                <View style={{ gap: 10 }}>
+                <View style={{ gap: spacing.itemGap }}>
                   {feed.due.map((entry) => (
                     <DueRelanceCard
                       key={entry.invoiceId}
@@ -839,7 +915,7 @@ export default function Notifications() {
             {feed.upcoming.length > 0 ? (
               <View>
                 <SectionHeader title={t('notif.sectionUpcoming', { personality })} />
-                <View style={{ gap: 10 }}>
+                <View style={{ gap: spacing.itemGap }}>
                   {feed.upcoming.map((entry) => (
                     <UpcomingDueCard key={entry.invoiceId} entry={entry} personality={personality} />
                   ))}
@@ -849,24 +925,32 @@ export default function Notifications() {
 
             {feed.conformite ? (
               <Card padding={13}>
+                {/* Conformité reste 'b2g' (Chorus Pro, légitime) — mais la carte répond au
+                    doigt comme ses sœurs (elle était morte au toucher) et le chevron est
+                    celui des contrôles. */}
                 <Pressable
                   accessibilityRole="button"
-                  accessibilityLabel={t('notif.conformiteTitle', { personality })}
+                  accessibilityLabel={`${t('notif.conformiteTitle', { personality })}. ${t('notif.conformiteSub', { personality })}`}
                   onPress={() => router.push('/diagnostic')}
-                  style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}
+                  style={({ pressed }) => ({
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 12,
+                    opacity: pressed ? 0.65 : 1,
+                  })}
                 >
                   <IconTile tone="b2g" size={34} radius={11}>
                     <ShieldIcon color={semantic.b2g} size={16} strokeWidth={2} />
                   </IconTile>
                   <View style={{ flex: 1 }}>
-                    <Text style={[font('label', 600), { fontSize: 14, color: colors.ink800 }]}>
+                    <Text style={[font('body', 600), { color: colors.ink800 }]}>
                       {t('notif.conformiteTitle', { personality })}
                     </Text>
                     <Text style={[font('meta'), { color: colors.slate500, marginTop: 2 }]}>
                       {t('notif.conformiteSub', { personality })}
                     </Text>
                   </View>
-                  <ChevronRightIcon color={colors.slate400} size={15} />
+                  <ChevronRightIcon color={controls.chevron} size={15} />
                 </Pressable>
               </Card>
             ) : null}
@@ -874,15 +958,16 @@ export default function Notifications() {
             {planCount > 0 ? (
               <View>
                 <SectionHeader title={t('notif.sectionScheduled', { personality })} />
-                <View style={{ gap: 10 }}>
-                  {/* Relances auto : INFORMATIF (cron serveur réel, aucun réglage exposé → pas de toggle fantôme). */}
+                <View style={{ gap: spacing.itemGap }}>
+                  {/* Relances auto : INFORMATIF (cron serveur réel, aucun réglage exposé → pas
+                      de toggle fantôme). C'est BOB qui relance : canal indigo déclaré 'ai'. */}
                   <Card padding={13}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-                      <IconTile tone="b2g" size={34} radius={11}>
-                        <SendIcon color={semantic.b2g} size={16} />
+                      <IconTile tone="ai" size={34} radius={11}>
+                        <SendIcon color={semantic.ai} size={16} />
                       </IconTile>
                       <View style={{ flex: 1 }}>
-                        <Text style={[font('label', 700), { fontSize: 14.5, color: colors.ink800 }]}>
+                        <Text style={[font('body', 700), { color: colors.ink800 }]}>
                           {t('relance.autoTitle', { personality })}
                         </Text>
                         <Text style={[font('meta'), { color: colors.slate500, marginTop: 1 }]}>
@@ -896,40 +981,31 @@ export default function Notifications() {
                   {feed.scheduled.map((entry) => (
                     <ScheduledRelanceRow key={entry.invoiceId} entry={entry} personality={personality} />
                   ))}
-                  {/* Garde-fou du proto : la mise en demeure n'est jamais envoyée sans validation. */}
-                  <View
-                    style={{
-                      flexDirection: 'row',
-                      gap: 8,
-                      alignItems: 'flex-start',
-                      backgroundColor: semantic.dangerBg,
-                      borderRadius: 12,
-                      paddingVertical: 11,
-                      paddingHorizontal: 13,
-                    }}
-                  >
-                    <Text style={[font('meta', 600), { color: semantic.danger, flex: 1, lineHeight: 17 }]}>
-                      {t('relance.medWarning', { personality })}
-                    </Text>
-                  </View>
+                  {/* Garde-fou du proto — StatusStrip kit tone danger : l'encre foncée AA
+                      (surfaceTint.light.danger.ink) remplace le danger nu 4,1:1 sur dangerBg. */}
+                  <StatusStrip tone="danger" label={t('relance.medWarning', { personality })} />
                 </View>
               </View>
             ) : null}
+            </StaggeredList>
           </View>
         )}
         {/* Après un refus ou « plus tard », l'affordance reste récupérable mais quitte le haut
             de page : aucun nag répété, seulement un réglage passif en fin de fil. */}
         {pushConsent.surface !== 'hidden' && pushConsent.surface !== 'primer' ? (
-          <PushConsentCard consent={pushConsent} personality={personality} onToast={setToast} />
+          <PushConsentCard consent={pushConsent} personality={personality} onToast={notify} />
         ) : null}
       </ScrollView>
 
+      {/* Le TONE dessine le glyphe (coche verte / croix danger on-dark) — fin de l'icône
+          CheckIcon codée en dur qui mettait une coche de succès sur les échecs. */}
       <Toast
-        message={toast ?? ''}
+        message={toast?.message ?? ''}
         visible={toast !== null}
         onHide={() => setToast(null)}
-        icon={<CheckIcon color={colors.surface} size={15} />}
+        {...(toast?.tone !== undefined ? { tone: toast.tone } : {})}
       />
+      {errorSheet}
     </View>
   );
 }

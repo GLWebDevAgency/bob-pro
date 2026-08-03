@@ -14,9 +14,14 @@
  * · échec → message voix Bob + retry (JAMAIS de spinner infini, JAMAIS de repli démo).
  *
  * L'id de company n'est JAMAIS choisi ici : le serveur dérive company-<userId> (idempotent).
+ *
+ * Vague hors-lots (audit 03/08) : AuthCta/AuthField partagés, chips forme/TVA à cible 44 +
+ * rôle radio annoncé, messages d'erreur DÉDIÉS (les libellés ne servent plus de messages),
+ * erreurs en encre danger on-dark certifiée, H1 au cran screenH1, corps white80, fade-through
+ * fail-closed entre les phases.
  */
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, Text, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useQueryClient } from '@tanstack/react-query';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -26,9 +31,9 @@ import {
   type LegalForm,
   type VatRegime,
 } from '@bob/core';
-import { themes } from '@bob/tokens';
+import { surfaceTint, themes } from '@bob/tokens';
 import { t, type I18nKey } from '@bob/i18n';
-import { font, useTheme } from '@bob/ui';
+import { FadeIn, font, useTheme } from '@bob/ui';
 import { useAuth } from '../data/auth';
 import { useBobClient } from '../data/client';
 import { clearNoCompanyQueries } from '../data/no-company-state';
@@ -42,6 +47,8 @@ import {
 } from '../data/company-draft';
 import { CompanyFicheCard, formatSiret } from '../components/CompanyFicheCard';
 import { SparkIcon } from '../components/icons';
+import { AuthCta } from '../components/auth/AuthCta';
+import { AuthField } from '../components/auth/AuthField';
 import {
   discriminateSiretLookupError,
   type SiretLookupFailureReason,
@@ -71,11 +78,53 @@ const AUTH_SIRET_ERROR_KEY: Record<SiretLookupFailureReason, I18nKey> = {
 const lookupErrorKey = (error: unknown): I18nKey =>
   AUTH_SIRET_ERROR_KEY[discriminateSiretLookupError(error).reason];
 
+/** Chip de choix (forme juridique / régime TVA) — cible ≥ 44 pt, rôle radio annoncé. */
+function ChoicePill({
+  label,
+  selected,
+  onPress,
+}: {
+  label: string;
+  selected: boolean;
+  onPress: () => void;
+}) {
+  const { colors, overlays } = useTheme();
+  return (
+    <Pressable
+      accessibilityRole="radio"
+      accessibilityLabel={label}
+      accessibilityState={{ checked: selected }}
+      onPress={onPress}
+      style={{
+        // Cible 44 réelle : les chips ≈36 px arrivaient au geste fondateur du premier
+        // lancement, gants aux mains — la hauteur monte, la géométrie visuelle reste.
+        minHeight: 44,
+        justifyContent: 'center',
+        backgroundColor: selected ? colors.surface : overlays.white07,
+        borderWidth: 1,
+        borderColor: selected ? colors.surface : overlays.white16,
+        borderRadius: 12,
+        paddingHorizontal: 12,
+        paddingVertical: 9,
+      }}
+    >
+      <Text
+        style={[
+          font('label', 600),
+          { color: selected ? colors.ink900 : overlays.white70 },
+        ]}
+      >
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
 export function ProvisioningScreen() {
   const { session, signOut } = useAuth();
   const client = useBobClient();
   const queryClient = useQueryClient();
-  const { colors, overlays, semantic, personality } = useTheme();
+  const { colors, overlays, personality } = useTheme();
   const insets = useSafeAreaInsets();
 
   const say = (key: I18nKey): string => t(key, { personality });
@@ -166,11 +215,12 @@ export function ProvisioningScreen() {
   async function submitConfirm(): Promise<void> {
     if (busy || !company) return;
     if (!legalForm) {
-      setError(say('auth.provisioningLegalFormLabel'));
+      // Message d'erreur DÉDIÉ — le libellé du champ ne sert plus de message.
+      setError(say('auth.errLegalFormRequired'));
       return;
     }
     if (!vatRegime) {
-      setError(say('onboard.vatTitle'));
+      setError(say('auth.errVatRequired'));
       return;
     }
     await register(company, legalForm, vatRegime);
@@ -190,7 +240,7 @@ export function ProvisioningScreen() {
       >
         <SparkIcon color={colors.ink900} size={32} strokeWidth={1.9} />
       </View>
-      <Text style={[font('screenH1'), { fontSize: 26, lineHeight: 30, color: colors.surface }]}>
+      <Text style={[font('screenH1'), { lineHeight: 30, color: colors.surface }]}>
         {say('auth.provisioningTitle')}
       </Text>
     </View>
@@ -200,37 +250,18 @@ export function ProvisioningScreen() {
     <Text
       accessibilityRole="alert"
       accessibilityLiveRegion="polite"
-      style={[font('sub'), { fontSize: 13.5, color: semantic.dangerVivid }]}
+      // Encre danger on-dark CERTIFIÉE du kit matière — dangerVivid ≈4,3:1 échouait l'AA.
+      style={[font('sub'), { color: surfaceTint.dark.danger.ink }]}
     >
       {error}
     </Text>
   ) : null;
 
-  const cta = (label: string, onPress: () => void) => (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      accessibilityState={{ disabled: busy, busy }}
-      disabled={busy}
-      onPress={onPress}
-      style={({ pressed }) => ({
-        backgroundColor: colors.surface,
-        borderRadius: 15,
-        paddingVertical: 16,
-        alignItems: 'center',
-        opacity: busy ? 0.7 : 1,
-        transform: [{ scale: pressed && !busy ? 0.97 : 1 }],
-      })}
-    >
-      <Text style={[font('button'), { color: colors.ink900 }]}>{busy ? '…' : label}</Text>
-    </Pressable>
-  );
-
   const content =
     phase === 'auto' ? (
       <View style={{ gap: 14 }}>
         {header}
-        <Text style={[font('body'), { fontSize: 15, lineHeight: 22, color: overlays.white60 }]}>
+        <Text style={[font('body'), { lineHeight: 22, color: overlays.white80 }]}>
           {say('auth.provisioningBody')}
         </Text>
         {/* Tout échec quitte cette phase (confirm/siret + retry) : jamais de spinner infini. */}
@@ -239,39 +270,21 @@ export function ProvisioningScreen() {
     ) : phase === 'siret' ? (
       <View style={{ gap: 14 }}>
         {header}
-        <Text style={[font('body'), { fontSize: 15, lineHeight: 22, color: overlays.white60 }]}>
+        <Text style={[font('body'), { lineHeight: 22, color: overlays.white80 }]}>
           {say('auth.provisioningSiretIntro')}
         </Text>
-        <View style={{ gap: 7 }}>
-          <Text style={[font('label', 600), { fontSize: 12, color: overlays.white60 }]}>
-            {say('auth.stepSiret')}
-          </Text>
-          <TextInput
-            accessibilityLabel={say('auth.stepSiret')}
-            value={formatSiret(siret)}
-            onChangeText={(raw) => setSiret(raw.replace(/\D/g, '').slice(0, 14))}
-            placeholder={say('auth.siretPlaceholder')}
-            placeholderTextColor={overlays.white50}
-            keyboardType="number-pad"
-            returnKeyType="done"
-            onSubmitEditing={() => void submitSiret()}
-            style={[
-              font('body'),
-              {
-                backgroundColor: overlays.white07,
-                borderWidth: 1,
-                borderColor: error ? semantic.dangerVivid : overlays.white16,
-                borderRadius: 15,
-                paddingHorizontal: 16,
-                paddingVertical: 15,
-                fontSize: 15,
-                color: colors.surface,
-              },
-            ]}
-          />
-        </View>
+        <AuthField
+          label={say('auth.stepSiret')}
+          value={formatSiret(siret)}
+          onChangeText={(raw) => setSiret(raw.replace(/\D/g, '').slice(0, 14))}
+          placeholder={say('auth.siretPlaceholder')}
+          keyboardType="number-pad"
+          returnKeyType="done"
+          onSubmitEditing={() => void submitSiret()}
+          error={error !== null}
+        />
         {errorLine}
-        {cta(say('auth.siretCta'), () => void submitSiret())}
+        <AuthCta label={say('auth.siretCta')} busy={busy} onPress={() => void submitSiret()} />
       </View>
     ) : (
       <View style={{ gap: 14 }}>
@@ -279,86 +292,48 @@ export function ProvisioningScreen() {
         {company ? <CompanyFicheCard company={company} /> : null}
         {company && !company.legalForm ? (
           <View style={{ gap: 8 }}>
-            <Text style={[font('label', 600), { fontSize: 12.5, color: overlays.white70 }]}>
+            <Text style={[font('label', 600), { color: overlays.white70 }]}>
               {say('auth.provisioningLegalFormLabel')}
             </Text>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-              {LEGAL_FORM_OPTIONS.map((form) => {
-                const selected = legalForm === form;
-                return (
-                  <Pressable
-                    key={form}
-                    accessibilityRole="button"
-                    accessibilityLabel={LEGAL_FORM_LABELS[form]}
-                    accessibilityState={{ selected }}
-                    onPress={() => {
-                      setLegalForm(form);
-                      setError(null);
-                    }}
-                    style={{
-                      backgroundColor: selected ? colors.surface : overlays.white07,
-                      borderWidth: 1,
-                      borderColor: selected ? colors.surface : overlays.white16,
-                      borderRadius: 12,
-                      paddingHorizontal: 12,
-                      paddingVertical: 9,
-                    }}
-                  >
-                    <Text
-                      style={[
-                        font('label', 600),
-                        { fontSize: 13, color: selected ? colors.ink900 : overlays.white70 },
-                      ]}
-                    >
-                      {LEGAL_FORM_LABELS[form]}
-                    </Text>
-                  </Pressable>
-                );
-              })}
+              {LEGAL_FORM_OPTIONS.map((form) => (
+                <ChoicePill
+                  key={form}
+                  label={LEGAL_FORM_LABELS[form]}
+                  selected={legalForm === form}
+                  onPress={() => {
+                    setLegalForm(form);
+                    setError(null);
+                  }}
+                />
+              ))}
             </View>
           </View>
         ) : null}
         <View style={{ gap: 8 }}>
-          <Text style={[font('label', 600), { fontSize: 12.5, color: overlays.white70 }]}>
+          <Text style={[font('label', 600), { color: overlays.white70 }]}>
             {say('onboard.vatTitle')}
           </Text>
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-            {VAT_OPTIONS.map((option) => {
-              const selected = vatRegime === option.id;
-              return (
-                <Pressable
-                  key={option.id}
-                  accessibilityRole="button"
-                  accessibilityLabel={say(option.label)}
-                  accessibilityState={{ selected }}
-                  onPress={() => {
-                    setVatRegime(option.id);
-                    setError(null);
-                  }}
-                  style={{
-                    backgroundColor: selected ? colors.surface : overlays.white07,
-                    borderWidth: 1,
-                    borderColor: selected ? colors.surface : overlays.white16,
-                    borderRadius: 12,
-                    paddingHorizontal: 12,
-                    paddingVertical: 9,
-                  }}
-                >
-                  <Text
-                    style={[
-                      font('label', 600),
-                      { fontSize: 13, color: selected ? colors.ink900 : overlays.white70 },
-                    ]}
-                  >
-                    {say(option.label)}
-                  </Text>
-                </Pressable>
-              );
-            })}
+            {VAT_OPTIONS.map((option) => (
+              <ChoicePill
+                key={option.id}
+                label={say(option.label)}
+                selected={vatRegime === option.id}
+                onPress={() => {
+                  setVatRegime(option.id);
+                  setError(null);
+                }}
+              />
+            ))}
           </View>
         </View>
         {errorLine}
-        {cta(error ? say('auth.provisioningRetry') : say('auth.provisioningConfirmCta'), () => void submitConfirm())}
+        <AuthCta
+          label={error ? say('auth.provisioningRetry') : say('auth.provisioningConfirmCta')}
+          busy={busy}
+          onPress={() => void submitConfirm()}
+        />
       </View>
     );
 
@@ -384,16 +359,17 @@ export function ProvisioningScreen() {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        {content}
+        {/* Fade-through fail-closed entre les phases (auto → siret → confirm). */}
+        <FadeIn key={phase}>{content}</FadeIn>
         {/* Échappatoire honnête : jamais bloqué sur cet écran. */}
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={say('auth.provisioningSignOut')}
           onPress={() => void signOut()}
           hitSlop={8}
-          style={{ alignSelf: 'center', paddingVertical: 6, marginTop: 16 }}
+          style={{ alignSelf: 'center', minHeight: 44, justifyContent: 'center', marginTop: 16 }}
         >
-          <Text style={[font('label', 600), { fontSize: 13.5, color: overlays.white70 }]}>
+          <Text style={[font('label', 600), { color: overlays.white70 }]}>
             {say('auth.provisioningSignOut')}
           </Text>
         </Pressable>

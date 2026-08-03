@@ -1,22 +1,32 @@
-import { useCallback, useEffect, useRef, useState, type ComponentProps } from 'react';
+/**
+ * Récupération de mot de passe (deep link Supabase) — l'écran consomme l'URL, la nettoie de
+ * la navigation, délègue la preuve à la couche data, puis fait saisir le nouveau mot de passe.
+ *
+ * Vague hors-lots (audit 03/08) : AuthField/AuthCta partagés (fin des RecoveryField/
+ * RecoveryButton dupliqués), ligne d'erreur en encre danger on-dark certifiée
+ * (surfaceTint.dark.danger.ink — dangerVivid ≈4,3:1 échouait l'AA sur marine.d1),
+ * H1 au cran screenH1, corps white80 / détails white70, fade-through fail-closed
+ * entre les phases, coche verte pour le succès (SparkIcon = canal exclusif de Bob).
+ */
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
-  Pressable,
   ScrollView,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import { addEventListener, clearInitialURL, getInitialURL } from 'expo-linking';
 import { useRouter, type Href } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { themes } from '@bob/tokens';
+import { surfaceTint, themes } from '@bob/tokens';
 import { t, type I18nKey } from '@bob/i18n';
-import { font, useTheme } from '@bob/ui';
-import { LockIcon, SparkIcon } from '../components/icons';
+import { FadeIn, font, useTheme } from '@bob/ui';
+import { CheckIcon, LockIcon } from '../components/icons';
+import { AuthCta } from '../components/auth/AuthCta';
+import { AuthField } from '../components/auth/AuthField';
 import { useAuth } from '../data/auth';
 import {
   isPasswordRecoveryUrl,
@@ -35,112 +45,6 @@ const RECOVERY_ERROR_KEY: Record<PasswordRecoveryErrorCode, I18nKey> = {
   unknown: 'auth.errUnknown',
 };
 
-function RecoveryField({
-  label,
-  visible,
-  onToggleVisibility,
-  error,
-  ...input
-}: {
-  label: string;
-  visible: boolean;
-  onToggleVisibility: () => void;
-  error: boolean;
-} & ComponentProps<typeof TextInput>) {
-  const { colors, overlays, semantic, personality } = useTheme();
-  const visibilityLabel = t(visible ? 'auth.recoveryHidePassword' : 'auth.recoveryShowPassword', {
-    personality,
-  });
-  return (
-    <View style={{ gap: 7 }}>
-      <Text style={[font('label', 600), { fontSize: 12, color: overlays.white60 }]}>{label}</Text>
-      <View
-        style={{
-          minHeight: 54,
-          flexDirection: 'row',
-          alignItems: 'center',
-          backgroundColor: overlays.white07,
-          borderWidth: 1,
-          borderColor: error ? semantic.dangerVivid : overlays.white16,
-          borderRadius: 15,
-        }}
-      >
-        <TextInput
-          accessibilityLabel={label}
-          accessibilityHint={t('auth.passwordHint', { personality })}
-          placeholder="••••••••"
-          placeholderTextColor={overlays.white50}
-          secureTextEntry={!visible}
-          autoCapitalize="none"
-          autoCorrect={false}
-          autoComplete="new-password"
-          textContentType="newPassword"
-          style={[
-            font('body'),
-            {
-              flex: 1,
-              minHeight: 52,
-              paddingHorizontal: 16,
-              paddingVertical: 14,
-              fontSize: 15,
-              color: colors.surface,
-            },
-          ]}
-          {...input}
-        />
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={visibilityLabel}
-          onPress={onToggleVisibility}
-          hitSlop={4}
-          style={{ minWidth: 72, minHeight: 48, alignItems: 'center', justifyContent: 'center' }}
-        >
-          <Text style={[font('label', 600), { fontSize: 12.5, color: overlays.white70 }]}>
-            {visible
-              ? t('auth.recoveryHide', { personality })
-              : t('auth.recoveryShow', { personality })}
-          </Text>
-        </Pressable>
-      </View>
-    </View>
-  );
-}
-
-function RecoveryButton({
-  label,
-  busy = false,
-  onPress,
-}: {
-  label: string;
-  busy?: boolean;
-  onPress: () => void;
-}) {
-  const { colors } = useTheme();
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      accessibilityState={{ disabled: busy, busy }}
-      disabled={busy}
-      onPress={onPress}
-      style={({ pressed }) => ({
-        minHeight: 52,
-        borderRadius: 15,
-        alignItems: 'center',
-        justifyContent: 'center',
-        backgroundColor: colors.surface,
-        opacity: busy ? 0.68 : pressed ? 0.88 : 1,
-      })}
-    >
-      {busy ? (
-        <ActivityIndicator color={colors.ink900} />
-      ) : (
-        <Text style={[font('button'), { color: colors.ink900 }]}>{label}</Text>
-      )}
-    </Pressable>
-  );
-}
-
 export function PasswordRecoveryScreen() {
   const { colors, overlays, semantic, personality } = useTheme();
   const insets = useSafeAreaInsets();
@@ -153,8 +57,6 @@ export function PasswordRecoveryScreen() {
   } = useAuth();
   const [password, setPassword] = useState('');
   const [confirmation, setConfirmation] = useState('');
-  const [passwordVisible, setPasswordVisible] = useState(false);
-  const [confirmationVisible, setConfirmationVisible] = useState(false);
   const [validationError, setValidationError] = useState<I18nKey | null>(null);
   // Booléens uniquement : l'URL (qui peut contenir les jetons) n'est jamais conservée dans React.
   const initialLinkHandled = useRef(false);
@@ -248,6 +150,9 @@ export function PasswordRecoveryScreen() {
   const linkErrorIsProof =
     passwordRecovery.error === 'invalid_link' || passwordRecovery.error === 'expired_link';
   const fieldError = validationError !== null || passwordRecovery.error === 'weak_password';
+  const phaseKey = establishing ? 'establishing' : linkError ? 'error' : success ? 'success' : 'ready';
+  // Encre danger on-dark CERTIFIÉE (≥8:1) du kit matière — dangerVivid échouait l'AA ici.
+  const dangerOnDark = surfaceTint.dark.danger.ink;
 
   return (
     <View style={{ flex: 1, backgroundColor: themes.marine.d1 }}>
@@ -287,12 +192,15 @@ export function PasswordRecoveryScreen() {
               }}
             >
               {success ? (
-                <SparkIcon color={semantic.success} size={31} strokeWidth={2} />
+                // La coche verte dit le succès — SparkIcon reste le glyphe exclusif de Bob.
+                <CheckIcon color={semantic.success} size={31} strokeWidth={2.4} />
               ) : (
                 <LockIcon color={colors.ink900} size={29} strokeWidth={1.9} />
               )}
             </View>
 
+            {/* Fade-through fail-closed entre les phases (annonces préservées). */}
+            <FadeIn key={phaseKey}>
             {establishing ? (
               <View
                 accessibilityLiveRegion="polite"
@@ -302,13 +210,13 @@ export function PasswordRecoveryScreen() {
                 <Text
                   style={[
                     font('screenH1'),
-                    { fontSize: 28, lineHeight: 32, color: colors.surface },
+                    { lineHeight: 32, color: colors.surface },
                   ]}
                 >
                   {say('auth.recoveryCheckingTitle')}
                 </Text>
                 <Text
-                  style={[font('body'), { fontSize: 15, lineHeight: 22, color: overlays.white66 }]}
+                  style={[font('body'), { lineHeight: 22, color: overlays.white80 }]}
                 >
                   {say('auth.recoveryCheckingBody')}
                 </Text>
@@ -320,7 +228,7 @@ export function PasswordRecoveryScreen() {
                   accessibilityRole="header"
                   style={[
                     font('screenH1'),
-                    { fontSize: 28, lineHeight: 32, color: colors.surface },
+                    { lineHeight: 32, color: colors.surface },
                   ]}
                 >
                   {say(
@@ -333,7 +241,7 @@ export function PasswordRecoveryScreen() {
                 </Text>
                 <Text
                   accessibilityRole="alert"
-                  style={[font('body'), { fontSize: 15, lineHeight: 22, color: overlays.white66 }]}
+                  style={[font('body'), { lineHeight: 22, color: overlays.white80 }]}
                 >
                   {say(
                     passwordRecovery.error
@@ -341,7 +249,7 @@ export function PasswordRecoveryScreen() {
                       : 'auth.recoveryInvalidBody',
                   )}
                 </Text>
-                <RecoveryButton label={say('auth.recoveryBack')} onPress={continueToApp} />
+                <AuthCta label={say('auth.recoveryBack')} onPress={continueToApp} />
               </View>
             ) : success ? (
               <View accessibilityLiveRegion="polite" style={{ gap: 14 }}>
@@ -349,17 +257,17 @@ export function PasswordRecoveryScreen() {
                   accessibilityRole="header"
                   style={[
                     font('screenH1'),
-                    { fontSize: 28, lineHeight: 32, color: colors.surface },
+                    { lineHeight: 32, color: colors.surface },
                   ]}
                 >
                   {say('auth.recoverySuccessTitle')}
                 </Text>
                 <Text
-                  style={[font('body'), { fontSize: 15, lineHeight: 22, color: overlays.white66 }]}
+                  style={[font('body'), { lineHeight: 22, color: overlays.white80 }]}
                 >
                   {say('auth.recoverySuccessBody')}
                 </Text>
-                <RecoveryButton label={say('auth.recoverySuccessCta')} onPress={continueToApp} />
+                <AuthCta label={say('auth.recoverySuccessCta')} onPress={continueToApp} />
               </View>
             ) : (
               <View style={{ gap: 14 }}>
@@ -368,7 +276,7 @@ export function PasswordRecoveryScreen() {
                     accessibilityRole="header"
                     style={[
                       font('screenH1'),
-                      { fontSize: 28, lineHeight: 32, color: colors.surface },
+                      { lineHeight: 32, color: colors.surface },
                     ]}
                   >
                     {say('auth.recoveryTitle')}
@@ -376,55 +284,66 @@ export function PasswordRecoveryScreen() {
                   <Text
                     style={[
                       font('body'),
-                      { fontSize: 15, lineHeight: 22, color: overlays.white66 },
+                      { lineHeight: 22, color: overlays.white80 },
                     ]}
                   >
                     {say('auth.recoveryBody')}
                   </Text>
                 </View>
-                <RecoveryField
+                <AuthField
                   label={say('auth.recoveryNewPassword')}
                   value={password}
                   onChangeText={(value) => {
                     setPassword(value);
                     setValidationError(null);
                   }}
-                  visible={passwordVisible}
-                  onToggleVisibility={() => setPasswordVisible((visible) => !visible)}
+                  placeholder="••••••••"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  autoComplete="new-password"
+                  textContentType="newPassword"
+                  accessibilityHint={say('auth.passwordHint')}
+                  secureToggle
                   error={fieldError}
                 />
-                <RecoveryField
+                <AuthField
                   label={say('auth.recoveryConfirmPassword')}
                   value={confirmation}
                   onChangeText={(value) => {
                     setConfirmation(value);
                     setValidationError(null);
                   }}
-                  visible={confirmationVisible}
-                  onToggleVisibility={() => setConfirmationVisible((visible) => !visible)}
+                  placeholder="••••••••"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  autoComplete="new-password"
+                  textContentType="newPassword"
+                  accessibilityHint={say('auth.passwordHint')}
+                  secureToggle
                   error={fieldError}
                   returnKeyType="go"
                   onSubmitEditing={() => void submit()}
                 />
-                <Text style={[font('meta'), { fontSize: 12, color: overlays.white50 }]}>
+                <Text style={[font('meta'), { color: overlays.white70 }]}>
                   {say('auth.passwordHint')}
                 </Text>
                 {formError ? (
                   <Text
                     accessibilityRole="alert"
                     accessibilityLiveRegion="polite"
-                    style={[font('sub'), { fontSize: 13.5, color: semantic.dangerVivid }]}
+                    style={[font('sub'), { color: dangerOnDark }]}
                   >
                     {formError}
                   </Text>
                 ) : null}
-                <RecoveryButton
+                <AuthCta
                   label={say('auth.recoveryCta')}
                   busy={updating}
                   onPress={() => void submit()}
                 />
               </View>
             )}
+            </FadeIn>
 
             <View
               style={{
@@ -434,8 +353,8 @@ export function PasswordRecoveryScreen() {
                 gap: 7,
               }}
             >
-              <LockIcon color={overlays.white50} size={13} strokeWidth={2} />
-              <Text style={[font('meta'), { fontSize: 11.5, color: overlays.white50 }]}>
+              <LockIcon color={overlays.white70} size={13} strokeWidth={2} />
+              <Text style={[font('meta'), { color: overlays.white70 }]}>
                 {say('auth.footerSecure')}
               </Text>
             </View>

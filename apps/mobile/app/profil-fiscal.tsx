@@ -12,16 +12,16 @@ import { Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { applicableFiscalFields, type FiscalProfileView } from '@bob/core';
+import { spacing } from '@bob/tokens';
 import { t, type Personality } from '@bob/i18n';
-import { Button, Card, ErrorRetry, SkeletonCard, font, useTheme } from '@bob/ui';
+import { BackHeader, Button, Card, ErrorRetry, Skeleton, font, useTheme } from '@bob/ui';
 import { usePublishAgentContext, type AgentContext, type AgentSurface } from '../src/agent';
 import { useFiscalProfileFlow } from '../src/fiscal/use-fiscal-profile-flow';
 import { FIELD_NAME_KEY, FIELD_STATUS_LABEL_KEY, FIELD_STATUS_TONE, type FiscalProfileFieldName } from '../src/fiscal/fiscal-i18n-keys';
 import { fieldSourceCaption, fieldValueDisplay } from '../src/fiscal/fiscal-value-labels';
 import { FiscalStatusPill } from '../src/components/fiscal/FiscalStatusPill';
 import { FiscalFieldEditSheet, type FiscalEditableField } from '../src/components/fiscal/FiscalFieldEditSheet';
-import { ChevronRightIcon } from '../src/components/icons';
-import { ScreenHeader } from '../src/components/screen-header';
+import { CheckIcon, ChevronRightIcon } from '../src/components/icons';
 import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 
 function FiscalFieldRow({
@@ -61,13 +61,15 @@ function FiscalFieldRow({
       }}
     >
       <View style={{ flex: 1, minWidth: 0 }}>
-        <Text style={[font('sub', 600), { fontSize: 14.5, color: colors.ink800 }]}>{fieldLabel}</Text>
-        <Text numberOfLines={1} style={[font('body'), { fontSize: 14, color: colors.ink900, marginTop: 2 }]}>
+        {/* Passe typo (vague hors-lots) : les demi-tailles 14.5/14/11.5 s'arrondissent aux
+            crans existants — body 14.5 et meta 12 (arbitrage : aucune demi-taille ad hoc). */}
+        <Text style={[font('body', 600), { color: colors.ink800 }]}>{fieldLabel}</Text>
+        <Text numberOfLines={1} style={[font('body'), { color: colors.ink900, marginTop: 2 }]}>
           {valueLabel}
         </Text>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, marginTop: 6 }}>
           <FiscalStatusPill label={statusLabel} tone={tone} />
-          <Text numberOfLines={1} style={[font('meta'), { fontSize: 11.5, color: colors.slate400, flexShrink: 1 }]}>
+          <Text numberOfLines={1} style={[font('meta'), { color: colors.slate400, flexShrink: 1 }]}>
             {sourceCaption}
           </Text>
         </View>
@@ -78,7 +80,7 @@ function FiscalFieldRow({
 }
 
 export default function ProfilFiscal() {
-  const { colors, personality } = useTheme();
+  const { colors, semantic, personality } = useTheme();
   const insets = useSafeAreaInsets();
   const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: insets.bottom + 34 });
   const router = useRouter();
@@ -107,7 +109,8 @@ export default function ProfilFiscal() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScreenHeader
+      {/* BackHeader importé directement de @bob/ui — le réexport local est déprécié. */}
+      <BackHeader
         backLabel={t('reglages.back', { personality })}
         onBack={() => router.back()}
         eyebrow={t('fiscal.screen.eyebrow', { personality })}
@@ -118,7 +121,7 @@ export default function ProfilFiscal() {
       <ScrollView
         style={{ flex: 1 }}
         contentContainerStyle={{
-          paddingHorizontal: 18,
+          paddingHorizontal: spacing.gutter,
           paddingTop: 14,
           paddingBottom: bobScrollInsets.paddingBottom,
         }}
@@ -135,7 +138,28 @@ export default function ProfilFiscal() {
         }
       >
         {flow.isLoading && !profile ? (
-          <SkeletonCard height={420} contentLines={6} />
+          // Skeleton FIDÈLE (doctrine des gabarits) : la silhouette de la liste de rangées
+          // (deux lignes + pastille), jamais un bloc plein qui saute à l'arrivée des données.
+          <Card radius={18} padding={0} style={{ paddingHorizontal: 16 }}>
+            {Array.from({ length: 6 }, (_, index) => (
+              <View
+                key={index}
+                style={{
+                  paddingVertical: 13,
+                  gap: 6,
+                  borderBottomWidth: index === 5 ? 0 : 1,
+                  borderBottomColor: colors.lineSoft,
+                }}
+              >
+                <Skeleton height={13} width="42%" radius={6} />
+                <Skeleton height={13} width="64%" radius={6} />
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
+                  <Skeleton height={17} width={74} radius={6} />
+                  <Skeleton height={10} width="30%" radius={5} />
+                </View>
+              </View>
+            ))}
+          </Card>
         ) : flow.isError && !profile ? (
           // Aucune donnée en cache : un échec pur, jamais un profil vide qui laisserait croire
           // que rien n'est renseigné.
@@ -167,8 +191,16 @@ export default function ProfilFiscal() {
                 />
               </View>
             ) : (
-              <Card style={{ marginBottom: 16, backgroundColor: colors.lineSoft, borderWidth: 0 }}>
-                <Text style={[font('sub', 600), { color: colors.ink800 }]}>{t('fiscal.screen.allSet', { personality })}</Text>
+              // Le vert est la récompense du geste commis : un profil fiscal entièrement
+              // confirmé est exactement ce moment — successBg + successInk + coche discrète
+              // (l'état neutre lineSoft le faisait ressembler à un bloc désactivé).
+              <Card style={{ marginBottom: 16, backgroundColor: semantic.successBg, borderWidth: 0 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <CheckIcon color={semantic.successInk} size={15} strokeWidth={2.6} />
+                  <Text style={[font('sub', 600), { color: semantic.successInk, flex: 1 }]}>
+                    {t('fiscal.screen.allSet', { personality })}
+                  </Text>
+                </View>
               </Card>
             )}
 

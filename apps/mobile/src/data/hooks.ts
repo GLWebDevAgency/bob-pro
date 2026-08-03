@@ -181,7 +181,8 @@ export function useStartCheckout() {
       void qc.invalidateQueries({ queryKey: ['subscription-invoices'] });
       openUrl(v.url);
     },
-    onError: alertError,
+    // Pas d'alertError générique (vague hors-lots) : compte.tsx — seul consommateur — porte
+    // l'échec en ErrorSheet 2 faces via les options de mutate (grammaire d'erreur, « Oups » banni).
   });
 }
 
@@ -200,7 +201,7 @@ export function useBillingPortal() {
       void qc.invalidateQueries({ queryKey: ['subscription-invoices'] });
       openUrl(v.url);
     },
-    onError: alertError,
+    // Même doctrine que useStartCheckout : l'échec remonte à l'écran (ErrorSheet).
   });
 }
 

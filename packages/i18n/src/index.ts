@@ -7375,6 +7375,18 @@ const legacyFr = {
     pro: 'Forme juridique de l’entreprise',
     direct: 'Forme juridique ?',
   },
+  // Erreurs de validation DÉDIÉES (vague hors-lots) : les libellés de champ servaient de
+  // messages d'erreur (« Forme juridique » comme texte d'erreur n'explique rien).
+  'auth.errLegalFormRequired': {
+    pote: 'Choisis ta forme juridique pour continuer.',
+    pro: 'Sélectionnez la forme juridique pour continuer.',
+    direct: 'Choisis la forme juridique.',
+  },
+  'auth.errVatRequired': {
+    pote: 'Choisis ton régime de TVA pour continuer.',
+    pro: 'Sélectionnez le régime de TVA pour continuer.',
+    direct: 'Choisis le régime de TVA.',
+  },
   'auth.provisioningConfirmCta': {
     pote: 'Créer mon espace',
     pro: 'Créer mon espace',
@@ -7618,6 +7630,9 @@ const legacyFr = {
     direct: 'Activité',
   },
   'notif.feedDone': { pote: 'Envoyée', pro: 'Envoyée', direct: 'Envoyée' },
+  // Papa vocal (vague hors-lots) : « non lue » se dit en TEXTE dans le label composé —
+  // le détournement d'accessibilityState.selected faisait annoncer « sélectionné ».
+  'notif.a11yUnread': { pote: 'non lue', pro: 'non lue', direct: 'non lue' },
   'notif.feedPending': {
     pote: 'En cours d’envoi…',
     pro: 'Envoi en cours…',
@@ -9419,6 +9434,18 @@ const legacyFr = {
     pro: 'Impossible de charger les réglages. Veuillez réessayer.',
     direct: 'Réglages injoignables. Réessaie.',
   },
+  // Échec d'ÉCRITURE d'un réglage (vague hors-lots) : les données restent affichées, la
+  // feuille d'erreur porte ce message — jamais un ErrorRetry plein écran pour un switch raté.
+  'reglages.saveError': {
+    pote: 'Je n’ai pas pu enregistrer ce réglage. Tes valeurs actuelles restent en place.',
+    pro: 'Le réglage n’a pas pu être enregistré. Les valeurs actuelles restent appliquées.',
+    direct: 'Enregistrement KO. Rien n’a bougé.',
+  },
+  // Swatches d'accent PDF (vague hors-lots) : VoiceOver lisait les clés anglaises brutes.
+  'reglages.accentNavy': { pote: 'Marine', pro: 'Marine', direct: 'Marine' },
+  'reglages.accentGreen': { pote: 'Vert', pro: 'Vert', direct: 'Vert' },
+  'reglages.accentPurple': { pote: 'Violet', pro: 'Violet', direct: 'Violet' },
+  'reglages.accentOrange': { pote: 'Orange', pro: 'Orange', direct: 'Orange' },
   // Le libellé nomme l'écran de destination — reglages-facturation ET profil-fiscal ne sont
   // ouverts QUE depuis Compte (compte.tsx), la clé partagée reste donc correcte pour les deux.
   'reglages.back': { pote: 'Compte', pro: 'Compte', direct: 'Compte' },
@@ -10018,6 +10045,18 @@ const legacyFr = {
     pote: '{count} échec(s) gardé(s) en mémoire, sur les {max} derniers max.',
     pro: '{count} échec(s) conservé(s) (maximum {max}).',
     direct: '{count}/{max} échecs.',
+  },
+  // Statut d'une entrée du journal — sorti du code en dur (vague hors-lots) : tout texte
+  // visible passe par la voix de Bob, même sur l'écran support.
+  'diagtech.noResponse': {
+    pote: 'sans réponse',
+    pro: 'sans réponse',
+    direct: 'sans réponse',
+  },
+  'diagtech.httpStatus': {
+    pote: 'HTTP {status}',
+    pro: 'HTTP {status}',
+    direct: 'HTTP {status}',
   },
 
   // ── Mon compte — accès au diagnostic technique ─────────────────────────────

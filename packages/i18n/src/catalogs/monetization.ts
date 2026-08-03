@@ -148,6 +148,9 @@ export const monetizationFr = {
   },
 
   // ── Changement d'offre (diff honnête) ──
+  // Label du geste de comparaison (vague hors-lots) : l'ancien label collait les titres des
+  // deux blocs (« {plan} — tu gagnes / tu perds »), cryptique à l'oreille.
+  'planDiff.compareWith': same('Comparer avec {plan}'),
   'planDiff.gains': same('Ce que tu gagnes'),
   'planDiff.losses': same('Ce que tu perds'),
   'planDiff.noChange': same('Aucun changement de fonctions entre ces deux offres.'),

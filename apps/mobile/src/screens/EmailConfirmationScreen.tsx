@@ -8,17 +8,23 @@
  * · preuve échangée → session publiée, l'app entre toute seule (AuthGate) ;
  * · compte confirmé sans session possible (autre appareil, code déjà servi) → « connecte-toi » ;
  * · lien expiré/invalide → copy dédiée, retour connexion (le login propose le renvoi d'email).
+ *
+ * Vague hors-lots (audit 03/08) : AuthCta partagé (fin du ConfirmationButton dupliqué),
+ * CheckIcon vert pour le succès (SparkIcon reste le glyphe EXCLUSIF de Bob), H1 au cran
+ * screenH1, corps white80 / détails white70 (doctrine on-dark), fade-through fail-closed
+ * entre les phases (FadeIn kit — coupé net sous reduce-motion).
  */
 import { useCallback, useEffect, useRef } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, Text, View } from 'react-native';
+import { ActivityIndicator, ScrollView, Text, View } from 'react-native';
 import { addEventListener, clearInitialURL, getInitialURL } from 'expo-linking';
 import { useLocalSearchParams, useRouter, type Href } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { themes } from '@bob/tokens';
 import { t, type I18nKey } from '@bob/i18n';
-import { font, useTheme } from '@bob/ui';
-import { LockIcon, MailIcon, SparkIcon } from '../components/icons';
+import { FadeIn, font, useTheme } from '@bob/ui';
+import { CheckIcon, LockIcon, MailIcon } from '../components/icons';
+import { AuthCta } from '../components/auth/AuthCta';
 import { useAuth } from '../data/auth';
 import { markFreshLogin } from '../data/biometric';
 import {
@@ -54,27 +60,6 @@ const FORWARDED_PARAM_NAMES = [
   'error_code',
   'error_description',
 ] as const;
-
-function ConfirmationButton({ label, onPress }: { label: string; onPress: () => void }) {
-  const { colors } = useTheme();
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      onPress={onPress}
-      style={({ pressed }) => ({
-        minHeight: 52,
-        borderRadius: 15,
-        alignItems: 'center',
-        justifyContent: 'center',
-        backgroundColor: colors.surface,
-        opacity: pressed ? 0.88 : 1,
-      })}
-    >
-      <Text style={[font('button'), { color: colors.ink900 }]}>{label}</Text>
-    </Pressable>
-  );
-}
 
 export function EmailConfirmationScreen() {
   const { colors, overlays, semantic, personality } = useTheme();
@@ -166,6 +151,7 @@ export function EmailConfirmationScreen() {
   const signedIn = emailConfirmation.phase === 'signed_in';
   const confirmed = emailConfirmation.phase === 'confirmed';
   const error = emailConfirmation.phase === 'error' ? (emailConfirmation.error ?? 'unknown') : null;
+  const phaseKey = checking ? 'checking' : signedIn ? 'signed_in' : confirmed ? 'confirmed' : 'error';
 
   return (
     <View style={{ flex: 1, backgroundColor: themes.marine.d1 }}>
@@ -201,12 +187,17 @@ export function EmailConfirmationScreen() {
             }}
           >
             {signedIn || confirmed ? (
-              <SparkIcon color={semantic.success} size={31} strokeWidth={2} />
+              // Le vert-récompense a son glyphe : la COCHE. SparkIcon reste réservé au
+              // logo/canal de Bob (doctrine L2 — l'étincelle ne dit jamais « succès »).
+              <CheckIcon color={semantic.success} size={31} strokeWidth={2.4} />
             ) : (
               <MailIcon color={colors.ink900} size={29} strokeWidth={1.9} />
             )}
           </View>
 
+          {/* Fade-through fail-closed entre les phases — annonces/focus préservés (les
+              liveRegions restent sur les blocs), coupé net sous reduce-motion. */}
+          <FadeIn key={phaseKey}>
           {checking ? (
             <View
               accessibilityLiveRegion="polite"
@@ -214,12 +205,12 @@ export function EmailConfirmationScreen() {
               style={{ gap: 12 }}
             >
               <Text
-                style={[font('screenH1'), { fontSize: 28, lineHeight: 32, color: colors.surface }]}
+                style={[font('screenH1'), { lineHeight: 32, color: colors.surface }]}
               >
                 {say('auth.confirmCheckingTitle')}
               </Text>
               <Text
-                style={[font('body'), { fontSize: 15, lineHeight: 22, color: overlays.white66 }]}
+                style={[font('body'), { lineHeight: 22, color: overlays.white80 }]}
               >
                 {say('auth.confirmCheckingBody')}
               </Text>
@@ -229,12 +220,12 @@ export function EmailConfirmationScreen() {
             <View accessibilityLiveRegion="polite" style={{ gap: 12 }}>
               <Text
                 accessibilityRole="header"
-                style={[font('screenH1'), { fontSize: 28, lineHeight: 32, color: colors.surface }]}
+                style={[font('screenH1'), { lineHeight: 32, color: colors.surface }]}
               >
                 {say('auth.confirmSignedInTitle')}
               </Text>
               <Text
-                style={[font('body'), { fontSize: 15, lineHeight: 22, color: overlays.white66 }]}
+                style={[font('body'), { lineHeight: 22, color: overlays.white80 }]}
               >
                 {say('auth.confirmSignedInBody')}
               </Text>
@@ -244,34 +235,35 @@ export function EmailConfirmationScreen() {
             <View accessibilityLiveRegion="polite" style={{ gap: 14 }}>
               <Text
                 accessibilityRole="header"
-                style={[font('screenH1'), { fontSize: 28, lineHeight: 32, color: colors.surface }]}
+                style={[font('screenH1'), { lineHeight: 32, color: colors.surface }]}
               >
                 {say('auth.confirmDoneTitle')}
               </Text>
               <Text
-                style={[font('body'), { fontSize: 15, lineHeight: 22, color: overlays.white66 }]}
+                style={[font('body'), { lineHeight: 22, color: overlays.white80 }]}
               >
                 {say('auth.confirmDoneBody')}
               </Text>
-              <ConfirmationButton label={say('auth.confirmDoneCta')} onPress={continueToLogin} />
+              <AuthCta label={say('auth.confirmDoneCta')} onPress={continueToLogin} />
             </View>
           ) : (
             <View style={{ gap: 14 }}>
               <Text
                 accessibilityRole="header"
-                style={[font('screenH1'), { fontSize: 28, lineHeight: 32, color: colors.surface }]}
+                style={[font('screenH1'), { lineHeight: 32, color: colors.surface }]}
               >
                 {say(CONFIRMATION_ERROR_TITLE_KEY[error ?? 'unknown'])}
               </Text>
               <Text
                 accessibilityRole="alert"
-                style={[font('body'), { fontSize: 15, lineHeight: 22, color: overlays.white66 }]}
+                style={[font('body'), { lineHeight: 22, color: overlays.white80 }]}
               >
                 {say(CONFIRMATION_ERROR_BODY_KEY[error ?? 'unknown'])}
               </Text>
-              <ConfirmationButton label={say('auth.confirmBack')} onPress={continueToLogin} />
+              <AuthCta label={say('auth.confirmBack')} onPress={continueToLogin} />
             </View>
           )}
+          </FadeIn>
 
           <View
             style={{
@@ -281,8 +273,8 @@ export function EmailConfirmationScreen() {
               gap: 7,
             }}
           >
-            <LockIcon color={overlays.white50} size={13} strokeWidth={2} />
-            <Text style={[font('meta'), { fontSize: 11.5, color: overlays.white50 }]}>
+            <LockIcon color={overlays.white70} size={13} strokeWidth={2} />
+            <Text style={[font('meta'), { color: overlays.white70 }]}>
               {say('auth.footerSecure')}
             </Text>
           </View>
