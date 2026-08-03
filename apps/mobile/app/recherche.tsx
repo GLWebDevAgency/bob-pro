@@ -8,20 +8,23 @@
  * masquées si vides. Zéro hex, zéro fixture.
  */
 import { useMemo, useState } from 'react';
-import { Pressable, RefreshControl, ScrollView, Text, TextInput, View } from 'react-native';
+import { Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { formatEUR, searchGlobal, type GlobalSearchResult } from '@bob/core';
-import { patterns, shadowNative } from '@bob/tokens';
+import { documentTile } from '@bob/tokens';
 import { t } from '@bob/i18n';
 import {
   Card,
   EmptyState,
   ErrorRetry,
+  FadeIn,
   IconTile,
+  SearchField,
   SectionHeader,
   Skeleton,
   SkeletonRow,
+  StickyBackRow,
   font,
   useTheme,
   type StatusBadgeVariant,
@@ -32,12 +35,10 @@ import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import { combineQueryStates } from '../src/data/query-state';
 import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 import {
-  ChevronLeftIcon,
   ChevronRightIcon,
   FileIcon,
   FileTextIcon,
   PeopleIcon,
-  SearchIcon,
 } from '../src/components/icons';
 
 const TYPE_TONE: Record<'b2c' | 'b2b' | 'b2g', StatusBadgeVariant> = {
@@ -51,12 +52,15 @@ function formatDate(iso: string): string {
   return d && m && y ? `${d}/${m}/${y}` : iso.slice(0, 10);
 }
 
-/** Rangée de résultat générique : pastille + titre + meta + accessoire, hairline entre rangées. */
+/** Rangée de résultat générique : pastille + titre + meta + accessoire, hairline entre
+ * rangées. Papa vocal (Lot 5) : le label accessible COMPOSE titre + meta + montant
+ * (`trailingLabel`) — « FA-2026-012, Mairie de Lyon, 1 250 € » se comprend à l'oreille. */
 function ResultRow({
   tile,
   title,
   meta,
   trailing,
+  trailingLabel,
   divider,
   onPress,
 }: {
@@ -64,6 +68,8 @@ function ResultRow({
   title: string;
   meta: string;
   trailing?: React.ReactNode;
+  /** Texte annoncé pour l'accessoire (le montant d'une pièce) — jamais un chiffre muet. */
+  trailingLabel?: string;
   divider: boolean;
   onPress: () => void;
 }) {
@@ -71,7 +77,7 @@ function ResultRow({
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={title}
+      accessibilityLabel={[title, meta, trailingLabel].filter(Boolean).join(', ')}
       onPress={onPress}
       style={({ pressed }) => ({
         flexDirection: 'row',
@@ -101,7 +107,7 @@ function ResultRow({
 }
 
 export default function Recherche() {
-  const { personality, colors, semantic, controls } = useTheme();
+  const { personality, colors, semantic } = useTheme();
   const insets = useSafeAreaInsets();
   const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: insets.bottom + 34 });
   const router = useRouter();
@@ -186,35 +192,11 @@ export default function Recherche() {
           />
         }
       >
-        {/* Rangée retour sticky (pattern A3-C17 : bg .92) */}
-        <View
-          style={{
-            paddingTop: insets.top + 10,
-            paddingHorizontal: 16,
-            paddingBottom: 8,
-            backgroundColor: patterns.bottomTabBar.fade[1],
-          }}
-        >
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={t('search.back', { personality })}
-            onPress={() => router.back()}
-            hitSlop={8}
-            style={({ pressed }) => ({
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 4,
-              alignSelf: 'flex-start',
-              minHeight: 44,
-              opacity: pressed ? 0.6 : 1,
-            })}
-          >
-            <ChevronLeftIcon color={colors.ink800} size={18} strokeWidth={2.2} />
-            <Text style={[font('label', 600), { fontSize: 15, color: colors.ink800 }]}>
-              {t('search.back', { personality })}
-            </Text>
-          </Pressable>
-        </View>
+        {/* Rangée retour sticky — StickyBackRow kit (44 pt, même mécanisme partout). */}
+        <StickyBackRow
+          backLabel={t('search.back', { personality })}
+          onBack={() => router.back()}
+        />
 
         <View style={{ paddingTop: 2, paddingHorizontal: 20, paddingBottom: 4 }}>
           <Text style={[font('eyebrow'), { color: colors.slate400 }]}>
@@ -231,35 +213,17 @@ export default function Recherche() {
           </Text>
         </View>
 
-        {/* Champ de recherche — même recette que le coffre C14 */}
-        <View
-          style={{
-            marginTop: 12,
-            marginHorizontal: 18,
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 9,
-            backgroundColor: colors.surface,
-            borderRadius: 14,
-            borderWidth: 1,
-            borderColor: controls.cardBorder,
-            paddingVertical: 11,
-            paddingHorizontal: 14,
-            ...shadowNative.e1,
-          }}
-        >
-          <SearchIcon color={colors.slate300} />
-          <TextInput
-            value={query}
-            onChangeText={setQuery}
-            autoFocus={!searching}
-            returnKeyType="search"
-            placeholder={t('search.placeholder', { personality })}
-            placeholderTextColor={colors.slate300}
-            accessibilityLabel={t('search.placeholder', { personality })}
-            style={{ ...font('body'), fontSize: 14, color: colors.ink800, flex: 1, padding: 0 }}
-          />
-        </View>
+        {/* Champ de recherche — SearchField kit (Lot 0) : loupe, placeholder AA (slate500),
+            bouton clear à cible 44 pt avec libellé i18n (contrat de l'addendum). */}
+        <SearchField
+          value={query}
+          onChange={setQuery}
+          placeholder={t('search.placeholder', { personality })}
+          autoFocus={!searching}
+          onClear={() => setQuery('')}
+          clearAccessibilityLabel={t('search.clear', { personality })}
+          style={{ marginTop: 12, marginHorizontal: 18 }}
+        />
 
         {queryState.failed ? (
           <View style={{ paddingHorizontal: 18, paddingTop: 16 }}>
@@ -293,7 +257,9 @@ export default function Recherche() {
         ) : (
           <>
             {result.customers.length > 0 ? (
-              <View style={{ paddingHorizontal: 18, paddingTop: 18 }}>
+              // FadeIn BORNÉ (index 0-2) : les sections fondent à l'arrivée des résultats,
+              // apparition immédiate sous reduce-motion (kit).
+              <FadeIn index={0} style={{ paddingHorizontal: 18, paddingTop: 18 }}>
                 <SectionHeader
                   title={t('search.sectionClients', { personality })}
                   action={
@@ -335,11 +301,11 @@ export default function Recherche() {
                     />
                   ))}
                 </Card>
-              </View>
+              </FadeIn>
             ) : null}
 
             {result.pieces.length > 0 ? (
-              <View style={{ paddingHorizontal: 18, paddingTop: 18 }}>
+              <FadeIn index={1} style={{ paddingHorizontal: 18, paddingTop: 18 }}>
                 <SectionHeader
                   title={t('search.sectionPieces', { personality })}
                   action={
@@ -359,6 +325,7 @@ export default function Recherche() {
                       }
                       title={p.number ?? t('search.draftNumber', { personality })}
                       meta={p.customerName}
+                      trailingLabel={formatEUR(p.amountCents)}
                       trailing={
                         <Text
                           style={{
@@ -377,11 +344,11 @@ export default function Recherche() {
                     />
                   ))}
                 </Card>
-              </View>
+              </FadeIn>
             ) : null}
 
             {result.documents.length > 0 ? (
-              <View style={{ paddingHorizontal: 18, paddingTop: 18 }}>
+              <FadeIn index={2} style={{ paddingHorizontal: 18, paddingTop: 18 }}>
                 <SectionHeader
                   title={t('search.sectionDocs', { personality })}
                   action={
@@ -395,8 +362,10 @@ export default function Recherche() {
                     <ResultRow
                       key={d.id}
                       tile={
-                        <IconTile tone="success" size={34} radius={10}>
-                          <FileIcon color={semantic.success} />
+                        // Tone 'document' NEUTRE (Lot 0, arbitrage TONS RECYCLÉS) : le vert
+                        // reste réservé à l'argent — l'intérim b2g est REFUSÉ.
+                        <IconTile tone="document" size={34} radius={10}>
+                          <FileIcon color={documentTile.ink} />
                         </IconTile>
                       }
                       title={d.filename}
@@ -406,7 +375,7 @@ export default function Recherche() {
                     />
                   ))}
                 </Card>
-              </View>
+              </FadeIn>
             ) : null}
           </>
         )}

@@ -7677,6 +7677,12 @@ const legacyFr = {
 
   // ── A7 — recherche globale (/recherche) ─────────────────────────────────────
   'search.back': { pote: 'Fermer', pro: 'Fermer', direct: 'Fermer' },
+  // Bouton clear du SearchField kit (Lot 5) — cible 44 pt, libellé i18n obligatoire (addendum).
+  'search.clear': {
+    pote: 'Effacer la recherche',
+    pro: 'Effacer la recherche',
+    direct: 'Effacer',
+  },
   'search.eyebrow': { pote: 'Recherche', pro: 'Recherche', direct: 'Recherche' },
   'search.title': { pote: 'Tout retrouver', pro: 'Tout retrouver', direct: 'Recherche' },
   'search.subtitle': {
