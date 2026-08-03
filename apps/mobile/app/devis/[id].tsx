@@ -5,13 +5,30 @@
  * Nav croisée réelle : première facture issue du devis (parentQuoteId).
  */
 import { useMemo, useRef, useState } from 'react';
-import { Alert, Linking, Share, Text, View } from 'react-native';
+import { Linking, Share, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import { buildPieceView, frSpokenNumbersToDigits, normalizeVoiceText, parisDateOnly, type PieceLineView, type PieceLinkedRef, type PurchaseOrderRefInput } from '@bob/core';
 import { challengeFor } from '@bob/ai';
 import { PERSONALITY_LABELS, t } from '@bob/i18n';
-import { Button, Card, ErrorRetry, FadeIn, SectionHeader, SkeletonCard, SkeletonHeader, font, useTheme } from '@bob/ui';
+// Grammaire d'erreur (plan DA 01/08) : plus JAMAIS Alert.alert « Oups » — useErrorSheet
+// pour tout échec de mutation ; le flux TVA de duplication parle QuestionSheet + LegalHint.
+import {
+  Button,
+  Card,
+  ErrorRetry,
+  FadeIn,
+  LegalHint,
+  QuestionSheet,
+  QuotePreviewBox,
+  SectionHeader,
+  SkeletonCard,
+  SkeletonHeader,
+  StatusBadge,
+  font,
+  useErrorSheet,
+  useTheme,
+} from '@bob/ui';
 import {
   appErrorMessage,
   useAttachQuotePurchaseOrder,
@@ -34,7 +51,6 @@ import {
   type QuoteActionsHandle,
   type QuoteLinkedInvoices,
 } from '../../src/components/DocumentActions';
-import { Badge } from '../../src/components/ui';
 import { ShareQuoteLinkButton } from '../../src/components/ShareQuoteLinkButton';
 import { quoteRelancePromptOf } from '../../src/components/quote-relance-prompt.logic';
 import { PieceDetailView } from '../../src/components/PieceDetailView';
@@ -86,7 +102,7 @@ function extractLinePricePatch(digits: string): number | null {
 
 export default function DevisDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { personality, colors, controls } = useTheme();
+  const { personality, colors } = useTheme();
   const router = useRouter();
   const client = useBobClient();
   const quote = useQuote(id);
@@ -192,6 +208,8 @@ export default function DevisDetail() {
   }, [customers.data, id, invoices.data, invoices.isSuccess, quote.data, screenDataReady]);
   const agentLayout = useMemo<AgentAccessLayout>(() => ({ bottomAvoidance: 86 }), []);
   const confirm = useConfirm();
+  // Grammaire d'erreur : la feuille premium locale remplace TOUS les Alert.alert de l'écran.
+  const { showError, errorSheet } = useErrorSheet();
 
   // ── R6 : édition/suppression d'une ligne de devis BROUILLON (swipe, ou affordance vocale qui
   //    ouvre les mêmes UI — le tap sur Enregistrer/Confirmer reste le SEUL point d'écriture). ──
@@ -222,7 +240,7 @@ export default function DevisDetail() {
     try {
       await removeLine.mutateAsync({ quoteId: id, lineId });
     } catch (error) {
-      Alert.alert(t('devis.lineMutationErrorTitle', { personality }), appErrorMessage(error));
+      showError(t('devis.lineMutationErrorTitle', { personality }), appErrorMessage(error));
     }
   };
   const submitLineEdit = async (patch: QuoteLineEditPatch): Promise<void> => {
@@ -293,7 +311,7 @@ export default function DevisDetail() {
     try {
       await detachPo.mutateAsync({ quoteId: id, expectedRevision: quote.data?.revision ?? 1 });
     } catch (error) {
-      Alert.alert('Oups', purchaseOrderErrorMessage(error, t('po.saveError', { personality })));
+      showError('Oups', purchaseOrderErrorMessage(error, t('po.saveError', { personality })));
     }
   };
   // B8/R7 : pont voix → écran — la voix OUVRE la même feuille que le bouton, jamais la mutation.
@@ -307,6 +325,9 @@ export default function DevisDetail() {
   //    au régime du jour, faits légaux (signature, urgence) et temporels (n°, validité) JAMAIS
   //    copiés. Taux réduits : l'éligibilité est RE-DEMANDÉE au point de décision (jamais copiée). ──
   const duplicate = useDuplicateQuote();
+  // Feuille TVA (plan Lot 3) : l'Alert système 3 boutons devient QuestionSheet + LegalHint —
+  // les 3 branches runDuplicate restent STRICTEMENT identiques (test duplicate existant).
+  const [duplicateVatOpen, setDuplicateVatOpen] = useState(false);
   const runDuplicate = async (vatChoice: {
     context?: { housingOlderThan2y?: boolean; energyRenovation?: boolean };
     standardRateForReducedLines?: boolean;
@@ -326,17 +347,21 @@ export default function DevisDetail() {
         idempotencyKey: `refaire:${id}:${Date.now()}`,
       });
       if (created.vatAdjustments.length > 0) {
-        Alert.alert(
+        // La navigation vers le brouillon créé attend la FERMETURE de la feuille (doctrine
+        // embargo « traced ») : l'utilisateur lit l'ajustement TVA avant d'arriver dessus.
+        showError(
           t('devis.duplicateDone', { personality }),
           t('devis.duplicateVatAdjusted', {
             personality,
             params: { count: String(created.vatAdjustments.length) },
           }),
+          () => router.push(`/devis/${created.quoteId}`),
         );
+        return;
       }
       router.push(`/devis/${created.quoteId}`);
     } catch (error) {
-      Alert.alert('Oups', appErrorMessage(error));
+      showError('Oups', appErrorMessage(error));
     }
   };
   const handleDuplicate = (): void => {
@@ -347,31 +372,9 @@ export default function DevisDetail() {
       void runDuplicate({});
       return;
     }
-    const energy = q.lines.some((line) => line.vatRate === 5.5)
-      ? t('devis.duplicateEligibilityEnergy', { personality })
-      : '';
-    // Pédagogie légale au point de décision : l'éligibilité appartient à la NOUVELLE pièce.
-    Alert.alert(
-      t('devis.duplicateEligibilityTitle', { personality }),
-      t('devis.duplicateEligibilityBody', { personality, params: { energy } }),
-      [
-        { text: t('common.cancel', { personality }), style: 'cancel' },
-        {
-          text: t('devis.duplicateEligibilityNo', { personality }),
-          onPress: () => void runDuplicate({ standardRateForReducedLines: true }),
-        },
-        {
-          text: t('devis.duplicateEligibilityYes', { personality }),
-          onPress: () =>
-            void runDuplicate({
-              context: {
-                housingOlderThan2y: true,
-                ...(q.lines.some((line) => line.vatRate === 5.5) ? { energyRenovation: true } : {}),
-              },
-            }),
-        },
-      ],
-    );
+    // Pédagogie légale au point de décision : l'éligibilité appartient à la NOUVELLE pièce —
+    // la question s'ouvre dans la feuille Bob (QuestionSheet + LegalHint), plus un Alert gris.
+    setDuplicateVatOpen(true);
   };
 
   // ── R7 (parité vocale) : « génère la facture finale »/« facture d'acompte »/« facture complète »
@@ -613,7 +616,7 @@ export default function DevisDetail() {
     ? async (): Promise<void> => {
         const r = await client.documentDownloadUrl(pdfDoc.id);
         if (!r.ok) {
-          Alert.alert('Oups', t('piece.shareError', { personality }));
+          showError('Oups', t('piece.shareError', { personality }));
           return;
         }
         const shared = await shareDocument({
@@ -622,8 +625,8 @@ export default function DevisDetail() {
           mimeType: pdfDoc.mimeType,
         });
         if (shared === 'unavailable')
-          Alert.alert('Oups', t('piece.shareUnavailable', { personality }));
-        else if (shared === 'error') Alert.alert('Oups', t('piece.shareError', { personality }));
+          showError('Oups', t('piece.shareUnavailable', { personality }));
+        else if (shared === 'error') showError('Oups', t('piece.shareError', { personality }));
       }
     : null;
   // Lien public de VISUALISATION (canal universel, sans e-mail) — tout statut sauf brouillon
@@ -637,7 +640,7 @@ export default function DevisDetail() {
             message: `Bonjour, voici le lien pour consulter le devis${quote.data?.number ? ` ${quote.data.number}` : ''} : ${result.viewUrl}`,
           });
         } catch {
-          Alert.alert('Oups', t('piece.shareLinkError', { personality }));
+          showError('Oups', t('piece.shareLinkError', { personality }));
         }
       }
     : null;
@@ -693,6 +696,11 @@ export default function DevisDetail() {
     );
   }
   const q = quote.data;
+  // Mention « rénovation énergétique » de la question TVA — même dérivation que la branche
+  // eligible de runDuplicate (une ligne à 5,5 % au moins).
+  const duplicateEnergy = q.lines.some((line) => line.vatRate === 5.5)
+    ? t('devis.duplicateEligibilityEnergy', { personality })
+    : '';
 
   return (
     <>
@@ -718,14 +726,15 @@ export default function DevisDetail() {
                 <Card style={{ marginBottom: 12 }}>
                   <SectionHeader title={t('devis.relanceCardTitle', { personality })} />
                   <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8 }}>
-                    <Badge
+                    {/* Casse au composant (StatusBadge 11/700) — fin du .toUpperCase() ad hoc. */}
+                    <StatusBadge
                       label={t(
                         relancePrompt.palier === 'j30'
                           ? 'today.prioQuoteRelanceBadgeJ30'
                           : 'today.prioQuoteRelanceBadgeJ15',
                         { personality },
-                      ).toUpperCase()}
-                      tone="warning"
+                      )}
+                      variant="warning"
                     />
                     <Text style={[font('meta', 500), { flex: 1, color: colors.slate500 }]}>
                       {t('devis.relanceCardHint', {
@@ -734,19 +743,8 @@ export default function DevisDetail() {
                       })}
                     </Text>
                   </View>
-                  <View
-                    style={{
-                      marginTop: 10,
-                      borderRadius: 12,
-                      borderWidth: 1,
-                      borderColor: controls.cardBorder,
-                      padding: 12,
-                    }}
-                  >
-                    <Text style={[font('body', 500), { fontSize: 13.5, lineHeight: 20, color: colors.ink800 }]}>
-                      {relancePrompt.previewBody}
-                    </Text>
-                  </View>
+                  {/* PR-05 — l'encadré du VRAI message : QuotePreviewBox kit (Lot 3). */}
+                  <QuotePreviewBox text={relancePrompt.previewBody} style={{ marginTop: 10 }} />
                   <View style={{ marginTop: 12, alignSelf: 'flex-start' }}>
                     <ShareQuoteLinkButton
                       quoteId={id}
@@ -849,6 +847,45 @@ export default function DevisDetail() {
         onInputChange={() => setPoError(null)}
         onSubmit={(input) => void submitPurchaseOrder(input)}
       />
+      {/* PR-14 — éligibilité TVA réduite de la COPIE : QuestionSheet + LegalHint au point de
+          décision (l'Alert système 3 boutons est mort). Les 3 branches runDuplicate sont
+          BYTE-IDENTIQUES à l'historique — verrouillées par le test duplicate existant. */}
+      <QuestionSheet
+        visible={duplicateVatOpen}
+        header={t('devis.duplicateVatHeader', { personality })}
+        question={t('devis.duplicateEligibilityBody', { personality, params: { energy: duplicateEnergy } })}
+        options={[
+          { value: 'eligible', label: t('devis.duplicateEligibilityYes', { personality }) },
+          { value: 'standard', label: t('devis.duplicateEligibilityNo', { personality }) },
+        ]}
+        hint={
+          <LegalHint
+            label={t('legal.vatReduced.inline', { personality })}
+            lawKey="legal.vatReduced.law"
+            whyKey="legal.vatReduced.why"
+            source="art. 279-0 bis et 278-0 bis A du CGI"
+          />
+        }
+        confirmLabel={t('devis.duplicateCta', { personality })}
+        otherLabel={t('common.cancel', { personality })}
+        onClose={() => setDuplicateVatOpen(false)}
+        onOther={() => setDuplicateVatOpen(false)}
+        onSelect={(values) => {
+          setDuplicateVatOpen(false);
+          if (values[0] === 'standard') {
+            void runDuplicate({ standardRateForReducedLines: true });
+            return;
+          }
+          void runDuplicate({
+            context: {
+              housingOlderThan2y: true,
+              ...(q.lines.some((line) => line.vatRate === 5.5) ? { energyRenovation: true } : {}),
+            },
+          });
+        }}
+      />
+      {/* Grammaire d'erreur : la feuille premium locale (plus aucun Alert natif à l'écran). */}
+      {errorSheet}
     </>
   );
 }

@@ -431,6 +431,8 @@ const legacyFr = {
   },
   // Taux réduits travaux : l'éligibilité est RE-DEMANDÉE — le fait légal appartient à la
   // nouvelle pièce, jamais copié (suggestVatRate refuse sinon, refus actionnable).
+  // Lot 3 — chip d'en-tête de la QuestionSheet (l'Alert système 3 boutons est mort).
+  'devis.duplicateVatHeader': { pote: 'TVA', pro: 'TVA', direct: 'TVA' },
   'devis.duplicateEligibilityTitle': {
     pote: 'TVA réduite : toujours d’actualité ?',
     pro: 'Taux réduit : conditions à reconfirmer',
