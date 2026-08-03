@@ -181,8 +181,8 @@ describe('contrat données autoritatives des écrans métier', () => {
   it('Assistant attend un abonnement vérifié et ne prétend pas être en ligne avant un échange réel', () => {
     const source = screen('(tabs)/assistant.tsx');
 
-    expect(source).toContain('!assistantEntitlement.verified || !entitled');
     expect(source).toContain('if (!assistantEntitlement.verified)');
+    expect(source).toContain('if (!entitled)');
     expect(source).toContain('const [reachable, setReachable] = useState<boolean | null>(null)');
     expect(source).toContain('reachable !== null ? <View');
   });

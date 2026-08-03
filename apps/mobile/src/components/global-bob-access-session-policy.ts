@@ -1,7 +1,6 @@
-export type GlobalBobSessionStopReason =
-  | 'entitlement_unconfirmed'
-  | 'entitlement_revoked'
-  | 'incompatible_route';
+import type { RealtimeVoiceClientPolicyCloseReason } from '@bob/core';
+
+export type GlobalBobSessionStopReason = RealtimeVoiceClientPolicyCloseReason;
 
 /**
  * Parcours où Bob est volontairement indisponible en V1 : Auth n'a aucune session exploitable ;
@@ -18,15 +17,23 @@ export function isBobEntryRoute(pathname: string): boolean {
   return BOB_ENTRY_ROUTES.some((entry) => route === entry || route.startsWith(`${entry}/`));
 }
 
+/** Un cache est une photographie utile à l'affichage, jamais la preuve actuelle d'un droit Live. */
+export function isGlobalBobSubscriptionVerified(input: {
+  readonly hasPayload: boolean;
+  readonly failed: boolean;
+}): boolean {
+  return input.hasPayload && !input.failed;
+}
+
 export function deriveGlobalBobSessionStopReason(input: {
-  readonly subscriptionResolved: boolean;
+  readonly subscriptionVerified: boolean;
   readonly entitled: boolean;
   readonly pathname: string;
 }): GlobalBobSessionStopReason | null {
   // La route prime sur le droit : elle est connue localement et sans latence. Auth n'a aucune
   // session exploitable et l'onboarding est volontairement hors parité vocale pendant la V1.
   if (input.pathname === '/voix' || isBobEntryRoute(input.pathname)) return 'incompatible_route';
-  if (!input.subscriptionResolved) return 'entitlement_unconfirmed';
+  if (!input.subscriptionVerified) return 'entitlement_unconfirmed';
   if (!input.entitled) return 'entitlement_revoked';
   return null;
 }

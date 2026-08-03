@@ -4,6 +4,7 @@ import {
   REALTIME_VOICE_CLIENT_CHECKPOINTS,
   REALTIME_VOICE_CLIENT_FAILURE_CODES,
   REALTIME_VOICE_CLIENT_LIFECYCLE_CLOSE_REASONS,
+  REALTIME_VOICE_CLIENT_POLICY_CLOSE_REASONS,
 } from './realtime-voice-client-diagnostic';
 
 describe('RealtimeVoiceClientTerminationDiagnostic', () => {
@@ -56,6 +57,23 @@ describe('RealtimeVoiceClientTerminationDiagnostic', () => {
     });
   });
 
+  it.each(REALTIME_VOICE_CLIENT_POLICY_CLOSE_REASONS)(
+    'accepte la fermeture par politique %s',
+    (closeReason) => {
+      expect(parseRealtimeVoiceClientTerminationDiagnostic({
+        version: 1,
+        terminationSource: 'policy',
+        lastSuccessfulCheckpoint: 'bootstrap_acknowledged',
+        closeReason,
+      })).toEqual({
+        version: 1,
+        terminationSource: 'policy',
+        lastSuccessfulCheckpoint: 'bootstrap_acknowledged',
+        closeReason,
+      });
+    },
+  );
+
   it.each([
     undefined,
     null,
@@ -65,6 +83,8 @@ describe('RealtimeVoiceClientTerminationDiagnostic', () => {
     { version: 1, terminationSource: 'automatic_failure', lastSuccessfulCheckpoint: 'transport_started', failureCode: 'free_text' },
     { version: 1, terminationSource: 'automatic_failure', lastSuccessfulCheckpoint: 'transport_started', failureCode: 'unknown', sdp: 'secret' },
     { version: 1, terminationSource: 'user', lastSuccessfulCheckpoint: 'transport_started', closeReason: 'background' },
+    { version: 1, terminationSource: 'policy', lastSuccessfulCheckpoint: 'transport_started', closeReason: 'free_text' },
+    { version: 1, terminationSource: 'policy', lastSuccessfulCheckpoint: 'transport_started', closeReason: 'entitlement_revoked', detail: 'secret' },
   ])('refuse toute forme libre ou surnuméraire %#', (value) => {
     expect(parseRealtimeVoiceClientTerminationDiagnostic(value)).toBeNull();
   });

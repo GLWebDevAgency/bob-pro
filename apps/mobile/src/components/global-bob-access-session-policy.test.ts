@@ -3,22 +3,29 @@ import {
   advanceGlobalBobSessionStopFence,
   deriveGlobalBobSessionStopReason,
   isBobEntryRoute,
+  isGlobalBobSubscriptionVerified,
 } from './global-bob-access-session-policy';
 
 describe('GlobalBobAccess — session masquée fail-closed', () => {
+  it('refuse comme autorité un payload en cache dont le refetch a échoué', () => {
+    expect(isGlobalBobSubscriptionVerified({ hasPayload: true, failed: false })).toBe(true);
+    expect(isGlobalBobSubscriptionVerified({ hasPayload: true, failed: true })).toBe(false);
+    expect(isGlobalBobSubscriptionVerified({ hasPayload: false, failed: false })).toBe(false);
+  });
+
   it('ferme une session dont le droit n’est plus confirmé ou vient d’être révoqué', () => {
     expect(deriveGlobalBobSessionStopReason({
-      subscriptionResolved: false,
+      subscriptionVerified: false,
       entitled: false,
       pathname: '/',
     })).toBe('entitlement_unconfirmed');
     expect(deriveGlobalBobSessionStopReason({
-      subscriptionResolved: true,
+      subscriptionVerified: true,
       entitled: false,
       pathname: '/',
     })).toBe('entitlement_revoked');
     expect(deriveGlobalBobSessionStopReason({
-      subscriptionResolved: true,
+      subscriptionVerified: true,
       entitled: true,
       pathname: '/',
     })).toBeNull();
@@ -26,12 +33,12 @@ describe('GlobalBobAccess — session masquée fail-closed', () => {
 
   it('ferme les routes incompatibles mais conserve la session dans son Assistant', () => {
     expect(deriveGlobalBobSessionStopReason({
-      subscriptionResolved: true,
+      subscriptionVerified: true,
       entitled: true,
       pathname: '/voix',
     })).toBe('incompatible_route');
     expect(deriveGlobalBobSessionStopReason({
-      subscriptionResolved: true,
+      subscriptionVerified: true,
       entitled: true,
       pathname: '/assistant',
     })).toBeNull();
@@ -43,12 +50,12 @@ describe('GlobalBobAccess — session masquée fail-closed', () => {
     // pouvait rien faire. La route doit trancher AVANT le droit, sans attendre le réseau.
     for (const pathname of ['/onboarding', '/auth', '/auth/callback', '/auth/recovery']) {
       expect(deriveGlobalBobSessionStopReason({
-        subscriptionResolved: false,
+        subscriptionVerified: false,
         entitled: false,
         pathname,
       })).toBe('incompatible_route');
       expect(deriveGlobalBobSessionStopReason({
-        subscriptionResolved: true,
+        subscriptionVerified: true,
         entitled: true,
         pathname,
       })).toBe('incompatible_route');

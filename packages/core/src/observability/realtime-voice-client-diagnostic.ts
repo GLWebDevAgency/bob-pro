@@ -61,12 +61,20 @@ export const REALTIME_VOICE_CLIENT_LIFECYCLE_CLOSE_REASONS = [
   'max_duration',
 ] as const;
 
+export const REALTIME_VOICE_CLIENT_POLICY_CLOSE_REASONS = [
+  'entitlement_unconfirmed',
+  'entitlement_revoked',
+  'incompatible_route',
+] as const;
+
 export type RealtimeVoiceClientCheckpoint =
   (typeof REALTIME_VOICE_CLIENT_CHECKPOINTS)[number];
 export type RealtimeVoiceClientFailureCode =
   (typeof REALTIME_VOICE_CLIENT_FAILURE_CODES)[number];
 export type RealtimeVoiceClientLifecycleCloseReason =
   (typeof REALTIME_VOICE_CLIENT_LIFECYCLE_CLOSE_REASONS)[number];
+export type RealtimeVoiceClientPolicyCloseReason =
+  (typeof REALTIME_VOICE_CLIENT_POLICY_CLOSE_REASONS)[number];
 
 interface RealtimeVoiceClientTerminationBase {
   readonly version: 1;
@@ -85,12 +93,19 @@ export type RealtimeVoiceClientTerminationDiagnostic =
   | (RealtimeVoiceClientTerminationBase & {
       readonly terminationSource: 'lifecycle';
       readonly closeReason: RealtimeVoiceClientLifecycleCloseReason;
+    })
+  | (RealtimeVoiceClientTerminationBase & {
+      readonly terminationSource: 'policy';
+      readonly closeReason: RealtimeVoiceClientPolicyCloseReason;
     });
 
 const CHECKPOINTS = new Set<string>(REALTIME_VOICE_CLIENT_CHECKPOINTS);
 const FAILURE_CODES = new Set<string>(REALTIME_VOICE_CLIENT_FAILURE_CODES);
 const LIFECYCLE_CLOSE_REASONS = new Set<string>(
   REALTIME_VOICE_CLIENT_LIFECYCLE_CLOSE_REASONS,
+);
+const POLICY_CLOSE_REASONS = new Set<string>(
+  REALTIME_VOICE_CLIENT_POLICY_CLOSE_REASONS,
 );
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -149,6 +164,20 @@ export function parseRealtimeVoiceClientTerminationDiagnostic(
       ])
       || typeof value.closeReason !== 'string'
       || !LIFECYCLE_CLOSE_REASONS.has(value.closeReason)
+    ) return null;
+    return value as unknown as RealtimeVoiceClientTerminationDiagnostic;
+  }
+
+  if (value.terminationSource === 'policy') {
+    if (
+      !hasExactKeys(value, [
+        'version',
+        'terminationSource',
+        'lastSuccessfulCheckpoint',
+        'closeReason',
+      ])
+      || typeof value.closeReason !== 'string'
+      || !POLICY_CLOSE_REASONS.has(value.closeReason)
     ) return null;
     return value as unknown as RealtimeVoiceClientTerminationDiagnostic;
   }

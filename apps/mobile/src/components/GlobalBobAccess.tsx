@@ -29,6 +29,7 @@ import {
   advanceGlobalBobSessionStopFence,
   deriveGlobalBobSessionStopReason,
   isBobEntryRoute,
+  isGlobalBobSubscriptionVerified,
 } from './global-bob-access-session-policy';
 import { ConversationTimeZoneSheet } from './ConversationTimeZoneSheet';
 import { RealtimeDiagnosticTraceSheet } from './RealtimeDiagnosticTraceSheet';
@@ -73,12 +74,19 @@ export function GlobalBobAccess() {
   // Le wizard facture possede sa propre oreille. L'Assistant rend le meme etat global
   // directement dans son composer : aucun bouton superpose, aucun deuxieme listener.
   const ownsItsVoiceChrome = pathname === '/assistant' || pathname === '/voix';
-  const { active: sessionActive, stop: stopSession } = session;
+  const { active: sessionActive, stopForPolicy } = session;
 
-  const entitled = subscription.data?.features.includes('ai_assistant') ?? false;
-  const entitlementUnavailable = subscription.isError && subscription.data === undefined;
+  // Une réponse en cache + un refetch en erreur ne confirme plus un droit potentiellement révoqué.
+  // Les deux surfaces Live partagent exactement la capacité `voice_live`.
+  const subscriptionVerified = isGlobalBobSubscriptionVerified({
+    hasPayload: subscription.data !== undefined,
+    failed: subscription.isError,
+  });
+  const entitled = subscriptionVerified
+    && (subscription.data?.features.includes('voice_live') ?? false);
+  const entitlementUnavailable = subscription.isError;
   const sessionStopReason = deriveGlobalBobSessionStopReason({
-    subscriptionResolved: subscription.data !== undefined,
+    subscriptionVerified,
     entitled,
     pathname,
   });
@@ -89,8 +97,10 @@ export function GlobalBobAccess() {
       stopReason: sessionStopReason,
     });
     sessionStopLatched.current = transition.latched;
-    if (transition.shouldStop) stopSession();
-  }, [sessionActive, sessionStopReason, stopSession]);
+    if (transition.shouldStop && sessionStopReason !== null) {
+      stopForPolicy(sessionStopReason);
+    }
+  }, [sessionActive, sessionStopReason, stopForPolicy]);
   const stateKey: I18nKey =
     session.phase === 'listening'
       ? 'agent.global.listening'
@@ -266,6 +276,16 @@ export function GlobalBobAccess() {
             <Text style={[font('sub'), { color: colors.ink800, lineHeight: 19 }]} numberOfLines={4}>
               {session.response ?? stateLabel}
             </Text>
+            {session.active ? (
+              <View style={{ marginTop: 8, alignSelf: 'stretch' }}>
+                <Button
+                  title={t('agent.global.stop', { personality })}
+                  variant="secondary"
+                  radius={12}
+                  onPress={session.stop}
+                />
+              </View>
+            ) : null}
             {session.reviewRequired && session.handoff !== null ? (
               <>
                 <Text style={[font('meta'), { color: semantic.warning, marginTop: 6 }]}>
@@ -297,7 +317,10 @@ export function GlobalBobAccess() {
         <Animated.View style={{ transform: [{ scale }] }}>
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel={stateLabel}
+            accessibilityLabel={t(
+              session.active ? 'agent.global.stop' : 'agent.global.idle',
+              { personality },
+            )}
             accessibilityHint={t(session.active ? 'agent.global.stop' : 'agent.global.idle', {
               personality,
             })}
@@ -321,7 +344,16 @@ export function GlobalBobAccess() {
               end={{ x: 1, y: 1 }}
               style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}
             >
-              {session.phase === 'thinking' || session.phase === 'speaking' ? (
+              {session.active ? (
+                <View
+                  style={{
+                    width: 15,
+                    height: 15,
+                    borderRadius: 3,
+                    backgroundColor: colors.surface,
+                  }}
+                />
+              ) : session.phase === 'thinking' || session.phase === 'speaking' ? (
                 <SparkIcon color={colors.surface} size={22} strokeWidth={2} />
               ) : (
                 <MicIcon color={colors.surface} size={22} />

@@ -73,6 +73,7 @@ function traceRow(overrides = {}) {
     outcome: 'ready',
     failureClass: null,
     interruptionReason: null,
+    sessionCloseReason: null,
     eventDigestKeyVersion: 1,
     encryptionKeyVersion: 1,
     transcriptCiphertext: null,
@@ -159,10 +160,38 @@ test('lecture sans contenu audite l acteur et ne republie jamais les ciphertexts
   assert.equal(Object.hasOwn(result[0], 'transcriptCiphertext'), false);
   assert.equal(Object.hasOwn(result[0], 'canonicalReplyCiphertext'), false);
   assert.equal(result[0].occurredAt, '2026-08-01T10:00:00.123Z');
+  assert.equal(result[0].sessionCloseReason, null);
   assert.equal(calls[0].command, 'database-certification');
   assert.equal(calls[1].command, 'psql');
   assert.equal(calls[1].commandArgs.includes('--set=include_content=false'), true);
+  assert.match(calls[1].options.input, /read_realtime_voice_trace_session_v3/u);
   assert.equal(calls[1].options.env.DIRECT_URL, undefined);
+});
+
+test('le lecteur sanctionné expose le motif policy sans contenu sensible', () => {
+  const row = traceRow({
+    eventKind: 'session_closed',
+    turnId: null,
+    stage: 'session',
+    outcome: 'closed',
+    sessionCloseReason: 'policy',
+    encryptionKeyVersion: null,
+  });
+  const result = runRealtimeVoiceTraceV2Reader(args(), environment(), {
+    tty: { stdin: true, stdout: true },
+    randomUUID: () => REQUEST_ID,
+    certifyDatabase: () => ({ databaseName: 'postgres' }),
+    spawnSync() {
+      return {
+        status: 0,
+        stdout: `${JSON.stringify({ kind: 'reader', actor: 'staging_deployer' })}\n${JSON.stringify(row)}\n`,
+      };
+    },
+  });
+
+  assert.equal(result[0].sessionCloseReason, 'policy');
+  assert.equal(Object.hasOwn(result[0], 'transcriptCiphertext'), false);
+  assert.equal(Object.hasOwn(result[0], 'canonicalReplyCiphertext'), false);
 });
 
 test('verbatim explicite authentifie AES-GCM avec toutes les fences de la ligne', () => {

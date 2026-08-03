@@ -373,17 +373,24 @@ describe('RealtimeVoiceService', () => {
     expect(settle).toHaveBeenCalledWith(expectedSettlement);
   });
 
-  it('journalise un diagnostic client fermé seulement après validation du propriétaire', async () => {
+  it.each([
+    'entitlement_unconfirmed',
+    'entitlement_revoked',
+    'incompatible_route',
+  ] as const)(
+    'journalise la policy %s seulement après validation du propriétaire',
+    async (closeReason) => {
     const provider: OpenAiRealtimeCallProvider = {
-      createCall: successfulProviderCreate('rtc_client_diagnostic'),
+      createCall: successfulProviderCreate(`rtc_client_diagnostic_${closeReason}`),
       hangupCall: vi.fn(async () => undefined),
     };
     const logger = loggerStub();
+    const sideband = sidebandStub();
     const service = new RealtimeVoiceService(
       SETTINGS,
       provider,
       admission(),
-      sidebandStub(),
+      sideband,
       new Metrics(),
       logger,
       undefined,
@@ -400,9 +407,9 @@ describe('RealtimeVoiceService', () => {
     if (!created.ok) throw new Error('Realtime session fixture unavailable.');
     const diagnostic = {
       version: 1 as const,
-      terminationSource: 'automatic_failure' as const,
-      lastSuccessfulCheckpoint: 'remote_description_set' as const,
-      failureCode: 'transceiver_rejected' as const,
+      terminationSource: 'policy' as const,
+      lastSuccessfulCheckpoint: 'bootstrap_acknowledged' as const,
+      closeReason,
     };
 
     await expect(runAsPrincipal(() => service.hangup(
@@ -413,6 +420,12 @@ describe('RealtimeVoiceService', () => {
     expect(logger.audit).toHaveBeenCalledWith('bob.live.client.termination', {
       sessionHandle: created.value.sessionHandle,
       ...diagnostic,
+    });
+    expect(sideband.fenceAndDetachSession).toHaveBeenCalledWith({
+      userId: 'user-1',
+      companyId: 'company-1',
+      sessionHandle: created.value.sessionHandle,
+      reason: 'policy',
     });
   });
 
@@ -433,9 +446,9 @@ describe('RealtimeVoiceService', () => {
       '00000000-0000-4000-8000-000000000001',
       {
         version: 1,
-        terminationSource: 'automatic_failure',
+        terminationSource: 'policy',
         lastSuccessfulCheckpoint: 'bootstrap_acknowledged',
-        failureCode: 'texte_libre_interdit',
+        closeReason: 'texte_libre_interdit',
       },
     ))).resolves.toEqual({
       ok: false,

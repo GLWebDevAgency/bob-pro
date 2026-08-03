@@ -7,6 +7,7 @@
  * ne tourne pas — l'orchestrateur ne démarre le repli qu'après fermeture COMPLÈTE du primaire.
  */
 import type { AgentContext } from '@bob/ai';
+import type { RealtimeVoiceClientPolicyCloseReason } from '@bob/core';
 import type {
   RealtimeAgentMissionProtocolVersion,
   RealtimeAgentMissionSession,
@@ -563,6 +564,15 @@ export class RealtimeSessionController {
   async stop(reason: 'user' | 'background' | 'unmount' = 'user'): Promise<void> {
     this.generation += 1; // invalide tout start() encore en vol — jamais de micro posthume
     await this.teardown(reason);
+  }
+
+  async stopForPolicy(reason: RealtimeVoiceClientPolicyCloseReason): Promise<void> {
+    // Publier la cause AVANT orchestrator.stop(): son AbortSignal externe peut gagner la course
+    // contre primary.close(), mais le transport conservera alors la policy au lieu de fabriquer
+    // un arrêt `aborted` ou `user`.
+    this.lastTransport?.reportClientDiagnostic?.({ type: 'policy_stop', closeReason: reason });
+    this.generation += 1;
+    await this.teardown('user');
   }
 
   private async teardown(

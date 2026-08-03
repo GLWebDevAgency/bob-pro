@@ -146,7 +146,7 @@ function readTraceRows(input, environment, dependencies) {
     String.raw`
 SET statement_timeout = '6s';
 SELECT pg_catalog.row_to_json(trace)::TEXT
-  FROM public.read_realtime_voice_trace_session_v2(
+  FROM public.read_realtime_voice_trace_session_v3(
     :'request_id'::UUID,
     :'company_id'::TEXT,
     :'user_id'::UUID,
@@ -231,7 +231,9 @@ export function certifyRealtimeVoiceTraceV2OnRows(rows) {
     result.canonicalReplyCiphertext !== null ||
     (speechReady.outcome !== 'ready' && speechReady.outcome !== 'already_ready') ||
     interrupted.interruptionReason !== 'session_end' ||
-    closed.outcome !== 'closed'
+    closed.outcome !== 'closed' ||
+    typeof closed.sessionCloseReason !== 'string' ||
+    closed.sessionCloseReason.length === 0
   ) {
     fail('ON trace terminal/content proof is invalid');
   }

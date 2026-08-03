@@ -27,8 +27,8 @@
  * respectée — fondation src/monetization/paywall, SPEC_PILIER2_MONETISATION).
  *
  * Écarts assumés vs réf/ancien écran :
- * · le mode vocal mains-libres partage désormais le lease STT global ; au blur, l'owner local
- *   libère l'oreille et l'accès Bob racine prend le relais sans double écoute ;
+ * · le mode vocal mains-libres est possédé exclusivement par l'AgentSessionProvider racine ;
+ *   le composer et le bouton flottant pilotent la même session continue, y compris en navigation ;
  * · badges « plan · modèle » de l'ancien écran non repris (le proto n'affiche pas de
  *   télémétrie — choix produit ThinkingIndicator conservé) ;
  * · dégradés via tokens (conformityCard.bgTop→bg · ai→indigo.d2), pas les hex du proto ;
@@ -55,14 +55,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useQueryClient } from '@tanstack/react-query';
 import {
-  echoOverlap,
   isAllowedAgentNavigationRoute,
-  parseBargeIn,
-  planSpokenDelivery,
-  speechWordCount,
-  parseVoiceChoice,
-  parseVoiceConsent,
-  speakableQuestion,
   type AccountingLine,
   type AgentQuestion,
   type AgentRun,
@@ -78,11 +71,15 @@ import { useInvoices, useQuotes, useSubscription } from '../../src/data/hooks';
 import { PaywallCard, isPaywallMuted, useEntitlement } from '../../src/monetization/paywall';
 import { makeBobAgent } from '../../src/data/bob';
 import { getAutonomy } from '../../src/data/settings';
-import { speechRecognitionAvailable, useSpeak, useVoiceInput } from '../../src/data/voice';
 import { ActionDiffView } from '../../src/components/ActionDiffView';
 import { SendIcon, SparkIcon } from '../../src/components/icons';
 import { useAgentSession } from '../../src/agent';
-import { planLiveSilenceRecovery } from '../../src/assistant/live-silence';
+import {
+  canRunAssistantManualTurn,
+  planAssistantRealtimeControl,
+  shouldRequestAssistantRealtimeHandoff,
+} from '../../src/agent/assistant-realtime-control';
+import { planAssistantLiveTurnImport } from '../../src/agent/assistant-live-transcript';
 import { AGENT_REFRESH_QUERY_KEY_PREFIXES } from '../../src/assistant/refresh-after-action';
 import { SUGGESTION_CHIP_POOL, rotateSuggestionChips } from '../../src/assistant/suggestion-chips';
 import {
@@ -290,6 +287,11 @@ export default function Assistant() {
   itemsRef.current = items;
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const setManualBusy = useCallback((next: boolean): void => {
+    busyRef.current = next;
+    setBusy(next);
+  }, []);
   const [phase, setPhase] = useState<string | null>(null);
   // Inconnu tant qu'aucun aller-retour agent n'a réussi/échoué : ne jamais afficher « en ligne »
   // comme une donnée de santé inventée au premier rendu.
@@ -312,6 +314,7 @@ export default function Assistant() {
   const globalHandoffRef = useRef(globalSession.handoff);
   globalHandoffRef.current = globalSession.handoff;
   const consumedHandoffIdRef = useRef<string | null>(null);
+  const importedLiveTurnIdsRef = useRef<Set<string>>(new Set());
   const submittedPrompt = useRef<string | null>(null);
   const counter = useRef(0);
   const nextId = (): string => {
@@ -437,10 +440,18 @@ export default function Assistant() {
 
   const ask = async (raw: string): Promise<{ run: AgentRun; item: ChatItem } | null> => {
     const message = raw.trim();
-    if (!message || busy || !assistantEntitlement.verified || !entitled) return null;
+    if (
+      !message ||
+      !canRunAssistantManualTurn({
+        sessionActive: globalSession.active,
+        manualTurnBusy: busyRef.current,
+        entitlementVerified: assistantEntitlement.verified,
+        entitlementAllowed: entitled,
+      })
+    ) return null;
+    setManualBusy(true);
     setInput('');
     pushText('user', message);
-    setBusy(true);
     const autonomy = await getAutonomy(); // politique de confirmation RÉELLE (runtime @bob/ai)
     // LIVE-2 : mémoire de conversation courte (anaphores) + humeur — expurgées côté agent.
     const history = itemsRef.current.slice(-6).map((it) => ({ role: it.role, text: it.text }));
@@ -448,20 +459,30 @@ export default function Assistant() {
     if (inheritedContext !== null && inheritedContext.expiresAt <= Date.now()) {
       handoffContextRef.current = null;
     }
-    const r = await agent.ask(message, {
-      autonomy,
-      history,
-      tone: personality,
-      ...(handoffContextRef.current !== null ? { context: handoffContextRef.current.context } : {}),
-      onPhase: (p) =>
-        setPhase(
-          t(p === 'comprends' ? 'assistant.phaseUnderstand' : 'assistant.phaseAct', {
-            personality,
-          }),
-        ),
-    });
-    setBusy(false);
-    setPhase(null);
+    let r: Awaited<ReturnType<typeof agent.ask>>;
+    try {
+      r = await agent.ask(message, {
+        autonomy,
+        history,
+        tone: personality,
+        ...(handoffContextRef.current !== null
+          ? { context: handoffContextRef.current.context }
+          : {}),
+        onPhase: (p) =>
+          setPhase(
+            t(p === 'comprends' ? 'assistant.phaseUnderstand' : 'assistant.phaseAct', {
+              personality,
+            }),
+          ),
+      });
+    } catch {
+      setReachable(false);
+      pushText('bob', t('assistant.offline', { personality }));
+      return null;
+    } finally {
+      setManualBusy(false);
+      setPhase(null);
+    }
     if (r.ok) {
       setReachable(true);
       return { run: r.value, item: pushRun(r.value) };
@@ -483,78 +504,12 @@ export default function Assistant() {
       return;
     }
     const picked = q.options.find((o) => o.value === values[0]);
-    if (picked) {
-      // En mode live, la réponse (tap OU voix) relance la boucle : Bob vocalise la suite.
-      if (liveRef.current) void ask(picked.followUp).then((res) => liveTurn(res));
-      else void ask(picked.followUp);
-    }
+    if (picked) void ask(picked.followUp);
   };
 
-  // ── LIVE-0/1 : boucle vocale mains-libres, synchronisée avec l'écran ─────────────────
-  // Semi-duplex : Bob écoute (fin de parole native) → réfléchit (agent) → parle (TTS) →
-  // ré-écoute. Les QUESTIONS structurées sont LUES (labels courts) et la réponse vocale
-  // (« le deuxième », « Lefèvre ») est résolue en fail-safe (parseVoiceChoice) — l'écran
-  // reste tappable à tout moment, même résultat. Les actions sensibles gardent leur
-  // plancher : consentement EXPLICITE (parseVoiceConsent), jamais d'exécution ambiguë.
-  const [live, setLive] = useState(false);
-  const [liveState, setLiveState] = useState<'idle' | 'listening' | 'thinking' | 'speaking'>(
-    'idle',
-  );
-  const liveRef = useRef(false);
-  liveRef.current = live;
-  const liveStateRef = useRef(liveState);
-  liveStateRef.current = liveState;
-  /** Ce que Bob est en train de dire — la référence de l'echo-guard (LIVE-3). */
-  const speakingTextRef = useRef('');
-  /** Dernier énoncé TERMINÉ + horodatage : sur device réel (sans annulation d'écho
-   * matérielle), la reco capte la fin du TTS APRÈS la bascule en écoute — la fenêtre de
-   * grâce échoscanne TOUT transcript, quelle que soit la phase (fix boucle d'écho). */
-  const lastSpokenRef = useRef<{ text: string; endedAt: number }>({ text: '', endedAt: 0 });
-  const ECHO_GRACE_MS = 5000;
-  /** Disjoncteur : 3 échos ignorés d'affilée → repos (l'orbe se relance au tap). */
-  const echoStreakRef = useRef(0);
-  /** S4 : l'oreille a été observée OUVERTE — seule une vraie transition ouverte→fermée
-   * compte comme fin d'écoute (jamais la latence d'ouverture permission/getVoiceMode). */
-  const liveEarWasOpenRef = useRef(false);
-  /** S4 : UNE relance parlée par silence — remis à zéro à chaque transcript réel. */
-  const silenceRetriedRef = useRef(false);
-  /** S4 : ré-écoute post-écho en vol (grâce du lease natif) — jamais prise pour un silence. */
-  const echoRelistenRef = useRef(false);
-
-  /** Référence d'écho active : l'énoncé en cours, ou le dernier fini s'il est récent. */
-  const echoReference = (): string => {
-    if (speakingTextRef.current) return speakingTextRef.current;
-    const { text, endedAt } = lastSpokenRef.current;
-    return Date.now() - endedAt < ECHO_GRACE_MS ? text : '';
-  };
-  // Ce que l'oreille attend : une commande libre, une réponse à une question, un consentement.
-  const expectationRef = useRef<
-    | { kind: 'command' }
-    | { kind: 'choice'; question: AgentQuestion; retried: boolean }
-    | { kind: 'consent'; item: ChatItem; retried: boolean }
-  >({ kind: 'command' });
-  const { speakAndWait, speakSentences, stopSpeaking } = useSpeak();
-
-  const voice = useVoiceInput(
-    (text) => {
-      if (liveRef.current) void onLiveTranscript(text);
-      else setInput(text);
-    },
-    {
-      onIssue: () => setLiveState('idle'),
-      // LIVE-3 : pendant que Bob PARLE, un partiel qui n'est ni son propre écho ni un
-      // borborygme le fait taire — la suite (final) est traitée par le flux normal.
-      onPartial: (partial) => {
-        if (!liveRef.current || liveStateRef.current !== 'speaking') return;
-        if (parseBargeIn(partial, speakingTextRef.current) !== 'echo') stopSpeaking();
-      },
-    },
-  );
-  const voiceRef = useRef(voice);
-  voiceRef.current = voice;
-
-  // Un tab peut rester monte sous une route Stack. Au blur, l'owner local rend toujours le
-  // lease STT : jamais de micro cache ni de concurrence avec l'acces Bob global.
+  // ── LIVE : une seule session racine, partagée avec l'orbe global ────────────────
+  // Un tab peut rester monté sous une route Stack. Il publie son focus et son contexte, mais
+  // n'a aucun owner audio local : la session racine continue pendant les navigations de Bob.
   useFocusEffect(
     useCallback(() => {
       setAssistantFocused(true);
@@ -566,269 +521,58 @@ export default function Assistant() {
         // Le contexte hérité appartient au fil ouvert depuis l'overlay, pas aux futures
         // visites de l'onglet Assistant après navigation ailleurs.
         handoffContextRef.current = null;
-        if (!liveRef.current) return;
-        liveRef.current = false;
-        setLive(false);
-        stopSpeaking();
-        void voiceRef.current.cancel();
-        setLiveState('idle');
-        expectationRef.current = { kind: 'command' };
-        silenceRetriedRef.current = false;
-        echoRelistenRef.current = false;
       };
-    }, [stopSpeaking]),
+    }, []),
   );
 
-  /** L'oreille se rouvre — ou retombe en idle si le live a été coupé entre-temps. */
-  const listen = (): void => {
-    if (!liveRef.current) return;
-    setLiveState('listening');
-    if (!voiceRef.current.listening) void voiceRef.current.start();
-  };
-
-  const say = async (text: string, opts: { bargeIn?: boolean } = {}): Promise<void> => {
-    if (!liveRef.current) return;
-    // S6 — MÊME bouche que la session globale : texte SANITIZÉ pour l'oreille (l'écran garde
-    // le gabarit intact) et FILE DE PHRASES — Bob parle dès la première, le tap/barge-in coupe
-    // entre deux. Les CONSENTEMENTS (bargeIn:false) restent MONOBLOCS : un prompt de
-    // confirmation ne se coupe jamais en deux. L'echo-guard référence ce qui est réellement DIT.
-    const delivery = planSpokenDelivery(text, { monolithic: opts.bargeIn === false });
-    setLiveState('speaking');
-    speakingTextRef.current = delivery.text;
-    // LIVE-3 : l'oreille reste ouverte PENDANT la lecture (natif seulement — en cloud, le
-    // tap du bandeau reste l'interruption). JAMAIS pendant une demande de CONFIRMATION :
-    // l'écho du prompt contient « je confirme »/« annule » — risque d'exécution fantôme.
-    if ((opts.bargeIn ?? true) && speechRecognitionAvailable && !voiceRef.current.listening)
-      void voiceRef.current.start();
-    if (delivery.sentences === null) await speakAndWait(delivery.text);
-    else await speakSentences(delivery.sentences);
-    speakingTextRef.current = '';
-    lastSpokenRef.current = { text: delivery.text, endedAt: Date.now() };
-  };
-
-  /** Pause de purge : laisse l'audio résiduel du TTS sortir des buffers AVANT d'écouter. */
-  const settle = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-
-  /** Vocalise le résultat d'un tour d'agent, arme l'attente adaptée, ré-écoute. */
-  const liveTurn = async (res: { run: AgentRun; item: ChatItem } | null): Promise<void> => {
-    if (!liveRef.current) return;
-    if (!res) {
-      await say(t('live.error', { personality }));
-      expectationRef.current = { kind: 'command' };
-      listen();
-      return;
-    }
-    const { run, item } = res;
-    const question = run.ask?.[0];
-    if (question) {
-      expectationRef.current = { kind: 'choice', question, retried: false };
-      await say(speakableQuestion(question));
-      await settle(500);
-      listen();
-      return;
-    }
-    if (run.kind === 'proposed' && item.pending) {
-      expectationRef.current = { kind: 'consent', item, retried: false };
-      await say(run.spokenPrompt ?? run.card.body, { bargeIn: false });
-      await settle(800); // purge longue : aucune bribe du prompt ne doit entrer dans l'oreille
-      listen();
-      return;
-    }
-    expectationRef.current = { kind: 'command' };
-    await say(run.naturalBody ?? run.card.body);
-    await settle(500);
-    listen();
-  };
-
-  /** Route la parole entendue selon l'attente courante — fail-safe à chaque embranchement. */
-  /** Écho avéré : ignorer, compter (disjoncteur), ré-écouter — jamais de réponse à soi-même. */
-  const swallowEcho = (): void => {
-    echoStreakRef.current += 1;
-    if (echoStreakRef.current >= 3) {
-      // Trois échos d'affilée : l'environnement audio boucle — on se met au repos (tap = reprise).
-      echoStreakRef.current = 0;
-      setLiveState('idle');
-      return;
-    }
-    if (liveRef.current && !voiceRef.current.listening) {
-      // S4 : cette ré-écoute traverse la grâce du lease natif — la détection de silence ne
-      // doit jamais parler pendant cette fenêtre (on répondrait à son propre écho).
-      echoRelistenRef.current = true;
-      void voiceRef.current.start().finally(() => {
-        echoRelistenRef.current = false;
-      });
-    }
-  };
-
-  const onLiveTranscript = async (text: string): Promise<void> => {
-    if (!liveRef.current) return;
-    const expected = expectationRef.current;
-    const reference = echoReference();
-
-    if (liveStateRef.current === 'speaking') {
-      // LIVE-3 : final entendu pendant que Bob parle — écho ignoré (ré-écoute), arrêt
-      // explicite = silence + oreille libre, parole nouvelle = Bob se tait et traite.
-      const verdict = parseBargeIn(text, speakingTextRef.current);
-      if (verdict === 'echo') {
-        swallowEcho();
-        return;
-      }
-      stopSpeaking(); // speakAndWait résout → le tour en cours enchaînera listen()
-      if (verdict === 'interrupt') return;
-      // 'speech' : on traite la nouvelle demande ci-dessous.
-    } else if (reference) {
-      // Fenêtre de grâce post-lecture (fix boucle d'écho device) : une réponse STRUCTURÉE
-      // attendue et courte (choix, consentement) court-circuite l'échoscan — ses mots
-      // viennent forcément de la question que Bob vient de lire ; tout le reste est
-      // échoscanné contre le dernier énoncé.
-      const shortReply = speechWordCount(text) <= 4;
-      const structuredReply =
-        (expected.kind === 'choice' &&
-          shortReply &&
-          parseVoiceChoice(text, expected.question.options) !== null) ||
-        (expected.kind === 'consent' && shortReply && parseVoiceConsent(text) !== 'unclear');
-      if (!structuredReply && echoOverlap(text, reference) >= 0.5) {
-        swallowEcho();
-        return;
-      }
-    }
-    echoStreakRef.current = 0;
-    silenceRetriedRef.current = false; // un transcript réel réarme la relance unique (S4)
-    setLiveState('thinking');
-
-    if (expected.kind === 'choice') {
-      const idx = parseVoiceChoice(text, expected.question.options);
-      if (idx !== null) {
-        const picked = expected.question.options[idx]!;
-        setActiveAsk(null); // la modale se referme : la voix a répondu
-        expectationRef.current = { kind: 'command' };
-        await liveTurn(await ask(picked.followUp));
-        return;
-      }
-      if (!expected.retried) {
-        expectationRef.current = { ...expected, retried: true };
-        await say(t('live.unclearChoice', { personality }));
-        listen();
-        return;
-      }
-      // Deux échecs : la modale reste ouverte, l'écran tranche — l'oreille redevient libre.
-      expectationRef.current = { kind: 'command' };
-      await say(t('live.useScreen', { personality }));
-      listen();
-      return;
-    }
-
-    if (expected.kind === 'consent') {
-      const consent = parseVoiceConsent(text);
-      if (consent === 'confirm') {
-        expectationRef.current = { kind: 'command' };
-        const done = await confirm(expected.item);
-        await say(done ? done.card.body : t('assistant.actionError', { personality }));
-        listen();
-        return;
-      }
-      if (consent === 'cancel') {
-        expectationRef.current = { kind: 'command' };
-        cancel(expected.item);
-        await say(t('assistant.canceled', { personality }));
-        listen();
-        return;
-      }
-      if (!expected.retried) {
-        expectationRef.current = { ...expected, retried: true };
-        await say(t('live.unclearConsent', { personality }));
-        listen();
-        return;
-      }
-      expectationRef.current = { kind: 'command' };
-      await say(t('live.useScreen', { personality }));
-      listen();
-      return;
-    }
-
-    await liveTurn(await ask(text));
-  };
-
   const toggleLive = (): void => {
-    if (globalSession.active) {
-      globalSession.stop();
-      return;
-    }
-    if (live) {
-      setLive(false);
-      liveRef.current = false;
-      stopSpeaking();
-      void voiceRef.current.stop();
-      setLiveState('idle');
-      expectationRef.current = { kind: 'command' };
+    const plan = planAssistantRealtimeControl({
+      sessionActive: globalSession.active,
+      manualTurnBusy: busyRef.current,
+      entitlementLoading: liveEntitlement.loading,
+      entitlementAllowed: liveEntitlement.allowed,
+    });
+    if (plan === 'toggle_root_session') {
+      globalSession.toggle();
       return;
     }
     // TEASER BOB LIVE (pilier 2) : sans droit voice_live, le tap devient LE moment contextuel —
     // jamais pendant le chargement (on ne vend pas sur un doute) et le « non » est tenu :
     // sourdine (2 rejets même source < 14 j) → réponse discrète de Bob, zéro vente. La branche
-    // AYANT DROIT ci-dessous est strictement inchangée (le realtime vit dans la session).
-    if (liveEntitlement.loading) return; // abonnement pas encore su : ni vente, ni départ à l'aveugle
-    if (!liveEntitlement.allowed) {
-      const decision = liveEntitlement.decision;
-      void isPaywallMuted('voice_live_tap').then((muted) => {
-        if (muted || decision === null) pushText('bob', t('live.useScreen', { personality }));
-        else setLivePaywall(decision);
-      });
-      return;
-    }
-    setLive(true);
-    liveRef.current = true;
-    expectationRef.current = { kind: 'command' };
-    silenceRetriedRef.current = false;
-    echoRelistenRef.current = false;
-    setLiveState('listening');
-    void voiceRef.current.start().then((started) => {
-      if (started) return;
-      liveRef.current = false;
-      setLive(false);
-      setLiveState('idle');
+    // AYANT DROIT ci-dessous délègue au même owner racine que le bouton flottant.
+    if (plan === 'wait_for_entitlement' || plan === 'wait_for_manual_turn') return;
+    const decision = liveEntitlement.decision;
+    void isPaywallMuted('voice_live_tap').then((muted) => {
+      if (muted || decision === null) pushText('bob', t('live.useScreen', { personality }));
+      else setLivePaywall(decision);
     });
   };
 
-  // S4 — CONTINUITÉ MAINS-LIBRES : fin d'écoute SANS transcript (la reco native se termine
-  // seule sur silence). 1er silence : UNE relance parlée (heardNothing) + UNE ré-écoute.
-  // 2e silence d'affilée : repos SILENCIEUX — un tap relance. La décision est PURE
-  // (live-silence.ts) et ne réagit qu'à une fermeture RÉELLE de l'oreille — jamais à la
-  // latence d'ouverture ni à la ré-écoute post-écho.
-  useEffect(() => {
-    const earWasOpen = liveEarWasOpenRef.current;
-    liveEarWasOpenRef.current = voice.listening;
-    const plan = planLiveSilenceRecovery({
-      live,
-      state: liveState,
-      voiceListening: voice.listening,
-      earWasOpen,
-      echoRelistenInFlight: echoRelistenRef.current,
-      nativeRecognition: speechRecognitionAvailable,
-      alreadyRetried: silenceRetriedRef.current,
-    });
-    if (plan.kind === 'none') return;
-    if (plan.kind === 'rest') {
-      setLiveState('idle');
-      return;
-    }
-    silenceRetriedRef.current = true;
-    void (async () => {
-      await say(t('agent.global.heardNothing', { personality }));
-      await settle(500);
-      listen();
-    })();
-  }, [live, voice.listening, liveState, personality]);
-
   /** Valider : exécute l'action proposée via agent.confirm — LE flux de confirmation existant. */
   const confirm = async (item: ChatItem): Promise<AgentRun | null> => {
-    if (!item.pending || busy || !assistantEntitlement.verified || !entitled) return null;
+    if (
+      !item.pending ||
+      !canRunAssistantManualTurn({
+        sessionActive: globalSession.active,
+        manualTurnBusy: busyRef.current,
+        entitlementVerified: assistantEntitlement.verified,
+        entitlementAllowed: entitled,
+      })
+    ) return null;
     // Une action financière ne part jamais avec un aperçu fabriqué à partir de données
     // absentes, obsolètes après erreur, ou d'une pièce introuvable.
     if (pendingPreview(item.pending, item.accountingLines).kind !== 'ready') return null;
-    setBusy(true);
-    const r = await agent.confirm(item.pending);
-    setBusy(false);
+    setManualBusy(true);
+    let r: Awaited<ReturnType<typeof agent.confirm>>;
+    try {
+      r = await agent.confirm(item.pending);
+    } catch {
+      setReachable(false);
+      pushText('bob', t('assistant.offline', { personality }));
+      return null;
+    } finally {
+      setManualBusy(false);
+    }
     // L'action proposée est consommée (les boutons disparaissent, décision prise).
     setItems((prev) => prev.map((it) => (it.id === item.id ? { ...it, pending: undefined } : it)));
     if (r.ok) {
@@ -844,6 +588,26 @@ export default function Assistant() {
     setItems((prev) => prev.map((it) => (it.id === item.id ? { ...it, pending: undefined } : it)));
     pushText('bob', t('assistant.canceled', { personality }));
   };
+
+  // Une proposition Realtime produite alors que l'utilisateur est DÉJÀ dans Assistant ne
+  // peut pas attendre le CTA de l'orbe (masqué sur cette route). On demande le même handoff
+  // opaque, puis l'effet ci-dessous recharge l'aperçu owner-bound exactement comme ailleurs.
+  useEffect(() => {
+    const handoff = globalSession.handoff;
+    if (!shouldRequestAssistantRealtimeHandoff({
+      assistantFocused,
+      reviewRequired: globalSession.reviewRequired,
+      handoffExists: handoff !== null,
+      handoffAlreadyRequested: handoff?.requestedAt !== null,
+    })) return;
+    if (handoff === null) return; // narrowing défensif ; le plan exige `handoffExists`.
+    globalSession.requestHandoff(handoff.id);
+  }, [
+    assistantFocused,
+    globalSession.handoff,
+    globalSession.requestHandoff,
+    globalSession.reviewRequired,
+  ]);
 
   // Passage overlay → fil complet : on consomme le run DÉJÀ produit, avec le même proposalId
   // et le même snapshot contextuel. Le transcript n'est pas rejoué via /ai/ask et aucune donnée
@@ -868,8 +632,18 @@ export default function Assistant() {
     const routePrompt = typeof prompt === 'string' ? prompt.trim() : '';
     if (routePrompt) submittedPrompt.current = routePrompt;
     handoffContextRef.current = { context: handoff.context, expiresAt: handoff.expiresAt };
-    for (const turn of handoff.history) pushTextRef.current(turn.role, turn.text);
-    pushTextRef.current('user', handoff.message);
+    const structuredBobText = handoff.kind === 'run'
+      ? handoff.run.naturalBody ?? handoff.run.card.body
+      : handoff.responseText;
+    const importPlan = planAssistantLiveTurnImport({
+      conversation: globalSession.conversation,
+      importedIds: importedLiveTurnIdsRef.current,
+      structuredBobText,
+    });
+    for (const id of importPlan.consumedIds) importedLiveTurnIdsRef.current.add(id);
+    for (const turn of importPlan.visibleTurns) {
+      pushTextRef.current(turn.role, turn.text);
+    }
     if (handoff.kind === 'run') {
       pushRunRef.current(handoff.run);
       globalSession.consumeHandoff(handoff.id);
@@ -878,7 +652,7 @@ export default function Assistant() {
 
     // La voix ne transporte jamais tool/args. L'identifiant opaque est recharge par un endpoint
     // qui reverifie tenant, utilisateur et TTL ; un mismatch reste bloque sans bouton Valider.
-    setBusy(true);
+    setManualBusy(true);
     void client.previewBobProposal(handoff.proposalId).then((preview) => {
       const stillCurrent = globalHandoffRef.current?.id === handoff.id;
       if (!stillCurrent) return;
@@ -897,7 +671,7 @@ export default function Assistant() {
         pushTextRef.current('bob', t('assistant.proposalUnavailable', { personality }));
       }
     }).finally(() => {
-      setBusy(false);
+      setManualBusy(false);
       globalSession.consumeHandoff(handoff.id);
     });
   }, [
@@ -905,33 +679,87 @@ export default function Assistant() {
     busy,
     entitled,
     globalSession.consumeHandoff,
+    globalSession.conversation,
     globalSession.handoff,
     client,
     personality,
     prompt,
+    setManualBusy,
+  ]);
+
+  // Les tours Live ordinaires restent visibles dans le fil après navigation et après arrêt.
+  // Une proposition est importée par l'effet owner-bound ci-dessus afin de conserver sa carte.
+  useEffect(() => {
+    if (
+      !assistantFocused ||
+      !entitled ||
+      (globalSession.reviewRequired && globalSession.handoff !== null)
+    ) return;
+    const importPlan = planAssistantLiveTurnImport({
+      conversation: globalSession.conversation,
+      importedIds: importedLiveTurnIdsRef.current,
+    });
+    for (const id of importPlan.consumedIds) importedLiveTurnIdsRef.current.add(id);
+    for (const turn of importPlan.visibleTurns) {
+      pushTextRef.current(turn.role, turn.text);
+    }
+  }, [
+    assistantFocused,
+    entitled,
+    globalSession.conversation,
+    globalSession.conversationEpoch,
+    globalSession.handoff,
+    globalSession.reviewRequired,
   ]);
 
   // ?prompt=relance (edges C10/C11/C13) : pré-remplit puis soumet — une seule fois par valeur.
   useEffect(() => {
     const raw = typeof prompt === 'string' ? prompt.trim() : '';
-    if (!assistantFocused || !raw || !entitled || busy || submittedPrompt.current === raw) return;
+    if (
+      !assistantFocused
+      || !raw
+      || !entitled
+      || busy
+      || globalSession.active
+      || submittedPrompt.current === raw
+    ) return;
     submittedPrompt.current = raw;
     const key = ENTRY_PROMPTS[raw];
     const text = key !== undefined ? t(key, { personality }) : raw;
     setInput(text); // pré-remplit…
     void askRef.current(text); // …et soumet (contrat C15)
-  }, [assistantFocused, prompt, entitled, personality, busy]);
+  }, [assistantFocused, prompt, entitled, personality, busy, globalSession.active]);
 
   const tabClearance =
     patterns.bottomTabBar.padding[0] +
     TAB_PILL_HEIGHT +
     Math.max(insets.bottom, patterns.bottomTabBar.padding[2]);
-  const displayedLive = globalSession.active || live;
-  const displayedLiveState = globalSession.active
-    ? globalSession.phase === 'error'
-      ? 'idle'
-      : globalSession.phase
-    : liveState;
+  const displayedLive = globalSession.active;
+  const responseAlreadyInConversation = globalSession.response !== null
+    && globalSession.conversation.some(
+      (turn) => turn.role === 'bob' && turn.text === globalSession.response,
+    );
+  const showLiveStatus = displayedLive
+    || (globalSession.response !== null && !responseAlreadyInConversation);
+  const displayedLiveState = globalSession.phase;
+  const displayedLiveStateKey: I18nKey =
+    displayedLiveState === 'listening'
+      ? 'live.listening'
+      : displayedLiveState === 'thinking'
+        ? 'live.thinking'
+        : displayedLiveState === 'speaking'
+          ? 'live.speaking'
+          : displayedLiveState === 'error'
+            ? 'agent.global.error'
+            : 'live.idle';
+  const displayedLiveCopy = globalSession.response !== null && !responseAlreadyInConversation
+    ? globalSession.response
+    : t(displayedLiveStateKey, { personality });
+
+  useEffect(() => {
+    // Une sheet ouverte avant Bob Live ne reste jamais armée derrière l'overlay vocal.
+    if (displayedLive) setActiveAsk(null);
+  }, [displayedLive]);
 
   // ── Garde d'abonnement autoritative : aucun prompt, live ou outil tant que GET /subscription
   // n'a pas répondu avec succès. Une erreur avec cache reste fermée jusqu'au prochain succès. ──
@@ -1192,7 +1020,7 @@ export default function Assistant() {
                         variant="secondary"
                         radius={12}
                         style={{ flex: 1 }}
-                        disabled={busy}
+                        disabled={busy || displayedLive}
                         onPress={() => cancel(it)}
                       />
                       <Button
@@ -1200,7 +1028,7 @@ export default function Assistant() {
                         variant="ai"
                         radius={12}
                         style={{ flex: 1 }}
-                        disabled={busy || preview?.kind !== 'ready'}
+                        disabled={busy || displayedLive || preview?.kind !== 'ready'}
                         onPress={() => void confirm(it)}
                       />
                     </View>
@@ -1212,6 +1040,7 @@ export default function Assistant() {
                   <View style={{ marginTop: 10, alignSelf: 'flex-start' }}>
                     <Chip
                       label={t('assistant.askAnswer', { personality })}
+                      disabled={busy || displayedLive}
                       onPress={() => setActiveAsk(it.run?.ask?.[0] ?? null)}
                     />
                   </View>
@@ -1221,6 +1050,7 @@ export default function Assistant() {
                       <Chip
                         key={c.value}
                         label={c.label}
+                        disabled={busy || displayedLive}
                         onPress={() =>
                           void ask(
                             t(
@@ -1266,37 +1096,11 @@ export default function Assistant() {
               />
             </View>
           ) : null}
-          {displayedLive ? (
-            <Pressable
-              accessibilityRole="button"
+          {showLiveStatus ? (
+            <View
+              accessibilityRole="text"
               accessibilityLiveRegion="polite"
-              accessibilityLabel={t(
-                displayedLiveState === 'listening'
-                  ? speechRecognitionAvailable
-                    ? 'live.listening'
-                    : 'live.tapWhenDone'
-                  : displayedLiveState === 'thinking'
-                    ? 'live.thinking'
-                    : displayedLiveState === 'speaking'
-                      ? 'live.speaking'
-                      : 'live.idle',
-                { personality },
-              )}
-              onPress={() => {
-                if (globalSession.active) {
-                  globalSession.toggle();
-                  return;
-                }
-                // Tap sur le bandeau : interrompt la lecture, clôt l'écoute cloud, ou relance l'oreille.
-                if (liveState === 'speaking') {
-                  stopSpeaking();
-                  listen();
-                } else if (liveState === 'listening' && !speechRecognitionAvailable) {
-                  void voiceRef.current.stop(); // cloud : fin de parole manuelle
-                } else if (liveState === 'idle') {
-                  listen();
-                }
-              }}
+              accessibilityLabel={displayedLiveCopy}
               style={{
                 marginHorizontal: 16,
                 marginTop: 6,
@@ -1322,24 +1126,39 @@ export default function Assistant() {
                       ? semantic.ai
                       : displayedLiveState === 'speaking'
                         ? semantic.success
-                        : colors.slate300,
+                        : displayedLiveState === 'error'
+                          ? semantic.danger
+                          : colors.slate300,
                 }}
               />
               <Text style={[font('sub', 600), { color: colors.ink800, flex: 1 }]}>
-                {t(
-                  displayedLiveState === 'listening'
-                    ? speechRecognitionAvailable
-                      ? 'live.listening'
-                      : 'live.tapWhenDone'
-                    : displayedLiveState === 'thinking'
-                      ? 'live.thinking'
-                      : displayedLiveState === 'speaking'
-                        ? 'live.speaking'
-                        : 'live.idle',
+                {displayedLiveCopy}
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t(
+                  displayedLive ? 'agent.global.stop' : 'agent.global.dismiss',
                   { personality },
                 )}
-              </Text>
-            </Pressable>
+                hitSlop={6}
+                onPress={displayedLive ? globalSession.stop : globalSession.dismissResponse}
+                style={({ pressed }) => ({
+                  width: 44,
+                  height: 44,
+                  marginVertical: -8,
+                  marginRight: -8,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  opacity: pressed ? 0.62 : 1,
+                })}
+              >
+                <Ionicons
+                  name={displayedLive ? 'stop-circle-outline' : 'close'}
+                  size={displayedLive ? 22 : 18}
+                  color={displayedLive ? semantic.danger : colors.slate500}
+                />
+              </Pressable>
+            </View>
           ) : null}
           <ScrollView
             horizontal
@@ -1358,7 +1177,7 @@ export default function Assistant() {
                 <SuggestionChip
                   key={key}
                   label={label}
-                  disabled={busy}
+                  disabled={busy || displayedLive}
                   onPress={() => void ask(label)}
                 />
               );
@@ -1385,6 +1204,7 @@ export default function Assistant() {
               placeholder={t('assistant.placeholder', { personality })}
               placeholderTextColor={colors.slate300}
               accessibilityLabel={t('assistant.placeholder', { personality })}
+              editable={!busy && !displayedLive}
               returnKeyType="send"
               onSubmitEditing={() => void ask(input)}
               style={[font('body'), { flex: 1, padding: 0, color: colors.ink800 }]}
@@ -1392,12 +1212,16 @@ export default function Assistant() {
             {/* LIVE — le mode vocal mains-libres : Bob écoute, agit et répond en continu. */}
             <Pressable
               accessibilityRole="button"
-              accessibilityState={{ selected: displayedLive }}
+              accessibilityState={{
+                selected: displayedLive,
+                disabled: busy && !displayedLive,
+              }}
               accessibilityLabel={
                 displayedLive
-                  ? t('live.speaking', { personality })
+                  ? t('agent.global.stop', { personality })
                   : t('live.idle', { personality })
               }
+              disabled={busy && !displayedLive}
               onPress={toggleLive}
               style={{
                 width: 38,
@@ -1420,7 +1244,7 @@ export default function Assistant() {
                 />
               ) : null}
               <Ionicons
-                name="pulse"
+                name={displayedLive ? 'stop' : 'pulse'}
                 size={19}
                 color={displayedLive ? colors.surface : colors.slate500}
               />
@@ -1428,7 +1252,8 @@ export default function Assistant() {
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={t('assistant.send', { personality })}
-              accessibilityState={{ disabled: busy }}
+              accessibilityState={{ disabled: busy || displayedLive }}
+              disabled={busy || displayedLive}
               onPress={() => void ask(input)}
               style={({ pressed }) => ({
                 width: 44,
@@ -1453,7 +1278,7 @@ export default function Assistant() {
 
       {/* ASK-1 : la modale de question structurée (choix unique/multiple, descriptions). */}
       <QuestionSheet
-        visible={activeAsk !== null}
+        visible={activeAsk !== null && !displayedLive}
         header={activeAsk?.header ?? ''}
         question={activeAsk?.question ?? ''}
         options={activeAsk?.options ?? []}

@@ -437,6 +437,14 @@ function client(getToken?: () => Promise<string | null>): HttpBobClient {
   });
 }
 
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
 function nativeCallInput(
   agentMissionProtocolVersion?: 1 | 2 | null,
 ): Parameters<HttpBobClient['createRealtimeVoiceCall']>[0] {
@@ -454,6 +462,7 @@ function nativeCallInput(
 
 describe('Realtime AgentMission capability handle', () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -1439,10 +1448,11 @@ describe('Realtime AgentMission capability handle', () => {
     result.value.agentMissionSession?.dispose();
   });
 
-  it('ne rejoue pas après abort et termine la session avant de rendre la main', async () => {
+  it('ne rejoue pas après abort, annule physiquement l ACK et compense avant de rendre la main', async () => {
     const controller = new AbortController();
     const paths: string[] = [];
-    const fetchMock = vi.fn(async (url: unknown) => {
+    let acknowledgementSignal: AbortSignal | null = null;
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
       const path = new URL(String(url)).pathname;
       paths.push(path);
       if (path === '/voice/realtime/calls') {
@@ -1455,6 +1465,7 @@ describe('Realtime AgentMission capability handle', () => {
         path
         === `/voice/realtime/calls/${SESSION_ID}/agent-mission-bootstrap-acknowledgements`
       ) {
+        acknowledgementSignal = init?.signal ?? null;
         controller.abort();
         return new Response(JSON.stringify({
           acknowledged: true,
@@ -1481,6 +1492,227 @@ describe('Realtime AgentMission capability handle', () => {
       `/voice/realtime/calls/${SESSION_ID}/agent-mission-bootstrap-acknowledgements`,
       `/voice/realtime/calls/${SESSION_ID}`,
     ]);
+    expect((acknowledgementSignal as AbortSignal | null)?.aborted).toBe(true);
+    expect(paths.filter((path) => (
+      path === `/voice/realtime/calls/${SESSION_ID}/agent-mission-bootstrap-acknowledgements`
+    ))).toHaveLength(1);
+  });
+
+  it('laisse au transport l’unique DELETE de bootstrap quand il en prend la propriété', async () => {
+    const controller = new AbortController();
+    const paths: string[] = [];
+    const deleteBodies: unknown[] = [];
+    const diagnostic = {
+      version: 1 as const,
+      terminationSource: 'policy' as const,
+      lastSuccessfulCheckpoint: 'bootstrap_acknowledged' as const,
+      closeReason: 'entitlement_revoked' as const,
+    };
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      const path = new URL(String(url)).pathname;
+      paths.push(path);
+      if (path === '/voice/realtime/calls') {
+        expect(JSON.parse(String(init?.body))).not.toHaveProperty('bootstrapTerminationOwner');
+        return new Response(JSON.stringify(nativeBootstrap({
+          agentMissionProtocolVersion: 1,
+          agentMissionCapability: CAPABILITY,
+        })), { headers: { 'content-type': 'application/json' } });
+      }
+      if (
+        path
+        === `/voice/realtime/calls/${SESSION_ID}/agent-mission-bootstrap-acknowledgements`
+      ) {
+        controller.abort();
+        return new Response(JSON.stringify({
+          acknowledged: true,
+          replayed: false,
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      if (path === `/voice/realtime/calls/${SESSION_ID}`) {
+        deleteBodies.push(JSON.parse(String(init?.body)));
+        return new Response(JSON.stringify({ ended: true }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      throw new Error(`Route inattendue: ${path}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const bobClient = client();
+    await expect(bobClient.createRealtimeVoiceCall({
+      ...nativeCallInput(1),
+      bootstrapTerminationOwner: 'transport',
+    }, controller.signal)).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'dependency' },
+    });
+    expect(paths).toEqual([
+      '/voice/realtime/calls',
+      `/voice/realtime/calls/${SESSION_ID}/agent-mission-bootstrap-acknowledgements`,
+    ]);
+
+    await expect(bobClient.hangupRealtimeVoiceCall(
+      SESSION_ID,
+      undefined,
+      diagnostic,
+    )).resolves.toEqual({ ok: true, value: { ended: true } });
+
+    expect(paths).toEqual([
+      '/voice/realtime/calls',
+      `/voice/realtime/calls/${SESSION_ID}/agent-mission-bootstrap-acknowledgements`,
+      `/voice/realtime/calls/${SESSION_ID}`,
+    ]);
+    expect(deleteBodies).toEqual([diagnostic]);
+  });
+
+  it('refuse la propriété transport sans handle UUID avant tout effet réseau', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const { sessionHandle, ...callWithoutHandle } = nativeCallInput(1);
+    expect(sessionHandle).toBe(SESSION_ID);
+
+    await expect(client().createRealtimeVoiceCall({
+      ...callWithoutHandle,
+      bootstrapTerminationOwner: 'transport',
+    })).resolves.toEqual({
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [{
+          field: 'bootstrapTerminationOwner',
+          message: 'Seul un transport WebRTC lié à un handle UUID peut posséder la terminaison.',
+        }],
+      },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('un signal transport déjà annulé interdit le POST avant tout effet réseau', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(client().createRealtimeVoiceCall({
+      ...nativeCallInput(1),
+      bootstrapTerminationOwner: 'transport',
+    }, controller.signal)).resolves.toMatchObject({
+      ok: false,
+      error: {
+        kind: 'dependency',
+        port: 'api',
+        cause: 'Requête annulée.',
+      },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('un abort transport pendant un token différé interdit durablement tout POST', async () => {
+    const token = deferred<string | null>();
+    const getToken = vi.fn(() => token.promise);
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const controller = new AbortController();
+
+    const bootstrap = client(getToken).createRealtimeVoiceCall({
+      ...nativeCallInput(1),
+      bootstrapTerminationOwner: 'transport',
+    }, controller.signal);
+    await vi.waitFor(() => expect(getToken).toHaveBeenCalledOnce());
+    controller.abort();
+
+    await expect(bootstrap).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'dependency', port: 'api', cause: 'Requête annulée.' },
+    });
+    token.resolve('supabase-jwt');
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('un abort transport pendant le POST attend sa réponse et ne démarre aucun ACK', async () => {
+    const post = deferred<Response>();
+    const paths: string[] = [];
+    const fetchMock = vi.fn((url: unknown) => {
+      const path = new URL(String(url)).pathname;
+      paths.push(path);
+      if (path === '/voice/realtime/calls') return post.promise;
+      throw new Error(`Route inattendue: ${path}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const controller = new AbortController();
+    let settled = false;
+    const bootstrap = client().createRealtimeVoiceCall({
+      ...nativeCallInput(1),
+      bootstrapTerminationOwner: 'transport',
+    }, controller.signal).finally(() => {
+      settled = true;
+    });
+    await vi.waitFor(() => expect(paths).toEqual(['/voice/realtime/calls']));
+    controller.abort();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(false);
+
+    post.resolve(new Response(JSON.stringify(nativeBootstrap({
+      agentMissionProtocolVersion: 1,
+      agentMissionCapability: CAPABILITY,
+    })), { headers: { 'content-type': 'application/json' } }));
+    await expect(bootstrap).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'dependency', port: 'api', cause: 'Requête annulée.' },
+    });
+    expect(paths).toEqual(['/voice/realtime/calls']);
+  });
+
+  it('le timeout transport reste borné et avorte le fetch même si le binding ne se règle pas', async () => {
+    vi.useFakeTimers();
+    const neverSettled = deferred<Response>();
+    let networkSignal: AbortSignal | null = null;
+    const fetchMock = vi.fn((_url: unknown, init?: RequestInit) => {
+      networkSignal = init?.signal ?? null;
+      return neverSettled.promise;
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const bootstrap = client().createRealtimeVoiceCall({
+      ...nativeCallInput(1),
+      bootstrapTerminationOwner: 'transport',
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fetchMock).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(12_000);
+    await expect(bootstrap).resolves.toMatchObject({
+      ok: false,
+      error: {
+        kind: 'dependency',
+        port: 'api',
+        cause: 'Délai réseau dépassé après 12000 ms.',
+      },
+    });
+    expect((networkSignal as AbortSignal | null)?.aborted).toBe(true);
+  });
+
+  it('refuse un propriétaire de terminaison runtime inconnu avant tout effet réseau', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const input = {
+      ...nativeCallInput(1),
+      bootstrapTerminationOwner: 'typo_runtime',
+    } as unknown as Parameters<HttpBobClient['createRealtimeVoiceCall']>[0];
+
+    await expect(client().createRealtimeVoiceCall(input)).resolves.toEqual({
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [{
+          field: 'bootstrapTerminationOwner',
+          message: 'Le propriétaire de terminaison du bootstrap est invalide.',
+        }],
+      },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('compense un bootstrap V1 mal formé avec le handle demandé', async () => {

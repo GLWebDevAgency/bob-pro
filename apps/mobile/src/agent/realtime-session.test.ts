@@ -787,6 +787,23 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     expect(log.filter((entry) => entry === 'mission-1:dispose')).toHaveLength(1);
   });
 
+  it('publie la policy fermée avant de stopper l’orchestrateur', async () => {
+    const { controller, diagnostics, log } = harness();
+    await controller.start();
+
+    await Promise.all([
+      controller.stopForPolicy('entitlement_revoked'),
+      controller.stop('background'),
+      controller.stopForPolicy('incompatible_route'),
+    ]);
+
+    expect(diagnostics.filter((entry) => entry.type === 'policy_stop')).toEqual([{
+      type: 'policy_stop',
+      closeReason: 'entitlement_revoked',
+    }]);
+    expect(log.filter((entry) => entry === 'orchestrator:stop')).toHaveLength(1);
+  });
+
   it('refuse avant adoption une capability liée à un autre handle Realtime', async () => {
     const log: string[] = [];
     const handle = '00000000-0000-4000-8000-000000000043';

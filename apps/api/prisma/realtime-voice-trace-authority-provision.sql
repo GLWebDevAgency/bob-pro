@@ -32,7 +32,8 @@ BEGIN
     'public.purge_realtime_voice_trace_v2(integer)'::REGPROCEDURE,
     'public.inspect_realtime_voice_trace_retention_v2()'::REGPROCEDURE,
     'public.assert_realtime_voice_trace_key_versions_v2(integer[])'::REGPROCEDURE,
-    'public.read_realtime_voice_trace_session_v2(uuid,text,uuid,uuid,text,text,boolean)'::REGPROCEDURE
+    'public.read_realtime_voice_trace_session_v2(uuid,text,uuid,uuid,text,text,boolean)'::REGPROCEDURE,
+    'public.read_realtime_voice_trace_session_v3(uuid,text,uuid,uuid,text,text,boolean)'::REGPROCEDURE
   ] LOOP
     IF protected_function IS NULL THEN
       RAISE EXCEPTION 'Realtime Voice Trace function inventory is incomplete';
@@ -236,7 +237,7 @@ SELECT pg_catalog.format(
 
 -- Reader : la sélection utile au diagnostic et l'INSERT d'audit sont enfermés dans une seule RPC.
 SELECT pg_catalog.format(
-  'SET LOCAL ROLE %I; GRANT SELECT (id, "companyId", "userId", "traceAttemptId", "sessionHandle", "ownerEpoch", "eventOrdinal", "eventKind", "turnId", "occurredAt", "durationMs", "contextRevision", "contextDigest", "speechDelivery", "plannerDisposition", "plannerAuthority", "plannerIntent", "missionKind", "runKind", "controlKind", stage, outcome, "failureClass", "interruptionReason", "eventDigestKeyVersion", "encryptionKeyVersion", "transcriptCiphertext", "canonicalReplyCiphertext") ON TABLE public.realtime_voice_trace_events TO bob_realtime_voice_trace_reader; RESET ROLE;',
+  'SET LOCAL ROLE %I; GRANT SELECT (id, "companyId", "userId", "traceAttemptId", "sessionHandle", "ownerEpoch", "eventOrdinal", "eventKind", "turnId", "occurredAt", "durationMs", "contextRevision", "contextDigest", "speechDelivery", "plannerDisposition", "plannerAuthority", "plannerIntent", "missionKind", "runKind", "controlKind", stage, outcome, "failureClass", "interruptionReason", "sessionCloseReason", "eventDigestKeyVersion", "encryptionKeyVersion", "transcriptCiphertext", "canonicalReplyCiphertext") ON TABLE public.realtime_voice_trace_events TO bob_realtime_voice_trace_reader; RESET ROLE;',
   owner.rolname
 )
   FROM pg_catalog.pg_class AS relation
@@ -269,6 +270,8 @@ SELECT pg_catalog.format(
     ('public.assert_realtime_voice_trace_key_versions_v2(integer[])'::REGPROCEDURE,
       'bob_realtime_voice_trace_key_readiness'),
     ('public.read_realtime_voice_trace_session_v2(uuid,text,uuid,uuid,text,text,boolean)'::REGPROCEDURE,
+      'bob_realtime_voice_trace_reader'),
+    ('public.read_realtime_voice_trace_session_v3(uuid,text,uuid,uuid,text,text,boolean)'::REGPROCEDURE,
       'bob_realtime_voice_trace_reader')
   ) AS mapping(function_oid, authority_name)
   JOIN pg_catalog.pg_proc AS function ON function.oid = mapping.function_oid
@@ -293,6 +296,8 @@ SELECT pg_catalog.format(
     ('public.assert_realtime_voice_trace_key_versions_v2(integer[])'::REGPROCEDURE,
       'bob_realtime_voice_trace_key_readiness'),
     ('public.read_realtime_voice_trace_session_v2(uuid,text,uuid,uuid,text,text,boolean)'::REGPROCEDURE,
+      'bob_realtime_voice_trace_reader'),
+    ('public.read_realtime_voice_trace_session_v3(uuid,text,uuid,uuid,text,text,boolean)'::REGPROCEDURE,
       'bob_realtime_voice_trace_reader')
   ) AS mapping(function_oid, authority_name)
   JOIN pg_catalog.pg_proc AS function ON function.oid = mapping.function_oid
@@ -336,7 +341,8 @@ SELECT DISTINCT pg_catalog.format(
    'public.purge_realtime_voice_trace_v2(integer)'::REGPROCEDURE,
    'public.inspect_realtime_voice_trace_retention_v2()'::REGPROCEDURE,
    'public.assert_realtime_voice_trace_key_versions_v2(integer[])'::REGPROCEDURE,
-   'public.read_realtime_voice_trace_session_v2(uuid,text,uuid,uuid,text,text,boolean)'::REGPROCEDURE
+   'public.read_realtime_voice_trace_session_v2(uuid,text,uuid,uuid,text,text,boolean)'::REGPROCEDURE,
+   'public.read_realtime_voice_trace_session_v3(uuid,text,uuid,uuid,text,text,boolean)'::REGPROCEDURE
  )
    AND privilege.grantee <> function.proowner
    AND (privilege.grantee = 0 OR grantee.rolname IS NOT NULL)
@@ -372,8 +378,18 @@ SET LOCAL ROLE bob_realtime_voice_trace_reader;
 REVOKE ALL ON FUNCTION public.read_realtime_voice_trace_session_v2(
   UUID, TEXT, UUID, UUID, TEXT, TEXT, BOOLEAN
 ) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.read_realtime_voice_trace_session_v3(
+  UUID, TEXT, UUID, UUID, TEXT, TEXT, BOOLEAN
+) FROM PUBLIC;
 SELECT pg_catalog.format(
   'REVOKE ALL ON FUNCTION public.read_realtime_voice_trace_session_v2(UUID, TEXT, UUID, UUID, TEXT, TEXT, BOOLEAN) FROM %I',
+  current_setting('app.release_runtime_role', TRUE)
+)
+ WHERE NULLIF(current_setting('app.release_runtime_role', TRUE), '') IS NOT NULL
+   AND pg_catalog.to_regrole(current_setting('app.release_runtime_role', TRUE)) IS NOT NULL
+\gexec
+SELECT pg_catalog.format(
+  'REVOKE ALL ON FUNCTION public.read_realtime_voice_trace_session_v3(UUID, TEXT, UUID, UUID, TEXT, TEXT, BOOLEAN) FROM %I',
   current_setting('app.release_runtime_role', TRUE)
 )
  WHERE NULLIF(current_setting('app.release_runtime_role', TRUE), '') IS NOT NULL
@@ -386,7 +402,20 @@ SELECT pg_catalog.format(
  WHERE current_setting('app.release_environment', TRUE) = 'staging'
 \gexec
 SELECT pg_catalog.format(
+  'GRANT EXECUTE ON FUNCTION public.read_realtime_voice_trace_session_v3(UUID, TEXT, UUID, UUID, TEXT, TEXT, BOOLEAN) TO %I',
+  current_setting('app.release_deployer_role', TRUE)
+)
+ WHERE current_setting('app.release_environment', TRUE) = 'staging'
+\gexec
+SELECT pg_catalog.format(
   'REVOKE ALL ON FUNCTION public.read_realtime_voice_trace_session_v2(UUID, TEXT, UUID, UUID, TEXT, TEXT, BOOLEAN) FROM %I',
+  current_setting('app.release_deployer_role', TRUE)
+)
+ WHERE current_setting('app.release_environment', TRUE) <> 'staging'
+   AND current_setting('app.release_deployer_role', TRUE) <> current_user
+\gexec
+SELECT pg_catalog.format(
+  'REVOKE ALL ON FUNCTION public.read_realtime_voice_trace_session_v3(UUID, TEXT, UUID, UUID, TEXT, TEXT, BOOLEAN) FROM %I',
   current_setting('app.release_deployer_role', TRUE)
 )
  WHERE current_setting('app.release_environment', TRUE) <> 'staging'

@@ -106,9 +106,13 @@ class FakeUplink implements RealtimeAuditedUplinkTransport {
     return session;
   }
   reportClientDiagnostic(update: RealtimeClientDiagnosticUpdate): void {
-    this.log.push(update.type === 'checkpoint'
-      ? `diagnostic:checkpoint:${update.checkpoint}`
-      : `diagnostic:failure:${update.failureCode}`);
+    if (update.type === 'checkpoint') {
+      this.log.push(`diagnostic:checkpoint:${update.checkpoint}`);
+    } else if (update.type === 'failure') {
+      this.log.push(`diagnostic:failure:${update.failureCode}`);
+    } else {
+      this.log.push(`diagnostic:policy:${update.closeReason}`);
+    }
   }
   getProcessAudioLease(): ProcessAudioLease | null { return this.lease; }
   getSpeechSourcePolicy() { return this.policy; }

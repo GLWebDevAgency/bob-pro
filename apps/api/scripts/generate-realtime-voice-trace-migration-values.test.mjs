@@ -16,6 +16,10 @@ const nativeRetryMigration = path.join(
   repositoryRoot,
   'apps/api/prisma/migrations/20260801051000_openai_native_retry_scenario_expand/migration.sql',
 );
+const traceClientCloseMigration = path.join(
+  repositoryRoot,
+  'apps/api/prisma/migrations/20260803010000_realtime_voice_trace_client_close_expand/migration.sql',
+);
 
 test('les CHECK SQL Realtime Voice Trace proviennent des unions TypeScript', () => {
   const result = spawnSync(process.execPath, [script, '--check'], {
@@ -41,13 +45,18 @@ test('chaque bloc généré est unique et la migration reste expand-only', () =>
     'PLANNER_AUTHORITIES',
     'RUN_KINDS',
     'CONTROL_KINDS',
-    'SESSION_CLOSE_REASONS',
     'MISSION_KINDS',
   ]) {
     assert.equal((sql.match(new RegExp(`REALTIME_TRACE_${marker}_START`, 'gu')) ?? []).length, 1);
     assert.equal((sql.match(new RegExp(`REALTIME_TRACE_${marker}_END`, 'gu')) ?? []).length, 1);
   }
   assert.doesNotMatch(sql, /\bDROP\s+(?:TABLE|COLUMN|TYPE)\b/iu);
+
+  const closeSql = readFileSync(traceClientCloseMigration, 'utf8');
+  assert.equal((closeSql.match(/REALTIME_TRACE_SESSION_CLOSE_REASONS_START/gu) ?? []).length, 1);
+  assert.equal((closeSql.match(/REALTIME_TRACE_SESSION_CLOSE_REASONS_END/gu) ?? []).length, 1);
+  assert.match(closeSql, /ADD CONSTRAINT[^;]+NOT VALID;/isu);
+  assert.doesNotMatch(closeSql, /VALIDATE CONSTRAINT/u);
 
   const nativeSql = readFileSync(nativeRetryMigration, 'utf8');
   assert.equal((nativeSql.match(/OPENAI_NATIVE_SPEECH_SCENARIOS_START/gu) ?? []).length, 1);

@@ -1699,11 +1699,14 @@ export class RealtimeVoiceService {
     let detachedTermination: ReturnType<RealtimeSidebandControl['fenceAndDetachSession']> =
       'not_found';
     try {
+      const sidebandCloseReason = clientDiagnostic === null
+        ? 'user'
+        : clientDiagnostic.terminationSource;
       detachedTermination = this.sideband.fenceAndDetachSession({
         userId: principal.userId,
         companyId: principal.companyId,
         sessionHandle,
-        reason: 'user',
+        reason: sidebandCloseReason,
       });
     } catch {
       // Une autre réplique ou le reaper durable reprend ci-dessous.

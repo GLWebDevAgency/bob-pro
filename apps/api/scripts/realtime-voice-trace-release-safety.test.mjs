@@ -11,6 +11,9 @@ const [
   traceMigration,
   retryExpand,
   retryValidate,
+  clientCloseExpand,
+  clientCloseValidate,
+  readerV3Expand,
   generator,
   postgresCert,
   nativePostgresCert,
@@ -33,6 +36,27 @@ const [
   readFile(
     new URL(
       'prisma/migrations/20260801052000_openai_native_retry_scenario_validate/migration.sql',
+      root,
+    ),
+    'utf8',
+  ),
+  readFile(
+    new URL(
+      'prisma/migrations/20260803010000_realtime_voice_trace_client_close_expand/migration.sql',
+      root,
+    ),
+    'utf8',
+  ),
+  readFile(
+    new URL(
+      'prisma/migrations/20260803010100_realtime_voice_trace_client_close_validate/migration.sql',
+      root,
+    ),
+    'utf8',
+  ),
+  readFile(
+    new URL(
+      'prisma/migrations/20260803010200_realtime_voice_trace_reader_v3_expand/migration.sql',
       root,
     ),
     'utf8',
@@ -95,9 +119,26 @@ test('l’autorité reader reste staging-only et la Data API demeure révoquée'
   );
   assert.match(
     readerAuthority,
+    /GRANT EXECUTE ON FUNCTION public\.read_realtime_voice_trace_session_v3[\s\S]*WHERE current_setting\('app\.release_environment', TRUE\) = 'staging'/u,
+  );
+  assert.match(
+    readerAuthority,
+    /REVOKE ALL ON FUNCTION public\.read_realtime_voice_trace_session_v3[\s\S]*WHERE current_setting\('app\.release_environment', TRUE\) <> 'staging'/u,
+  );
+  assert.match(
+    readerAuthority,
     /REVOKE ALL ON FUNCTION public\.read_realtime_voice_trace_session_v2[\s\S]*WHERE current_setting\('app\.release_environment', TRUE\) <> 'staging'/u,
   );
   assert.match(releaseCert, /release_environment = 'staging'/u);
+  assert.match(
+    releaseCert,
+    /has_function_privilege\([\s\S]*session_user,[\s\S]*read_realtime_voice_trace_session_v2/u,
+  );
+  assert.match(
+    releaseCert,
+    /has_function_privilege\([\s\S]*session_user,[\s\S]*read_realtime_voice_trace_session_v3/u,
+  );
+  assert.match(postgresCert, /Le CLI staging appelle la SECURITY DEFINER avec le role deployeur/u);
   assert.match(releaseCert, /ARRAY\['PUBLIC', 'anon', 'authenticated', 'service_role'\]/u);
   assert.match(releaseCert, /runtime\.rolsuper OR runtime\.rolbypassrls/u);
   assert.doesNotMatch(
@@ -112,16 +153,51 @@ test('les CHECK sont générés et le NOT VALID est validé dans une migration u
   assert.match(retryExpand, /ADD CONSTRAINT[\s\S]*NOT VALID;/u);
   assert.doesNotMatch(retryExpand, /VALIDATE CONSTRAINT/u);
   assert.match(retryValidate, /VALIDATE CONSTRAINT/u);
+  assert.match(clientCloseExpand, /REALTIME_TRACE_SESSION_CLOSE_REASONS_START/u);
+  assert.match(clientCloseExpand, /ADD CONSTRAINT[\s\S]*NOT VALID;/u);
+  assert.doesNotMatch(clientCloseExpand, /VALIDATE CONSTRAINT/u);
+  assert.match(clientCloseValidate, /VALIDATE CONSTRAINT/u);
   assert.match(generator, /OPENAI_NATIVE_SPEECH_SCENARIO_IDS/u);
   assert.match(
     nativePostgresCert,
     /writer N-1 exact sous les états expand puis validate du scénario retry/u,
   );
   assert.match(nativePostgresCert, /convalidated AS validated/u);
-  for (const migration of [traceMigration, retryExpand, retryValidate]) {
+  assert.match(
+    postgresCert,
+    /writer N-1 exact sous les états expand puis validate des motifs client/u,
+  );
+  assert.match(postgresCert, /realtime_voice_trace_close_reason_check_v2/u);
+  for (const migration of [
+    traceMigration,
+    retryExpand,
+    retryValidate,
+    clientCloseExpand,
+    clientCloseValidate,
+    readerV3Expand,
+  ]) {
     assert.match(migration, /SET LOCAL lock_timeout = '5s'/u);
     assert.match(migration, /SET LOCAL statement_timeout = '60s'/u);
   }
+});
+
+test('le lecteur V3 est additif, délègue une fois au V2 et expose le motif terminal', () => {
+  assert.match(readerV3Expand, /CREATE FUNCTION public\.read_realtime_voice_trace_session_v3/u);
+  assert.match(readerV3Expand, /WITH previous AS MATERIALIZED/u);
+  assert.equal(
+    readerV3Expand.match(/read_realtime_voice_trace_session_v2/gu)?.length,
+    1,
+  );
+  assert.match(readerV3Expand, /"sessionCloseReason" VARCHAR\(32\)/u);
+  assert.match(readerV3Expand, /stored\."sessionCloseReason"/u);
+  assert.doesNotMatch(readerV3Expand, /DROP\s+(?:FUNCTION|TABLE)|ALTER\s+TABLE/iu);
+  assert.match(readerV3Expand, /FROM PUBLIC/u);
+  for (const role of ['anon', 'authenticated', 'service_role']) {
+    assert.match(readerV3Expand, new RegExp(`'${role}'`, 'u'));
+  }
+  assert.match(provision, /SELECT \([^)]*"sessionCloseReason"/u);
+  assert.match(releaseCert, /'sessionCloseReason'/u);
+  assert.match(postgresCert, /sessionCloseReason: 'policy'/u);
 });
 
 test('le certificat comportemental couvre les invariants critiques réels', () => {

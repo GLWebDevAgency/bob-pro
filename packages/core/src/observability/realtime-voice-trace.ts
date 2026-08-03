@@ -135,6 +135,9 @@ export const REALTIME_VOICE_TRACE_CONTROL_KINDS = [
 
 export const REALTIME_VOICE_TRACE_SESSION_CLOSE_REASONS = [
   'user',
+  'automatic_failure',
+  'lifecycle',
+  'policy',
   'kill_switch',
   'superseded',
   'max_duration',

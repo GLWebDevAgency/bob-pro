@@ -14,6 +14,7 @@ import { randomUUID } from 'expo-crypto';
 import { echoOverlap, isAllowedAgentNavigationRoute, type AgentRun, type AskOptions , planSpokenDelivery, summarizeVoiceLatency, type VoiceLatencyTrace } from '@bob/ai';
 import { t } from '@bob/i18n';
 import { useTheme } from '@bob/ui';
+import type { RealtimeVoiceClientPolicyCloseReason } from '@bob/core';
 import {
   REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
   REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
@@ -45,6 +46,7 @@ import {
   planAgentSessionFallback,
   planAgentSessionFailedClosed,
   revalidateAgentSessionBackgroundAfterPermission,
+  realtimeGenericReconnectBudget,
   realtimeOwnsAgentSession,
   shouldRecoverLegacyListeningSilence,
   shouldStopAgentSessionForAppState,
@@ -78,10 +80,16 @@ import { RealtimeSessionController } from './realtime-session';
 import { createRealtimePrimaryTransport } from './realtime-primary-transport';
 import { registerBeforeSignOutCleanup } from '../data/session-cleanup';
 import { useAgentMissionRuntimeBridge } from './agent-mission-provider';
+import {
+  consumeAgentSessionHandoff,
+  requestAgentSessionHandoff,
+} from './agent-session-handoff-cas';
+import { appendAgentConversationJournal } from './agent-conversation-journal';
 
 export type AgentSessionPhase = 'idle' | 'listening' | 'thinking' | 'speaking' | 'error';
 
 export interface AgentConversationTurn {
+  readonly id: string;
   readonly role: 'user' | 'bob';
   readonly text: string;
 }
@@ -118,6 +126,10 @@ export interface AgentSessionValue {
   readonly reviewRequired: boolean;
   readonly contextAtTurn: AgentContext | null;
   readonly handoff: AgentSessionHandoff | null;
+  /** Tours terminaux de la session racine, stables pendant les navigations de l'Assistant. */
+  readonly conversation: readonly AgentConversationTurn[];
+  /** Change uniquement au démarrage d'une nouvelle session ; les ids ne sont jamais recyclés. */
+  readonly conversationEpoch: number;
   readonly diagnosticTrace: RealtimeVoiceDiagnosticTraceDisclosure | null;
   readonly diagnosticTraceConfirmationPending: boolean;
   readonly confirmDiagnosticTrace: () => void;
@@ -140,6 +152,8 @@ export interface AgentSessionValue {
    */
   readonly stopAfterManualHandoff: () => Promise<number | null>;
   readonly stop: () => void;
+  /** Arrêt fail-closed attribué à une règle produit, jamais à un geste utilisateur. */
+  readonly stopForPolicy: (reason: RealtimeVoiceClientPolicyCloseReason) => void;
   readonly toggle: () => void;
   readonly dismissResponse: () => void;
   readonly requestHandoff: (id: string) => void;
@@ -183,6 +197,34 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
   const [reviewRequired, setReviewRequired] = useState(false);
   const [contextAtTurn, setContextAtTurn] = useState<AgentContext | null>(null);
   const [handoff, setHandoff] = useState<AgentSessionHandoff | null>(null);
+  const handoffRef = useRef<AgentSessionHandoff | null>(null);
+  const replaceHandoff = useCallback((next: AgentSessionHandoff | null): void => {
+    handoffRef.current = next;
+    setHandoff(next);
+  }, []);
+  const [conversation, setConversation] = useState<readonly AgentConversationTurn[]>([]);
+  const conversationRef = useRef<readonly AgentConversationTurn[]>([]);
+  const [conversationEpoch, setConversationEpoch] = useState(0);
+  const conversationEpochRef = useRef(0);
+  const conversationSequenceRef = useRef(0);
+  const appendConversation = useCallback((
+    ...turns: ReadonlyArray<Pick<AgentConversationTurn, 'role' | 'text'>>
+  ): void => {
+    const appended = turns.map((turn) => Object.freeze({
+      id: `${conversationEpochRef.current}:${++conversationSequenceRef.current}`,
+      role: turn.role,
+      text: turn.text,
+    }));
+    const next = appendAgentConversationJournal(conversationRef.current, appended);
+    conversationRef.current = next;
+    setConversation(next);
+  }, []);
+  const beginConversationEpoch = useCallback((): void => {
+    const nextEpoch = conversationEpochRef.current + 1;
+    conversationEpochRef.current = nextEpoch;
+    conversationSequenceRef.current = 0;
+    setConversationEpoch(nextEpoch);
+  }, []);
   const [diagnosticTrace, setDiagnosticTrace] =
     useState<RealtimeVoiceDiagnosticTraceDisclosure | null>(null);
   const [diagnosticTraceConfirmationPending, setDiagnosticTraceConfirmationPending] =
@@ -216,9 +258,6 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     },
     [],
   );
-  const handoffRef = useRef<AgentSessionHandoff | null>(null);
-  handoffRef.current = handoff;
-  const historyRef = useRef<AgentConversationTurn[]>([]);
   const authSessionRef = useRef(authSession);
   authSessionRef.current = authSession;
   const [timeZoneConfirmation, setTimeZoneConfirmation] =
@@ -377,7 +416,10 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
             legacyFallback,
             // Une reconnexion générique recréerait une deuxième mission v2. Le runtime v2 est
             // seul propriétaire de ses routes ; l'orchestrateur attend son verdict/fallback.
-            maxReconnectAttempts: conversationV2 ? 0 : 1,
+            maxReconnectAttempts: realtimeGenericReconnectBudget(
+              agentMissionProtocolVersion,
+              conversationV2,
+            ),
           });
         },
         createControlGate: (currentFence) =>
@@ -395,12 +437,12 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
         onUserTranscript: (text, final) => {
           if (!realtimeActiveRef.current || !final) return;
           setTranscript(text);
-          historyRef.current = [...historyRef.current, { role: 'user' as const, text }].slice(-12);
+          appendConversation({ role: 'user', text });
         },
         onBobTranscript: (text, final) => {
           if (!realtimeActiveRef.current || !final) return;
           setResponse(text);
-          historyRef.current = [...historyRef.current, { role: 'bob' as const, text }].slice(-12);
+          appendConversation({ role: 'bob', text });
         },
         onDiagnosticTrace: (disclosure) => {
           if (!realtimeActiveRef.current) return;
@@ -413,7 +455,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
           if (!proposalId) {
             setResponse(t('assistant.proposalUnavailable', { personality }));
             setReviewRequired(false);
-            setHandoff(null);
+            replaceHandoff(null);
             return;
           }
           const now = Date.now();
@@ -426,19 +468,21 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
           if (expiresAt <= now) {
             setResponse(t('assistant.proposalUnavailable', { personality }));
             setReviewRequired(false);
-            setHandoff(null);
+            replaceHandoff(null);
             return;
           }
-          const conversation = historyRef.current.slice(-12);
-          const userIndex = conversation.findLastIndex((turn) => turn.role === 'user');
-          const message = (userIndex >= 0 ? conversation[userIndex]?.text : null)
+          const conversationSnapshot = conversationRef.current.slice(-12);
+          const userIndex = conversationSnapshot.findLastIndex((turn) => turn.role === 'user');
+          const message = (userIndex >= 0 ? conversationSnapshot[userIndex]?.text : null)
             ?? t('agent.global.reviewRequired', { personality });
-          const history = userIndex >= 0 ? conversation.slice(0, userIndex) : conversation;
+          const history = userIndex >= 0
+            ? conversationSnapshot.slice(0, userIndex)
+            : conversationSnapshot;
           const reviewText = t('agent.global.reviewRequired', { personality });
           setResponse(reviewText);
           setReviewRequired(true);
           setContextAtTurn(snapshotAgentContext(contextRef.current));
-          setHandoff(Object.freeze({
+          replaceHandoff(Object.freeze({
             kind: 'proposal',
             id: `handoff-realtime-${proposalId}-${expiresAt}`,
             proposalId,
@@ -490,7 +534,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
           setIssue(plan.issue);
           setReviewRequired(false);
           setContextAtTurn(null);
-          setHandoff(null);
+          replaceHandoff(null);
           setResponse(t(plan.responseKey, { personality }));
           setSessionPhase(plan.phase);
         },
@@ -566,6 +610,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
   const stopWithReason = useCallback((
     reason: 'user' | 'background' | 'unmount',
     afterManualHandoff = false,
+    policyReason: RealtimeVoiceClientPolicyCloseReason | null = null,
   ): Promise<void> => {
     // INCONDITIONNEL (P0 review 14/07) : un stop() pendant le bootstrap temps réel (avant que
     // realtimeActiveRef ne passe à true) doit quand même invalider la génération du contrôleur
@@ -577,7 +622,9 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     sessionGenerationRef.current += 1;
     const realtimeStop = afterManualHandoff
       ? realtimeRef.current?.stopAfterManualHandoff() ?? Promise.resolve()
-      : realtimeRef.current?.stop(reason) ?? Promise.resolve();
+      : policyReason !== null
+        ? realtimeRef.current?.stopForPolicy(policyReason) ?? Promise.resolve()
+        : realtimeRef.current?.stop(reason) ?? Promise.resolve();
     clearWizardHint(); // un hint en vol meurt avec la session — jamais de pré-remplissage fantôme
     turnGenerationRef.current += 1;
     activeRef.current = false;
@@ -586,7 +633,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     stopSpeaking();
     void voiceRef.current.cancel();
     setContextAtTurn(null);
-    setHandoff(null);
+    replaceHandoff(null);
     setReviewRequired(false);
       setDiagnosticTrace(null);
       setSessionPhase('idle');
@@ -594,11 +641,15 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
       ? realtimeStop
       : realtimeStop.catch(() => undefined);
   },
-    [setSessionPhase, settleDiagnosticTraceDecision, stopSpeaking],
+    [replaceHandoff, setSessionPhase, settleDiagnosticTraceDecision, stopSpeaking],
   );
 
   const stop = useCallback((): void => {
     void stopWithReason('user');
+  }, [stopWithReason]);
+
+  const stopForPolicy = useCallback((reason: RealtimeVoiceClientPolicyCloseReason): void => {
+    void stopWithReason('user', false, reason);
   }, [stopWithReason]);
 
   const suspendForManualHandoff = useCallback(
@@ -760,11 +811,10 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
         try {
           const outcome = await run();
           if (!activeRef.current || turnGeneration !== turnGenerationRef.current) return;
-          historyRef.current = [
-            ...historyRef.current,
-            { role: 'user' as const, text: message },
-            { role: 'bob' as const, text: outcome.say },
-          ].slice(-12);
+          appendConversation(
+            { role: 'user', text: message },
+            { role: 'bob', text: outcome.say },
+          );
           setResponse(outcome.say);
           await say(outcome.say, true);
         } catch {
@@ -782,12 +832,11 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
       setResponse(null);
       setIssue(null);
       setReviewRequired(false);
-      setHandoff(null);
+      replaceHandoff(null);
       setSessionPhase('thinking');
 
-      const history = historyRef.current.slice(-6);
-      const userTurn: AgentConversationTurn = { role: 'user', text: message };
-      historyRef.current = [...historyRef.current, userTurn].slice(-12);
+      const history = conversationRef.current.slice(-6);
+      appendConversation({ role: 'user', text: message });
       const options: ContextualAskOptions = {
         // S1 global est strictement lecture seule : aucune mutation ne peut s'auto-executer,
         // meme si l'abonnement autorise un niveau d'autonomie superieur dans le fil complet.
@@ -810,8 +859,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
 
       const run = result.value;
       const body = run.naturalBody ?? run.card.body;
-      const bobTurn: AgentConversationTurn = { role: 'bob', text: body };
-      historyRef.current = [...historyRef.current, bobTurn].slice(-12);
+      appendConversation({ role: 'bob', text: body });
       setResponse(body);
 
       // S1 est lecture seule. Une proposition mutante ou une question structuree reste visible,
@@ -820,7 +868,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
       setReviewRequired(needsReview);
       if (needsReview) {
         const expiresAt = Date.now() + HANDOFF_TTL_MS;
-        setHandoff(
+        replaceHandoff(
           Object.freeze({
             kind: 'run',
             id: `handoff-${turnGeneration}-${expiresAt}`,
@@ -857,7 +905,17 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
         flushPendingGreeting();
       }
     },
-    [agent, listen, personality, say, setSessionPhase, stop, flushPendingGreeting],
+    [
+      agent,
+      appendConversation,
+      flushPendingGreeting,
+      listen,
+      personality,
+      replaceHandoff,
+      say,
+      setSessionPhase,
+      stop,
+    ],
   );
   transcriptHandlerRef.current = (text) => {
     if (realtimeActiveRef.current) return; // exclusivité : l'ASR legacy ne nourrit jamais le temps réel
@@ -914,9 +972,10 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     requiredMissionProtocolVersion: RealtimeAgentMissionProtocolVersion | null,
   ): Promise<boolean> => {
     if (activeRef.current) return false;
-    // Nouvelle session = nouvelle mission : guidages, historique et disjoncteur repartent à zéro.
+    // Nouvelle session = nouvelle mission : les ids changent et les mécanismes de pilotage
+    // repartent à zéro. Le journal UI, lui, reste visible entre deux sessions du même provider.
     spokenGreetingsRef.current.clear();
-    historyRef.current = [];
+    beginConversationEpoch();
     echoStreakRef.current = 0;
     const sessionGeneration = sessionGenerationRef.current + 1;
     sessionGenerationRef.current = sessionGeneration;
@@ -931,7 +990,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     setIssue(null);
     setReviewRequired(false);
     setContextAtTurn(null);
-    setHandoff(null);
+    replaceHandoff(null);
       setDiagnosticTrace(null);
     setSessionPhase('thinking');
     // TEMPS RÉEL d'abord — le serveur décide (plan voice_live + rollout). Une reprise durable
@@ -992,7 +1051,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
         void say(t('live.on', { personality }), true);
       }
       return false;
-  }, [personality, say, speakGreeting]);
+  }, [beginConversationEpoch, personality, replaceHandoff, say, speakGreeting]);
 
   const start = useCallback((): void => {
     void beginSession(null);
@@ -1010,26 +1069,26 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     setTranscript(null);
     setReviewRequired(false);
     setContextAtTurn(null);
-    setHandoff(null);
+    replaceHandoff(null);
     setDiagnosticTrace(null);
-  }, []);
+  }, [replaceHandoff]);
 
   const consumeHandoff = useCallback((id: string): void => {
-    setHandoff((current) => (current?.id === id ? null : current));
+    const consumed = consumeAgentSessionHandoff(handoffRef.current, id);
+    if (!consumed.changed) return;
+    replaceHandoff(null);
     setResponse(null);
     setTranscript(null);
     setReviewRequired(false);
     setContextAtTurn(null);
-  }, []);
+  }, [replaceHandoff]);
 
   const requestHandoff = useCallback((id: string): void => {
     const requestedAt = Date.now();
-    setHandoff((current) =>
-      current?.id === id && current.expiresAt > requestedAt
-        ? Object.freeze({ ...current, requestedAt })
-        : current,
-    );
-  }, []);
+    const requested = requestAgentSessionHandoff(handoffRef.current, id, requestedAt);
+    if (!requested.changed) return;
+    replaceHandoff(requested.value);
+  }, [replaceHandoff]);
 
   const finishListening = useCallback((): void => {
     const generation = turnGenerationRef.current;
@@ -1114,14 +1173,14 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
       // Un ancien timer déjà placé dans la queue JS ne doit jamais effacer un passage plus
       // récent. Le ref complète le cleanup d'effet avec un fence d'identité synchrone.
       if (handoffRef.current?.id !== id) return;
-      setHandoff((current) => (current?.id === id ? null : current));
+      replaceHandoff(null);
       setResponse(null);
       setTranscript(null);
       setReviewRequired(false);
       setContextAtTurn(null);
     }, delay);
     return () => clearTimeout(timer);
-  }, [handoff]);
+  }, [handoff, replaceHandoff]);
 
   const value = useMemo<AgentSessionValue>(
     () => ({
@@ -1133,6 +1192,8 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
       reviewRequired,
       contextAtTurn,
       handoff,
+      conversation,
+      conversationEpoch,
       diagnosticTrace,
       diagnosticTraceConfirmationPending,
       confirmDiagnosticTrace,
@@ -1146,6 +1207,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
       suspendForManualHandoff,
       stopAfterManualHandoff,
       stop,
+      stopForPolicy,
       toggle,
       dismissResponse,
       requestHandoff,
@@ -1157,6 +1219,8 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
       cancelDiagnosticTrace,
       confirmDiagnosticTrace,
       confirmConversationTimeZone,
+      conversation,
+      conversationEpoch,
       contextAtTurn,
       consumeHandoff,
       dismissResponse,
@@ -1172,6 +1236,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
       reviewRequired,
       start,
       stop,
+      stopForPolicy,
       stopAfterManualHandoff,
       suspendForManualHandoff,
       toggle,

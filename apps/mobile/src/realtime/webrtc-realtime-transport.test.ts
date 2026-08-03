@@ -1,4 +1,5 @@
 import {
+  HttpBobClient,
   REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
   REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
   type BobClient,
@@ -57,7 +58,7 @@ class FakeTrack {
 
 class FakeTransceiver {
   direction = 'sendonly';
-  currentDirection: string | null = 'sendonly';
+  currentDirection: string | null | undefined = 'sendonly';
   stopped = false;
   stopCalls = 0;
   readonly sender: { track: FakeTrack };
@@ -124,6 +125,7 @@ class FakePeer extends FakeEventSource {
   connectionState: 'new' | 'connecting' | 'connected' | 'disconnected' | 'failed' | 'closed' = 'new';
   iceConnectionState: 'new' | 'checking' | 'connected' | 'completed' | 'failed' | 'disconnected' | 'closed' = 'new';
   localDescription: { type: 'offer'; sdp: string } | null = null;
+  remoteDescription: { type: 'answer'; sdp: string } | null = null;
   readonly channel = new FakeDataChannel();
   private stats = new Map<string, unknown>();
   setLocalDescriptionCalls = 0;
@@ -138,6 +140,13 @@ class FakePeer extends FakeEventSource {
     localDescriptionGate?: Promise<void>;
     remoteDescriptionGate?: Promise<void>;
     remoteDescriptionError?: Error;
+    appliedLocalSdp?: string;
+    appliedRemoteSdp?: string;
+    omitAppliedLocalDescription?: boolean;
+    omitAppliedRemoteDescription?: boolean;
+    mutateLocalSdpAfterRemote?: string;
+    reportedTransceiverTopology?: 'exact' | 'missing' | 'foreign' | 'duplicate';
+    omitNegotiatedDirectionKey?: boolean;
     negotiatedDirection?: string | null;
     offerSdp: string;
   }) { super(); }
@@ -149,7 +158,18 @@ class FakePeer extends FakeEventSource {
     return this.transceiver;
   }
   getTransceivers(): FakeTransceiver[] {
-    return this.transceiver ? [this.transceiver] : [];
+    if (!this.transceiver) return [];
+    if (this.remoteDescription === null || this.options.reportedTransceiverTopology === 'exact') {
+      return [this.transceiver];
+    }
+    if (this.options.reportedTransceiverTopology === 'missing') return [];
+    if (this.options.reportedTransceiverTopology === 'duplicate') {
+      return [this.transceiver, this.transceiver];
+    }
+    if (this.options.reportedTransceiverTopology === 'foreign') {
+      return [new FakeTransceiver(this.transceiver.sender.track, this.transceiver.direction)];
+    }
+    return [this.transceiver];
   }
   async createOffer(options?: Record<string, unknown>): Promise<{ type: 'offer'; sdp: string }> {
     this.createOfferOptions = options;
@@ -158,13 +178,29 @@ class FakePeer extends FakeEventSource {
   async setLocalDescription(description: { type: 'offer'; sdp: string }): Promise<void> {
     this.setLocalDescriptionCalls += 1;
     await this.options.localDescriptionGate;
-    this.localDescription = description;
+    this.localDescription = this.options.omitAppliedLocalDescription === true
+      ? null
+      : { type: description.type, sdp: this.options.appliedLocalSdp ?? description.sdp };
   }
-  async setRemoteDescription(): Promise<void> {
+  async setRemoteDescription(description: { type: 'answer'; sdp: string }): Promise<void> {
     this.setRemoteDescriptionCalls += 1;
     await this.options.remoteDescriptionGate;
     if (this.options.remoteDescriptionError) throw this.options.remoteDescriptionError;
-    if (this.transceiver && this.options.negotiatedDirection !== undefined) {
+    this.remoteDescription = this.options.omitAppliedRemoteDescription === true
+      ? null
+      : {
+          type: description.type,
+          sdp: this.options.appliedRemoteSdp ?? description.sdp,
+        };
+    if (this.options.mutateLocalSdpAfterRemote !== undefined && this.localDescription !== null) {
+      this.localDescription = {
+        type: this.localDescription.type,
+        sdp: this.options.mutateLocalSdpAfterRemote,
+      };
+    }
+    if (this.transceiver && this.options.omitNegotiatedDirectionKey === true) {
+      this.transceiver.currentDirection = undefined;
+    } else if (this.transceiver && this.options.negotiatedDirection !== undefined) {
       this.transceiver.currentDirection = this.options.negotiatedDirection;
     }
     if (this.options.closeChannelOnRemote) this.channel.closeSilently();
@@ -228,6 +264,13 @@ function runtimeHarness(
     localDescriptionGate?: Promise<void>;
     remoteDescriptionGate?: Promise<void>;
     remoteDescriptionError?: Error;
+    appliedLocalSdp?: string;
+    appliedRemoteSdp?: string;
+    omitAppliedLocalDescription?: boolean;
+    omitAppliedRemoteDescription?: boolean;
+    mutateLocalSdpAfterRemote?: string;
+    reportedTransceiverTopology?: 'exact' | 'missing' | 'foreign' | 'duplicate';
+    omitNegotiatedDirectionKey?: boolean;
     negotiatedDirection?: string | null;
     offerSdp?: string;
   } = {},
@@ -241,6 +284,13 @@ function runtimeHarness(
         localDescriptionGate: options.localDescriptionGate,
         remoteDescriptionGate: options.remoteDescriptionGate,
         remoteDescriptionError: options.remoteDescriptionError,
+        appliedLocalSdp: options.appliedLocalSdp,
+        appliedRemoteSdp: options.appliedRemoteSdp,
+        omitAppliedLocalDescription: options.omitAppliedLocalDescription,
+        omitAppliedRemoteDescription: options.omitAppliedRemoteDescription,
+        mutateLocalSdpAfterRemote: options.mutateLocalSdpAfterRemote,
+        reportedTransceiverTopology: options.reportedTransceiverTopology,
+        omitNegotiatedDirectionKey: options.omitNegotiatedDirectionKey,
         negotiatedDirection: options.negotiatedDirection,
         offerSdp: options.offerSdp ?? SEND_ONLY_SDP,
       });
@@ -249,7 +299,13 @@ function runtimeHarness(
     }
   }
   class SessionDescription {
-    constructor(readonly init: { type: 'answer'; sdp: string }) {}
+    readonly type: 'answer';
+    readonly sdp: string;
+
+    constructor(readonly init: { type: 'answer'; sdp: string }) {
+      this.type = init.type;
+      this.sdp = init.sdp;
+    }
   }
   const runtime = {
     RTCPeerConnection: Peer,
@@ -446,6 +502,7 @@ afterEach(async () => {
   await Promise.all(transports.splice(0).map((value) => value.close('unmount')));
   for (const lease of testAudioLeases.splice(0)) processAudioSession.release(lease);
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 describe('RealtimeWebRtcTransport — courses et autorite serveur', () => {
@@ -1076,6 +1133,112 @@ describe('RealtimeWebRtcTransport — courses et autorite serveur', () => {
     );
   });
 
+  it('accepte le cache Android currentDirection null sous preuve SDP appliquée audité', async () => {
+    const bobClient = client();
+    const harness = runtimeHarness(async () => new FakeStream(), { negotiatedDirection: null });
+    const value = transport(bobClient, harness);
+
+    await expect(value.connect()).resolves.toBeUndefined();
+
+    expect(harness.peers[0]?.transceiver?.currentDirection).toBeNull();
+    expect(value.state.phase).toBe('ready');
+    expect(bobClient.hangupRealtimeVoiceCall).not.toHaveBeenCalled();
+  });
+
+  it('accepte la clé Android currentDirection omise sous la même preuve SDP appliquée', async () => {
+    const bobClient = client();
+    const harness = runtimeHarness(async () => new FakeStream(), {
+      omitNegotiatedDirectionKey: true,
+    });
+    const value = transport(bobClient, harness);
+
+    await expect(value.connect()).resolves.toBeUndefined();
+
+    expect(harness.peers[0]?.transceiver?.currentDirection).toBeUndefined();
+    expect(value.state.phase).toBe('ready');
+    expect(bobClient.hangupRealtimeVoiceCall).not.toHaveBeenCalled();
+  });
+
+  it('refuse currentDirection null si la description distante appliquée est incompatible', async () => {
+    const bobClient = client();
+    const value = transport(
+      bobClient,
+      runtimeHarness(async () => new FakeStream(), {
+        negotiatedDirection: null,
+        appliedRemoteSdp: SEND_RECV_SDP,
+      }),
+    );
+
+    await expect(value.connect()).rejects.toMatchObject({ reason: 'provider_error' });
+
+    expect(bobClient.hangupRealtimeVoiceCall).toHaveBeenCalledWith(
+      expect.any(String),
+      undefined,
+      {
+        version: 1,
+        terminationSource: 'automatic_failure',
+        lastSuccessfulCheckpoint: 'remote_description_set',
+        failureCode: 'transceiver_rejected',
+      },
+    );
+  });
+
+  it.each([
+    ['description locale absente', { omitAppliedLocalDescription: true }],
+    ['description distante absente', { omitAppliedRemoteDescription: true }],
+    ['description locale devenue incompatible', { mutateLocalSdpAfterRemote: SEND_RECV_SDP }],
+  ] as const)(
+    'refuse currentDirection null si la preuve SDP appliquée est incomplète : %s',
+    async (_label, proofDrift) => {
+      const bobClient = client();
+      const value = transport(
+        bobClient,
+        runtimeHarness(async () => new FakeStream(), {
+          negotiatedDirection: null,
+          ...proofDrift,
+        }),
+      );
+
+      await expect(value.connect()).rejects.toMatchObject({ reason: 'provider_error' });
+      expect(bobClient.hangupRealtimeVoiceCall).toHaveBeenCalledWith(
+        expect.any(String),
+        undefined,
+        expect.objectContaining({
+          terminationSource: 'automatic_failure',
+          lastSuccessfulCheckpoint: 'remote_description_set',
+          failureCode: 'transceiver_rejected',
+        }),
+      );
+    },
+  );
+
+  it.each(['missing', 'foreign', 'duplicate'] as const)(
+    'refuse currentDirection null si la topologie transceiver appliquée devient %s',
+    async (reportedTransceiverTopology) => {
+      const bobClient = client();
+      const value = transport(
+        bobClient,
+        runtimeHarness(async () => new FakeStream(), {
+          negotiatedDirection: null,
+          reportedTransceiverTopology,
+        }),
+      );
+
+      await expect(value.connect()).rejects.toMatchObject({ reason: 'provider_error' });
+
+      expect(bobClient.hangupRealtimeVoiceCall).toHaveBeenCalledWith(
+        expect.any(String),
+        undefined,
+        expect.objectContaining({
+          version: 1,
+          terminationSource: 'automatic_failure',
+          lastSuccessfulCheckpoint: 'remote_description_set',
+          failureCode: 'transceiver_rejected',
+        }),
+      );
+    },
+  );
+
   it('stoppe et clôt immédiatement une piste hostile pendant la négociation', async () => {
     const remoteDescription = deferred<void>();
     const stream = new FakeStream();
@@ -1208,6 +1371,7 @@ describe('RealtimeWebRtcTransport — courses et autorite serveur', () => {
     value.reportClientDiagnostic({ type: 'checkpoint', checkpoint: 'answer_sdp_validated' });
     value.reportClientDiagnostic({ type: 'failure', failureCode: 'context_publish_failed' });
     value.reportClientDiagnostic({ type: 'failure', failureCode: 'remote_description_rejected' });
+    value.reportClientDiagnostic({ type: 'policy_stop', closeReason: 'entitlement_revoked' });
     value.reportClientDiagnostic({ type: 'checkpoint', checkpoint: 'microphone_opened' });
     await value.close('fallback');
 
@@ -1249,16 +1413,14 @@ describe('RealtimeWebRtcTransport — courses et autorite serveur', () => {
     await waitUntil(() => createRealtimeVoiceCall.mock.calls.length === 1);
     const handle = createRealtimeVoiceCall.mock.calls[0]?.[0].sessionHandle;
 
-    await value.close('user');
+    const closing = value.close('user');
 
     expect(receivedSignal?.aborted).toBe(true);
-    expect(hangupRealtimeVoiceCall).toHaveBeenCalledOnce();
-    expect(hangupRealtimeVoiceCall).toHaveBeenCalledWith(handle, undefined, {
-      version: 1,
-      terminationSource: 'user',
-      lastSuccessfulCheckpoint: 'local_offer_set',
-      closeReason: 'user',
+    expect(createRealtimeVoiceCall.mock.calls[0]?.[0]).toMatchObject({
+      bootstrapTerminationOwner: 'transport',
     });
+    // Le serveur n'a pas encore réglé le bootstrap : aucun DELETE prématuré ne peut gagner.
+    expect(hangupRealtimeVoiceCall).not.toHaveBeenCalled();
     bootstrap.resolve({
       ok: true,
       value: {
@@ -1276,6 +1438,14 @@ describe('RealtimeWebRtcTransport — courses et autorite serveur', () => {
       },
     });
     await expect(connecting).resolves.toMatchObject({ reason: 'aborted' });
+    await closing;
+    expect(hangupRealtimeVoiceCall).toHaveBeenCalledOnce();
+    expect(hangupRealtimeVoiceCall).toHaveBeenCalledWith(handle, undefined, {
+      version: 1,
+      terminationSource: 'user',
+      lastSuccessfulCheckpoint: 'local_offer_set',
+      closeReason: 'user',
+    });
     expect(stream.track.stopCalls).toBe(1);
     expect(stream.releaseArguments).toEqual([true]);
   });
@@ -1322,6 +1492,211 @@ describe('RealtimeWebRtcTransport — courses et autorite serveur', () => {
       lastSuccessfulCheckpoint: 'local_offer_set',
       closeReason: 'user',
     });
+  });
+
+  it('préserve une policy pendant la course abort sans AbortSignal.reason ni double hangup', async () => {
+    const createRealtimeVoiceCall = vi.fn((
+      _input: { sdp: string; sessionHandle?: string },
+      signal?: AbortSignal,
+    ) => new Promise<Awaited<ReturnType<BobClient['createRealtimeVoiceCall']>>>(
+      (_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new Error('bootstrap aborted')), {
+          once: true,
+        });
+      },
+    ));
+    const hangupRealtimeVoiceCall = vi.fn(async () => ({
+      ok: true as const,
+      value: { ended: true as const },
+    }));
+    const bobClient = {
+      realtimeVoiceConfig: vi.fn(async () => ({ ok: true as const, value: realtimeConfig })),
+      createRealtimeVoiceCall,
+      hangupRealtimeVoiceCall,
+    } as unknown as BobClient;
+    const value = transport(bobClient, runtimeHarness(async () => new FakeStream()));
+    const connecting = value.connect().then(
+      () => null,
+      (error: unknown) => error,
+    );
+    await waitUntil(() => createRealtimeVoiceCall.mock.calls.length === 1);
+    const handle = createRealtimeVoiceCall.mock.calls[0]?.[0].sessionHandle;
+
+    value.reportClientDiagnostic({
+      type: 'policy_stop',
+      closeReason: 'entitlement_unconfirmed',
+    });
+    const closing = value.close('aborted');
+    const duplicateClosing = value.close('background');
+    await expect(connecting).resolves.toMatchObject({ reason: 'aborted' });
+    await Promise.all([closing, duplicateClosing]);
+
+    expect(hangupRealtimeVoiceCall).toHaveBeenCalledOnce();
+    expect(hangupRealtimeVoiceCall).toHaveBeenCalledWith(handle, undefined, {
+      version: 1,
+      terminationSource: 'policy',
+      lastSuccessfulCheckpoint: 'local_offer_set',
+      closeReason: 'entitlement_unconfirmed',
+    });
+  });
+
+  it('un close réentrant pendant CLOSE rejoint le latch et conserve la première cause', async () => {
+    const bobClient = client();
+    const value = transport(bobClient, runtimeHarness(async () => new FakeStream()));
+    await value.connect();
+    let reentrant: Promise<void> | null = null;
+    value.subscribe((event) => {
+      if (event.type === 'state' && event.state.phase === 'closing' && reentrant === null) {
+        reentrant = value.close('background');
+      }
+    });
+
+    const first = value.close('user');
+
+    expect(reentrant).toBe(first);
+    await Promise.all([first, reentrant]);
+    expect(bobClient.hangupRealtimeVoiceCall).toHaveBeenCalledOnce();
+    expect(bobClient.hangupRealtimeVoiceCall).toHaveBeenCalledWith(
+      expect.any(String),
+      undefined,
+      expect.objectContaining({
+        terminationSource: 'user',
+        closeReason: 'user',
+      }),
+    );
+  });
+
+  it('vrai HttpBobClient M2-A audité : close pendant ACK produit un seul DELETE policy ordonné', async () => {
+    const auditedCurrentConfig = {
+      ...realtimeConfig,
+      configVersion: nativeRealtimeConfig.configVersion,
+    };
+    const capability = 'bam2_CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk';
+    const acknowledgement = deferred<Response>();
+    let acknowledgementRequested = false;
+    const acknowledgementSignal: { current: AbortSignal | null } = { current: null };
+    let sessionHandle: string | null = null;
+    const deleteBodies: unknown[] = [];
+    const requestPaths: string[] = [];
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      const path = new URL(String(url)).pathname;
+      requestPaths.push(path);
+      if (path === '/voice/realtime/config') {
+        return new Response(JSON.stringify(auditedCurrentConfig), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (path === '/voice/realtime/calls' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        expect(body).not.toHaveProperty('bootstrapTerminationOwner');
+        expect(body).toMatchObject({
+          sdp: SEND_ONLY_SDP,
+          agentMissionProtocolVersion: REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
+        });
+        expect(body.sessionHandle).toEqual(expect.any(String));
+        sessionHandle = String(body.sessionHandle);
+        return new Response(JSON.stringify({
+          transport: 'webrtc',
+          answerSdp: RECEIVE_ONLY_SDP,
+          sessionHandle,
+          hardExpiresAt: new Date(Date.now() + 900_000).toISOString(),
+          model: auditedCurrentConfig.model,
+          voice: auditedCurrentConfig.voice,
+          configVersion: auditedCurrentConfig.configVersion,
+          maxSessionSeconds: auditedCurrentConfig.maxSessionSeconds,
+          speechDelivery: auditedCurrentConfig.speechDelivery,
+          speechSourcePolicy: speechSourcePolicy(sessionHandle),
+          agentMissionProtocolVersion: REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
+          agentMissionCapability: capability,
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      if (
+        sessionHandle !== null
+        && path
+          === `/voice/realtime/calls/${sessionHandle}/agent-mission-bootstrap-acknowledgements`
+        && init?.method === 'POST'
+      ) {
+        expect(init.headers).toMatchObject({
+          'x-bob-agent-mission-capability': capability,
+        });
+        acknowledgementSignal.current = init.signal ?? null;
+        acknowledgementRequested = true;
+        return acknowledgement.promise;
+      }
+      if (
+        sessionHandle !== null
+        && path === `/voice/realtime/calls/${sessionHandle}`
+        && init?.method === 'DELETE'
+      ) {
+        deleteBodies.push(JSON.parse(String(init.body)));
+        return new Response(JSON.stringify({ ended: true }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      throw new Error(`Route inattendue: ${path}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const bobClient = new HttpBobClient({
+      baseUrl: 'https://api.bob.test',
+      companyId: 'company-1',
+    });
+    const harness = runtimeHarness(async () => new FakeStream(), { offerSdp: SEND_ONLY_SDP });
+    const value = transport(bobClient, harness, auditedCurrentConfig);
+    const connecting = value.connect().then(
+      () => null,
+      (error: unknown) => error,
+    );
+    await Promise.race([
+      vi.waitFor(() => expect(acknowledgementRequested).toBe(true)),
+      connecting.then((error) => {
+        throw new Error(
+          `Le bootstrap a terminé avant l’ACK M2-A: ${JSON.stringify({ error, requestPaths })}`,
+        );
+      }),
+    ]);
+
+    value.reportClientDiagnostic({
+      type: 'policy_stop',
+      closeReason: 'entitlement_revoked',
+    });
+    const closing = value.close('aborted');
+    expect(deleteBodies).toEqual([]);
+    // Laisse gagner toutes les micro/macro-tâches d'annulation. L'ancienne implémentation
+    // considérait alors le Promise.race local comme « réglé » et envoyait déjà le DELETE,
+    // pendant que le fetch ACK restait en vol côté serveur.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(acknowledgementSignal.current?.aborted).toBe(false);
+    expect(deleteBodies).toEqual([]);
+    expect(requestPaths).toEqual([
+      '/voice/realtime/calls',
+      `/voice/realtime/calls/${sessionHandle}/agent-mission-bootstrap-acknowledgements`,
+    ]);
+    acknowledgement.resolve(new Response(JSON.stringify({
+      acknowledged: true,
+      replayed: false,
+    }), { headers: { 'content-type': 'application/json' } }));
+
+    await expect(connecting).resolves.toMatchObject({ reason: 'aborted' });
+    await closing;
+
+    expect(sessionHandle).not.toBeNull();
+    expect(requestPaths).toEqual([
+      '/voice/realtime/calls',
+      `/voice/realtime/calls/${sessionHandle}/agent-mission-bootstrap-acknowledgements`,
+      `/voice/realtime/calls/${sessionHandle}`,
+    ]);
+    expect(requestPaths.filter((path) => (
+      path === `/voice/realtime/calls/${sessionHandle}/agent-mission-bootstrap-acknowledgements`
+    ))).toHaveLength(1);
+    expect(requestPaths.filter((path) => path === `/voice/realtime/calls/${sessionHandle}`))
+      .toHaveLength(1);
+    expect(value.takeAgentMissionSession()).toBeNull();
+    expect(deleteBodies).toEqual([{
+      version: 1,
+      terminationSource: 'policy',
+      lastSuccessfulCheckpoint: 'local_offer_set',
+      closeReason: 'entitlement_revoked',
+    }]);
   });
 
   it('absorbe un échec synchrone de hangup sans doubler la fermeture locale', async () => {
@@ -1766,6 +2141,27 @@ describe('RealtimeWebRtcTransport — downlink OpenAI natif', () => {
     // Le drain provider seul n'est pas un ACK : sans RTP observé + transcript final, le tour
     // reste fermé et ne publie rien.
     expect(value.state.phase).toBe('bob_speaking');
+  });
+
+  it('accepte le cache Android currentDirection null sous preuve SDP appliquée native', async () => {
+    const bobClient = client(SEND_RECV_SDP, nativeRealtimeConfig);
+    const harness = runtimeHarness(
+      async () => new FakeStream(),
+      {
+        offerSdp: SEND_RECV_SDP,
+        negotiatedDirection: null,
+      },
+    );
+    const value = transport(bobClient, harness, nativeRealtimeConfig);
+
+    await expect(value.connect()).resolves.toBeUndefined();
+
+    expect(harness.peers[0]?.transceiver?.currentDirection).toBeNull();
+    const remote = harness.peers[0]!.receiveRemoteTrack();
+    expect(remote.transceiver).toBe(harness.peers[0]!.transceiver);
+    expect(remote.track.enabled).toBe(false);
+    expect(value.state.phase).toBe('ready');
+    expect(bobClient.hangupRealtimeVoiceCall).not.toHaveBeenCalled();
   });
 
   it('refuse une answer non sendrecv avant de l appliquer au peer natif', async () => {

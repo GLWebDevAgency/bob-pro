@@ -229,7 +229,7 @@ BEGIN
           'eventOrdinal', 'eventKind', 'turnId', 'occurredAt', 'durationMs',
           'contextRevision', 'contextDigest', 'speechDelivery', 'plannerDisposition',
           'plannerAuthority', 'plannerIntent', 'missionKind', 'runKind', 'controlKind',
-          'stage', 'outcome', 'failureClass', 'interruptionReason',
+          'stage', 'outcome', 'failureClass', 'interruptionReason', 'sessionCloseReason',
           'eventDigestKeyVersion', 'encryptionKeyVersion', 'transcriptCiphertext',
           'canonicalReplyCiphertext'
         )
@@ -327,6 +327,8 @@ BEGIN
         ('public.assert_realtime_voice_trace_key_versions_v2(integer[])'::REGPROCEDURE,
           'bob_realtime_voice_trace_key_readiness'),
         ('public.read_realtime_voice_trace_session_v2(uuid,text,uuid,uuid,text,text,boolean)'::REGPROCEDURE,
+          'bob_realtime_voice_trace_reader'),
+        ('public.read_realtime_voice_trace_session_v3(uuid,text,uuid,uuid,text,text,boolean)'::REGPROCEDURE,
           'bob_realtime_voice_trace_reader')
       ) AS expected(function_oid, owner_name)
   LOOP
@@ -362,6 +364,22 @@ BEGIN
     END LOOP;
   END LOOP;
 
+  -- Le lecteur operateur est un outil de staging, pas seulement une ACL « autorisee » par
+  -- l'inventaire ci-dessous. Le certificat prouve aussi positivement que le deployeur qui
+  -- execute ce rituel peut appeler les deux versions en staging, et ne le peut plus ailleurs.
+  IF pg_catalog.has_function_privilege(
+       session_user,
+       'public.read_realtime_voice_trace_session_v2(uuid,text,uuid,uuid,text,text,boolean)'::REGPROCEDURE,
+       'EXECUTE'
+     ) IS DISTINCT FROM (release_environment = 'staging')
+     OR pg_catalog.has_function_privilege(
+       session_user,
+       'public.read_realtime_voice_trace_session_v3(uuid,text,uuid,uuid,text,text,boolean)'::REGPROCEDURE,
+       'EXECUTE'
+     ) IS DISTINCT FROM (release_environment = 'staging') THEN
+    RAISE EXCEPTION 'Realtime Voice Trace deployer reader grant drift for %', release_environment;
+  END IF;
+
   IF EXISTS (
     SELECT 1
       FROM pg_catalog.pg_proc AS function
@@ -374,7 +392,8 @@ BEGIN
        'public.purge_realtime_voice_trace_v2(integer)'::REGPROCEDURE,
        'public.inspect_realtime_voice_trace_retention_v2()'::REGPROCEDURE,
        'public.assert_realtime_voice_trace_key_versions_v2(integer[])'::REGPROCEDURE,
-       'public.read_realtime_voice_trace_session_v2(uuid,text,uuid,uuid,text,text,boolean)'::REGPROCEDURE
+       'public.read_realtime_voice_trace_session_v2(uuid,text,uuid,uuid,text,text,boolean)'::REGPROCEDURE,
+       'public.read_realtime_voice_trace_session_v3(uuid,text,uuid,uuid,text,text,boolean)'::REGPROCEDURE
      )
        AND privilege.privilege_type = 'EXECUTE'
        AND privilege.grantee <> function.proowner
@@ -390,8 +409,10 @@ BEGIN
        AND NOT (
          release_environment = 'staging'
          AND grantee.rolname = session_user
-         AND function.oid =
-           'public.read_realtime_voice_trace_session_v2(uuid,text,uuid,uuid,text,text,boolean)'::REGPROCEDURE
+         AND function.oid IN (
+           'public.read_realtime_voice_trace_session_v2(uuid,text,uuid,uuid,text,text,boolean)'::REGPROCEDURE,
+           'public.read_realtime_voice_trace_session_v3(uuid,text,uuid,uuid,text,text,boolean)'::REGPROCEDURE
+         )
        )
   ) THEN
     RAISE EXCEPTION 'Realtime Voice Trace unexpected function executor';
@@ -438,7 +459,8 @@ BEGIN
        'public.purge_realtime_voice_trace_v2(integer)'::REGPROCEDURE,
        'public.inspect_realtime_voice_trace_retention_v2()'::REGPROCEDURE,
        'public.assert_realtime_voice_trace_key_versions_v2(integer[])'::REGPROCEDURE,
-       'public.read_realtime_voice_trace_session_v2(uuid,text,uuid,uuid,text,text,boolean)'::REGPROCEDURE
+       'public.read_realtime_voice_trace_session_v2(uuid,text,uuid,uuid,text,text,boolean)'::REGPROCEDURE,
+       'public.read_realtime_voice_trace_session_v3(uuid,text,uuid,uuid,text,text,boolean)'::REGPROCEDURE
      )
        AND privilege.grantee <> function.proowner
        AND privilege.is_grantable
@@ -463,6 +485,11 @@ BEGIN
      OR pg_catalog.has_function_privilege(
        runtime_name,
        'public.read_realtime_voice_trace_session_v2(uuid,text,uuid,uuid,text,text,boolean)',
+       'EXECUTE'
+     )
+     OR pg_catalog.has_function_privilege(
+       runtime_name,
+       'public.read_realtime_voice_trace_session_v3(uuid,text,uuid,uuid,text,text,boolean)',
        'EXECUTE'
      ) THEN
     RAISE EXCEPTION 'Realtime Voice Trace runtime function ACL drift';
