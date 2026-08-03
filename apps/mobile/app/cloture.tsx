@@ -246,14 +246,15 @@ export default function Cloture() {
   };
 
   /** Rangée de checklist : pastille statut + libellé + compteur + chevron (si à traiter).
-   * Press feedback standard (PressableScale) — une rangée réglée (count 0) reste inerte. */
+   * Press feedback standard (PressableScale) — une rangée réglée (count 0) reste inerte
+   * SANS accessibilityState.disabled (verdict Lot 5, P3) : « c'est réglé » n'est pas
+   * « non disponible », VoiceOver n'annonce rien de désactivé sur une rangée gagnée. */
   function CheckRow({ item, divider }: { item: CheckItem; divider: boolean }) {
     const done = item.count === 0;
     return (
       <PressableScale
         accessibilityRole={item.count > 0 ? 'button' : undefined}
         accessibilityLabel={`${t(item.labelKey, { personality })} : ${item.count}`}
-        disabled={done}
         onPress={item.count > 0 ? () => router.push(item.route) : undefined}
         style={{
           flexDirection: 'row',
@@ -775,7 +776,7 @@ export default function Cloture() {
         visible={fecWarnings !== null}
         onClose={() => setFecWarnings(null)}
         accessibilityLabel={t('cloture.fecWarningsTitle', { personality })}
-        closeAccessibilityLabel="Fermer"
+        closeAccessibilityLabel={t('common.close', { personality })}
       >
         <Text
           accessibilityRole="header"
@@ -800,7 +801,9 @@ export default function Cloture() {
           </View>
         ))}
         <View style={{ marginTop: 12, marginBottom: 8 }}>
-          <Button title="OK" onPress={() => setFecWarnings(null)} />
+          {/* i18n common.close (verdict Lot 5, P3) — le geste EST la fermeture : plus de
+              « OK » hors catalogue sur une surface neuve. */}
+          <Button title={t('common.close', { personality })} onPress={() => setFecWarnings(null)} />
         </View>
       </Sheet>
 

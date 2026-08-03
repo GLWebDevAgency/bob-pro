@@ -206,6 +206,13 @@ describe('Grammaire d’erreur — le moment le plus anxiogène garde la voix de
     expect(rendered).toContain('Compte 411 sans libellé');
     expect(rendered).toContain('Pièce sans justificatif');
     expect(rendered).toContain('FEC-2026.txt'); // toast honnête de génération
+    // i18n common.close (verdict Lot 5, P3) : le bouton de la Sheet dit « Fermer » (catalogue),
+    // plus jamais un « OK » en dur hors humeurs — assertion sur le NŒUD du bouton.
+    expect(rendered).not.toContain('"OK"');
+    const closeButton = renderer.root
+      .findAllByType('Text' as never)
+      .find((node) => (node.props as { children?: unknown }).children === 'Fermer');
+    expect(closeButton).toBeDefined();
   });
 });
 
@@ -226,6 +233,59 @@ describe('CTA kit — parité stricte des états', () => {
     const renderer = await render();
     const send = findByLabel(renderer, 'Envoyer le dossier au comptable');
     expect(send).toBeDefined();
+  });
+
+  it('sendingDossier ⇒ le CTA d’envoi est busy + disabled, libellé « Préparation » (P2 du verdict)', async () => {
+    // Le partage du dossier RESTE en vol : l'état sendingDossier est observable pendant ce temps.
+    let releaseShare!: (value: 'unavailable') => void;
+    share.shareTextFile.mockImplementationOnce(
+      () =>
+        new Promise<'unavailable'>((resolve) => {
+          releaseShare = resolve;
+        }),
+    );
+    const renderer = await render();
+    const send = findByLabel(renderer, 'Envoyer le dossier au comptable');
+    expect(send).toBeDefined();
+    await act(async () => {
+      (send!.props as { onPress: () => void }).onPress();
+    });
+    // Parité STRICTE (mutant N9 : disabled/loading retirés ⇒ ces trois assertions rougissent).
+    const pending = findByLabel(renderer, 'Envoyer le dossier au comptable');
+    const state = (pending!.props as { accessibilityState?: { disabled?: boolean; busy?: boolean } })
+      .accessibilityState;
+    expect(state?.disabled).toBe(true);
+    expect(state?.busy).toBe(true);
+    expect(treeOf(renderer)).toContain('Préparation du dossier…'); // cloture.sendingDossier
+    await act(async () => {
+      releaseShare('unavailable');
+    });
+    // Le geste terminé, le CTA revient actionnable — aucun état fantôme.
+    const settled = findByLabel(renderer, 'Envoyer le dossier au comptable');
+    expect(
+      (settled!.props as { accessibilityState?: { disabled?: boolean } }).accessibilityState
+        ?.disabled,
+    ).toBe(false);
+  });
+});
+
+describe('CheckRow — une rangée réglée n’est pas « non disponible » (P3 du verdict)', () => {
+  it('compteur 0 ⇒ ni rôle bouton, ni onPress, ni disabled annoncé à VoiceOver', async () => {
+    // Fixtures par défaut : aucune anomalie — toutes les rangées de checklist sont réglées.
+    const renderer = await render();
+    const row = findByLabel(renderer, 'Devis signés à facturer : 0');
+    expect(row).toBeDefined();
+    const props = row!.props as {
+      accessibilityRole?: string;
+      onPress?: unknown;
+      disabled?: boolean;
+      accessibilityState?: { disabled?: boolean };
+    };
+    expect(props.accessibilityRole).toBeUndefined();
+    expect(props.onPress).toBeUndefined();
+    // La sémantique inverse du sens porté (« c'est réglé » ≠ désactivé) ne revient jamais.
+    expect(props.disabled).not.toBe(true);
+    expect(props.accessibilityState?.disabled).not.toBe(true);
   });
 });
 
