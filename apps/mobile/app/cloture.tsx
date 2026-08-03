@@ -9,7 +9,7 @@
  * Zéro hex, zéro fixture, i18n cloture.* ×3 humeurs.
  */
 import { useMemo, useState, type ReactNode } from 'react';
-import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
+import { ScrollView, Text, View } from 'react-native';
 import { useRouter, type Href } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
@@ -21,19 +21,24 @@ import {
   deriveTrialBalance,
   formatEUR,
 } from '@bob/core';
-import { patterns } from '@bob/tokens';
 import { t, type I18nKey } from '@bob/i18n';
 import {
+  Button,
   Card,
   EmptyState,
   ErrorRetry,
   IconTile,
   InnerScreenHeader,
+  PressableScale,
   SectionHeader,
+  Sheet,
   SkeletonCard,
+  StaggeredList,
   StatusBadge,
+  StickyBackRow,
   Toast,
   font,
+  useErrorSheet,
   useTheme,
 } from '@bob/ui';
 import {
@@ -54,7 +59,6 @@ import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-
 import {
   ChartIcon,
   CheckIcon,
-  ChevronLeftIcon,
   ChevronRightIcon,
   ClipboardCheckIcon,
   FileIcon,
@@ -106,6 +110,10 @@ export default function Cloture() {
   const entitled = entitlement.allowed;
   const [sendingDossier, setSendingDossier] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  // Grammaire d'erreur (Lot 5) : les échecs appelables au support passent en ErrorSheet
+  // (voix + matière de Bob), les avertissements FEC en Sheet listée — plus d'Alert système.
+  const errorSheet = useErrorSheet();
+  const [fecWarnings, setFecWarnings] = useState<readonly string[] | null>(null);
 
   // Toutes les synthèses de clôture croisent ces cinq lectures autoritatives. Une source
   // absente ou en échec ferme aussi Bob : l'agent ne doit jamais commenter une clôture
@@ -201,15 +209,19 @@ export default function Cloture() {
       const res = await exportFec.mutateAsync({ from: fecFrom, to: fecTo });
       const shared = await shareFec(res); // E9 : octets ISO 8859-15 (arrêté 29/07/2013)
       if (shared === 'unavailable') setToast(t('cloture.fecGenerated', { personality, params: { filename: res.filename } }));
-      if (res.warnings.length) Alert.alert('Avertissements FEC', res.warnings.join('\n'));
+      if (res.warnings.length) setFecWarnings(res.warnings);
     } catch (e) {
-      Alert.alert('Oups', appErrorMessage(e));
+      // Échec appelable au support : la feuille de Bob, plus jamais « Oups » système.
+      errorSheet.showError(t('cloture.exportFec', { personality }), appErrorMessage(e));
     }
   };
 
   const onSendDossier = async (): Promise<void> => {
     if (!company.data) {
-      Alert.alert('Oups', "L'identité de l'entreprise n'est pas disponible. Réessaie avant de préparer le dossier.");
+      errorSheet.showError(
+        t('cloture.sendDossier', { personality }),
+        "L'identité de l'entreprise n'est pas disponible. Réessaie avant de préparer le dossier.",
+      );
       return;
     }
     setSendingDossier(true);
@@ -227,19 +239,21 @@ export default function Cloture() {
       const shared = await shareTextFile(dossier);
       if (shared === 'unavailable') setToast(t('cloture.dossierPrepared', { personality, params: { filename: dossier.filename } }));
     } catch (e) {
-      Alert.alert('Oups', appErrorMessage(e));
+      errorSheet.showError(t('cloture.sendDossier', { personality }), appErrorMessage(e));
     } finally {
       setSendingDossier(false);
     }
   };
 
-  /** Rangée de checklist : pastille statut + libellé + compteur + chevron (si à traiter). */
+  /** Rangée de checklist : pastille statut + libellé + compteur + chevron (si à traiter).
+   * Press feedback standard (PressableScale) — une rangée réglée (count 0) reste inerte. */
   function CheckRow({ item, divider }: { item: CheckItem; divider: boolean }) {
     const done = item.count === 0;
     return (
-      <Pressable
+      <PressableScale
         accessibilityRole={item.count > 0 ? 'button' : undefined}
         accessibilityLabel={`${t(item.labelKey, { personality })} : ${item.count}`}
+        disabled={done}
         onPress={item.count > 0 ? () => router.push(item.route) : undefined}
         style={{
           flexDirection: 'row',
@@ -260,7 +274,7 @@ export default function Cloture() {
         <Text style={[font('sub'), { color: colors.ink800, flex: 1 }]}>{t(item.labelKey, { personality })}</Text>
         <StatusBadge label={String(item.count)} variant={done ? 'success' : 'particulier'} />
         {item.count > 0 ? <ChevronRightIcon color={controls.chevron} size={14} strokeWidth={2} /> : null}
-      </Pressable>
+      </PressableScale>
     );
   }
 
@@ -308,25 +322,10 @@ export default function Cloture() {
         automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
         scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
       >
-        <View
-          style={{
-            paddingTop: insets.top + 10,
-            paddingHorizontal: 16,
-            paddingBottom: 8,
-            backgroundColor: patterns.bottomTabBar.fade[1],
-          }}
-        >
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={t('cloture.back', { personality })}
-            onPress={() => router.back()}
-            hitSlop={8}
-            style={{ flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start', minHeight: 34 }}
-          >
-            <ChevronLeftIcon color={colors.ink800} size={18} strokeWidth={2.2} />
-            <Text style={[font('label', 600), { fontSize: 15, color: colors.ink800 }]}>{t('cloture.back', { personality })}</Text>
-          </Pressable>
-        </View>
+        <StickyBackRow
+          backLabel={t('cloture.back', { personality })}
+          onBack={() => router.back()}
+        />
 
         <InnerScreenHeader
           eyebrow={t('cloture.eyebrow', { personality })}
@@ -380,7 +379,9 @@ export default function Cloture() {
               retrying={refreshing}
             />
           ) : (
-            <>
+            // Cascade sobre (Lot 5) : chaque bloc de la clôture fond en entrant (40 ms/rang,
+            // cap 8) — coupée nette sous reduce-motion, wrappers enfants directs du gap 14.
+            <StaggeredList>
               {/* Synthèse — tout prêt ou points restants */}
               <Card>
                 <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 11 }}>
@@ -536,7 +537,9 @@ export default function Cloture() {
                           accessibilityLabel={`Compte ${row.account}, solde ${formatEUR(row.balanceCents)}`}
                           style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 5 }}
                         >
-                          <Text style={[font('sub'), { color: colors.ink800, width: 60, fontVariant: ['tabular-nums'] }]}>
+                          {/* Colonnes en flexBasis+minWidth (Lot 5) : en Dynamic Type XXL le
+                              contenu POUSSE la colonne au lieu d'être tronqué par un width figé. */}
+                          <Text style={[font('sub'), { color: colors.ink800, flexBasis: 60, minWidth: 60, fontVariant: ['tabular-nums'] }]}>
                             {row.account}
                           </Text>
                           <Text style={{ ...font('meta'), color: colors.slate400, flex: 1, textAlign: 'right', fontVariant: ['tabular-nums'] }}>
@@ -549,7 +552,8 @@ export default function Cloture() {
                             style={{
                               ...font('sub', 700),
                               color: row.balanceCents >= 0 ? colors.ink900 : colors.slate500,
-                              width: 92,
+                              flexBasis: 92,
+                              minWidth: 92,
                               textAlign: 'right',
                               fontVariant: ['tabular-nums'],
                             }}
@@ -713,59 +717,31 @@ export default function Cloture() {
               {section(
                 'cloture.sectionExport',
                 <>
+                  {/* Les 2 CTA au langage kit (Lot 5) : Button avec slot icône, parité
+                      STRICTE disabled/loading (sendingDossier, exportFec.isPending) —
+                      le spinner remplace l'icône, busy annoncé, libellé d'action stable. */}
                   {balance.rows.length > 0 ? (
-                    <Pressable
-                      accessibilityRole="button"
+                    <Button
+                      title={t(sendingDossier ? 'cloture.sendingDossier' : 'cloture.sendDossier', { personality })}
                       accessibilityLabel={t('cloture.sendDossier', { personality })}
-                      disabled={sendingDossier}
                       onPress={() => void onSendDossier()}
-                      style={({ pressed }) => [
-                        {
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          gap: 9,
-                          backgroundColor: semantic.success,
-                          borderRadius: 14,
-                          paddingVertical: 14,
-                          minHeight: 44,
-                          opacity: sendingDossier ? 0.6 : pressed ? 0.9 : 1,
-                        },
-                      ]}
-                    >
-                      <SendIcon color={colors.surface} size={17} />
-                      <Text style={{ ...font('body', 700), fontSize: 14.5, color: colors.surface }}>
-                        {t(sendingDossier ? 'cloture.sendingDossier' : 'cloture.sendDossier', { personality })}
-                      </Text>
-                    </Pressable>
+                      disabled={sendingDossier}
+                      loading={sendingDossier}
+                      icon={<SendIcon color={colors.surface} size={17} />}
+                      radius={14}
+                    />
                   ) : null}
                   <View style={{ height: balance.rows.length > 0 ? 10 : 0 }} />
-                  <Pressable
-                    accessibilityRole="button"
+                  <Button
+                    title={t(exportFec.isPending ? 'cloture.exportingFec' : 'cloture.exportFec', { personality })}
                     accessibilityLabel={t('cloture.exportFec', { personality })}
-                    disabled={exportFec.isPending}
+                    variant="secondary"
                     onPress={() => void onExportFec()}
-                    style={({ pressed }) => [
-                      {
-                        flexDirection: 'row',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        gap: 9,
-                        backgroundColor: colors.surface,
-                        borderWidth: 1,
-                        borderColor: controls.buttonSecondaryBorder,
-                        borderRadius: 14,
-                        paddingVertical: 14,
-                        minHeight: 44,
-                        opacity: exportFec.isPending ? 0.6 : pressed ? 0.9 : 1,
-                      },
-                    ]}
-                  >
-                    <FileIcon color={colors.ink600} size={16} />
-                    <Text style={{ ...font('body', 700), fontSize: 14.5, color: colors.ink600 }}>
-                      {t(exportFec.isPending ? 'cloture.exportingFec' : 'cloture.exportFec', { personality })}
-                    </Text>
-                  </Pressable>
+                    disabled={exportFec.isPending}
+                    loading={exportFec.isPending}
+                    icon={<FileIcon color={colors.ink600} size={16} />}
+                    radius={14}
+                  />
                   <Text style={[font('meta'), { color: colors.slate400, marginTop: 8, textAlign: 'center', lineHeight: 16 }]}>
                     {t('cloture.exportHelper', { personality })}
                   </Text>
@@ -773,7 +749,7 @@ export default function Cloture() {
               )}
 
               {/* Accès au grand-livre complet */}
-              <Pressable
+              <PressableScale
                 accessibilityRole="button"
                 accessibilityLabel={t('compta.title', { personality })}
                 onPress={() => router.push('/comptabilite')}
@@ -787,17 +763,55 @@ export default function Cloture() {
                     <ChevronRightIcon color={controls.chevron} size={14} strokeWidth={2} />
                   </View>
                 </Card>
-              </Pressable>
-            </>
+              </PressableScale>
+            </StaggeredList>
           )}
         </View>
       </ScrollView>
 
+      {/* Avertissements FEC — Sheet LISTÉE (matière Bob) : chaque avertissement sur sa
+          rangée, plus un bloc Alert système illisible. */}
+      <Sheet
+        visible={fecWarnings !== null}
+        onClose={() => setFecWarnings(null)}
+        accessibilityLabel={t('cloture.fecWarningsTitle', { personality })}
+        closeAccessibilityLabel="Fermer"
+      >
+        <Text
+          accessibilityRole="header"
+          style={[font('sheetTitle'), { color: colors.ink900, marginBottom: 10 }]}
+        >
+          {t('cloture.fecWarningsTitle', { personality })}
+        </Text>
+        {(fecWarnings ?? []).map((warning, index) => (
+          <View
+            key={index}
+            style={{
+              flexDirection: 'row',
+              alignItems: 'flex-start',
+              gap: 8,
+              paddingVertical: 7,
+              borderTopWidth: index === 0 ? 0 : 1,
+              borderTopColor: colors.lineSoft,
+            }}
+          >
+            <Feather name="alert-triangle" size={14} color={semantic.warning} style={{ marginTop: 2 }} />
+            <Text style={[font('sub'), { color: colors.ink800, flex: 1, lineHeight: 19 }]}>{warning}</Text>
+          </View>
+        ))}
+        <View style={{ marginTop: 12, marginBottom: 8 }}>
+          <Button title="OK" onPress={() => setFecWarnings(null)} />
+        </View>
+      </Sheet>
+
+      {errorSheet.errorSheet}
+
+      {/* Succès uniquement (les échecs vivent en ErrorSheet) — coche du tone kit. */}
       <Toast
         message={toast ?? ''}
         visible={toast !== null}
         onHide={() => setToast(null)}
-        icon={<CheckIcon color={colors.surface} />}
+        tone="success"
       />
     </View>
   );

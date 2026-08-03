@@ -8111,6 +8111,12 @@ const legacyFr = {
 
   // ── CLOTURE-UI — écran « Clôture » (refonte @bob/ui) ────────────────────────
   'cloture.back': { pote: 'Accueil', pro: 'Accueil', direct: 'Accueil' },
+  // Titre de la Sheet des avertissements FEC (Lot 5) — même intitulé que l'ex-Alert système.
+  'cloture.fecWarningsTitle': {
+    pote: 'Avertissements FEC',
+    pro: 'Avertissements FEC',
+    direct: 'Avertissements FEC',
+  },
   'cloture.eyebrow': {
     pote: 'Le mois pour ton comptable',
     pro: 'Le mois pour votre comptable',
