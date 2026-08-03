@@ -13,11 +13,13 @@ import {
   CHIP_HIT_SLOP,
   chipColors,
   statusBadgeColors,
+  statusBadgeRoleColors,
   type StatusBadgePalette,
   type StatusBadgeVariant,
+  type StatusColorRole,
 } from './status-badge.logic';
 
-export type { StatusBadgeVariant };
+export type { StatusBadgeVariant, StatusColorRole };
 
 /** Construit la palette §7 depuis le contexte de thème (réutilisé par Avatar/IconTile). */
 export function useStatusBadgePalette(): StatusBadgePalette {
@@ -44,14 +46,23 @@ export function useStatusBadgePalette(): StatusBadgePalette {
   };
 }
 
-export interface StatusBadgeProps {
-  label: string;
-  variant: StatusBadgeVariant;
-}
+/**
+ * Soit une VARIANTE sémantique (états, typologies client), soit un RÔLE de couleur dédié
+ * (Lot 5, arbitrage TONS RECYCLÉS : journaux comptables, catégories de dépense) — jamais
+ * les deux : le rôle existe précisément pour que la variante cesse de mentir.
+ */
+export type StatusBadgeProps = { label: string } & (
+  | { variant: StatusBadgeVariant; role?: undefined }
+  | { variant?: undefined; role: StatusColorRole }
+);
 
-export function StatusBadge({ label, variant }: StatusBadgeProps) {
+export function StatusBadge(props: StatusBadgeProps) {
+  const { label } = props;
   const palette = useStatusBadgePalette();
-  const { fg, bg } = statusBadgeColors(variant, palette);
+  const { fg, bg } =
+    props.role !== undefined
+      ? statusBadgeRoleColors(props.role)
+      : statusBadgeColors(props.variant, palette);
   return (
     <View
       accessibilityRole="text"

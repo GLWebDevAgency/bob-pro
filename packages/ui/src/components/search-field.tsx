@@ -24,6 +24,8 @@ interface SearchFieldBaseProps {
   readonly onChange: (next: string) => void;
   /** Placeholder i18n — sert aussi de libellé accessible par défaut. */
   readonly placeholder: string;
+  /** Focus à l'ouverture (recherche globale, Lot 5) — pass-through TextInput, défaut false. */
+  readonly autoFocus?: boolean;
   readonly accessibilityLabel?: string;
   readonly style?: StyleProp<ViewStyle>;
   readonly testID?: string;
@@ -69,6 +71,7 @@ export function SearchField({
   value,
   onChange,
   placeholder,
+  autoFocus = false,
   onClear,
   clearAccessibilityLabel,
   accessibilityLabel,
@@ -100,6 +103,7 @@ export function SearchField({
         placeholder={placeholder}
         placeholderTextColor={colors.slate500}
         autoCorrect={false}
+        autoFocus={autoFocus}
         returnKeyType="search"
         accessibilityLabel={accessibilityLabel ?? placeholder}
         style={[font('body'), { flex: 1, padding: 0, color: colors.ink800 }]}

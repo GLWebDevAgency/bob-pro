@@ -7701,6 +7701,12 @@ const legacyFr = {
 
   // ── A7 — recherche globale (/recherche) ─────────────────────────────────────
   'search.back': { pote: 'Fermer', pro: 'Fermer', direct: 'Fermer' },
+  // Bouton clear du SearchField kit (Lot 5) — cible 44 pt, libellé i18n obligatoire (addendum).
+  'search.clear': {
+    pote: 'Effacer la recherche',
+    pro: 'Effacer la recherche',
+    direct: 'Effacer',
+  },
   'search.eyebrow': { pote: 'Recherche', pro: 'Recherche', direct: 'Recherche' },
   'search.title': { pote: 'Tout retrouver', pro: 'Tout retrouver', direct: 'Recherche' },
   'search.subtitle': {
@@ -8135,6 +8141,12 @@ const legacyFr = {
 
   // ── CLOTURE-UI — écran « Clôture » (refonte @bob/ui) ────────────────────────
   'cloture.back': { pote: 'Accueil', pro: 'Accueil', direct: 'Accueil' },
+  // Titre de la Sheet des avertissements FEC (Lot 5) — même intitulé que l'ex-Alert système.
+  'cloture.fecWarningsTitle': {
+    pote: 'Avertissements FEC',
+    pro: 'Avertissements FEC',
+    direct: 'Avertissements FEC',
+  },
   'cloture.eyebrow': {
     pote: 'Le mois pour ton comptable',
     pro: 'Le mois pour votre comptable',
@@ -8542,6 +8554,9 @@ const legacyFr = {
     pro: '{name} représente {share} % de l’activité : une dépendance à surveiller.',
     direct: '{name} : {share} % du CA. Dépendance.',
   },
+  // Badge textuel de l'alerte de concentration (Lot 5) — annoncé tel quel par VoiceOver,
+  // là où « ! » ne disait rien ; warning = l'actionnable (arbitrage BADGE du plan DA).
+  'pilotage.concentrationBadge': { pote: 'Risque', pro: 'Risque', direct: 'Risque' },
   'pilotage.noClients': {
     pote: 'Pas encore de facturation sur les 12 derniers mois.',
     pro: 'Aucune facturation sur les 12 derniers mois.',

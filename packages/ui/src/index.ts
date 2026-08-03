@@ -22,6 +22,7 @@ export * from './components/status-badge';
 export {
   STATUS_BADGE_VARIANT_BY_LEGACY_TONE,
   statusBadgeColors,
+  statusBadgeRoleColors,
   statusBadgeVariantForLegacyTone,
   type LegacyBadgeTone,
 } from './components/status-badge.logic';
@@ -40,6 +41,16 @@ export {
 } from './components/motion-presence.logic';
 export * from './components/pressable-scale';
 export * from './components/icon-tile';
+// Lot 5 — dataviz vivante & verre sombre (plan DA 01/08)
+export * from './components/trend-bars';
+export {
+  TREND_BARS_ANIMATION_MS,
+  clampTrendBarPct,
+  resolveTrendBarsMotion,
+  type TrendBarsMotion,
+} from './components/trend-bars.logic';
+export * from './components/glass-panel-dark';
+export { glassPanelDarkStyle } from './components/glass-panel-dark.logic';
 export * from './components/delete-icon-button';
 export * from './components/eyebrow';
 export * from './components/section-header';

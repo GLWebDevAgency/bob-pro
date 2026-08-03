@@ -17,7 +17,7 @@
  *
  * Écarts assumés vs proto (tokens only, zéro hex/rgba) :
  * · le fond 172° indigo→navy profond du proto n'existe pas en rampe → themes.indigo.d1 vers
- *   themes.marine.d1 ; les lavandes du proto → vault.scanChipIcon ; barre/CTA → themes.indigo.d3/ink ;
+ *   themes.marine.d1 ; les lavandes du proto → themes.indigo.accent ; barre/CTA → themes.indigo.d3/ink ;
  * · l'anneau @bob/ui garde sa piste claire et son chiffre ink900 → médaillon blanc (surface)
  *   derrière le ring, et le « / 100 » du proto est porté par l'accessibilité (min/max) ;
  * · le « recevoir » en gras de l'intro est rendu en corps simple (copy i18n d'un seul tenant).
@@ -48,9 +48,19 @@ import {
   type PersistedDiagnosticAnswers,
   validateDiagnosticAssessmentAnswers,
 } from '@bob/core';
-import { themes, vault } from '@bob/tokens';
+import { themes } from '@bob/tokens';
 import { t, type I18nKey, type Personality } from '@bob/i18n';
-import { ScoreBar, ScoreRing, font, useReduceMotion, useTheme } from '@bob/ui';
+import {
+  GlassPanelDark,
+  MorphReplace,
+  PressableScale,
+  ScoreBar,
+  ScoreRing,
+  font,
+  resolveTrendBarsMotion,
+  useReduceMotionPreference,
+  useTheme,
+} from '@bob/ui';
 import {
   useCustomers,
   useDiagnostic,
@@ -146,26 +156,31 @@ function pickedFromAnswers(answers: PersistedDiagnosticAnswers): PickedAnswers {
 }
 
 // ── Barre de progression fine du proto (piste white10, remplissage dégradé indigo) ──
+// PreferenceState STRICT (Lot 5) : l'animation ne joue que si la préférence est RÉSOLUE
+// à inactive (resolveTrendBarsMotion, la même règle pure que TrendBars) — unknown =
+// statique dès la première frame, état final identique.
 function ProgressBar({ progress }: { progress: number }) {
   const { overlays } = useTheme();
-  const reduceMotion = useReduceMotion();
+  const motion = resolveTrendBarsMotion(useReduceMotionPreference());
   const anim = useRef(new Animated.Value(progress)).current;
 
   useEffect(() => {
-    if (reduceMotion) {
+    if (!motion.animated) {
       anim.stopAnimation();
       anim.setValue(progress);
       return;
     }
     Animated.timing(anim, {
       toValue: progress,
-      duration: 400,
+      duration: motion.durationMs,
       easing: Easing.out(Easing.quad),
       useNativeDriver: false, // width en % = prop de layout
     }).start();
-  }, [anim, progress, reduceMotion]);
+  }, [anim, progress, motion.animated, motion.durationMs]);
 
-  const width = anim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
+  const width = motion.animated
+    ? anim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] })
+    : (`${Math.round(Math.min(1, Math.max(0, progress)) * 100)}%` as const);
   return (
     <View
       accessibilityRole="progressbar"
@@ -190,12 +205,14 @@ function ProgressBar({ progress }: { progress: number }) {
   );
 }
 
-/** Count-up 0 → target (900 ms, ease-out) — l'anneau ScoreRing suit la valeur affichée. */
+/** Count-up 0 → target (900 ms, ease-out) — l'anneau ScoreRing suit la valeur affichée.
+ * PreferenceState STRICT : pas de count-up tant que la préférence n'est pas résolue à
+ * inactive — le score vrai s'affiche dès la première frame (jamais un 0 mensonger). */
 function useCountUp(target: number): number {
-  const reduceMotion = useReduceMotion();
-  const [value, setValue] = useState(0);
+  const motion = resolveTrendBarsMotion(useReduceMotionPreference());
+  const [value, setValue] = useState(target);
   useEffect(() => {
-    if (reduceMotion) {
+    if (!motion.animated) {
       setValue(target);
       return;
     }
@@ -210,7 +227,7 @@ function useCountUp(target: number): number {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [reduceMotion, target]);
+  }, [motion.animated, target]);
   return value;
 }
 
@@ -226,7 +243,7 @@ function ItemRow({
   personality: Personality;
   onPress?: (() => void) | undefined;
 }) {
-  const { colors, semantic, overlays, controls } = useTheme();
+  const { colors, semantic, overlays } = useTheme();
   const icon = item.done ? (
     <CheckIcon color={semantic.successOnDark} size={14} strokeWidth={2.6} />
   ) : item.severity === 'critical' ? (
@@ -255,14 +272,16 @@ function ItemRow({
         <Text style={[font('label', 600), { fontSize: 14, color: colors.surface }]}>
           {t(item.labelKey, { personality })}
         </Text>
-        <Text style={[font('meta'), { fontSize: 12, color: overlays.white50, marginTop: 1 }]}>
+        {/* Détail on-dark ≥ white70 (doctrine AA Lot 0) — white50 échouait plein soleil. */}
+        <Text style={[font('meta'), { fontSize: 12, color: overlays.white70, marginTop: 1 }]}>
           {detail}
           {!item.done && item.deadline !== null
             ? ` · ${t('diag.deadline', { personality, params: { date: frDate(item.deadline) } })}`
             : ''}
         </Text>
       </View>
-      {onPress !== undefined ? <ChevronRightIcon color={controls.chevron} size={15} /> : null}
+      {/* Chevron on-dark : le token clair (controls.chevron) disparaissait sur l'indigo. */}
+      {onPress !== undefined ? <ChevronRightIcon color={overlays.white70} size={15} /> : null}
     </>
   );
   const rowStyle = {
@@ -289,7 +308,6 @@ function ItemRow({
 
 export default function Diagnostic() {
   const { colors, overlays, personality } = useTheme();
-  const reduceMotion = useReduceMotion();
   const insets = useSafeAreaInsets();
   const router = useRouter();
 
@@ -574,7 +592,7 @@ export default function Diagnostic() {
               lineHeight: 23,
               maxWidth: 300,
               textAlign: 'center',
-              color: overlays.white66,
+              color: overlays.white80,
             },
           ]}
         >
@@ -605,13 +623,15 @@ export default function Diagnostic() {
           </Text>
         ) : null}
       </View>
-      <Pressable
+      {/* Press feedback standard du kit (échelle animée, coupée sous reduce-motion) —
+          fin du scale pressé manuel. */}
+      <PressableScale
         accessibilityRole="button"
         accessibilityLabel={t(blockingError ? 'diag.retry' : 'diag.introCta', { personality })}
         accessibilityState={{ disabled: !canBegin && !blockingError, busy: queryState.loading }}
         disabled={!canBegin && !blockingError}
         onPress={blockingError ? retry : begin}
-        style={({ pressed }) => ({
+        style={{
           minHeight: 52,
           backgroundColor: colors.surface,
           borderRadius: 16,
@@ -619,15 +639,14 @@ export default function Diagnostic() {
           justifyContent: 'center',
           alignItems: 'center',
           opacity: canBegin || blockingError ? 1 : 0.65,
-          transform: [{ scale: pressed && !reduceMotion ? 0.97 : 1 }],
-        })}
+        }}
       >
         <Text style={[font('button'), { color: themes.indigo.d1 }]}>
           {t(blockingError ? 'diag.retry' : canBegin ? 'diag.introCta' : 'diag.dataLoading', {
             personality,
           })}
         </Text>
-      </Pressable>
+      </PressableScale>
     </>
   );
 
@@ -638,7 +657,7 @@ export default function Diagnostic() {
           <Text
             style={[
               font('body'),
-              { fontSize: 15.5, textAlign: 'center', color: overlays.white66, maxWidth: 300 },
+              { fontSize: 15.5, textAlign: 'center', color: overlays.white80, maxWidth: 300 },
             ]}
           >
             {t('diag.dataError', { personality })}
@@ -668,7 +687,7 @@ export default function Diagnostic() {
           style={{ alignItems: 'center', gap: 12 }}
         >
           <ActivityIndicator color={colors.surface} />
-          <Text style={[font('sub'), { color: overlays.white66 }]}>
+          <Text style={[font('sub'), { color: overlays.white80 }]}>
             {t('diag.dataLoading', { personality })}
           </Text>
         </View>
@@ -687,14 +706,14 @@ export default function Diagnostic() {
         showsVerticalScrollIndicator={false}
       >
         <Text
-          style={[font('eyebrow'), { fontSize: 13, color: vault.scanChipIcon, marginBottom: 8 }]}
+          style={[font('eyebrow'), { fontSize: 13, color: themes.indigo.accent, marginBottom: 8 }]}
         >
           {t('diag.auditEyebrow', { personality })}
         </Text>
         <Text style={[font('screenH1'), { fontSize: 25, color: colors.surface, marginBottom: 8 }]}>
           {t('diag.auditTitle', { personality })}
         </Text>
-        <Text style={[font('sub'), { color: overlays.white66, marginBottom: 18 }]}>
+        <Text style={[font('sub'), { color: overlays.white80, marginBottom: 18 }]}>
           {t('diag.auditMix', {
             personality,
             params: {
@@ -704,16 +723,7 @@ export default function Diagnostic() {
             },
           })}
         </Text>
-        <View
-          style={{
-            backgroundColor: overlays.white07,
-            borderWidth: 1,
-            borderColor: overlays.white10,
-            borderRadius: 18,
-            paddingVertical: 3,
-            paddingHorizontal: 16,
-          }}
-        >
+        <GlassPanelDark style={{ paddingVertical: 3, paddingHorizontal: 16 }}>
           {derived.items
             .filter((item) => item.source === 'dossier')
             .map((item, i, rows) => (
@@ -725,9 +735,9 @@ export default function Diagnostic() {
                 onPress={undefined}
               />
             ))}
-        </View>
+        </GlassPanelDark>
       </ScrollView>
-      <Pressable
+      <PressableScale
         accessibilityRole="button"
         accessibilityLabel={t('diag.auditContinue', { personality })}
         onPress={() => {
@@ -742,19 +752,18 @@ export default function Diagnostic() {
           }
           setStep(1);
         }}
-        style={({ pressed }) => ({
+        style={{
           minHeight: 52,
           backgroundColor: colors.surface,
           borderRadius: 16,
           paddingVertical: 16,
           alignItems: 'center',
-          transform: [{ scale: pressed && !reduceMotion ? 0.97 : 1 }],
-        })}
+        }}
       >
         <Text style={[font('button'), { color: themes.indigo.d1 }]}>
           {t('diag.auditContinue', { personality })}
         </Text>
-      </Pressable>
+      </PressableScale>
     </>
   ) : (
     pending
@@ -776,7 +785,7 @@ export default function Diagnostic() {
         showsVerticalScrollIndicator={false}
       >
         <Text
-          style={[font('eyebrow'), { fontSize: 13, color: vault.scanChipIcon, marginBottom: 8 }]}
+          style={[font('eyebrow'), { fontSize: 13, color: themes.indigo.accent, marginBottom: 8 }]}
         >
           {t('diag.questionTag', { personality, params: { n: step, total: questions.length } })}
         </Text>
@@ -803,7 +812,7 @@ export default function Diagnostic() {
                   justifyContent: 'center',
                   backgroundColor: selected || pressed ? overlays.white16 : overlays.white07,
                   borderWidth: 1,
-                  borderColor: selected ? vault.scanChipIcon : overlays.white14,
+                  borderColor: selected ? themes.indigo.accent : overlays.white14,
                   borderRadius: 15,
                   padding: 16,
                 })}
@@ -822,7 +831,7 @@ export default function Diagnostic() {
             style={{ alignItems: 'center', gap: 10, marginTop: 18 }}
           >
             <ActivityIndicator color={colors.surface} />
-            <Text style={[font('sub'), { color: overlays.white66 }]}>
+            <Text style={[font('sub'), { color: overlays.white80 }]}>
               {t('diag.dataLoading', { personality })}
             </Text>
           </View>
@@ -876,7 +885,7 @@ export default function Diagnostic() {
                 <ChevronLeftIcon color={overlays.white70} size={18} strokeWidth={2.2} />
               </Pressable>
             ) : null}
-            <ShieldIcon color={vault.scanChipIcon} size={17} strokeWidth={2} />
+            <ShieldIcon color={themes.indigo.accent} size={17} strokeWidth={2} />
             <Text style={[font('label', 700), { fontSize: 13.5, color: overlays.white70 }]}>
               {t('diag.title', { personality })}
             </Text>
@@ -900,7 +909,14 @@ export default function Diagnostic() {
 
         {phase === 'steps' ? <ProgressBar progress={(step + 1) / (totalSteps + 1)} /> : null}
 
-        {phase === 'intro' ? intro : phase === 'result' ? result : step === 0 ? audit : question}
+        {/* Fade-through des PHASES (Lot 5) : le flux le plus narratif ne change plus de
+            scène par coupure sèche — MorphReplace (280 ms, bascule immédiate sous
+            reduce-motion). Les annonces (announceForAccessibility, effet ci-dessus) et le
+            focus ne dépendent pas du wrapper : PRÉSERVÉS, testés. Les pas INTERNES du
+            questionnaire (audit → q1 → q2) restent des mises à jour en direct. */}
+        <MorphReplace morphKey={phase} style={{ flex: 1 }}>
+          {phase === 'intro' ? intro : phase === 'result' ? result : step === 0 ? audit : question}
+        </MorphReplace>
       </View>
     </View>
   );
@@ -919,7 +935,6 @@ function Result({
   actionsDisabled: boolean;
 }) {
   const { colors, overlays, personality } = useTheme();
-  const reduceMotion = useReduceMotion();
   const router = useRouter();
   const display = useCountUp(derived.score);
 
@@ -978,7 +993,7 @@ function Result({
         <Text
           style={[
             font('sub'),
-            { fontSize: 14.5, color: overlays.white66, textAlign: 'center', maxWidth: 290 },
+            { fontSize: 14.5, color: overlays.white80, textAlign: 'center', maxWidth: 290 },
           ]}
         >
           {t(bodyKey, { personality, params: { count: todos.length } })}
@@ -986,17 +1001,7 @@ function Result({
       </View>
 
       {/* 3 axes du diagnostic expert-comptable — réception surpondérée avant 2026 (core). */}
-      <View
-        style={{
-          backgroundColor: overlays.white07,
-          borderWidth: 1,
-          borderColor: overlays.white10,
-          borderRadius: 18,
-          padding: 16,
-          gap: 12,
-          marginBottom: 14,
-        }}
-      >
+      <GlassPanelDark style={{ padding: 16, gap: 12, marginBottom: 14 }}>
         {derived.axes.map((axis) => (
           <View key={axis.id} style={{ gap: 6 }}>
             <View
@@ -1021,23 +1026,13 @@ function Result({
             />
           </View>
         ))}
-      </View>
+      </GlassPanelDark>
 
       {/* Plan d'action daté — à faire d'abord (tri core), chaque item ouvre sa route réelle. */}
-      <Text style={[font('eyebrow'), { fontSize: 12, color: vault.scanChipIcon, marginBottom: 8 }]}>
+      <Text style={[font('eyebrow'), { fontSize: 12, color: themes.indigo.accent, marginBottom: 8 }]}>
         {t('diag.planTitle', { personality })}
       </Text>
-      <View
-        style={{
-          backgroundColor: overlays.white07,
-          borderWidth: 1,
-          borderColor: overlays.white10,
-          borderRadius: 18,
-          paddingVertical: 3,
-          paddingHorizontal: 16,
-          marginBottom: 18,
-        }}
-      >
+      <GlassPanelDark style={{ paddingVertical: 3, paddingHorizontal: 16, marginBottom: 18 }}>
         {derived.items.map((item, i, rows) => (
           <ItemRow
             key={item.kind}
@@ -1051,7 +1046,7 @@ function Result({
             }
           />
         ))}
-      </View>
+      </GlassPanelDark>
 
       {actionsDisabled ? (
         <Text
@@ -1062,25 +1057,24 @@ function Result({
         </Text>
       ) : null}
 
-      <Pressable
+      <PressableScale
         accessibilityRole="button"
         accessibilityLabel={t('diag.resultCta', { personality })}
         accessibilityState={{ disabled: actionsDisabled }}
         disabled={actionsDisabled}
         onPress={() => router.push(primaryRoute as Href)}
-        style={({ pressed }) => ({
+        style={{
           minHeight: 52,
           borderRadius: 16,
           overflow: 'hidden',
           opacity: actionsDisabled ? 0.55 : 1,
-          transform: [{ scale: pressed && !reduceMotion && !actionsDisabled ? 0.97 : 1 }],
           shadowColor: themes.indigo.ink2,
           shadowOpacity: 0.4,
           shadowRadius: 24,
           shadowOffset: { width: 0, height: 10 },
           elevation: 8,
           marginBottom: 10,
-        })}
+        }}
       >
         <LinearGradient
           colors={[themes.indigo.ink2, themes.indigo.ink]}
@@ -1097,14 +1091,14 @@ function Result({
             {t('diag.resultCta', { personality })}
           </Text>
         </LinearGradient>
-      </Pressable>
+      </PressableScale>
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={t('diag.resultLater', { personality })}
         onPress={onClose}
         style={{ minHeight: 44, justifyContent: 'center', alignItems: 'center' }}
       >
-        <Text style={[font('label', 600), { fontSize: 14, color: overlays.white60 }]}>
+        <Text style={[font('label', 600), { fontSize: 14, color: overlays.white70 }]}>
           {t('diag.resultLater', { personality })}
         </Text>
       </Pressable>

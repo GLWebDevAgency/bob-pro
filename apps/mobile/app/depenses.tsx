@@ -22,22 +22,29 @@ import {
   type ExpenseProps,
   type PaymentMethod,
 } from '@bob/core';
-import { patterns } from '@bob/tokens';
+import { documentTile, expenseCategory } from '@bob/tokens';
 import { t, type I18nKey } from '@bob/i18n';
 import {
   Button,
   Card,
+  EmptyState,
   ErrorRetry,
   IconTile,
+  KpiTile,
+  MoneyText,
+  MorphReplace,
   PressableScale,
   QuestionSheet,
   SectionHeader,
   Skeleton,
+  StaggeredList,
   StatusBadge,
+  StickyBackRow,
   Toast,
   font,
   useTheme,
-  type StatusBadgeVariant,
+  type StatusColorRole,
+  type ToastTone,
 } from '@bob/ui';
 import {
   useAssignExpenseChantier,
@@ -52,7 +59,7 @@ import {
   ExpensePaymentSheet,
   type ExpensePaymentSheetMode,
 } from '../src/components/ExpensePaymentSheet';
-import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, FolderSmallIcon, WalletIcon } from '../src/components/icons';
+import { ChevronRightIcon, FolderSmallIcon, WalletIcon } from '../src/components/icons';
 import { linkChantierOptions, linkedChantierName } from '../src/documents/link-chantier-options';
 import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 import { displayExpensePaymentDate } from '../src/finance/expense-payment-form';
@@ -67,13 +74,16 @@ const CAT_KEY: Record<ExpenseCategory, I18nKey> = {
   autre: 'dep.catAutre',
 };
 
-const CAT_TONE: Record<ExpenseCategory, StatusBadgeVariant> = {
-  fournitures: 'success',
-  materiel: 'b2b',
-  carburant: 'particulier',
-  repas: 'particulier',
-  sous_traitance: 'b2g',
-  autre: 'b2g',
+/** Rôles couleur DÉDIÉS des catégories (Lot 0/5, arbitrage TONS RECYCLÉS) — fini le
+ * « particulier » qui signifiait « carburant » : mêmes primitives (adoption iso-visuelle,
+ * lot0-roles.test.ts), le contrat d'usage devient honnête. */
+const CAT_ROLE: Record<ExpenseCategory, StatusColorRole> = {
+  fournitures: expenseCategory.fournitures,
+  materiel: expenseCategory.materiel,
+  carburant: expenseCategory.carburant,
+  repas: expenseCategory.repas,
+  sous_traitance: expenseCategory.sous_traitance,
+  autre: expenseCategory.autre,
 };
 
 /** Même palier de confirmation que l'encaissement : une écriture au journal se confirme. */
@@ -98,7 +108,9 @@ export default function Depenses() {
   const assignChantier = useAssignExpenseChantier();
   const [chantierTarget, setChantierTarget] = useState<ExpenseProps | null>(null);
   const confirm = useConfirm();
-  const [toast, setToast] = useState<string | null>(null);
+  // Grammaire d'erreur (Lot 5) : le toast porte son TON — coche verte pour un succès,
+  // croix danger pour un échec (chantier, données périmées).
+  const [toast, setToast] = useState<{ message: string; tone: ToastTone } | null>(null);
   const [paymentSheetExpense, setPaymentSheetExpense] = useState<ExpenseProps | null>(null);
   // `record` = règlement d'une dépense à payer ; `regularize` = justification d'une ligne
   // historique payée sans preuve (même formulaire, endpoint dédié).
@@ -214,8 +226,10 @@ export default function Depenses() {
     assignChantier.mutate(
       { expenseId: expense.id, chantierId: null },
       {
-        onSuccess: () => setToast(t('dep.chantierUnlinkedToast', { personality })),
-        onError: () => setToast(t('dep.chantierError', { personality })),
+        onSuccess: () =>
+          setToast({ message: t('dep.chantierUnlinkedToast', { personality }), tone: 'success' }),
+        onError: () =>
+          setToast({ message: t('dep.chantierError', { personality }), tone: 'danger' }),
       },
     );
   };
@@ -228,8 +242,12 @@ export default function Depenses() {
       { expenseId: expense.id, chantierId },
       {
         onSuccess: () =>
-          setToast(t('dep.chantierLinkToast', { personality, params: { name } })),
-        onError: () => setToast(t('dep.chantierError', { personality })),
+          setToast({
+            message: t('dep.chantierLinkToast', { personality, params: { name } }),
+            tone: 'success',
+          }),
+        onError: () =>
+          setToast({ message: t('dep.chantierError', { personality }), tone: 'danger' }),
       },
     );
   };
@@ -276,19 +294,20 @@ export default function Depenses() {
         ? currentExpense !== undefined && isLegacyUnverifiedExpensePayment(currentExpense)
         : currentExpense?.status === 'to_pay';
       if (!dataFreshRef.current || !stillActionable) {
-        setToast(t('dep.dataError', { personality }));
+        setToast({ message: t('dep.dataError', { personality }), tone: 'danger' });
         void expenses.refetch();
         return;
       }
       const callbacks = {
         onSuccess: () => {
           setPaymentDraft(null);
-          setToast(
-            t(regularizing ? 'dep.regularizedToast' : 'dep.paidToast', {
+          setToast({
+            message: t(regularizing ? 'dep.regularizedToast' : 'dep.paidToast', {
               personality,
               params: { supplier: expense.supplierName },
             }),
-          );
+            tone: 'success',
+          });
         },
         onError: () => {
           setPaymentFormError(
@@ -316,34 +335,11 @@ export default function Depenses() {
         automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
         scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
       >
-        {/* Rangée retour sticky (pattern A3-C17). */}
-        <View
-          style={{
-            paddingTop: insets.top + 10,
-            paddingHorizontal: 16,
-            paddingBottom: 8,
-            backgroundColor: patterns.bottomTabBar.fade[1],
-          }}
-        >
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={t('dep.back', { personality })}
-            onPress={() => router.back()}
-            hitSlop={8}
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 4,
-              alignSelf: 'flex-start',
-              minHeight: 34,
-            }}
-          >
-            <ChevronLeftIcon color={colors.ink800} size={18} strokeWidth={2.2} />
-            <Text style={[font('label', 600), { fontSize: 15, color: colors.ink800 }]}>
-              {t('dep.back', { personality })}
-            </Text>
-          </Pressable>
-        </View>
+        {/* Rangée retour sticky — StickyBackRow kit (44 pt, était 34 ad hoc). */}
+        <StickyBackRow
+          backLabel={t('dep.back', { personality })}
+          onBack={() => router.back()}
+        />
 
         <View style={{ paddingTop: 2, paddingHorizontal: 20, paddingBottom: 4 }}>
           <Text style={[font('eyebrow'), { color: colors.slate400 }]}>
@@ -386,23 +382,37 @@ export default function Depenses() {
                 />
               </View>
             ) : null}
-            {/* HÉROS : reste à payer (la dette fournisseurs vivante) + mois + TVA. */}
+            {/* HÉROS MATIÈRE (Lot 5, planche « matière argent ») : la dette fournisseurs
+                vivante teinte la carte — voile warningBg si reste à payer > 0 (le pendant
+                « sortant » du vert comptable), neutre à zéro. Montant en MoneyText
+                moneyHero (27/800), mini-stats en KpiTile kit.
+                AA SOUS LE VOILE (verdict Lot 5, P1 n°2) : sur warningBg, semantic.warning
+                tombe à 2,99:1 (< 3:1 gros texte) et slate400 à 2,59:1 — montant ET eyebrow
+                passent à semantic.warningInk (5,25:1, l'encre créée au Lot 0 pour ce cas
+                exact) dès que le voile est actif ; teintes neutres inchangées à zéro. */}
             <View style={{ paddingTop: 16, paddingHorizontal: 18 }}>
-              <Card radius={20} padding={16}>
-                <Text style={[font('eyebrow'), { color: colors.slate400 }]}>
+              <Card
+                radius={20}
+                padding={16}
+                {...(summary.toPayCents > 0
+                  ? { style: { backgroundColor: semantic.warningBg } }
+                  : {})}
+              >
+                <Text
+                  style={[
+                    font('eyebrow'),
+                    { color: summary.toPayCents > 0 ? semantic.warningInk : colors.slate400 },
+                  ]}
+                >
                   {t('dep.toPay', { personality })}
                 </Text>
-                <Text
-                  style={{
-                    ...font('bigNum'),
-                    fontSize: 27,
-                    color: summary.toPayCents > 0 ? semantic.warning : colors.ink900,
-                    marginTop: 3,
-                    fontVariant: ['tabular-nums'],
-                  }}
-                >
-                  {formatEUR(summary.toPayCents)}
-                </Text>
+                <View style={{ marginTop: 3 }}>
+                  <MoneyText
+                    cents={summary.toPayCents}
+                    variant="moneyHero"
+                    color={summary.toPayCents > 0 ? semantic.warningInk : colors.ink900}
+                  />
+                </View>
                 <Text
                   style={{
                     ...font('sub', 500),
@@ -415,47 +425,23 @@ export default function Depenses() {
                     ? t('dep.toPayCountOne', { personality })
                     : t('dep.toPayCount', { personality, params: { count: summary.toPayCount } })}
                 </Text>
+                {/* ISO-INFORMATION (feature freeze, verdict Lot 5 P2) : ces chiffres sont
+                    FISCAUX (décaissé, TVA déductible) — l'écran affichait les centimes
+                    avant le lot, ils restent. formatEUR via valueText : le canon euros
+                    entiers de KpiTile vaut pour les agrégats de briefing, pas ici. */}
                 <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
-                  {(
-                    [
-                      {
-                        key: 'dep.paidMonth',
-                        cents: summary.paidThisMonthCents,
-                        color: colors.ink800,
-                      },
-                      {
-                        key: 'dep.vatMonth',
-                        cents: summary.vatDeductibleThisMonthCents,
-                        color: semantic.success,
-                      },
-                    ] as const
-                  ).map(({ key, cents, color }) => (
-                    <View
-                      key={key}
-                      style={{
-                        flex: 1,
-                        backgroundColor: colors.lineSoft,
-                        borderRadius: 13,
-                        paddingVertical: 11,
-                        paddingHorizontal: 12,
-                      }}
-                    >
-                      <Text style={[font('meta'), { fontSize: 11.5, color: colors.slate400 }]}>
-                        {t(key, { personality })}
-                      </Text>
-                      <Text
-                        style={{
-                          ...font('cardTitle'),
-                          fontSize: 16,
-                          color,
-                          marginTop: 1,
-                          fontVariant: ['tabular-nums'],
-                        }}
-                      >
-                        {formatEUR(cents)}
-                      </Text>
-                    </View>
-                  ))}
+                  <KpiTile
+                    style={{ flex: 1 }}
+                    label={t('dep.paidMonth', { personality })}
+                    valueText={formatEUR(summary.paidThisMonthCents)}
+                    tone="ink"
+                  />
+                  <KpiTile
+                    style={{ flex: 1 }}
+                    label={t('dep.vatMonth', { personality })}
+                    valueText={formatEUR(summary.vatDeductibleThisMonthCents)}
+                    tone="success"
+                  />
                 </View>
                 <View style={{ height: 12 }} />
                 <Button
@@ -469,9 +455,7 @@ export default function Depenses() {
             {sorted.length === 0 ? (
               <View style={{ paddingTop: 12, paddingHorizontal: 18 }}>
                 <Card>
-                  <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19 }]}>
-                    {t('dep.empty', { personality })}
-                  </Text>
+                  <EmptyState body={t('dep.empty', { personality })} />
                 </Card>
               </View>
             ) : (
@@ -487,6 +471,7 @@ export default function Depenses() {
                   />
                 </View>
                 <View style={{ paddingHorizontal: 18, gap: 11 }}>
+                  <StaggeredList>
                   {sorted.map((expense) => {
                     // Ligne HISTORIQUE payée sans preuve (migration lane preuves) : badge
                     // distinct porteur de sens + action de régularisation — jamais le même
@@ -496,19 +481,20 @@ export default function Depenses() {
                     const expenseChantierId = expense.chantierId ?? null;
                     const expenseChantierName = linkedChantierName(chantiers.data ?? [], expenseChantierId);
                     return (
-                    <Card key={expense.id} padding={15}>
+                    // MORPH du passage payé (Lot 5) : quand le statut change (À payer →
+                    // Payée), la carte fond vers son nouvel état au lieu d'un saut sec —
+                    // bascule immédiate sous reduce-motion (MorphReplace kit).
+                    <MorphReplace
+                      key={expense.id}
+                      morphKey={`${expense.status}:${legacyUnverified ? 'legacy' : 'ok'}`}
+                    >
+                    <Card padding={15}>
                       <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 11 }}>
-                        <IconTile tone={CAT_TONE[expense.category]} size={34} radius={10}>
+                        {/* Pastille au rôle de SA catégorie (expenseCategory.*, Lot 0) —
+                            l'icône se teinte à l'encre du rôle, plus une typologie client. */}
+                        <IconTile role={CAT_ROLE[expense.category]} size={34} radius={10}>
                           <WalletIcon
-                            color={
-                              CAT_TONE[expense.category] === 'success'
-                                ? semantic.success
-                                : CAT_TONE[expense.category] === 'b2b'
-                                  ? semantic.b2b
-                                  : CAT_TONE[expense.category] === 'b2g'
-                                    ? semantic.b2g
-                                    : semantic.particulier
-                            }
+                            color={CAT_ROLE[expense.category].ink}
                             size={17}
                             strokeWidth={2}
                           />
@@ -552,9 +538,12 @@ export default function Depenses() {
                             variant={
                               legacyUnverified
                                 ? 'warning'
+                                // « À payer » est un ÉTAT actionnable, pas une typologie
+                                // client : variant warning (mêmes pixels que l'ex-
+                                // 'particulier', contrat honnête — doctrine TONS RECYCLÉS).
                                 : expense.status === 'paid'
                                   ? 'success'
-                                  : 'particulier'
+                                  : 'warning'
                             }
                           />
                         </View>
@@ -651,8 +640,10 @@ export default function Depenses() {
                               onPress={() => router.push(`/chantier/${expenseChantierId}`)}
                               style={{ minHeight: 48, flex: 1, flexDirection: 'row', alignItems: 'center', gap: 12 }}
                             >
-                              <IconTile tone="b2b" size={40} radius={12}>
-                                <FolderSmallIcon color={semantic.b2b} size={19} />
+                              {/* Dossier de chantier = famille de CONTENU neutre (documentTile,
+                                  arbitrage TONS RECYCLÉS) — le b2b restait une typologie client. */}
+                              <IconTile tone="document" size={40} radius={12}>
+                                <FolderSmallIcon color={documentTile.ink} size={19} />
                               </IconTile>
                               <Text style={[font('sub'), { color: colors.ink900, flex: 1, fontWeight: '700' }]} numberOfLines={1}>
                                 {expenseChantierName !== null
@@ -685,8 +676,8 @@ export default function Depenses() {
                             onPress={() => setChantierTarget(expense)}
                             style={{ minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 8 }}
                           >
-                            <IconTile tone="b2b" size={40} radius={12}>
-                              <FolderSmallIcon color={semantic.b2b} size={19} />
+                            <IconTile tone="document" size={40} radius={12}>
+                              <FolderSmallIcon color={documentTile.ink} size={19} />
                             </IconTile>
                             <Text style={[font('sub'), { color: colors.ink900, flex: 1, fontWeight: '700' }]}>
                               {t('docs.linkChantierCta', { personality })}
@@ -696,8 +687,10 @@ export default function Depenses() {
                         </>
                       ) : null}
                     </Card>
+                    </MorphReplace>
                     );
                   })}
+                  </StaggeredList>
                 </View>
               </>
             )}
@@ -753,11 +746,13 @@ export default function Depenses() {
         onOther={() => setChantierTarget(null)}
       />
 
+      {/* Le TONE dessine le glyphe (coche success / croix danger, Toast kit Lot 0) —
+          un échec chantier ne porte plus jamais une coche. */}
       <Toast
-        message={toast ?? ''}
+        message={toast?.message ?? ''}
         visible={toast !== null}
         onHide={() => setToast(null)}
-        icon={<CheckIcon color={colors.surface} />}
+        {...(toast !== null ? { tone: toast.tone } : {})}
       />
     </View>
   );

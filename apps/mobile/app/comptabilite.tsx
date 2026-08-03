@@ -20,7 +20,7 @@ import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { formatEUR, summarizeAccountingEntries } from '@bob/core';
-import { patterns, vault } from '@bob/tokens';
+import { documentTile, journal, vault } from '@bob/tokens';
 import { t, type I18nKey } from '@bob/i18n';
 import {
   Card,
@@ -28,13 +28,17 @@ import {
   EmptyState,
   ErrorRetry,
   IconTile,
+  PressableScale,
   SectionHeader,
   SkeletonCard,
+  StaggeredList,
   StatusBadge,
+  StickyBackRow,
   Toast,
   font,
   useTheme,
-  type StatusBadgeVariant,
+  type StatusColorRole,
+  type ToastTone,
 } from '@bob/ui';
 import { useAccountingEntries, useExportFec } from '../src/data/hooks';
 import { PaywallCard, useEntitlement } from '../src/monetization/paywall';
@@ -44,8 +48,6 @@ import { AccountingLinesView } from '../src/components/AccountingLinesView';
 import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 import {
   ChartIcon,
-  CheckIcon,
-  ChevronLeftIcon,
   ChevronRightIcon,
   ClipboardCheckIcon,
   DepositIcon,
@@ -60,11 +62,14 @@ const JOURNAL_KEY: Record<string, I18nKey> = {
   bank: 'compta.journalBank',
   misc: 'compta.journalMisc',
 };
-const JOURNAL_TONE: Record<string, StatusBadgeVariant> = {
-  sales: 'b2b',
-  purchases: 'particulier',
-  bank: 'success',
-  misc: 'b2g',
+/** Rôles couleur DÉDIÉS des journaux (Lot 0/5, arbitrage TONS RECYCLÉS) — fini le
+ * « particulier » qui signifiait « journal achats » : mêmes primitives (adoption
+ * iso-visuelle, lot0-roles.test.ts), contrat honnête, évolution possible rôle par rôle. */
+const JOURNAL_ROLE: Record<string, StatusColorRole> = {
+  sales: journal.ventes,
+  purchases: journal.achats,
+  bank: journal.banque,
+  misc: journal.od,
 };
 
 /** Date du jour AAAA-MM-JJ (DateOnly du core) — sans Intl, comme formatEUR. */
@@ -106,7 +111,9 @@ export default function Comptabilite() {
   const exportFec = useExportFec();
   const entitled = entitlement.allowed;
   const [filterJournal, setFilterJournal] = useState<string | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
+  // Grammaire d'erreur (Lot 5) : le toast porte son TON — coche verte pour un succès,
+  // croix danger pour un échec. Plus jamais une coche sur un export raté.
+  const [toast, setToast] = useState<{ message: string; tone: ToastTone } | null>(null);
 
   const sorted = useMemo(
     () => [...(entries.data ?? [])].sort((a, b) => b.entryDate.localeCompare(a.entryDate)),
@@ -145,17 +152,17 @@ export default function Comptabilite() {
     [sorted, filterJournal],
   );
 
-  /** Icône du journal, teintée comme sa pastille (mêmes sémantiques que la réf). */
-  const journalIcon = (journal: string): ReactNode => {
-    switch (journal) {
+  /** Icône du journal, teintée par l'encre de SON rôle (journal.*, plus une typologie client). */
+  const journalIcon = (journalCode: string): ReactNode => {
+    switch (journalCode) {
       case 'sales':
-        return <FileTextIcon color={semantic.b2b} size={16} />;
+        return <FileTextIcon color={journal.ventes.ink} size={16} />;
       case 'purchases':
-        return <WalletIcon color={semantic.particulier} size={17} strokeWidth={2} />;
+        return <WalletIcon color={journal.achats.ink} size={17} strokeWidth={2} />;
       case 'bank':
-        return <DepositIcon color={semantic.success} size={16} />;
+        return <DepositIcon color={journal.banque.ink} size={16} />;
       default:
-        return <ChartIcon color={semantic.b2g} size={16} />;
+        return <ChartIcon color={journal.od.ink} size={16} />;
     }
   };
 
@@ -170,10 +177,15 @@ export default function Comptabilite() {
           // le toast honnête de génération (le FEC existe, l'envoi attendra).
           void shareFec(out).then((r) => {
             if (r === 'unavailable')
-              setToast(t('docs.exportDone', { personality, params: { filename: out.filename } }));
+              setToast({
+                message: t('docs.exportDone', { personality, params: { filename: out.filename } }),
+                tone: 'success',
+              });
           });
         },
-        onError: () => setToast(t('docs.exportError', { personality })),
+        // Échec d'export : croix DANGER — la coche verte sur un échec était le seul
+        // vrai mensonge visuel du lot (plan DA 01/08).
+        onError: () => setToast({ message: t('docs.exportError', { personality }), tone: 'danger' }),
       },
     );
   };
@@ -188,29 +200,13 @@ export default function Comptabilite() {
         automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
         scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
       >
-        {/* [0] Rangée retour — SEUL élément sticky (réf : bg .92, « ‹ Documents » b2b).
-            Divergence deep-link assumée : ouvert depuis le briefing, back() y retourne. */}
-        <View
-          style={{
-            paddingTop: insets.top + 10,
-            paddingHorizontal: 16,
-            paddingBottom: 8,
-            backgroundColor: patterns.bottomTabBar.fade[1],
-          }}
-        >
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={t('compta.back', { personality })}
-            onPress={() => router.back()}
-            hitSlop={8}
-            style={{ flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start', minHeight: 34 }}
-          >
-            <ChevronLeftIcon color={semantic.b2b} size={19} strokeWidth={2.2} />
-            <Text style={[font('label', 600), { fontSize: 15, color: semantic.b2b }]}>
-              {t('compta.back', { personality })}
-            </Text>
-          </Pressable>
-        </View>
+        {/* [0] Rangée retour — SEUL élément sticky, désormais StickyBackRow kit (44 pt,
+            encre canon ink800 — fin de l'accent b2b divergent). Divergence deep-link
+            assumée : ouvert depuis le briefing, back() y retourne. */}
+        <StickyBackRow
+          backLabel={t('compta.back', { personality })}
+          onBack={() => router.back()}
+        />
 
         {/* En-tête — DÉFILE avec le contenu (réf : padding 2/20/4). */}
         <View style={{ paddingTop: 2, paddingHorizontal: 20, paddingBottom: 4 }}>
@@ -411,12 +407,20 @@ export default function Comptabilite() {
                   </View>
                 ) : null}
 
-                {/* Écritures (réf : padding 10/18/0, gap 11, cartes padding 15) */}
+                {/* Écritures (réf : padding 10/18/0, gap 11, cartes padding 15) — cascade
+                    StaggeredList (40 ms/rang, cap 8, coupée sous reduce-motion). */}
                 <View style={{ paddingTop: 10, paddingHorizontal: 18, gap: 11 }}>
+                  <StaggeredList>
                   {filtered.map((entry) => (
                     <Card key={entry.id} padding={15}>
-                      <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 11 }}>
-                        <IconTile tone={JOURNAL_TONE[entry.journal] ?? 'b2g'} size={34} radius={10}>
+                      {/* Une PHRASE VoiceOver pour l'en-tête (référence, libellé, date,
+                          journal) — l'œil lit quatre faits, l'oreille aussi. */}
+                      <View
+                        accessible
+                        accessibilityLabel={`${entry.reference}. ${entry.label}. ${formatDate(entry.entryDate)}. ${t(JOURNAL_KEY[entry.journal] ?? 'compta.journalMisc', { personality })}.`}
+                        style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 11 }}
+                      >
+                        <IconTile role={JOURNAL_ROLE[entry.journal] ?? journal.od} size={34} radius={10}>
                           {journalIcon(entry.journal)}
                         </IconTile>
                         <View style={{ flex: 1, minWidth: 0 }}>
@@ -432,7 +436,7 @@ export default function Comptabilite() {
                         </View>
                         <StatusBadge
                           label={t(JOURNAL_KEY[entry.journal] ?? 'compta.journalMisc', { personality })}
-                          variant={JOURNAL_TONE[entry.journal] ?? 'b2g'}
+                          role={JOURNAL_ROLE[entry.journal] ?? journal.od}
                         />
                       </View>
                       <View
@@ -447,12 +451,13 @@ export default function Comptabilite() {
                       </View>
                     </Card>
                   ))}
+                  </StaggeredList>
                 </View>
               </>
             )}
 
-            {/* Clôture du mois (réf : padding 12/18/0, carte 15) */}
-            <Pressable
+            {/* Clôture du mois (réf : padding 12/18/0, carte 15) — press feedback standard. */}
+            <PressableScale
               accessibilityRole="button"
               accessibilityLabel={t('compta.closeCta', { personality })}
               onPress={() => router.push('/cloture')}
@@ -460,8 +465,11 @@ export default function Comptabilite() {
             >
               <Card padding={15}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11 }}>
-                  <IconTile tone="b2g" size={34} radius={10}>
-                    <LockIcon color={semantic.b2g} size={15} strokeWidth={2} />
+                  {/* Carte-outil de clôture : famille de CONTENU neutre (documentTile —
+                      le dossier du comptable), plus jamais l'intérim b2g de typologie
+                      client (doctrine TONS RECYCLÉS, verdict Lot 5 P3). */}
+                  <IconTile tone="document" size={34} radius={10}>
+                    <LockIcon color={documentTile.ink} size={15} strokeWidth={2} />
                   </IconTile>
                   <View style={{ flex: 1, minWidth: 0 }}>
                     <Text style={[font('cardTitle'), { color: colors.ink800 }]}>
@@ -474,7 +482,7 @@ export default function Comptabilite() {
                   <ChevronRightIcon color={controls.chevron} size={14} strokeWidth={2} />
                 </View>
               </Card>
-            </Pressable>
+            </PressableScale>
 
             {/* Footer voix de Bob (réf : padding 22/30/8) */}
             <Text
@@ -496,11 +504,13 @@ export default function Comptabilite() {
         )}
       </ScrollView>
 
+      {/* Le TONE dessine le glyphe (coche success / croix danger, Toast kit Lot 0) —
+          plus d'icône injectée qui mentirait sur un échec. */}
       <Toast
-        message={toast ?? ''}
+        message={toast?.message ?? ''}
         visible={toast !== null}
         onHide={() => setToast(null)}
-        icon={<CheckIcon color={colors.surface} />}
+        {...(toast !== null ? { tone: toast.tone } : {})}
       />
     </View>
   );
