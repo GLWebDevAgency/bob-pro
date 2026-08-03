@@ -14,8 +14,27 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { createElement } from 'react';
-import { runDiagnostic } from '@bob/core';
+import { deriveDiagnostic, runDiagnostic } from '@bob/core';
 import { ThemeProvider } from '@bob/ui';
+
+/**
+ * SONDE COUNT-UP (verdict Lot 5, P2 — phase result hors couverture) : chaque rendu du
+ * ScoreRing enregistre la valeur `score` reçue. Sous ignorance (préférence motion jamais
+ * résolue), la PREMIÈRE frame doit déjà porter le score VRAI — jamais un 0 mensonger
+ * (mutant N10 : useState(0) dans useCountUp).
+ */
+const ringScores = vi.hoisted(() => ({ value: [] as number[] }));
+vi.mock('@bob/ui', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@bob/ui')>();
+  const { createElement: h } = await import('react');
+  return {
+    ...actual,
+    ScoreRing: (props: { score: number }) => {
+      ringScores.value.push(props.score);
+      return h(actual.ScoreRing as never, props as never);
+    },
+  };
+});
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -186,8 +205,47 @@ async function beginAudit(renderer: ReactTestRenderer): Promise<void> {
   });
 }
 
+/** Résultat RÉEL du même use case pur que l'écran — zéro score inventé. */
+const SAVED_ANSWERS = { platform: 'no', offAppSales: 'no', accountant: 'yes' } as const;
+const SAVED_RESULT = deriveDiagnostic({
+  facts: FACTS,
+  customers: [{ id: 'c1', type: 'b2c', siren: null }],
+  invoices: [
+    {
+      id: 'i1',
+      customerId: 'c1',
+      kind: 'final',
+      status: 'paid',
+      ttcCents: 120_000,
+      lineCategories: ['labor', 'supply'],
+    },
+  ],
+  payments: [],
+  profile: { trade: 'plombier' },
+  answers: SAVED_ANSWERS,
+  today: TODAY,
+});
+
+/** Assessment « déjà réalisé, courant » : le CTA d'intro rouvre directement le résultat. */
+function configureWithSavedResult(): void {
+  configure({
+    assessment: q({
+      data: {
+        status: 'current',
+        saved: { revision: 1, updatedAt: TODAY, answers: SAVED_ANSWERS },
+        result: SAVED_RESULT,
+        staleReason: null,
+        questions: ['platform', 'offAppSales', 'accountant'],
+        currentSourceAsOf: TODAY,
+        currentSourceFingerprint: 'fp-1',
+      },
+    }),
+  });
+}
+
 beforeEach(() => {
   announceSpy.mockClear();
+  ringScores.value.length = 0;
   configure();
 });
 
@@ -237,5 +295,46 @@ describe('ProgressBar — PreferenceState strict, statique sous ignorance', () =
     await beginAudit(renderer);
     // totalSteps = 3 questions + 1 audit ⇒ progress (0+1)/(4+1) = 20 %.
     expect(treeOf(renderer)).toContain('"width":"20%"');
+  });
+});
+
+describe('Phase RESULT — couverte de bout en bout (verdict Lot 5, P2)', () => {
+  it('count-up honnête : le score VRAI dès la PREMIÈRE frame sous ignorance, jamais un 0', async () => {
+    configureWithSavedResult();
+    expect(SAVED_RESULT.score).toBeGreaterThan(0); // sanity : un 0 mensonger serait discernable
+    const renderer = await render();
+    await beginAudit(renderer); // diagnostic déjà réalisé et courant ⇒ résultat direct
+    // La SONDE du ScoreRing (mutant N10 : useState(0) dans useCountUp — la première frame
+    // peindrait 0 avant que l'effet ne corrige) : CHAQUE frame porte le score vrai.
+    expect(ringScores.value.length).toBeGreaterThan(0);
+    expect(ringScores.value[0]).toBe(SAVED_RESULT.score);
+    expect(ringScores.value.every((score) => score === SAVED_RESULT.score)).toBe(true);
+  });
+
+  it('la transition vers le résultat est ANNONCÉE (announceForAccessibility, planTitle)', async () => {
+    configureWithSavedResult();
+    const renderer = await render();
+    await beginAudit(renderer);
+    expect(announceSpy).toHaveBeenCalledWith('Ton plan d’action'); // diag.planTitle (pote)
+  });
+
+  it('les panneaux du résultat portent la recette GlassPanelDark, le CTA dégradé est actionnable', async () => {
+    configureWithSavedResult();
+    const renderer = await render();
+    await beginAudit(renderer);
+    const rendered = treeOf(renderer);
+    // Les deux GlassPanelDark du résultat (axes + plan d'action) — recette kit.
+    expect(rendered).toContain('"backgroundColor":"rgba(255,255,255,.07)"');
+    expect(rendered).toContain('"borderColor":"rgba(255,255,255,.1)"');
+    expect(rendered).toContain('"borderRadius":18');
+    // Le plan d'action est là (titre de section) et le CTA dégradé est actionnable.
+    expect(rendered).toContain('Ton plan d’action');
+    const cta = findByLabel(renderer, 'Configurer ma réception'); // diag.resultCta (pote)
+    expect(cta).toBeDefined();
+    const state = (cta!.props as { accessibilityState?: { disabled?: boolean } })
+      .accessibilityState;
+    expect(state?.disabled).toBe(false); // actionsDisabled=false : sources courantes
+    // Et la porte de sortie douce « Plus tard » reste offerte.
+    expect(findByLabel(renderer, 'Plus tard')).toBeDefined();
   });
 });
