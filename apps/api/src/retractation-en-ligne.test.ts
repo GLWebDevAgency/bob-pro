@@ -243,7 +243,7 @@ describe('A3 × L221-10 — rétractation vs encaissement programmé (job outbox
     const { quoteId, signed } = await asPrincipal(MERCIER, () => signRemoteB2c(service));
     // Encaissement programmé PENDANT la fenêtre : job durable, dû seulement à l'échéance.
     const job = await persistence.notificationJobs.enqueue({
-      id: 'job-embargo-cancel-1',
+      id: 'e2c64134-fde7-48a8-967a-e4de91423970',
       companyId: MERCIER_PROPS.id,
       kind: 'embargo-scheduled-payment',
       dedupeKey: embargoScheduledPaymentDedupeKey(quoteId),
@@ -285,7 +285,7 @@ describe('A3 × L221-10 — rétractation vs encaissement programmé (job outbox
     // Job qui aurait survécu à l'annulation transactionnelle (version antérieure, course…) :
     // DÛ immédiatement — la garde par kind du worker doit l'annuler avant tout I/O provider.
     const job = await persistence.notificationJobs.enqueue({
-      id: 'job-embargo-stale-1',
+      id: '915fe7c3-c7cc-48e0-b185-a02add452bac',
       companyId: MERCIER_PROPS.id,
       kind: 'embargo-scheduled-payment',
       dedupeKey: embargoScheduledPaymentDedupeKey(quoteId),

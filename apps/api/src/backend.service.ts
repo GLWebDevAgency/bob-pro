@@ -407,7 +407,10 @@ import { clampAgentAutonomy } from './ai/autonomy-entitlements';
 import { NotificationDeliveryService } from './jobs/notification-delivery.service';
 // Clé de déduplication du job « encaissement programmé » (embargo L221-10) — source unique
 // partagée entre la programmation, l'annulation à la rétractation et la garde de livraison.
-import { embargoScheduledPaymentDedupeKey } from './persistence/notification-jobs';
+import {
+  NotificationPayloadContractUnavailableError,
+  embargoScheduledPaymentDedupeKey,
+} from './persistence/notification-jobs';
 import {
   documentArchiveIntegrityProofSha256,
   LEGACY_ARCHIVE_PROOF_REQUIRED,
@@ -2020,7 +2023,15 @@ export class BackendService {
   > {
     if (!(await this.ownedInvoice(invoiceId)))
       return { ok: false as const, error: appNotFound('invoice', invoiceId) };
-    const sent = await new SendInvoice({
+    if (!this.notificationDelivery.supportsExtendedPayloads()) {
+      this.logger.audit('notification.payload_contract_unavailable', {
+        operation: 'invoice-delivery',
+      });
+      return err(appUnavailable('notification-payload-v3-rollout'));
+    }
+    const sent = await this.runWithNotificationPayloadContract(
+      'invoice-delivery',
+      () => new SendInvoice({
       invoices: this.p.invoices,
       customers: this.p.customers,
       companies: this.p.companies,
@@ -2036,10 +2047,11 @@ export class BackendService {
       },
       archivePdf: this.invoiceArchivePdfPort(),
       viewUrlOf: publicDocumentViewUrl,
-    }).execute({
-      invoiceId,
-      ...(input?.recipientEmail !== undefined ? { recipientEmail: input.recipientEmail } : {}),
-    });
+      }).execute({
+        invoiceId,
+        ...(input?.recipientEmail !== undefined ? { recipientEmail: input.recipientEmail } : {}),
+      }),
+    );
     if (!sent.ok) return sent;
     // Jamais le contenu dans les journaux — corrélation technique seulement.
     this.logger.audit('invoice.email_queued', {
@@ -2049,6 +2061,21 @@ export class BackendService {
       deliveryStatus: sent.value.deliveryStatus,
     });
     return sent;
+  }
+
+  /** Release A : un geste étendu est refusé SYNCHRONEMENT. Il ne peut jamais répondre `queued`
+   * puis être purgé silencieusement par le worker de compatibilité. */
+  private async runWithNotificationPayloadContract<T>(
+    operation: 'invoice-delivery' | 'intervention-report',
+    run: () => Promise<Result<T, AppError>>,
+  ): Promise<Result<T, AppError>> {
+    try {
+      return await run();
+    } catch (error) {
+      if (!(error instanceof NotificationPayloadContractUnavailableError)) throw error;
+      this.logger.audit('notification.payload_contract_unavailable', { operation });
+      return err(appUnavailable('notification-payload-v3-rollout'));
+    }
   }
 
   /** PDF ARCHIVÉ (immuable) de la pièce émise, en base64 pour la pièce jointe e-mail — même
@@ -7345,7 +7372,15 @@ export class BackendService {
   ): Promise<Result<SendInterventionReportOutput, AppError>> {
     const forbidden = await this.chantierMediaForbidden();
     if (forbidden) return { ok: false, error: forbidden };
-    const r = await new SendInterventionReport({
+    if (!this.notificationDelivery.supportsExtendedPayloads()) {
+      this.logger.audit('notification.payload_contract_unavailable', {
+        operation: 'intervention-report',
+      });
+      return err(appUnavailable('notification-payload-v3-rollout'));
+    }
+    const r = await this.runWithNotificationPayloadContract(
+      'intervention-report',
+      () => new SendInterventionReport({
       interventions: this.p.interventions,
       companies: this.p.companies,
       customers: this.p.customers,
@@ -7392,11 +7427,12 @@ export class BackendService {
           return { jobId: job.id, status: job.status === 'cancelled' ? 'failed' : job.status };
         },
       },
-    }).execute({
-      companyId: this.companyId(),
-      interventionId,
-      ...(input?.recipientEmail !== undefined ? { recipientEmail: input.recipientEmail } : {}),
-    });
+      }).execute({
+        companyId: this.companyId(),
+        interventionId,
+        ...(input?.recipientEmail !== undefined ? { recipientEmail: input.recipientEmail } : {}),
+      }),
+    );
     if (r.ok)
       // Jamais le contenu ni l'adresse dans les journaux — corrélation technique seulement.
       this.logger.audit('intervention.report_email_queued', {

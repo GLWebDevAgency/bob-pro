@@ -195,7 +195,7 @@ async function runRealtimeNotificationMutation() {
   const persistence = new InMemoryPersistence();
   await persistence.seed();
   await persistence.notificationJobs.enqueue({
-    id: 'notification-live-unread',
+    id: 'da769201-dd4a-4816-9583-4124cf624eca',
     companyId: MERCIER_PROPS.id,
     kind: 'invoice-relance',
     dedupeKey: 'invoice:live:relance:manual:v1',
@@ -204,7 +204,7 @@ async function runRealtimeNotificationMutation() {
       to: 'client@example.test',
       subject: 'Relance',
       body: 'Relance en attente.',
-      idempotencyKey: 'notification-live-unread',
+      idempotencyKey: 'da769201-dd4a-4816-9583-4124cf624eca',
     },
     now: '2026-07-30T11:59:00.000Z',
   });

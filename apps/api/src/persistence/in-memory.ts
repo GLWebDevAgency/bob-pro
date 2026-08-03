@@ -66,6 +66,11 @@ import {
 } from './document-archive-jobs';
 import {
   NotificationDedupeConflictError,
+  NOTIFICATION_DUE_SCAN_MAX_PAGES,
+  NOTIFICATION_PAYLOAD_INTEGRITY_ERROR,
+  NOTIFICATION_PAYLOAD_QUARANTINE_AT,
+  isLegacyNotificationPayloadSealed,
+  normalizeLegacyNotificationForEnqueue,
   notificationPayloadFingerprint,
   type DeliverableNotificationJob,
   type EnqueueNotificationJobInput,
@@ -935,7 +940,13 @@ export class InMemoryNotificationJobRepository implements NotificationJobReposit
   }
 
   async enqueue(input: EnqueueNotificationJobInput): Promise<NotificationJob> {
-    const payloadFingerprint = notificationPayloadFingerprint(input.notification);
+    const notification = normalizeLegacyNotificationForEnqueue(input.notification, {
+      jobId: input.id,
+      channel: input.notification.channel,
+      recipient: input.notification.to,
+      subject: input.notification.subject,
+    });
+    const payloadFingerprint = notificationPayloadFingerprint(notification);
     const existing = [...this.map.values()].find(
       (job) =>
         job.companyId === input.companyId &&
@@ -973,10 +984,10 @@ export class InMemoryNotificationJobRepository implements NotificationJobReposit
       companyId: input.companyId,
       kind: input.kind,
       dedupeKey: input.dedupeKey,
-      channel: input.notification.channel,
-      recipient: input.notification.to,
-      subject: input.notification.subject,
-      notification: { ...input.notification },
+      channel: notification.channel,
+      recipient: notification.to,
+      subject: notification.subject,
+      notification: { ...notification },
       payloadFingerprint,
       status: 'pending',
       attempts: 0,
@@ -1004,14 +1015,39 @@ export class InMemoryNotificationJobRepository implements NotificationJobReposit
     now: string,
     limit: number,
   ): Promise<DeliverableNotificationJob[]> {
-    return [...this.map.values()]
+    const safeLimit = Math.max(1, Math.min(limit, 100));
+    const candidates = [...this.map.values()]
       .filter((job) => job.companyId === companyId)
       .filter((job) => job.status === 'pending' || job.status === 'failed')
-      .filter((job) => job.notification !== null)
       .filter((job) => job.nextAttemptAt <= now)
       .sort((a, b) => a.nextAttemptAt.localeCompare(b.nextAttemptAt))
-      .slice(0, limit)
-      .map((job) => ({ ...job, notification: job.notification! }));
+      .slice(0, safeLimit * NOTIFICATION_DUE_SCAN_MAX_PAGES);
+    const deliverable: DeliverableNotificationJob[] = [];
+    for (const job of candidates) {
+      if (deliverable.length >= safeLimit) break;
+      if (
+        job.notification !== null
+        && isLegacyNotificationPayloadSealed(job.notification, job.payloadFingerprint, {
+          jobId: job.id,
+          channel: job.channel,
+          recipient: job.recipient,
+          subject: job.subject,
+        })
+      ) {
+        deliverable.push({ ...job, notification: { ...job.notification } });
+        continue;
+      }
+      this.map.set(job.id, {
+        ...job,
+        notification: null,
+        status: 'failed',
+        nextAttemptAt: NOTIFICATION_PAYLOAD_QUARANTINE_AT,
+        leaseToken: null,
+        lastError: NOTIFICATION_PAYLOAD_INTEGRITY_ERROR,
+        updatedAt: now,
+      });
+    }
+    return deliverable;
   }
 
   async claimForDelivery(

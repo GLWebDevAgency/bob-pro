@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import type { Company, Invoice, NotificationPort, Payment } from '@bob/core';
 import { DigestService, weeklyDigestWindow, type DigestWindow } from './digest.service';
 import { NotificationDeliveryService } from './notification-delivery.service';
@@ -36,7 +37,8 @@ async function seedDoneRelance(
   invoiceId: string,
   at: string,
 ): Promise<void> {
-  const id = `relance-${companyId}-${invoiceId}`;
+  const hex = createHash('sha256').update(`relance:${companyId}:${invoiceId}`).digest('hex');
+  const id = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
   await persistence.notificationJobs.enqueue({
     id,
     companyId,

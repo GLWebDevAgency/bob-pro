@@ -17,6 +17,15 @@ const BINDING_A2 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2';
 const BINDING_B1 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1';
 const SECRET_A = 'ab'.repeat(32);
 const SECRET_B = 'cd'.repeat(32);
+const JOB_1 = '10000000-0000-4000-8000-000000000001';
+const JOB_2 = '10000000-0000-4000-8000-000000000002';
+const JOB_OTHER_TENANT = '10000000-0000-4000-8000-000000000003';
+const JOB_OTHER_TENANT_READ = '10000000-0000-4000-8000-000000000004';
+const JOB_OLD_1 = '10000000-0000-4000-8000-000000000005';
+const JOB_OLD_2 = '10000000-0000-4000-8000-000000000006';
+const JOB_OTHER_COMPANY = '10000000-0000-4000-8000-000000000007';
+const JOB_AT_CUTOFF = '10000000-0000-4000-8000-000000000008';
+const JOB_AFTER_CUTOFF = '10000000-0000-4000-8000-000000000009';
 
 function registration(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
   return {
@@ -56,10 +65,10 @@ describe('NotificationsApiService — fil company-scoped (C25)', () => {
   it('GET /notifications : items récents avec deep link dérivé et lu/non-lu', async () => {
     const p = new InMemoryPersistence();
     const service = new NotificationsApiService(p);
-    await seedJob(p, 'job-1', 'invoice:inv-1:relance:2026-07-01', '2026-07-01T06:00:00.000Z');
-    await seedJob(p, 'job-2', 'invoice:inv-2:relance:2026-07-03', '2026-07-03T06:00:00.000Z');
+    await seedJob(p, JOB_1, 'invoice:inv-1:relance:2026-07-01', '2026-07-01T06:00:00.000Z');
+    await seedJob(p, JOB_2, 'invoice:inv-2:relance:2026-07-03', '2026-07-03T06:00:00.000Z');
     await p.notificationJobs.enqueue({
-      id: 'job-autre-tenant',
+      id: JOB_OTHER_TENANT,
       companyId: 'co-intrus',
       kind: 'invoice-relance',
       dedupeKey: 'invoice:inv-9:relance:2026-07-03',
@@ -71,10 +80,10 @@ describe('NotificationsApiService — fil company-scoped (C25)', () => {
 
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.value.map((n) => n.id)).toEqual(['job-2', 'job-1']); // récents d'abord, tenant seul
+    expect(r.value.map((n) => n.id)).toEqual([JOB_2, JOB_1]); // récents d'abord, tenant seul
     expect(r.value[0]).toMatchObject({
       kind: 'invoice-relance',
-      title: 'Relance job-2',
+      title: `Relance ${JOB_2}`,
       route: '/facture/inv-2',
       readAt: null,
       status: 'pending',
@@ -84,9 +93,9 @@ describe('NotificationsApiService — fil company-scoped (C25)', () => {
   it('POST /notifications/:id/read : idempotent, refuse un job hors tenant (anti-IDOR)', async () => {
     const p = new InMemoryPersistence();
     const service = new NotificationsApiService(p);
-    await seedJob(p, 'job-1', 'invoice:inv-1:relance:2026-07-03', '2026-07-03T06:00:00.000Z');
+    await seedJob(p, JOB_1, 'invoice:inv-1:relance:2026-07-03', '2026-07-03T06:00:00.000Z');
     await p.notificationJobs.enqueue({
-      id: 'job-other-tenant',
+      id: JOB_OTHER_TENANT_READ,
       companyId: 'co-intrus',
       kind: 'invoice-relance',
       dedupeKey: 'invoice:inv-secret:relance:2026-07-03',
@@ -94,16 +103,16 @@ describe('NotificationsApiService — fil company-scoped (C25)', () => {
       now: '2026-07-03T06:00:00.000Z',
     });
 
-    const first = await asTenant(() => service.markRead('job-1'));
+    const first = await asTenant(() => service.markRead(JOB_1));
     expect(first.ok && first.value.readAt).not.toBeNull();
-    const again = await asTenant(() => service.markRead('job-1'));
+    const again = await asTenant(() => service.markRead(JOB_1));
     expect(again.ok && first.ok && again.value.readAt).toBe(first.ok ? first.value.readAt : null); // première lecture conservée
 
     const ghost = await asTenant(() => service.markRead('job-ghost'));
     expect(!ghost.ok && ghost.error.kind).toBe('not_found');
-    const otherTenant = await asTenant(() => service.markRead('job-other-tenant'));
+    const otherTenant = await asTenant(() => service.markRead(JOB_OTHER_TENANT_READ));
     expect(!otherTenant.ok && otherTenant.error.kind).toBe('not_found');
-    await expect(p.notificationJobs.findById('co-intrus', 'job-other-tenant')).resolves.toMatchObject({
+    await expect(p.notificationJobs.findById('co-intrus', JOB_OTHER_TENANT_READ)).resolves.toMatchObject({
       readAt: null,
     });
   });
@@ -114,10 +123,10 @@ describe('NotificationsApiService — fil company-scoped (C25)', () => {
       vi.setSystemTime(new Date('2026-07-13T10:00:00.000Z'));
       const p = new InMemoryPersistence();
       const service = new NotificationsApiService(p);
-      await seedJob(p, 'job-old-1', 'invoice:inv-old-1:relance:2026-07-13', '2026-07-13T09:59:59.000Z');
-      await seedJob(p, 'job-old-2', 'invoice:inv-old-2:relance:2026-07-13', '2026-07-13T09:59:59.999Z');
+      await seedJob(p, JOB_OLD_1, 'invoice:inv-old-1:relance:2026-07-13', '2026-07-13T09:59:59.000Z');
+      await seedJob(p, JOB_OLD_2, 'invoice:inv-old-2:relance:2026-07-13', '2026-07-13T09:59:59.999Z');
       await p.notificationJobs.enqueue({
-        id: 'job-other-company',
+        id: JOB_OTHER_COMPANY,
         companyId: 'co-intrus',
         kind: 'invoice-relance',
         dedupeKey: 'invoice:inv-other:relance:2026-07-13',
@@ -133,14 +142,14 @@ describe('NotificationsApiService — fil company-scoped (C25)', () => {
       if (!preview.ok) return;
 
       // Insertion concurrente à la même milliseconde puis après : toutes deux hors snapshot.
-      await seedJob(p, 'job-at-cutoff', 'invoice:inv-at:relance:2026-07-13', preview.value.throughCreatedAt);
-      await seedJob(p, 'job-after-cutoff', 'invoice:inv-after:relance:2026-07-13', '2026-07-13T10:00:00.001Z');
+      await seedJob(p, JOB_AT_CUTOFF, 'invoice:inv-at:relance:2026-07-13', preview.value.throughCreatedAt);
+      await seedJob(p, JOB_AFTER_CUTOFF, 'invoice:inv-after:relance:2026-07-13', '2026-07-13T10:00:00.001Z');
 
       const forgedFuture = await asTenant(() =>
         service.markReadThrough({ throughCreatedAt: '2026-07-13T10:00:00.001Z' }),
       );
       expect(!forgedFuture.ok && forgedFuture.error.kind).toBe('validation');
-      await expect(p.notificationJobs.findById(TENANT, 'job-old-1')).resolves.toMatchObject({ readAt: null });
+      await expect(p.notificationJobs.findById(TENANT, JOB_OLD_1)).resolves.toMatchObject({ readAt: null });
 
       const marked = await asTenant(() =>
         service.markReadThrough({ throughCreatedAt: preview.value.throughCreatedAt }),
@@ -153,9 +162,9 @@ describe('NotificationsApiService — fil company-scoped (C25)', () => {
         service.markReadThrough({ throughCreatedAt: preview.value.throughCreatedAt }),
       );
       expect(replay.ok && replay.value.updatedCount).toBe(0);
-      await expect(p.notificationJobs.findById(TENANT, 'job-at-cutoff')).resolves.toMatchObject({ readAt: null });
-      await expect(p.notificationJobs.findById(TENANT, 'job-after-cutoff')).resolves.toMatchObject({ readAt: null });
-      await expect(p.notificationJobs.findById('co-intrus', 'job-other-company')).resolves.toMatchObject({ readAt: null });
+      await expect(p.notificationJobs.findById(TENANT, JOB_AT_CUTOFF)).resolves.toMatchObject({ readAt: null });
+      await expect(p.notificationJobs.findById(TENANT, JOB_AFTER_CUTOFF)).resolves.toMatchObject({ readAt: null });
+      await expect(p.notificationJobs.findById('co-intrus', JOB_OTHER_COMPANY)).resolves.toMatchObject({ readAt: null });
 
       const malformed = await asTenant(() => service.markReadThrough({ throughCreatedAt: 'demain' }));
       expect(!malformed.ok && malformed.error.kind).toBe('validation');

@@ -36,7 +36,7 @@ interface EnqueuedJob {
   notification: { to: string; subject: string; body: string; attachments?: unknown[] };
 }
 
-function makeService(options: { withRenderer?: boolean } = {}) {
+function makeService(options: { withRenderer?: boolean; supportsExtendedPayloads?: boolean } = {}) {
   const p = new InMemoryPersistence();
   const admin: SupabaseAdminPort = {
     setUserCompanyId: async () => undefined,
@@ -51,6 +51,7 @@ function makeService(options: { withRenderer?: boolean } = {}) {
   } as unknown as AppLogger;
   const enqueued: EnqueuedJob[] = [];
   const notificationDelivery = {
+    supportsExtendedPayloads: () => options.supportsExtendedPayloads ?? true,
     enqueue: async (order: EnqueuedJob) => {
       enqueued.push(order);
       return { id: `job-${enqueued.length}`, status: 'pending' as const };
@@ -473,8 +474,14 @@ describe('fiche de passage — service (PR-15b)', () => {
 });
 
 describe('fiche de passage PDF — archive immuable, envoi confirmé, CTA facturer (PR-16)', () => {
-  async function completedIntervention(withEquipment = true) {
-    const env = makeService();
+  async function completedIntervention(
+    input: boolean | { withEquipment?: boolean; supportsExtendedPayloads?: boolean } = true,
+  ) {
+    const withEquipment = typeof input === 'boolean' ? input : (input.withEquipment ?? true);
+    const env = makeService({
+      supportsExtendedPayloads:
+        typeof input === 'boolean' ? true : (input.supportsExtendedPayloads ?? true),
+    });
     const companyId = await seedTenant(env.p);
     await seedChantier(env.p, 'site-bastille', companyId);
     await seedCustomer(env.p, 'cust-ratp', companyId);
@@ -595,6 +602,19 @@ describe('fiche de passage PDF — archive immuable, envoi confirmé, CTA factur
     // Le PDF ARCHIVÉ est joint, et la mention « non signée » est HONNÊTE.
     expect(env.enqueued[0]!.notification.attachments).toHaveLength(1);
     expect(env.enqueued[0]!.notification.body).toContain('sans signature sur place');
+  });
+
+  it('release A refuse l’envoi étendu avant le use case et sans faux statut queued', async () => {
+    const env = await completedIntervention({ supportsExtendedPayloads: false });
+    await env.run(() => env.service.generateInterventionReport(env.interventionId));
+
+    const sent = await env.run(() => env.service.sendInterventionReport(env.interventionId));
+
+    expect(sent).toEqual({
+      ok: false,
+      error: { kind: 'unavailable', service: 'notification-payload-v3-rollout' },
+    });
+    expect(env.enqueued).toHaveLength(0);
   });
 
   it('archive d’AVANT la signature : l’envoi est REFUSÉ (jamais un corps qui ment sur la PJ)', async () => {

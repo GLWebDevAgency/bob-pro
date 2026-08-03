@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   NotificationDedupeConflictError,
+  NOTIFICATION_PAYLOAD_INTEGRITY_ERROR,
+  NOTIFICATION_PAYLOAD_QUARANTINE_AT,
   notificationPayloadFingerprint,
 } from '../notification-jobs';
 import { PrismaNotificationJobRepository } from './repositories';
@@ -91,6 +93,149 @@ describe('PrismaNotificationJobRepository — fidélité de l’outbox', () => {
     await expect(repository.findById('co-2', JOB_ID)).resolves.toBeNull();
     expect(findFirst).toHaveBeenNthCalledWith(1, { where: { id: JOB_ID, companyId: 'co-1' } });
     expect(findFirst).toHaveBeenNthCalledWith(2, { where: { id: JOB_ID, companyId: 'co-2' } });
+  });
+
+  it('quarantaine une page étendue puis poursuit le scan vers le job valide', async () => {
+    const invalid = row({
+      id: OTHER_JOB_ID,
+      payload: { ...NOTIFICATION, idempotencyKey: OTHER_JOB_ID, senderName: 'Non scellé' },
+    });
+    const valid = row();
+    const findMany = vi.fn()
+      .mockResolvedValueOnce([invalid])
+      .mockResolvedValueOnce([valid]);
+    const updateMany = vi.fn(async () => ({ count: 1 }));
+    const repository = new PrismaNotificationJobRepository({
+      client: () => ({ notificationJob: { findMany, updateMany } }),
+    } as unknown as PrismaService);
+
+    await expect(repository.listDue('co-1', NOW.toISOString(), 1)).resolves.toEqual([
+      expect.objectContaining({ id: JOB_ID }),
+    ]);
+    expect(findMany).toHaveBeenCalledTimes(2);
+    expect(findMany.mock.calls[1]![0]).toMatchObject({
+      where: { companyId: 'co-1', id: { notIn: [OTHER_JOB_ID] } },
+    });
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        id: OTHER_JOB_ID,
+        companyId: 'co-1',
+        updatedAt: NOW,
+      }),
+      data: expect.objectContaining({
+        status: 'failed',
+        nextAttemptAt: new Date(NOTIFICATION_PAYLOAD_QUARANTINE_AT),
+        leaseToken: null,
+        lastError: NOTIFICATION_PAYLOAD_INTEGRITY_ERROR,
+      }),
+    }));
+  });
+
+  it('refuse un payload recomputé qui diverge des colonnes autoritaires', async () => {
+    const altered = { ...NOTIFICATION, to: 'intrus@example.com' };
+    const findMany = vi.fn()
+      .mockResolvedValueOnce([row({
+        payload: altered,
+        payloadFingerprint: notificationPayloadFingerprint(altered),
+      })])
+      .mockResolvedValueOnce([]);
+    const updateMany = vi.fn(async () => ({ count: 1 }));
+    const repository = new PrismaNotificationJobRepository({
+      client: () => ({ notificationJob: { findMany, updateMany } }),
+    } as unknown as PrismaService);
+
+    await expect(repository.listDue('co-1', NOW.toISOString(), 1)).resolves.toEqual([]);
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ id: JOB_ID, companyId: 'co-1' }),
+      data: expect.objectContaining({ lastError: NOTIFICATION_PAYLOAD_INTEGRITY_ERROR }),
+    }));
+  });
+
+  it('refuse une clé provider SMS présente mais mal typée', async () => {
+    const sms = {
+      channel: 'sms',
+      to: '+33600000000',
+      subject: 'Rappel',
+      body: 'Merci.',
+      idempotencyKey: 42,
+    };
+    const findMany = vi.fn()
+      .mockResolvedValueOnce([row({
+        channel: 'sms',
+        recipient: sms.to,
+        subject: sms.subject,
+        payload: sms,
+        payloadFingerprint: notificationPayloadFingerprint({
+          channel: 'sms',
+          to: sms.to,
+          subject: sms.subject,
+          body: sms.body,
+        }),
+      })])
+      .mockResolvedValueOnce([]);
+    const updateMany = vi.fn(async () => ({ count: 1 }));
+    const repository = new PrismaNotificationJobRepository({
+      client: () => ({ notificationJob: { findMany, updateMany } }),
+    } as unknown as PrismaService);
+
+    await expect(repository.listDue('co-1', NOW.toISOString(), 1)).resolves.toEqual([]);
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ lastError: NOTIFICATION_PAYLOAD_INTEGRITY_ERROR }),
+    }));
+  });
+
+  it('quarantaine une clé email non-UUID même recalculée et égale à l’identifiant', async () => {
+    const corruptedId = 'job-non-uuid';
+    const corrupted = { ...NOTIFICATION, idempotencyKey: corruptedId };
+    const findMany = vi.fn()
+      .mockResolvedValueOnce([row({
+        id: corruptedId,
+        payload: corrupted,
+        payloadFingerprint: notificationPayloadFingerprint(corrupted),
+      })])
+      .mockResolvedValueOnce([]);
+    const updateMany = vi.fn(async () => ({ count: 1 }));
+    const repository = new PrismaNotificationJobRepository({
+      client: () => ({ notificationJob: { findMany, updateMany } }),
+    } as unknown as PrismaService);
+
+    await expect(repository.listDue('co-1', NOW.toISOString(), 1)).resolves.toEqual([]);
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ id: corruptedId, companyId: 'co-1' }),
+      data: expect.objectContaining({ lastError: NOTIFICATION_PAYLOAD_INTEGRITY_ERROR }),
+    }));
+  });
+
+  it('quarantaine un payload NULL au lieu de le masquer dans le scan Prisma', async () => {
+    const findMany = vi.fn()
+      .mockResolvedValueOnce([row({ payload: null })])
+      .mockResolvedValueOnce([]);
+    const updateMany = vi.fn(async () => ({ count: 1 }));
+    const repository = new PrismaNotificationJobRepository({
+      client: () => ({ notificationJob: { findMany, updateMany } }),
+    } as unknown as PrismaService);
+
+    await expect(repository.listDue('co-1', NOW.toISOString(), 1)).resolves.toEqual([]);
+    expect(findMany.mock.calls[0]![0]).not.toMatchObject({
+      where: { NOT: expect.anything() },
+    });
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        id: JOB_ID,
+        companyId: 'co-1',
+        status: { in: ['pending', 'failed'] },
+        nextAttemptAt: { lte: NOW },
+        updatedAt: NOW,
+      }),
+      data: expect.objectContaining({
+        payload: expect.anything(),
+        status: 'failed',
+        nextAttemptAt: new Date(NOTIFICATION_PAYLOAD_QUARANTINE_AT),
+        leaseToken: null,
+        lastError: NOTIFICATION_PAYLOAD_INTEGRITY_ERROR,
+        updatedAt: NOW,
+      }),
+    }));
   });
 
   it('snapshot et batch utilisent l’horloge DB, le tenant et une borne exclusive', async () => {
