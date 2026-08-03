@@ -6,9 +6,9 @@
 import { useMemo, useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { t } from '@bob/i18n';
-import { Button, Sheet, font, useTheme } from '@bob/ui';
+// Extinction Lot 3 : Chip vient du kit (mêmes teintes, press feedback + sélection annoncée).
+import { Button, Chip, Sheet, font, useTheme } from '@bob/ui';
 import type { DateOnly } from '@bob/core';
-import { Chip } from './ui';
 import { DateRangeChips, type DateRangeValue } from './DateRangeChips';
 
 export interface AdvancedSearchFilters {

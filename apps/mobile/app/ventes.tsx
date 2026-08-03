@@ -11,8 +11,21 @@ import { useTheme } from '../src/theme';
 import { useCustomers, useQuotes, useInvoices, useSalesDocumentSearch, useSalesDocumentSuggestions } from '../src/data/hooks';
 import { usePublishAgentContext, type AgentContext, type AgentSurface } from '../src/agent';
 import { frDateLabel } from '@bob/ai';
-import { Card, Badge, MoneyText, SectionHeader, font } from '../src/components/ui';
-import { EmptyState, ErrorRetry, FadeIn, SkeletonRow } from '@bob/ui';
+// Extinction Lot 3 (plan DA 01/08) : dernier gros consommateur de src/components/ui —
+// Card/Badge/MoneyText/SectionHeader/font viennent du kit, les badges par la table FIGÉE
+// du Lot 0 (statusBadgeVariantForLegacyTone : identité sur 6 tones, 'ai' → 'ai').
+import {
+  Card,
+  EmptyState,
+  ErrorRetry,
+  FadeIn,
+  MoneyText,
+  SectionHeader,
+  SkeletonRow,
+  StatusBadge,
+  font,
+  statusBadgeVariantForLegacyTone,
+} from '@bob/ui';
 import { combineQueryStates } from '../src/data/query-state';
 import {
   QuoteActions,
@@ -637,7 +650,8 @@ export default function Ventes() {
                       {t('ventes.draftCard.subtitle', { personality })}
                     </Text>
                   </View>
-                  <Badge label={t('ventes.draftCard.badge', { personality }).toUpperCase()} tone="warning" />
+                  {/* Casse au composant (StatusBadge 11/700) — fin du .toUpperCase() ad hoc. */}
+                  <StatusBadge label={t('ventes.draftCard.badge', { personality })} variant="warning" />
                 </View>
                 <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
                   <Pressable
@@ -769,7 +783,7 @@ export default function Ventes() {
                           </View>
                           <View style={{ alignItems: 'flex-end', gap: 6 }}>
                             <MoneyText cents={q.totals.ttc} />
-                            <Badge label={badge.label} tone={badge.tone} />
+                            <StatusBadge label={badge.label} variant={statusBadgeVariantForLegacyTone(badge.tone)} />
                           </View>
                         </Pressable>
                         {hasQuoteActions(q) ? (
@@ -941,7 +955,7 @@ export default function Ventes() {
                             {showRemaining ? (
                               <Text style={[font('meta'), { color: colors.slate500 }]}>À encaisser {formatEUR(remaining)}</Text>
                             ) : null}
-                            <Badge label={badge.label} tone={badge.tone} />
+                            <StatusBadge label={badge.label} variant={statusBadgeVariantForLegacyTone(badge.tone)} />
                           </View>
                         </Pressable>
                         {hasInvoiceActions(inv) ? (
