@@ -254,6 +254,16 @@ describe('PLANCHE « matière argent » — le héros dette, SCOPÉ AU NŒUD', (
     expect(rendered).toContain('Payé ce mois-ci');
     expect(rendered).toContain('TVA récupérable du mois');
     // formatEUR, jamais l'arrondi à l'euro : 240,00 € décaissés, 55,00 € de TVA (fixtures).
+    // TÉMOIN SCOPÉ PAR CONSTRUCTION (P2 de la re-vérification) : le montant seul est ambigu —
+    // la rangée Point P affiche le même 240,00 € au même format. L'accessibilityLabel composite
+    // de KpiTile (« label, montant ») est lui UNIQUE dans l'arbre : il lie la tuile à SA valeur,
+    // et meurt si la tuile repasse à l'arrondi entier (« Payé ce mois-ci, 240 € »).
+    expect(rendered).toContain(
+      JSON.stringify(`Payé ce mois-ci, ${formatEUR(24_000)}`).slice(1, -1),
+    );
+    expect(rendered).toContain(
+      JSON.stringify(`TVA récupérable du mois, ${formatEUR(5_500)}`).slice(1, -1),
+    );
     expect(rendered).toContain(JSON.stringify(formatEUR(24_000)).slice(1, -1));
     expect(rendered).toContain(JSON.stringify(formatEUR(5_500)).slice(1, -1));
   });
