@@ -7,7 +7,13 @@ import {
   type RealtimeVoiceNativeSpeechDeliveryInput,
   type RealtimeVoiceSpeechSourcePolicy,
 } from '@bob/api-client';
-import { deriveRealtimeTurnId } from '@bob/core';
+import {
+  deriveRealtimeTurnId,
+  REALTIME_VOICE_CLIENT_CHECKPOINTS,
+  type RealtimeVoiceClientCheckpoint,
+  type RealtimeVoiceClientFailureCode,
+  type RealtimeVoiceClientTerminationDiagnostic,
+} from '@bob/core';
 import { randomUUID } from 'expo-crypto';
 import type { MediaStream, MediaStreamTrack } from 'react-native-webrtc';
 import type RTCDataChannel from 'react-native-webrtc/lib/typescript/RTCDataChannel';
@@ -31,6 +37,7 @@ import {
   type RealtimeTransportMetrics,
   type RealtimeTransportState,
   type RealtimeTurnSettlementStatus,
+  type RealtimeClientDiagnosticUpdate,
   type VoiceConversationTransport,
 } from './realtime-transport';
 import { loadWebRtcRuntime, type WebRtcRuntime } from './webrtc-runtime';
@@ -63,6 +70,9 @@ const NATIVE_LOCAL_OBSERVATION = Object.freeze({
   formatVersion: 1 as const,
   kind: 'webrtc_remote_rtp_observed_provider_drained_v1' as const,
 });
+const CLIENT_CHECKPOINT_RANK = new Map<RealtimeVoiceClientCheckpoint, number>(
+  REALTIME_VOICE_CLIENT_CHECKPOINTS.map((checkpoint, index) => [checkpoint, index]),
+);
 
 type SdpDirection = 'sendrecv' | 'sendonly' | 'recvonly' | 'inactive';
 
@@ -293,6 +303,12 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
   private pendingConnectAbort: AbortController | null = null;
   private connectivityState: 'connected' | 'disconnected' | null = null;
   private readonly disposedNativeResources = new WeakSet<object>();
+  private readonly armedTerminationDiagnostics = new Map<
+    string,
+    RealtimeVoiceClientTerminationDiagnostic
+  >();
+  private lastClientCheckpoint: RealtimeVoiceClientCheckpoint = 'transport_started';
+  private clientFailureCode: RealtimeVoiceClientFailureCode | null = null;
 
   constructor(
     private readonly client: BobClient,
@@ -319,6 +335,17 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     const session = this.agentMissionSession;
     this.agentMissionSession = null;
     return session;
+  }
+
+  reportClientDiagnostic(update: RealtimeClientDiagnosticUpdate): void {
+    if (update.type === 'failure') {
+      this.clientFailureCode ??= update.failureCode;
+      return;
+    }
+    if (this.clientFailureCode !== null) return;
+    const currentRank = CLIENT_CHECKPOINT_RANK.get(this.lastClientCheckpoint) ?? -1;
+    const nextRank = CLIENT_CHECKPOINT_RANK.get(update.checkpoint) ?? -1;
+    if (nextRank >= currentRank) this.lastClientCheckpoint = update.checkpoint;
   }
 
   /** Capacités internes de la composition auditée ; les jetons ne quittent jamais le processus. */
@@ -365,6 +392,8 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     this.cancelNativeProviderDrainedTail(true);
     this.clearNativeResponseTerminalWatchdog();
     const generation = ++this.generation;
+    this.lastClientCheckpoint = 'transport_started';
+    this.clientFailureCode = null;
     // Le contexte écran durable doit être acquitté par le serveur avant toute trame micro.
     // Chaque nouveau peer repart fermé, même si la session précédente avait été activée.
     this.microphoneEnabled = false;
@@ -438,6 +467,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
         preemptLegacy: true,
       });
       if (!audio.ok) throw new RealtimeTransportError('audio_busy');
+      this.reportClientDiagnostic({ type: 'checkpoint', checkpoint: 'audio_acquired' });
       resources.audioLease = audio.lease;
       this.assertGeneration(generation);
       this.audioLease = audio.lease;
@@ -490,6 +520,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
       const offerSdp = peer.localDescription?.sdp ?? offer?.sdp;
       if (typeof offerSdp !== 'string') throw new RealtimeTransportError('bootstrap_failed');
       assertMobileOffer(offerSdp, this.nativeDownlink);
+      this.reportClientDiagnostic({ type: 'checkpoint', checkpoint: 'local_offer_set' });
       this.metrics.markOfferSent();
 
       const requestedSessionHandle = randomUUID();
@@ -507,26 +538,32 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
         bootstrapAbort.signal,
       );
       if (!bootstrap.ok) {
+        this.reportClientDiagnostic({ type: 'failure', failureCode: 'bootstrap_request_failed' });
         throw new RealtimeTransportError('agent_mission_negotiation_failed');
       }
+      this.reportClientDiagnostic({ type: 'checkpoint', checkpoint: 'bootstrap_acknowledged' });
       const agentMissionSession = bootstrap.value.agentMissionSession;
       if (
         !Object.hasOwn(bootstrap.value, 'agentMissionSession')
         || agentMissionSession === undefined
       ) {
+        this.reportClientDiagnostic({ type: 'failure', failureCode: 'mission_bootstrap_rejected' });
         throw new RealtimeTransportError('agent_mission_negotiation_failed');
       }
       const expectedMissionProtocol = this.options.agentMissionProtocolVersion;
       if (expectedMissionProtocol === null) {
         if (agentMissionSession !== null) {
           resources.agentMissionSession = agentMissionSession;
+          this.reportClientDiagnostic({ type: 'failure', failureCode: 'mission_bootstrap_rejected' });
           throw new RealtimeTransportError('agent_mission_negotiation_failed');
         }
       } else {
         if (agentMissionSession === null) {
+          this.reportClientDiagnostic({ type: 'failure', failureCode: 'mission_bootstrap_rejected' });
           throw new RealtimeTransportError('agent_mission_negotiation_failed');
         }
         if (agentMissionSession.disposed) {
+          this.reportClientDiagnostic({ type: 'failure', failureCode: 'mission_bootstrap_rejected' });
           throw new RealtimeTransportError('agent_mission_negotiation_failed');
         }
         resources.agentMissionSession = agentMissionSession;
@@ -534,6 +571,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
           agentMissionSession.protocolVersion !== expectedMissionProtocol
           || agentMissionSession.realtimeSessionId !== requestedSessionHandle
         ) {
+          this.reportClientDiagnostic({ type: 'failure', failureCode: 'mission_bootstrap_rejected' });
           throw new RealtimeTransportError('agent_mission_negotiation_failed');
         }
       }
@@ -547,6 +585,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
         || bootstrap.value.maxSessionSeconds !== config.maxSessionSeconds
         || bootstrap.value.speechDelivery !== config.speechDelivery
       ) {
+        this.reportClientDiagnostic({ type: 'failure', failureCode: 'bootstrap_contract_rejected' });
         throw new RealtimeTransportError('bootstrap_failed');
       }
       const negotiatedDiagnosticTrace = config.diagnosticTrace ?? null;
@@ -559,6 +598,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
             negotiatedDiagnosticTrace.retentionDays !== bootstrappedDiagnosticTrace.retentionDays ||
             negotiatedDiagnosticTrace.purpose !== bootstrappedDiagnosticTrace.purpose))
       ) {
+        this.reportClientDiagnostic({ type: 'failure', failureCode: 'diagnostic_contract_rejected' });
         throw new RealtimeTransportError('bootstrap_failed');
       }
       if (bootstrappedDiagnosticTrace !== null) {
@@ -572,27 +612,50 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
         : null;
       const hardExpiryDelayMs = Date.parse(bootstrap.value.hardExpiresAt) - Date.now();
       if (!Number.isFinite(hardExpiryDelayMs) || hardExpiryDelayMs <= 0) {
+        this.reportClientDiagnostic({ type: 'failure', failureCode: 'session_expiry_rejected' });
         throw new RealtimeTransportError('bootstrap_failed');
       }
       try {
         assertProviderAnswer(bootstrap.value.answerSdp, this.nativeDownlink);
       } catch (error) {
+        this.reportClientDiagnostic({ type: 'failure', failureCode: 'answer_sdp_rejected' });
         this.emit({ type: 'error', code: 'provider_downlink_rejected' });
         throw error;
       }
+      this.reportClientDiagnostic({ type: 'checkpoint', checkpoint: 'answer_sdp_validated' });
       this.metrics.markAnswerReceived();
-      await peer.setRemoteDescription(new runtime.RTCSessionDescription({
-        type: 'answer',
-        sdp: bootstrap.value.answerSdp,
-      }));
+      try {
+        await peer.setRemoteDescription(new runtime.RTCSessionDescription({
+          type: 'answer',
+          sdp: bootstrap.value.answerSdp,
+        }));
+      } catch {
+        this.reportClientDiagnostic({ type: 'failure', failureCode: 'remote_description_rejected' });
+        throw new RealtimeTransportError('provider_error');
+      }
       this.assertGeneration(generation);
+      this.reportClientDiagnostic({ type: 'checkpoint', checkpoint: 'remote_description_set' });
       this.assertNegotiatedAudioTransceiver(peer, microphoneTransceiver);
-      await this.waitForDataChannel(channel, generation);
+      this.reportClientDiagnostic({ type: 'checkpoint', checkpoint: 'transceiver_validated' });
+      try {
+        await this.waitForDataChannel(channel, generation);
+      } catch (error) {
+        this.reportClientDiagnostic({
+          type: 'failure',
+          failureCode: error instanceof RealtimeTransportError
+            && error.reason === 'data_channel_timeout'
+            ? 'data_channel_timeout'
+            : 'data_channel_closed',
+        });
+        throw error;
+      }
       this.assertGeneration(generation);
+      this.reportClientDiagnostic({ type: 'checkpoint', checkpoint: 'data_channel_open' });
       this.metrics.markDataChannelOpened();
       this.agentMissionSession = resources.agentMissionSession;
       resources.agentMissionSession = null;
       this.transition({ type: 'CONNECTED' });
+      this.reportClientDiagnostic({ type: 'checkpoint', checkpoint: 'raw_transport_ready' });
       this.assertGeneration(generation);
       this.startStats(generation);
       this.sessionTimer = setTimeout(() => {
@@ -611,6 +674,12 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
         throw new RealtimeTransportError('aborted');
       }
       const reason = error instanceof RealtimeTransportError ? error.reason : 'bootstrap_failed';
+      if (this.clientFailureCode === null && reason !== 'aborted') {
+        this.reportClientDiagnostic({
+          type: 'failure',
+          failureCode: this.clientFailureCodeForFallback(reason),
+        });
+      }
       await this.degradeAndClose(reason, generation);
       throw error instanceof RealtimeTransportError ? error : new RealtimeTransportError(reason);
     }
@@ -724,7 +793,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     return true;
   }
 
-  close(_reason: RealtimeCloseReason): Promise<void> {
+  close(reason: RealtimeCloseReason): Promise<void> {
     this.disposeAgentMissionSession();
     if (this.closingPromise) {
       // Un connect demandé pendant le hangup précédent attend sans posséder de micro. Une
@@ -743,6 +812,22 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     this.clearNativeResponseTerminalWatchdog();
     this.clearPendingTurnWatchdogs();
     this.invalidateNativeSpeechObservation();
+    if (reason === 'fallback' && this.clientFailureCode === null) {
+      this.reportClientDiagnostic({
+        type: 'failure',
+        failureCode: 'provider_connection_failed',
+      });
+    }
+    const armedSessionHandle = this.sessionHandle;
+    const clientTerminationDiagnostic = this.clientTerminationDiagnostic(reason);
+    if (armedSessionHandle !== null) {
+      // Armer la provenance AVANT abort(): la continuation rejetée du POST peut reprendre dans
+      // la microtâche suivante et tenter le même hangup avant performClose().
+      this.armedTerminationDiagnostics.set(
+        armedSessionHandle,
+        clientTerminationDiagnostic,
+      );
+    }
     ++this.generation;
     this.transition({ type: 'CLOSE' });
     this.bootstrapAbort?.abort();
@@ -792,7 +877,10 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     const closing = Promise.resolve().then(async (): Promise<void> => {
       // Le hangup est armé avant CLOSED, mais ne retarde pas la preuve de fermeture native.
       // Un connect réentrant verra `closingPromise` et attendra quand même sa résolution.
-      const hangup = this.hangupSession(resources.sessionHandle);
+      const hangup = this.hangupSession(
+        resources.sessionHandle,
+        clientTerminationDiagnostic,
+      );
       const nativeDisposed = this.disposeAttemptResources(resources);
       if (!nativeDisposed) {
         await hangup;
@@ -933,6 +1021,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
       && resources.remoteAudioTrack === null
       && this.remoteAudioTrack === null;
     if (!validNativeTrack || !track) {
+      this.reportClientDiagnostic({ type: 'failure', failureCode: 'remote_track_rejected' });
       this.neutralizeRejectedRemoteTrack(tracks);
       this.failClosedUnauthorizedDownlink(generation);
       return;
@@ -972,12 +1061,14 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     for (const transceiver of transceivers) {
       try { transceiver.receiver.track?.stop(); } catch { /* piste provider déjà arrêtée */ }
     }
+    this.reportClientDiagnostic({ type: 'failure', failureCode: 'transceiver_rejected' });
     this.emit({ type: 'error', code: 'provider_downlink_rejected' });
     throw new RealtimeTransportError('provider_error');
   }
 
   private failClosedUnauthorizedDownlink(generation: number): void {
     if (generation !== this.generation) return;
+    this.reportClientDiagnostic({ type: 'failure', failureCode: 'remote_track_rejected' });
     this.emit({ type: 'error', code: 'provider_downlink_rejected' });
     // `degradeAndClose` transitionne et dispose le peer de façon synchrone avant son
     // premier await : aucun échantillon distant ne peut atteindre la sortie acoustique.
@@ -1032,6 +1123,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     });
     runtimeEvents(channel).addEventListener('close', () => {
       if (generation === this.generation && this.currentState.phase !== 'closing') {
+        this.reportClientDiagnostic({ type: 'failure', failureCode: 'data_channel_closed' });
         void this.degradeAndClose('provider_error', generation);
       }
     });
@@ -2104,6 +2196,12 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
   private async degradeAndClose(reason: RealtimeFallbackReason, generation: number): Promise<void> {
     if (generation !== this.generation) return;
     if (this.currentState.phase === 'closed' || this.currentState.phase === 'closing') return;
+    if (reason !== 'aborted' && this.clientFailureCode === null) {
+      this.reportClientDiagnostic({
+        type: 'failure',
+        failureCode: this.clientFailureCodeForFallback(reason),
+      });
+    }
     this.settlePendingTurns('failed');
     this.transition({ type: 'DEGRADED', reason });
     if (generation !== this.generation) return;
@@ -2165,12 +2263,23 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     }
   }
 
-  private async hangupSession(sessionHandle: string | null): Promise<void> {
+  private async hangupSession(
+    sessionHandle: string | null,
+    diagnostic?: RealtimeVoiceClientTerminationDiagnostic,
+  ): Promise<void> {
     if (sessionHandle === null) return;
     const existing = this.hangupTasks.get(sessionHandle);
     if (existing) return existing;
+    const effectiveDiagnostic = diagnostic
+      ?? this.armedTerminationDiagnostics.get(sessionHandle)
+      ?? this.clientTerminationDiagnostic('aborted');
+    this.armedTerminationDiagnostics.delete(sessionHandle);
     const task = Promise.resolve()
-      .then(() => this.client.hangupRealtimeVoiceCall(sessionHandle))
+      .then(() => this.client.hangupRealtimeVoiceCall(
+        sessionHandle,
+        undefined,
+        effectiveDiagnostic,
+      ))
       .then((result) => {
         if (!result.ok) this.emit({ type: 'error', code: 'server_hangup_pending' });
       })
@@ -2179,6 +2288,54 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
       });
     this.hangupTasks.set(sessionHandle, task);
     return task;
+  }
+
+  private clientFailureCodeForFallback(
+    reason: RealtimeFallbackReason,
+  ): RealtimeVoiceClientFailureCode {
+    switch (reason) {
+      case 'native_module_unavailable': return 'native_module_unavailable';
+      case 'audio_busy': return 'audio_acquisition_failed';
+      case 'microphone_denied': return 'microphone_permission_denied';
+      case 'agent_mission_negotiation_failed': return 'mission_bootstrap_rejected';
+      case 'data_channel_timeout': return 'data_channel_timeout';
+      case 'provider_error':
+      case 'ice_failed': return 'provider_connection_failed';
+      case 'aborted': return 'aborted';
+      case 'backend_disabled':
+      case 'not_entitled':
+      case 'entitlement_unavailable':
+      case 'bootstrap_failed': return 'bootstrap_request_failed';
+      default: return 'unknown';
+    }
+  }
+
+  private clientTerminationDiagnostic(
+    reason: RealtimeCloseReason,
+  ): RealtimeVoiceClientTerminationDiagnostic {
+    const checkpoint = this.lastClientCheckpoint;
+    if (this.clientFailureCode !== null || reason === 'fallback') {
+      return {
+        version: 1,
+        terminationSource: 'automatic_failure',
+        lastSuccessfulCheckpoint: checkpoint,
+        failureCode: this.clientFailureCode ?? 'unknown',
+      };
+    }
+    if (reason === 'user') {
+      return {
+        version: 1,
+        terminationSource: 'user',
+        lastSuccessfulCheckpoint: checkpoint,
+        closeReason: 'user',
+      };
+    }
+    return {
+      version: 1,
+      terminationSource: 'lifecycle',
+      lastSuccessfulCheckpoint: checkpoint,
+      closeReason: reason,
+    };
   }
 
   private transition(event: RealtimeMachineEvent): void {

@@ -137,6 +137,8 @@ class FakePeer extends FakeEventSource {
     closeChannelOnRemote: boolean;
     localDescriptionGate?: Promise<void>;
     remoteDescriptionGate?: Promise<void>;
+    remoteDescriptionError?: Error;
+    negotiatedDirection?: string | null;
     offerSdp: string;
   }) { super(); }
 
@@ -161,6 +163,10 @@ class FakePeer extends FakeEventSource {
   async setRemoteDescription(): Promise<void> {
     this.setRemoteDescriptionCalls += 1;
     await this.options.remoteDescriptionGate;
+    if (this.options.remoteDescriptionError) throw this.options.remoteDescriptionError;
+    if (this.transceiver && this.options.negotiatedDirection !== undefined) {
+      this.transceiver.currentDirection = this.options.negotiatedDirection;
+    }
     if (this.options.closeChannelOnRemote) this.channel.closeSilently();
     else this.channel.open();
   }
@@ -221,6 +227,8 @@ function runtimeHarness(
     closeChannelOnRemote?: boolean;
     localDescriptionGate?: Promise<void>;
     remoteDescriptionGate?: Promise<void>;
+    remoteDescriptionError?: Error;
+    negotiatedDirection?: string | null;
     offerSdp?: string;
   } = {},
 ): RuntimeHarness {
@@ -232,6 +240,8 @@ function runtimeHarness(
         closeChannelOnRemote: options.closeChannelOnRemote === true,
         localDescriptionGate: options.localDescriptionGate,
         remoteDescriptionGate: options.remoteDescriptionGate,
+        remoteDescriptionError: options.remoteDescriptionError,
+        negotiatedDirection: options.negotiatedDirection,
         offerSdp: options.offerSdp ?? SEND_ONLY_SDP,
       });
       peers.push(peer);
@@ -558,7 +568,12 @@ describe('RealtimeWebRtcTransport — courses et autorite serveur', () => {
     expect(sessionHandle).toMatch(/^[0-9a-f-]{36}$/i);
     expect(second.getSessionHandle()).toBeNull();
     expect(secondClient.hangupRealtimeVoiceCall).toHaveBeenCalledOnce();
-    expect(secondClient.hangupRealtimeVoiceCall).toHaveBeenCalledWith(sessionHandle);
+    expect(secondClient.hangupRealtimeVoiceCall).toHaveBeenCalledWith(sessionHandle, undefined, {
+      version: 1,
+      terminationSource: 'user',
+      lastSuccessfulCheckpoint: 'raw_transport_ready',
+      closeReason: 'user',
+    });
   });
 
   it.each([
@@ -1006,7 +1021,59 @@ describe('RealtimeWebRtcTransport — courses et autorite serveur', () => {
     expect(stream.releaseArguments).toEqual([true]);
     expect(value.state).toMatchObject({ phase: 'closed', fallbackReason: 'provider_error' });
     expect(bobClient.hangupRealtimeVoiceCall).toHaveBeenCalledOnce();
+    expect(bobClient.hangupRealtimeVoiceCall).toHaveBeenCalledWith(
+      expect.any(String),
+      undefined,
+      {
+        version: 1,
+        terminationSource: 'automatic_failure',
+        lastSuccessfulCheckpoint: 'bootstrap_acknowledged',
+        failureCode: 'answer_sdp_rejected',
+      },
+    );
     expect(errors).toContain('provider_downlink_rejected');
+  });
+
+  it('attribue précisément un rejet natif de setRemoteDescription', async () => {
+    const bobClient = client();
+    const value = transport(bobClient, runtimeHarness(
+      async () => new FakeStream(),
+      { remoteDescriptionError: new Error('native_rejected') },
+    ));
+
+    await expect(value.connect()).rejects.toMatchObject({ reason: 'provider_error' });
+
+    expect(bobClient.hangupRealtimeVoiceCall).toHaveBeenCalledWith(
+      expect.any(String),
+      undefined,
+      {
+        version: 1,
+        terminationSource: 'automatic_failure',
+        lastSuccessfulCheckpoint: 'answer_sdp_validated',
+        failureCode: 'remote_description_rejected',
+      },
+    );
+  });
+
+  it('attribue précisément une direction négociée incompatible du transceiver', async () => {
+    const bobClient = client();
+    const value = transport(bobClient, runtimeHarness(
+      async () => new FakeStream(),
+      { negotiatedDirection: 'sendrecv' },
+    ));
+
+    await expect(value.connect()).rejects.toMatchObject({ reason: 'provider_error' });
+
+    expect(bobClient.hangupRealtimeVoiceCall).toHaveBeenCalledWith(
+      expect.any(String),
+      undefined,
+      {
+        version: 1,
+        terminationSource: 'automatic_failure',
+        lastSuccessfulCheckpoint: 'remote_description_set',
+        failureCode: 'transceiver_rejected',
+      },
+    );
   });
 
   it('stoppe et clôt immédiatement une piste hostile pendant la négociation', async () => {
@@ -1114,11 +1181,46 @@ describe('RealtimeWebRtcTransport — courses et autorite serveur', () => {
   it('attend la description distante avant le canal et echoue proprement si celui-ci est ferme', async () => {
     const stream = new FakeStream();
     const harness = runtimeHarness(async () => stream, { closeChannelOnRemote: true });
-    const value = transport(client(), harness);
+    const bobClient = client();
+    const value = transport(bobClient, harness);
 
     await expect(value.connect()).rejects.toMatchObject({ reason: 'provider_error' });
     expect(value.state.phase).toBe('closed');
     expect(stream.releaseArguments).toEqual([true]);
+    expect(bobClient.hangupRealtimeVoiceCall).toHaveBeenCalledWith(
+      expect.any(String),
+      undefined,
+      {
+        version: 1,
+        terminationSource: 'automatic_failure',
+        lastSuccessfulCheckpoint: 'transceiver_validated',
+        failureCode: 'data_channel_closed',
+      },
+    );
+  });
+
+  it('conserve le checkpoint monotone et la première cause terminale', async () => {
+    const bobClient = client();
+    const value = transport(bobClient, runtimeHarness(async () => new FakeStream()));
+    await value.connect();
+
+    value.reportClientDiagnostic({ type: 'checkpoint', checkpoint: 'context_put_started' });
+    value.reportClientDiagnostic({ type: 'checkpoint', checkpoint: 'answer_sdp_validated' });
+    value.reportClientDiagnostic({ type: 'failure', failureCode: 'context_publish_failed' });
+    value.reportClientDiagnostic({ type: 'failure', failureCode: 'remote_description_rejected' });
+    value.reportClientDiagnostic({ type: 'checkpoint', checkpoint: 'microphone_opened' });
+    await value.close('fallback');
+
+    expect(bobClient.hangupRealtimeVoiceCall).toHaveBeenCalledWith(
+      expect.any(String),
+      undefined,
+      {
+        version: 1,
+        terminationSource: 'automatic_failure',
+        lastSuccessfulCheckpoint: 'context_put_started',
+        failureCode: 'context_publish_failed',
+      },
+    );
   });
 
   it('annule le POST et raccroche avec le handle connu si l utilisateur ferme pendant le bootstrap', async () => {
@@ -1151,7 +1253,12 @@ describe('RealtimeWebRtcTransport — courses et autorite serveur', () => {
 
     expect(receivedSignal?.aborted).toBe(true);
     expect(hangupRealtimeVoiceCall).toHaveBeenCalledOnce();
-    expect(hangupRealtimeVoiceCall).toHaveBeenCalledWith(handle);
+    expect(hangupRealtimeVoiceCall).toHaveBeenCalledWith(handle, undefined, {
+      version: 1,
+      terminationSource: 'user',
+      lastSuccessfulCheckpoint: 'local_offer_set',
+      closeReason: 'user',
+    });
     bootstrap.resolve({
       ok: true,
       value: {
@@ -1171,6 +1278,50 @@ describe('RealtimeWebRtcTransport — courses et autorite serveur', () => {
     await expect(connecting).resolves.toMatchObject({ reason: 'aborted' });
     expect(stream.track.stopCalls).toBe(1);
     expect(stream.releaseArguments).toEqual([true]);
+  });
+
+  it('conserve la provenance user si l abort du POST reprend avant la microtâche de hangup', async () => {
+    let receivedSignal: AbortSignal | undefined;
+    const createRealtimeVoiceCall = vi.fn((
+      _input: { sdp: string; sessionHandle?: string },
+      signal?: AbortSignal,
+    ) => new Promise<Awaited<ReturnType<BobClient['createRealtimeVoiceCall']>>>(
+      (_resolve, reject) => {
+        receivedSignal = signal;
+        signal?.addEventListener('abort', () => reject(new Error('bootstrap aborted')), {
+          once: true,
+        });
+      },
+    ));
+    const hangupRealtimeVoiceCall = vi.fn(async () => ({
+      ok: true as const,
+      value: { ended: true as const },
+    }));
+    const bobClient = {
+      realtimeVoiceConfig: vi.fn(async () => ({ ok: true as const, value: realtimeConfig })),
+      createRealtimeVoiceCall,
+      hangupRealtimeVoiceCall,
+    } as unknown as BobClient;
+    const value = transport(bobClient, runtimeHarness(async () => new FakeStream()));
+    const connecting = value.connect().then(
+      () => null,
+      (error: unknown) => error,
+    );
+    await waitUntil(() => createRealtimeVoiceCall.mock.calls.length === 1);
+    const handle = createRealtimeVoiceCall.mock.calls[0]?.[0].sessionHandle;
+
+    const closing = value.close('user');
+    await expect(connecting).resolves.toMatchObject({ reason: 'aborted' });
+    await closing;
+
+    expect(receivedSignal?.aborted).toBe(true);
+    expect(hangupRealtimeVoiceCall).toHaveBeenCalledOnce();
+    expect(hangupRealtimeVoiceCall).toHaveBeenCalledWith(handle, undefined, {
+      version: 1,
+      terminationSource: 'user',
+      lastSuccessfulCheckpoint: 'local_offer_set',
+      closeReason: 'user',
+    });
   });
 
   it('absorbe un échec synchrone de hangup sans doubler la fermeture locale', async () => {

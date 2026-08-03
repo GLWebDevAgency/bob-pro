@@ -195,8 +195,9 @@ export class RealtimeVoiceController {
   async hangup(
     @Param('sessionHandle') sessionHandle: string,
     @Res({ passthrough: true }) response: HeaderResponse,
+    @Body() diagnosticBody: unknown = undefined,
   ) {
-    const result = await this.realtime.hangup(sessionHandle);
+    const result = await this.realtime.hangup(sessionHandle, diagnosticBody);
     this.applyRetryAfter(result, response);
     return unwrap(result);
   }

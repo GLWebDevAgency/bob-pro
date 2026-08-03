@@ -26,6 +26,7 @@ import {
   type LegacyFallbackChannel,
 } from '../realtime/realtime-recovery-policy';
 import type {
+  RealtimeClientDiagnosticUpdate,
   RealtimeFallbackReason,
   RealtimeTransportEvent,
 } from '../realtime/realtime-transport';
@@ -84,6 +85,7 @@ export interface RealtimeTransportLike {
   interrupt(reason: 'user_speech' | 'tap' | 'navigation'): boolean;
   getSessionHandle(): string | null;
   takeAgentMissionSession(): RealtimeAgentMissionSession | null;
+  reportClientDiagnostic?(update: RealtimeClientDiagnosticUpdate): void;
 }
 
 /** Gate d'ACK one-shot (lane GPT) : échange une référence provider NON FIABLE contre le
@@ -507,6 +509,10 @@ export class RealtimeSessionController {
     // micro sur le contexte frais. La traiter en échec tuait la session à chaque navigation.
     if (result.status === 'superseded') return;
     if (result.status === 'failed') {
+      transport.reportClientDiagnostic?.({
+        type: 'failure',
+        failureCode: 'context_publish_failed',
+      });
       await this.stopCurrentPrimaryWithFallback(
         controllerGeneration,
         primaryGeneration,
@@ -528,6 +534,7 @@ export class RealtimeSessionController {
       result.fence,
       context,
     )) return;
+    transport.reportClientDiagnostic?.({ type: 'checkpoint', checkpoint: 'context_confirmed' });
     await this.openMicrophoneIfActive(
       controllerGeneration,
       primaryGeneration,
@@ -851,6 +858,12 @@ export class RealtimeSessionController {
     reason: RealtimeFallbackReason,
   ): Promise<void> {
     if (!this.isCurrentPrimary(controllerGeneration, primaryGeneration, transport)) return;
+    // Ce helper représente toujours une fermeture automatique. Les appelants qui connaissent
+    // une cause plus précise l'ont déjà publiée ; first-failure-wins la conserve.
+    transport.reportClientDiagnostic?.({
+      type: 'failure',
+      failureCode: 'provider_connection_failed',
+    });
     const missionAuthorityRequired =
       this.requestedAgentMissionProtocolVersion !== null
       || this.hasObservedMissionAuthority();
@@ -885,7 +898,22 @@ export class RealtimeSessionController {
       return false;
     }
     if (!this.isCurrentPrimary(controllerGeneration, primaryGeneration, transport)) return false;
-    transport.setMicrophoneEnabled(true);
+    try {
+      transport.setMicrophoneEnabled(true);
+    } catch {
+      transport.reportClientDiagnostic?.({
+        type: 'failure',
+        failureCode: 'microphone_activation_refused',
+      });
+      await this.stopCurrentPrimaryWithFallback(
+        controllerGeneration,
+        primaryGeneration,
+        transport,
+        'provider_error',
+      );
+      return false;
+    }
+    transport.reportClientDiagnostic?.({ type: 'checkpoint', checkpoint: 'microphone_opened' });
     if (
       this.requiredMissionProtocolVersion !== null
       && this.agentMissionSessionTransferred
@@ -915,6 +943,10 @@ export class RealtimeSessionController {
     }
     if (!this.isCurrentPrimary(controllerGeneration, primaryGeneration, transport)) return false;
     if (synchronized) return true;
+    transport.reportClientDiagnostic?.({
+      type: 'failure',
+      failureCode: 'context_synchronization_failed',
+    });
     await this.stopCurrentPrimaryWithFallback(
       controllerGeneration,
       primaryGeneration,
@@ -933,6 +965,10 @@ export class RealtimeSessionController {
     if (!transport) return;
     const handle = transport.getSessionHandle();
     if (handle === null) {
+      transport.reportClientDiagnostic?.({
+        type: 'failure',
+        failureCode: 'provider_connection_failed',
+      });
       await this.stopCurrentPrimaryWithFallback(
         controllerGeneration,
         primaryGeneration,
@@ -945,6 +981,10 @@ export class RealtimeSessionController {
       !this.agentMissionSessionClaimed
       && !this.claimAgentMissionSession(transport, handle)
     ) {
+      transport.reportClientDiagnostic?.({
+        type: 'failure',
+        failureCode: 'mission_adoption_failed',
+      });
       await this.stopCurrentPrimaryWithFallback(
         controllerGeneration,
         primaryGeneration,
@@ -957,6 +997,10 @@ export class RealtimeSessionController {
       this.agentMissionRealtimeSessionId !== null
       && this.agentMissionRealtimeSessionId !== handle
     ) {
+      transport.reportClientDiagnostic?.({
+        type: 'failure',
+        failureCode: 'mission_adoption_failed',
+      });
       await this.stopCurrentPrimaryWithFallback(
         controllerGeneration,
         primaryGeneration,
@@ -965,10 +1009,12 @@ export class RealtimeSessionController {
       );
       return;
     }
+    transport.reportClientDiagnostic?.({ type: 'checkpoint', checkpoint: 'mission_adopted' });
     this.publisher?.close();
     const publisher = new RealtimeContextPublisher(handle, this.deps.updateContext);
     this.publisher = publisher;
     const context = this.hooks.getContextSnapshot();
+    transport.reportClientDiagnostic?.({ type: 'checkpoint', checkpoint: 'context_put_started' });
     const result = await publisher.publish(context);
     if (
       !this.isCurrentPrimary(controllerGeneration, primaryGeneration, transport) ||
@@ -977,6 +1023,10 @@ export class RealtimeSessionController {
       return;
     if (result.status === 'superseded') return; // une publication plus récente rouvrira le micro
     if (result.status === 'failed') {
+      transport.reportClientDiagnostic?.({
+        type: 'failure',
+        failureCode: 'context_publish_failed',
+      });
       await this.stopCurrentPrimaryWithFallback(
         controllerGeneration,
         primaryGeneration,
@@ -998,6 +1048,7 @@ export class RealtimeSessionController {
       result.fence,
       context,
     )) return;
+    transport.reportClientDiagnostic?.({ type: 'checkpoint', checkpoint: 'context_confirmed' });
     await this.openMicrophoneIfActive(
       controllerGeneration,
       primaryGeneration,
@@ -1161,6 +1212,10 @@ export class RealtimeSessionController {
       this.agentMissionContextConfirmed = true;
       return true;
     }
+    transport.reportClientDiagnostic?.({
+      type: 'failure',
+      failureCode: 'mission_context_confirmation_failed',
+    });
     await this.stopCurrentPrimaryWithFallback(
       controllerGeneration,
       primaryGeneration,

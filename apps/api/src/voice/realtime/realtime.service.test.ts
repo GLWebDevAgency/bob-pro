@@ -373,6 +373,151 @@ describe('RealtimeVoiceService', () => {
     expect(settle).toHaveBeenCalledWith(expectedSettlement);
   });
 
+  it('journalise un diagnostic client fermé seulement après validation du propriétaire', async () => {
+    const provider: OpenAiRealtimeCallProvider = {
+      createCall: successfulProviderCreate('rtc_client_diagnostic'),
+      hangupCall: vi.fn(async () => undefined),
+    };
+    const logger = loggerStub();
+    const service = new RealtimeVoiceService(
+      SETTINGS,
+      provider,
+      admission(),
+      sidebandStub(),
+      new Metrics(),
+      logger,
+      undefined,
+      entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
+    );
+    const created = await runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
+      sdp: OFFER_SDP,
+    }));
+    if (!created.ok) throw new Error('Realtime session fixture unavailable.');
+    const diagnostic = {
+      version: 1 as const,
+      terminationSource: 'automatic_failure' as const,
+      lastSuccessfulCheckpoint: 'remote_description_set' as const,
+      failureCode: 'transceiver_rejected' as const,
+    };
+
+    await expect(runAsPrincipal(() => service.hangup(
+      created.value.sessionHandle,
+      diagnostic,
+    ))).resolves.toEqual({ ok: true, value: { ended: true } });
+
+    expect(logger.audit).toHaveBeenCalledWith('bob.live.client.termination', {
+      sessionHandle: created.value.sessionHandle,
+      ...diagnostic,
+    });
+  });
+
+  it('refuse un diagnostic client libre avant toute terminaison', async () => {
+    const durable = admission();
+    const claimTermination = vi.spyOn(durable, 'claimTermination');
+    const logger = loggerStub();
+    const service = new RealtimeVoiceService(
+      SETTINGS,
+      { createCall: vi.fn(), hangupCall: vi.fn() },
+      durable,
+      sidebandStub(),
+      new Metrics(),
+      logger,
+    );
+
+    await expect(runAsPrincipal(() => service.hangup(
+      '00000000-0000-4000-8000-000000000001',
+      {
+        version: 1,
+        terminationSource: 'automatic_failure',
+        lastSuccessfulCheckpoint: 'bootstrap_acknowledged',
+        failureCode: 'texte_libre_interdit',
+      },
+    ))).resolves.toEqual({
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [{
+          field: 'diagnostic',
+          message: 'Le diagnostic terminal Bob Live est invalide.',
+        }],
+      },
+    });
+    expect(claimTermination).not.toHaveBeenCalled();
+    expect(logger.audit).not.toHaveBeenCalled();
+  });
+
+  it('traite le body DELETE vide d’une ancienne APK comme un diagnostic absent', async () => {
+    const durable = admission();
+    const claimTermination = vi.spyOn(durable, 'claimTermination');
+    const logger = loggerStub();
+    const provider: OpenAiRealtimeCallProvider = {
+      createCall: successfulProviderCreate('rtc_legacy_empty_delete'),
+      hangupCall: vi.fn(async () => undefined),
+    };
+    const service = new RealtimeVoiceService(
+      SETTINGS,
+      provider,
+      durable,
+      sidebandStub(),
+      new Metrics(),
+      logger,
+      undefined,
+      entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
+    );
+    const created = await runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
+      sdp: OFFER_SDP,
+    }));
+    if (!created.ok) throw new Error('Realtime session fixture unavailable.');
+
+    await expect(runAsPrincipal(() => service.hangup(
+      created.value.sessionHandle,
+      {},
+    ))).resolves.toEqual({ ok: true, value: { ended: true } });
+
+    expect(claimTermination).toHaveBeenCalledOnce();
+    expect(logger.audit).not.toHaveBeenCalledWith(
+      'bob.live.client.termination',
+      expect.anything(),
+    );
+  });
+
+  it('ne journalise aucun diagnostic pour un handle inconnu ou déjà terminé', async () => {
+    const logger = loggerStub();
+    const service = new RealtimeVoiceService(
+      SETTINGS,
+      { createCall: vi.fn(), hangupCall: vi.fn() },
+      admission(),
+      sidebandStub(),
+      new Metrics(),
+      logger,
+    );
+
+    await expect(runAsPrincipal(() => service.hangup(
+      '00000000-0000-4000-8000-000000000076',
+      {
+        version: 1,
+        terminationSource: 'automatic_failure',
+        lastSuccessfulCheckpoint: 'bootstrap_acknowledged',
+        failureCode: 'remote_description_rejected',
+      },
+    ))).resolves.toEqual({ ok: true, value: { ended: true } });
+
+    expect(logger.audit).not.toHaveBeenCalledWith(
+      'bob.live.client.termination',
+      expect.anything(),
+    );
+  });
+
   it('acquitte le bootstrap Mission avec l’identité dérivée et une métrique bornée', async () => {
     const capability = `bam1_${Buffer.alloc(32, 7).toString('base64url')}`;
     const acknowledgeAgentMissionBootstrap = vi

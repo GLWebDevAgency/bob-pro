@@ -13,6 +13,7 @@ import {
   type RealtimeAuditedUplinkTransport,
 } from './realtime-audited-conversation-transport';
 import type {
+  RealtimeClientDiagnosticUpdate,
   RealtimeTransportEvent,
   RealtimeTransportMetrics,
   RealtimeTransportState,
@@ -104,6 +105,11 @@ class FakeUplink implements RealtimeAuditedUplinkTransport {
     this.missionSession = null;
     return session;
   }
+  reportClientDiagnostic(update: RealtimeClientDiagnosticUpdate): void {
+    this.log.push(update.type === 'checkpoint'
+      ? `diagnostic:checkpoint:${update.checkpoint}`
+      : `diagnostic:failure:${update.failureCode}`);
+  }
   getProcessAudioLease(): ProcessAudioLease | null { return this.lease; }
   getSpeechSourcePolicy() { return this.policy; }
   metricsSnapshot(): RealtimeTransportMetrics { return METRICS; }
@@ -117,6 +123,7 @@ class FakeUplink implements RealtimeAuditedUplinkTransport {
 function harness(input: {
   readonly oneShot?: boolean;
   readonly emitCommitOnFinish?: boolean;
+  readonly createPlaybackFails?: boolean;
 } = {}) {
   const uplink = new FakeUplink();
   uplink.completesConversationAfterAuditedSpeech = input.oneShot === true;
@@ -145,8 +152,9 @@ function harness(input: {
       contextDigest: DIGEST,
     }),
     createIdentifier: () => ACK,
-    createPlayback: (input) => {
-      expect(input).toEqual({ audioLease: LEASE, speechSourcePolicy: POLICY });
+    createPlayback: (playbackInput) => {
+      expect(playbackInput).toEqual({ audioLease: LEASE, speechSourcePolicy: POLICY });
+      if (input.createPlaybackFails === true) throw new Error('native_player_unavailable');
       return {} as never;
     },
     createPlayer: (input) => {
@@ -176,7 +184,11 @@ describe('RealtimeAuditedConversationTransport', () => {
 
     await value.transport.connect();
 
-    expect(value.log).toEqual(['uplink:connect', 'player:start']);
+    expect(value.log).toEqual([
+      'uplink:connect',
+      'diagnostic:checkpoint:audited_player_created',
+      'player:start',
+    ]);
     expect(phases.at(-1)).toBe('ready');
     expect(value.getDependencies()).toMatchObject({ sessionHandle: SESSION });
     expect(value.transport.capabilities).toEqual({
@@ -185,6 +197,36 @@ describe('RealtimeAuditedConversationTransport', () => {
       remoteAudio: true,
     });
     expect(value.transport.completionMode).toBe('continuous');
+  });
+
+  it('attribue un échec synchrone de création du player avant le hangup', async () => {
+    const value = harness({ createPlaybackFails: true });
+
+    await expect(value.transport.connect()).rejects.toMatchObject({
+      reason: 'bootstrap_failed',
+    });
+
+    expect(value.log).toEqual([
+      'uplink:connect',
+      'diagnostic:failure:audited_player_creation_failed',
+      'uplink:close:fallback',
+    ]);
+  });
+
+  it('attribue l’événement d’erreur du player de production avant le fallback', async () => {
+    const value = harness();
+    const events: RealtimeTransportEvent[] = [];
+    value.transport.subscribe((event) => events.push(event));
+    await value.transport.connect();
+
+    value.emitPlayer({ type: 'error', code: 'playback_failed', atMs: 10 });
+
+    expect(value.log).toContain('diagnostic:failure:audited_player_runtime_failed');
+    expect(events).toContainEqual({
+      type: 'error',
+      code: 'audited_speech_playback_failed',
+    });
+    expect(events).toContainEqual({ type: 'fallback', reason: 'provider_error' });
   });
 
   it('relaie la capability opaque exactement une fois sans la copier dans le wrapper', () => {
@@ -274,6 +316,7 @@ describe('RealtimeAuditedConversationTransport', () => {
 
     expect(value.log).toEqual([
       'uplink:connect',
+      'diagnostic:checkpoint:audited_player_created',
       'player:start',
       'context:r2',
       'mic:true',
@@ -344,6 +387,7 @@ describe('RealtimeAuditedConversationTransport', () => {
       expect(events.filter((event) => event.type === 'fallback')).toEqual([
         { type: 'fallback', reason: 'provider_error' },
       ]);
+      expect(value.log).toContain('diagnostic:failure:audited_pipeline_failed');
       await value.transport.close('fallback');
     } finally {
       vi.useRealTimers();
@@ -390,6 +434,7 @@ describe('RealtimeAuditedConversationTransport', () => {
       code: 'audited_speech_turn_terminal_conflict',
     });
     expect(events).toContainEqual({ type: 'fallback', reason: 'provider_error' });
+    expect(value.log).toContain('diagnostic:failure:audited_pipeline_failed');
   });
 
   it('déduplique un terminal identique et ferme sur un statut contradictoire', async () => {

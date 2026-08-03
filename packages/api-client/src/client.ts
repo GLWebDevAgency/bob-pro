@@ -99,6 +99,7 @@ import type {
   SituationAmountInput,
   InvoiceTransmissionStatus,
   TransmissionGuide,
+  RealtimeVoiceClientTerminationDiagnostic as CoreRealtimeVoiceClientTerminationDiagnostic,
 } from '@bob/core';
 import type {
   RealtimeAgentMissionProtocolVersion,
@@ -699,6 +700,10 @@ export interface RealtimeVoiceContextUpdate {
   revision: number;
   context: AgentContext;
 }
+
+/** Contrat redacted transporté avec le hangup ; la source canonique vit dans @bob/core. */
+export type RealtimeVoiceClientTerminationDiagnostic =
+  CoreRealtimeVoiceClientTerminationDiagnostic;
 
 export type RealtimeVoiceCallInput =
   | {
@@ -1365,6 +1370,7 @@ export interface BobClient {
   hangupRealtimeVoiceCall(
     sessionHandle: string,
     signal?: AbortSignal,
+    diagnostic?: RealtimeVoiceClientTerminationDiagnostic,
   ): Promise<Result<{ ended: true }, AppError>>;
   /** Publie un snapshot écran monotone, lié au handle opaque courant et revalidé côté serveur. */
   updateRealtimeVoiceContext(
