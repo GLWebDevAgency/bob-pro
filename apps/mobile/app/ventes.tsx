@@ -1,33 +1,36 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, ScrollView, TextInput, View, Text, Pressable } from 'react-native';
+import { ScrollView, TextInput, View, Text, Pressable } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { challengeFor } from '@bob/ai';
 import { formatEUR, normalizeVoiceText, type SalesDocumentSearchScope } from '@bob/core';
 import { t } from '@bob/i18n';
 import type { QuoteView, InvoiceView, SearchSalesDocumentsClientInput } from '@bob/api-client';
-import { useTheme } from '../src/theme';
-import { useCustomers, useQuotes, useInvoices, useSalesDocumentSearch, useSalesDocumentSuggestions } from '../src/data/hooks';
+import { appErrorMessage, useCustomers, useQuotes, useInvoices, useSalesDocumentSearch, useSalesDocumentSuggestions } from '../src/data/hooks';
 import { usePublishAgentContext, type AgentContext, type AgentSurface } from '../src/agent';
 import { frDateLabel } from '@bob/ai';
 // Extinction Lot 3 (plan DA 01/08) : dernier gros consommateur de src/components/ui —
 // Card/Badge/MoneyText/SectionHeader/font viennent du kit, les badges par la table FIGÉE
 // du Lot 0 (statusBadgeVariantForLegacyTone : identité sur 6 tones, 'ai' → 'ai').
 import {
+  BackHeader,
+  Button,
   Card,
+  DeleteIconButton,
   EmptyState,
   ErrorRetry,
-  FadeIn,
   FilterChip,
   MoneyText,
   PressableScale,
   SectionHeader,
   SegmentedControl,
   SkeletonRow,
+  StaggeredList,
   StatusBadge,
   font,
   statusBadgeVariantForLegacyTone,
+  useErrorSheet,
+  useTheme,
 } from '@bob/ui';
 import { combineQueryStates } from '../src/data/query-state';
 import {
@@ -70,7 +73,6 @@ const INVOICE_ORDER: Record<InvoiceStatus, number> = { draft: 0, late: 1, issued
 
 export default function Ventes() {
   const { colors, semantic, personality, theme } = useTheme();
-  const insets = useSafeAreaInsets();
   const router = useRouter();
   const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: 40 });
 
@@ -92,6 +94,8 @@ export default function Ventes() {
         : null)
     : null;
   const persistedDraftName = persistedDraft?.customer?.name ?? null;
+  // Grammaire d'erreur (plan DA 01/08) : tout échec de mutation appelable au support.
+  const { showError, errorSheet } = useErrorSheet();
   const deletePersistedDraft = async (): Promise<void> => {
     if (draftDeleteBusy) return;
     const ok = await confirm({
@@ -107,6 +111,10 @@ export default function Ventes() {
     setDraftDeleteBusy(true);
     try {
       await quoteDraft.discard();
+    } catch (e) {
+      // LE catch manquant (correction d'état sous freeze, plan Lot 3) : un échec réseau de
+      // suppression ne produisait RIEN — trou dans un système d'états par ailleurs exemplaire.
+      showError(t('ventes.draftCard.deleteErrorTitle', { personality }), appErrorMessage(e));
     } finally {
       setDraftDeleteBusy(false);
     }
@@ -404,24 +412,14 @@ export default function Ventes() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <View style={{ paddingTop: insets.top + 8, paddingHorizontal: 20, paddingBottom: 8 }}>
-        <Pressable
-          onPress={() => router.back()}
-          accessibilityRole="button"
-          accessibilityLabel="Retour"
-          hitSlop={8}
-          style={({ pressed }) => ({
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 4,
-            opacity: pressed ? 0.6 : 1,
-          })}
-        >
-          <Ionicons name="chevron-back" size={22} color={colors.ink800} />
-          <Text style={[font('body'), { color: colors.ink800 }]}>Accueil</Text>
-        </Pressable>
-        <Text style={[font('screenH1'), { color: colors.ink900, marginTop: 6 }]}>Devis &amp; Factures</Text>
-      </View>
+      {/* Lot 3 : bloc retour + titre ad hoc → BackHeader kit (voile v2 hérité, retour 44 pt
+          nommé « Accueil », i18n « Devis & Factures ») — mêmes textes qu'avant, en clés. */}
+      <BackHeader
+        backLabel={t('ventes.back', { personality })}
+        onBack={() => router.back()}
+        eyebrow={t('ventes.eyebrow', { personality })}
+        title={t('ventes.headerTitle', { personality })}
+      />
 
       <ScrollView
         contentContainerStyle={{
@@ -624,47 +622,25 @@ export default function Ventes() {
                   <StatusBadge label={t('ventes.draftCard.badge', { personality })} variant="warning" />
                 </View>
                 <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={t('ventes.draftCard.resume', { personality })}
+                  {/* Le CTA le plus chaud de l'écran : press feedback standard du Button kit
+                      (l'aplat artisanal ink900 n'avait pas la matière du kit). */}
+                  <Button
+                    title={t('ventes.draftCard.resume', { personality })}
+                    radius={12}
+                    style={{ flex: 1 }}
                     onPress={() => router.push('/devis/new?resume=1')}
-                    style={({ pressed }) => ({
-                      flex: 1,
-                      minHeight: 44,
-                      borderRadius: 12,
-                      backgroundColor: colors.ink900,
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      transform: [{ scale: pressed ? 0.97 : 1 }],
-                      opacity: pressed ? 0.9 : 1,
-                    })}
-                  >
-                    <Text style={[font('button'), { color: colors.surface }]}>
-                      {t('ventes.draftCard.resume', { personality })}
-                    </Text>
-                  </Pressable>
-                  <Pressable
-                    accessibilityRole="button"
+                  />
+                  {/* Corbeille canonique @bob/ui — même composant que DocumentActions/C27
+                      (flux ConfirmSheet + busy STRICTEMENT conservé). */}
+                  <DeleteIconButton
+                    icon={<Ionicons name="trash-outline" size={18} color={semantic.danger} />}
                     accessibilityLabel={t('ventes.draftCard.delete', { personality })}
+                    size={44}
+                    radius={12}
+                    loading={draftDeleteBusy}
                     disabled={draftDeleteBusy}
                     onPress={() => void deletePersistedDraft()}
-                    style={({ pressed }) => ({
-                      width: 44,
-                      height: 44,
-                      borderRadius: 12,
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      backgroundColor: semantic.dangerBg,
-                      opacity: draftDeleteBusy ? 0.5 : pressed ? 0.7 : 1,
-                      transform: [{ scale: pressed && !draftDeleteBusy ? 0.94 : 1 }],
-                    })}
-                  >
-                    {draftDeleteBusy ? (
-                      <ActivityIndicator size="small" color={semantic.danger} />
-                    ) : (
-                      <Ionicons name="trash-outline" size={18} color={semantic.danger} />
-                    )}
-                  </Pressable>
+                  />
                 </View>
               </Card>
             ) : null}
@@ -701,7 +677,10 @@ export default function Ventes() {
                 </Card>
               ) : null
             ) : (
-              <FadeIn index={0} style={{ gap: 10 }}>
+              // FadeIn de bloc → StaggeredList PAR CARTE (cascade 40 ms, cap 8, au montage
+              // seulement — reduce-motion et préférence non résolue : apparition immédiate).
+              <View style={{ gap: 10 }}>
+                <StaggeredList>
                   {sortedQuotes.map((q) => {
                     const badge = QUOTE_BADGE[q.status];
                     return (
@@ -777,7 +756,8 @@ export default function Ventes() {
                       </Card>
                     );
                   })}
-                </FadeIn>
+                </StaggeredList>
+              </View>
               )}
           </View>
         ) : null}
@@ -835,7 +815,8 @@ export default function Ventes() {
                 </Card>
               ) : null
             ) : (
-              <FadeIn index={1} style={{ gap: 10 }}>
+              <View style={{ gap: 10 }}>
+                <StaggeredList>
                   {sortedInvoices.map((inv) => {
                     // E5 : badge dérivé par kind — avoir émis = « Émis » AMBRE (masculin).
                     // PR-02 : pièce émise JAMAIS transmise (aucun envoi constaté, aucun dépôt
@@ -949,11 +930,15 @@ export default function Ventes() {
                       </Card>
                     );
                   })}
-                </FadeIn>
+                </StaggeredList>
+              </View>
               )}
           </View>
         ) : null}
       </ScrollView>
+      {/* Feuille d'erreur premium locale (grammaire d'erreur du plan) — rendue au niveau
+          de l'écran : l'échec de deletePersistedDraft n'est plus jamais muet. */}
+      {errorSheet}
     </View>
   );
 }

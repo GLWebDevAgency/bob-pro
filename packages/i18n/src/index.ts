@@ -4187,6 +4187,21 @@ const legacyFr = {
     pro: 'Le brouillon de devis pour {name} sera définitivement supprimé. Cette action est irréversible.',
     direct: 'Brouillon {name} supprimé pour de bon. Irréversible.',
   },
+  // Lot 3 — le catch manquant de deletePersistedDraft (correction d'état sous freeze) :
+  // un échec réseau de suppression ne produit plus RIEN → ErrorSheet, jamais un échec muet.
+  'ventes.draftCard.deleteErrorTitle': {
+    pote: 'La suppression n’est pas passée',
+    pro: 'Suppression impossible',
+    direct: 'Suppression échouée',
+  },
+  // Lot 3 — BackHeader kit (règle : le bouton retour NOMME l'écran de destination).
+  'ventes.back': { pote: 'Accueil', pro: 'Accueil', direct: 'Accueil' },
+  'ventes.eyebrow': { pote: 'Ventes', pro: 'Ventes', direct: 'Ventes' },
+  'ventes.headerTitle': {
+    pote: 'Devis & Factures',
+    pro: 'Devis & Factures',
+    direct: 'Devis & Factures',
+  },
   'ventes.voiceDraftResume': {
     pote: 'Je rouvre ton brouillon.',
     pro: 'Le brouillon se rouvre.',
