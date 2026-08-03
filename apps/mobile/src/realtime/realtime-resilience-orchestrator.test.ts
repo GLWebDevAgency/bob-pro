@@ -231,6 +231,32 @@ describe('RealtimeResilienceOrchestrator', () => {
     ]);
   });
 
+  it('respecte un budget nul sans recréer le primaire après une panne transitoire', async () => {
+    const first = rejectedPrimary('ice_failed');
+    const fallback = fallbackHarness();
+    const createPrimary = vi.fn(() => first);
+    const sleep = vi.fn(async (_milliseconds: number) => undefined);
+    const orchestrator = new RealtimeResilienceOrchestrator({
+      createPrimary,
+      legacyFallback: fallback.port,
+      maxReconnectAttempts: 0,
+      reconnectDelayMs: () => 0,
+      sleep,
+    });
+
+    await expect(orchestrator.start()).resolves.toMatchObject({
+      phase: 'legacy',
+      reconnectAttempts: 0,
+      lastFailureReason: 'ice_failed',
+      fallbackChannel: 'voice',
+    });
+
+    expect(createPrimary).toHaveBeenCalledOnce();
+    expect(first.closeReasons).toEqual(['fallback']);
+    expect(sleep).not.toHaveBeenCalled();
+    expect(fallback.start).toHaveBeenCalledOnce();
+  });
+
   it('épuise une reconnexion puis ferme le primaire avant le fallback legacy', async () => {
     const events: string[] = [];
     const first = rejectedPrimary('bootstrap_failed', events);

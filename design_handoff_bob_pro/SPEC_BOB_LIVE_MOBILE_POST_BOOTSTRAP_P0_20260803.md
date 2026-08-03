@@ -48,7 +48,9 @@ Mission ou contexte.
    Une fermeture explicite de l'utilisateur reste distincte.
 3. Aucun SDP, token, URL signée, transcription, audio, identifiant métier ou texte libre n'entre
    dans ce diagnostic.
-4. Le mobile ne tente pas une reconnexion automatique pour une erreur de contrat déterministe.
+4. Une Mission M2-A ne tente aucune reconnexion générique, y compris après une panne transport
+   classée transitoire : seule sa reprise durable explicite peut reconstruire l'autorité. Le
+   contrôleur ferme donc la mission au lieu de recréer une capability ou d'activer le legacy.
 5. Une session ne possède qu'un transport, une capability Mission et un contrôleur actif.
 6. Le serveur revalide l'identité tenant/utilisateur/session avant d'accepter un diagnostic.
 
@@ -78,6 +80,8 @@ Le dernier checkpoint réussi et la classe terminale doivent permettre de distin
 - [x] Un test contrôleur couvre le refus d'adoption Mission avant tout `PUT /context`.
 - [x] Le chemin heureux prouve : capability prise une fois, contexte publié une fois, microphone
       ouvert après confirmation, zéro hangup automatique.
+- [x] Une Mission M2-A possède un budget de reconnexion générique nul : panne transitoire,
+      primaire créé une fois, aucun délai de retry et aucun second bootstrap.
 - [ ] Le bouton global et l'écran Assistant déclenchent le même propriétaire Bob Live ; aucun
       second moteur vocal ne peut concurrencer la session.
 - [ ] Une reproduction Android preview sur staging ne ferme plus spontanément la session et
