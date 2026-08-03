@@ -215,6 +215,92 @@ describe('Alerte de concentration — « Risque » en toutes lettres', () => {
   });
 });
 
+/** Aplati un style RN (objet ou tableau imbriqué) — le DERNIER gagne, comme au runtime. */
+type FlatStyle = Record<string, unknown>;
+function flatStyle(style: unknown): FlatStyle {
+  if (Array.isArray(style)) {
+    return style.reduce<FlatStyle>((acc, entry) => ({ ...acc, ...flatStyle(entry) }), {});
+  }
+  return style !== null && typeof style === 'object' ? { ...(style as FlatStyle) } : {};
+}
+
+describe('HONNÊTETÉ DES NULL TYPÉS — le cœur de la doctrine du derive (verdict Lot 5, P1 n°4)', () => {
+  it('DSO null (< 3 mois d’historique) ⇒ le message explicatif, JAMAIS un nombre fabriqué', async () => {
+    // Fixtures par défaut : 2 mois d'écritures ⇒ dso.days === null, reason insufficient_history.
+    const rendered = treeOf(await render());
+    // La branche null est la SEULE réponse à l'absence (tue le mutant N3 : branche neutralisée
+    // ⇒ « null jours » String(null) affiché à l'artisan).
+    expect(rendered).toContain('Il me faut 3 mois de facturation pour mesurer ça — on y est presque.');
+    expect(rendered).not.toContain('null jours');
+    expect(rendered).not.toContain('"children":"null"');
+  });
+
+  it('taux d’encaissement null ⇒ le message explicatif, JAMAIS un « 0 % encaissé » fabriqué', async () => {
+    const rendered = treeOf(await render());
+    // Tue le mutant N4 : branche null neutralisée ⇒ Math.round(null/100) = « 0 % encaissé »
+    // teinté danger — un chiffre FAUX présenté comme mesuré.
+    expect(rendered).toContain(
+      'Il me faut 3 mois de facturation pour un taux honnête — encore un peu de patience.',
+    );
+    expect(rendered).not.toContain('0 % encaissé');
+  });
+
+  it('part client null (base ≤ 0) ⇒ AUCUNE barre fantôme dans la rangée du client — scopé au nœud', async () => {
+    // Avoir net c2 (700 €) > CA c1 (600 €) ⇒ clientsTotal ≤ 0 ⇒ shareBps null pour c1.
+    configure({
+      customers: q({ data: [{ id: 'c1', name: 'SARL Martin' }, { id: 'c2', name: 'SCI Nord' }] }),
+      invoices: q({
+        data: [
+          {
+            id: 'i1',
+            number: 'F-2026-100',
+            kind: 'final',
+            status: 'paid',
+            totals: { ht: 500_000, tva: 100_000, ttc: 600_000, netToPay: 600_000 },
+            paid: 600_000,
+            dueAt: TODAY,
+            customerId: 'c1',
+          },
+          {
+            id: 'a1',
+            number: 'A-2026-001',
+            kind: 'credit_note',
+            status: 'paid',
+            totals: { ht: 583_334, tva: 116_666, ttc: 700_000, netToPay: 700_000 },
+            paid: 0,
+            dueAt: TODAY,
+            customerId: 'c2',
+          },
+        ],
+      }),
+    });
+    const renderer = await render();
+    const row = renderer.root
+      .findAll(
+        (node) =>
+          ((node.props as { accessibilityLabel?: string }).accessibilityLabel ?? '').startsWith(
+            '1. SARL Martin',
+          ),
+        { deep: true },
+      )
+      .at(0);
+    expect(row).toBeDefined();
+    // Tue le mutant N5 : `(line.shareBps ?? 0) / 100` peindrait ici une barre à « 0% » —
+    // la rangée d'un client SANS part mesurable ne contient AUCUNE largeur de barre.
+    const widths = row!
+      .findAllByType('View' as never)
+      .map((view) => flatStyle((view.props as { style?: unknown }).style)['width'])
+      .filter((width) => width !== undefined);
+    expect(widths).toEqual([]);
+    // Et aucun « % » de méta fabriqué dans la rangée.
+    const metaTexts = row!
+      .findAllByType('Text' as never)
+      .map((text) => (text.props as { children?: unknown }).children)
+      .filter((children): children is string => typeof children === 'string');
+    expect(metaTexts.some((children) => children.includes('%'))).toBe(false);
+  });
+});
+
 describe('États de premier rang', () => {
   it('aucune donnée (couverture nulle) ⇒ EmptyState voix de Bob, jamais un zéro fabriqué', async () => {
     configure({
