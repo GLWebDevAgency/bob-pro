@@ -4,6 +4,20 @@
  * Actif : surface + ombre e1 + text.primary ; inactif : text.muted sur la piste.
  * Les deux rôles sont certifiés AA ; slate400 reste réservé au non-contenu.
  * Hit-target ≥ 44 garanti par hitSlop vertical.
+ *
+ * SÉMANTIQUE ACCESSIBLE — décision Lot 3 (risque « radiogroup » nommé par le plan, tranché) :
+ * le contrôle parle `tablist`/`tab` + `accessibilityState.selected`, PAS `radiogroup`/`radio`.
+ * Le composant est UNIQUE pour tous ses consommateurs (périodes 7/30/60/90 d'argent.tsx,
+ * scénarios, kindFilter de ventes) : des vrais onglets de contenu — VoiceOver annonce
+ * « onglet, sélectionné » qui porte la même information d'exclusivité qu'un radiogroup,
+ * sans forker la sémantique par écran. Changer le rôle ici changerait l'annonce d'écrans
+ * déjà livrés (dont la lane argent) : hors de question sous freeze.
+ *
+ * `disabled` (Lot 3, correctif a11y) : un contrôle inerte pendant un chargement doit
+ * L'ANNONCER — chaque segment porte `disabled` + `accessibilityState.disabled` (plus jamais
+ * une enveloppe pointerEvents='none' muette côté écran : VoiceOver présentait des onglets
+ * actionnables qui ne répondaient pas). Le voile 0.5 reprend le langage visuel des états
+ * désactivés du kit. Prop ABSENTE = arbre strictement historique (spreads conditionnels).
  */
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { resolveColorRole, shadowNative } from '@bob/tokens';
@@ -17,6 +31,8 @@ export interface SegmentedControlProps<K extends string> {
   value: K;
   onChange: (key: K) => void;
   accessibilityLabel?: string;
+  /** Contrôle inerte ET annoncé tel (chargement) : segments disabled + state.disabled. */
+  disabled?: boolean;
 }
 
 export function SegmentedControl<K extends string>({
@@ -24,11 +40,16 @@ export function SegmentedControl<K extends string>({
   value,
   onChange,
   accessibilityLabel,
+  disabled = false,
 }: SegmentedControlProps<K>) {
   const { colors, controls } = useTheme();
   return (
     <View
-      style={[styles.track, { backgroundColor: controls.segmentedTrack }]}
+      style={[
+        styles.track,
+        { backgroundColor: controls.segmentedTrack },
+        ...(disabled ? [styles.trackDisabled] : []),
+      ]}
       accessibilityRole="tablist"
       {...(accessibilityLabel !== undefined ? { accessibilityLabel } : {})}
     >
@@ -41,7 +62,8 @@ export function SegmentedControl<K extends string>({
             hitSlop={{ top: 10, bottom: 10 }}
             accessibilityRole="tab"
             accessibilityLabel={option.label}
-            accessibilityState={{ selected: active }}
+            {...(disabled ? { disabled: true } : {})}
+            accessibilityState={{ selected: active, ...(disabled ? { disabled: true } : {}) }}
             style={[
               styles.segment,
               active && [styles.segmentActive, { backgroundColor: colors.surface }, shadowNative.e1],
@@ -66,6 +88,7 @@ export function SegmentedControl<K extends string>({
 
 const styles = StyleSheet.create({
   track: { flexDirection: 'row', gap: 4, borderRadius: 12, padding: 4 },
+  trackDisabled: { opacity: 0.5 },
   segment: {
     flex: 1,
     borderRadius: 9,

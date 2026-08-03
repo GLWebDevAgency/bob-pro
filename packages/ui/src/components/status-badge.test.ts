@@ -132,6 +132,33 @@ describe('table BadgeTone legacy → StatusBadgeVariant (Lot 0 — FIGÉE avant 
   });
 });
 
+describe('PREUVE DE TEINTE par tone legacy (verdict PR #61, P3) — pas seulement les noms', () => {
+  // Le Badge legacy (src/components/ui index.tsx l.195-203) peignait : fg = semantic.<tone>,
+  // bg = semantic.<tone>Bg — SAUF danger (bg = semantic.dangerBg). La table figée doit donc
+  // prouver les COULEURS au pixel, tone par tone, en LITTÉRAUX (un drift de token casse ici).
+  it.each([
+    ['b2b', '#1B3A63', '#E6EDF6'],
+    ['b2g', '#4338CA', '#EDEAFE'],
+    ['particulier', '#C77A12', '#FBF0DF'],
+    ['success', '#0E7C5A', '#EAF2EC'],
+    ['warning', '#C77A12', '#FBF0DF'],
+    ['ai', '#4338CA', '#F1EBFA'],
+  ] as const)(
+    'tone %s → mêmes teintes que le Badge legacy, au pixel (fg %s / bg %s)',
+    (tone, fg, bg) => {
+      expect(statusBadgeColors(statusBadgeVariantForLegacyTone(tone), palette)).toEqual({ fg, bg });
+    },
+  );
+
+  it('tone danger → SEUL écart de teinte assumé : fond redlines §7 #FBE7E4 (controls.dangerBadgeBg), plus le semantic.dangerBg #FBEAE8 du legacy', () => {
+    const colors = statusBadgeColors(statusBadgeVariantForLegacyTone('danger'), palette);
+    expect(colors).toEqual({ fg: '#C8463C', bg: '#FBE7E4' });
+    // L'écart est une DÉCISION (cible redlines §7 de l'extinction), pas un accident : le fond
+    // legacy ne doit pas réapparaître ici par un « alignement » silencieux du token.
+    expect(colors.bg).not.toBe('#FBEAE8');
+  });
+});
+
 describe('chipColors — mode filtre', () => {
   const chipPalette = {
     ink: themes.marine.ink,
