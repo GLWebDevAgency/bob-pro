@@ -64,6 +64,7 @@ function onRows() {
             : 'ready',
     failureClass: null,
     interruptionReason: eventKind === 'turn_interrupted' ? 'session_end' : null,
+    sessionCloseReason: eventKind === 'session_closed' ? 'policy' : null,
     eventDigestKeyVersion: 1,
     encryptionKeyVersion: ['turn_transcript_final', 'turn_agent_result'].includes(eventKind)
       ? 1
@@ -107,6 +108,12 @@ test('preuve ON lie ordre, tentative, owner, tour, contexte et absence de faux d
   const drifted = onRows();
   drifted[4] = { ...drifted[4], traceAttemptId: REQUEST_ID };
   assert.throws(() => certifyRealtimeVoiceTraceV2OnRows(drifted), /fences/u);
+  const missingCloseReason = onRows();
+  missingCloseReason[7] = { ...missingCloseReason[7], sessionCloseReason: null };
+  assert.throws(
+    () => certifyRealtimeVoiceTraceV2OnRows(missingCloseReason),
+    /terminal\/content proof/u,
+  );
 });
 
 test('runner ON ne publie aucune identité ni contenu dans son reçu', () => {

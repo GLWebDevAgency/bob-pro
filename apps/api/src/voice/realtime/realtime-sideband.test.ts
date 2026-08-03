@@ -1246,6 +1246,31 @@ describe('RealtimeSidebandManager — cutover sortie auditée', () => {
     ).toBe('not_found');
   });
 
+  it.each(['automatic_failure', 'lifecycle', 'policy'] as const)(
+    'conserve le motif client %s dans le terminal Voice Trace',
+    async (reason) => {
+      const value = harness();
+      const trace = traceProbe();
+      await attach(value, { trace: trace.recorder });
+
+      const detached = value.manager.fenceAndDetachSession({
+        userId: 'user-1',
+        companyId: 'company-1',
+        sessionHandle: SESSION,
+        reason,
+      });
+      expect(detached).not.toBe('not_found');
+      if (detached !== 'not_found') detached.settle('confirmed');
+
+      expect(trace.events.at(-1)).toEqual(expect.objectContaining({
+        eventKind: 'session_closed',
+        outcome: 'closed',
+        sessionCloseReason: reason,
+      }));
+      expect(trace.events.filter((event) => event.eventKind === 'session_closed')).toHaveLength(1);
+    },
+  );
+
   it('conserve un observer one-shot si le reaper devient owner avant le détachement HTTP', async () => {
     const value = harness();
     const trace = traceProbe();

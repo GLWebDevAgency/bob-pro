@@ -81,6 +81,20 @@ const NATIVE_DELIVERY_RECONCILIATION_MAX_WINDOW_MS = 5_000;
 const NATIVE_DELIVERY_RECONCILIATION_READ_TIMEOUT_MS = 500;
 const PLAN_TIERS = new Set<PlanTier>(['free', 'solo', 'pro', 'business']);
 
+type ManagedSessionCloseReason =
+  | 'user'
+  | 'kill_switch'
+  | 'superseded'
+  | 'max_duration'
+  | 'shutdown';
+type DetachedSessionCloseReason =
+  | 'user'
+  | 'automatic_failure'
+  | 'lifecycle'
+  | 'policy'
+  | 'kill_switch';
+type TraceSessionCloseReason = ManagedSessionCloseReason | DetachedSessionCloseReason;
+
 export { deriveRealtimeTurnId };
 
 interface SidebandSocket {
@@ -131,9 +145,7 @@ export interface RealtimeSidebandAttachInput {
   lifecycle?: {
     activate(): Promise<void>;
     fenceAfterDurableTerminationClaim(): void;
-    terminate(
-      reason: 'user' | 'kill_switch' | 'superseded' | 'max_duration' | 'shutdown',
-    ): Promise<RealtimeCallTerminationOutcome>;
+    terminate(reason: ManagedSessionCloseReason): Promise<RealtimeCallTerminationOutcome>;
   };
   turn?: {
     run(input: {
@@ -244,7 +256,7 @@ export interface RealtimeSidebandControl {
     userId: string;
     companyId: string;
     sessionHandle: string;
-    reason: 'user' | 'kill_switch';
+    reason: DetachedSessionCloseReason;
   }): 'not_found' | RealtimeSidebandDetachedTerminationObserver;
 }
 
@@ -634,7 +646,7 @@ function speechContext(
 }
 
 function cancellationReasonForClose(
-  reason: 'user' | 'kill_switch' | 'superseded' | 'max_duration' | 'shutdown',
+  reason: TraceSessionCloseReason,
 ): RealtimeSpeechCancellationReason {
   if (reason === 'user') return 'user_cancel';
   if (reason === 'superseded') return 'superseded';
@@ -758,7 +770,7 @@ class ManagedSidebandSession {
     private readonly cancellationId: () => string,
     private readonly activateLease: () => Promise<void>,
     private readonly terminateCall: (
-      reason: 'user' | 'kill_switch' | 'superseded' | 'max_duration' | 'shutdown',
+      reason: ManagedSessionCloseReason,
     ) => Promise<RealtimeCallTerminationOutcome>,
     private readonly fenceLeaseLifecycle: () => void,
     private readonly runTurn: (input: {
@@ -1171,7 +1183,7 @@ class ManagedSidebandSession {
   }
 
   async close(
-    reason: 'user' | 'kill_switch' | 'superseded' | 'max_duration' | 'shutdown',
+    reason: ManagedSessionCloseReason,
   ): Promise<RealtimeCallTerminationOutcome> {
     if (this.closed && !this.closing) return 'confirmed';
     if (this.closing) return this.closing;
@@ -1180,7 +1192,7 @@ class ManagedSidebandSession {
   }
 
   forceDispose(
-    reason: 'user' | 'kill_switch' | 'superseded' | 'max_duration' | 'shutdown' = 'kill_switch',
+    reason: TraceSessionCloseReason = 'kill_switch',
     recordClosure = true,
   ): void {
     if (this.finalized) return;
@@ -1199,7 +1211,7 @@ class ManagedSidebandSession {
   }
 
   fenceAndDetachAfterDurableClaim(
-    reason: 'user' | 'kill_switch',
+    reason: DetachedSessionCloseReason,
   ): RealtimeSidebandDetachedTerminationObserver {
     const traceEligible = this.ready && this.owner !== null;
     const observer =
@@ -1217,7 +1229,7 @@ class ManagedSidebandSession {
   }
 
   private createTerminationObserver(
-    reason: 'user' | 'kill_switch' | 'superseded' | 'max_duration' | 'shutdown',
+    reason: TraceSessionCloseReason,
     traceEligible: boolean,
   ): RealtimeSidebandDetachedTerminationObserver {
     let settled = false;
@@ -2199,7 +2211,7 @@ class ManagedSidebandSession {
   }
 
   private async terminate(
-    reason: 'user' | 'kill_switch' | 'superseded' | 'max_duration' | 'shutdown',
+    reason: ManagedSessionCloseReason,
   ): Promise<RealtimeCallTerminationOutcome> {
     const traceEligible = this.ready && this.owner !== null;
     const terminationObserver = this.createTerminationObserver(reason, traceEligible);
@@ -2239,7 +2251,7 @@ class ManagedSidebandSession {
   }
 
   private recordTraceClosed(
-    reason: 'user' | 'kill_switch' | 'superseded' | 'max_duration' | 'shutdown',
+    reason: TraceSessionCloseReason,
     allowAfterDetach = false,
   ): void {
     if (this.traceClosed || (!this.ready && !allowAfterDetach)) return;
@@ -2730,7 +2742,7 @@ export class RealtimeSidebandManager implements RealtimeSidebandControl, OnAppli
     userId: string;
     companyId: string;
     sessionHandle: string;
-    reason: 'user' | 'kill_switch';
+    reason: DetachedSessionCloseReason;
   }): 'not_found' | RealtimeSidebandDetachedTerminationObserver {
     const key = principalKey(input);
     const session = this.sessionsByPrincipal.get(key);

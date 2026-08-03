@@ -66,6 +66,10 @@ export type RealtimeClientDiagnosticUpdate =
   | {
       readonly type: 'failure';
       readonly failureCode: import('@bob/core').RealtimeVoiceClientFailureCode;
+    }
+  | {
+      readonly type: 'policy_stop';
+      readonly closeReason: import('@bob/core').RealtimeVoiceClientPolicyCloseReason;
     };
 
 export type RealtimeTransportEvent =

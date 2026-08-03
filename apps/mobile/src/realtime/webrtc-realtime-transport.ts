@@ -12,6 +12,7 @@ import {
   REALTIME_VOICE_CLIENT_CHECKPOINTS,
   type RealtimeVoiceClientCheckpoint,
   type RealtimeVoiceClientFailureCode,
+  type RealtimeVoiceClientPolicyCloseReason,
   type RealtimeVoiceClientTerminationDiagnostic,
 } from '@bob/core';
 import { randomUUID } from 'expo-crypto';
@@ -301,6 +302,11 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
   private readonly hangupTasks = new Map<string, Promise<void>>();
   private closingPromise: Promise<void> | null = null;
   private pendingConnectAbort: AbortController | null = null;
+  /**
+   * Settlement du POST/ACK bootstrap possédé par le transport. Un hangup ne part qu'après ce
+   * point : jamais de DELETE avant que le serveur ait fini de créer ou compenser le handle.
+   */
+  private bootstrapSettlement: Promise<void> | null = null;
   private connectivityState: 'connected' | 'disconnected' | null = null;
   private readonly disposedNativeResources = new WeakSet<object>();
   private readonly armedTerminationDiagnostics = new Map<
@@ -309,6 +315,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
   >();
   private lastClientCheckpoint: RealtimeVoiceClientCheckpoint = 'transport_started';
   private clientFailureCode: RealtimeVoiceClientFailureCode | null = null;
+  private clientPolicyCloseReason: RealtimeVoiceClientPolicyCloseReason | null = null;
 
   constructor(
     private readonly client: BobClient,
@@ -340,6 +347,10 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
   reportClientDiagnostic(update: RealtimeClientDiagnosticUpdate): void {
     if (update.type === 'failure') {
       this.clientFailureCode ??= update.failureCode;
+      return;
+    }
+    if (update.type === 'policy_stop') {
+      if (this.clientFailureCode === null) this.clientPolicyCloseReason ??= update.closeReason;
       return;
     }
     if (this.clientFailureCode !== null) return;
@@ -394,6 +405,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     const generation = ++this.generation;
     this.lastClientCheckpoint = 'transport_started';
     this.clientFailureCode = null;
+    this.clientPolicyCloseReason = null;
     // Le contexte écran durable doit être acquitté par le serveur avant toute trame micro.
     // Chaque nouveau peer repart fermé, même si la session précédente avait été activée.
     this.microphoneEnabled = false;
@@ -526,7 +538,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
       const requestedSessionHandle = randomUUID();
       resources.sessionHandle = requestedSessionHandle;
       this.sessionHandle = requestedSessionHandle;
-      const bootstrap = await this.client.createRealtimeVoiceCall(
+      const bootstrapRequest = this.client.createRealtimeVoiceCall(
         {
           transport: 'webrtc',
           sdp: offerSdp,
@@ -534,9 +546,21 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
           configVersion: config.configVersion,
           speechDelivery: config.speechDelivery,
           agentMissionProtocolVersion: this.options.agentMissionProtocolVersion,
+          bootstrapTerminationOwner: 'transport',
         },
         bootstrapAbort.signal,
       );
+      const bootstrapSettlement = Promise.resolve(bootstrapRequest).then(
+        () => undefined,
+        () => undefined,
+      );
+      this.bootstrapSettlement = bootstrapSettlement;
+      let bootstrap: Awaited<typeof bootstrapRequest>;
+      try {
+        bootstrap = await bootstrapRequest;
+      } finally {
+        if (this.bootstrapSettlement === bootstrapSettlement) this.bootstrapSettlement = null;
+      }
       if (!bootstrap.ok) {
         this.reportClientDiagnostic({ type: 'failure', failureCode: 'bootstrap_request_failed' });
         throw new RealtimeTransportError('agent_mission_negotiation_failed');
@@ -806,6 +830,19 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
       this.clearNativeResponseTerminalWatchdog();
       return Promise.resolve();
     }
+    // Installer le latch AVANT toute transition observable. Un subscriber de CLOSE peut rappeler
+    // close() synchroniquement : il doit rejoindre ce même workflow, sans recalculer la cause ni
+    // disposer deux fois les ressources. La première cause armée reste donc autoritative.
+    let resolveClosing!: () => void;
+    let rejectClosing!: (error: unknown) => void;
+    const closingGate = new Promise<void>((resolve, reject) => {
+      resolveClosing = resolve;
+      rejectClosing = reject;
+    });
+    const tracked = closingGate.finally(() => {
+      if (this.closingPromise === tracked) this.closingPromise = null;
+    });
+    this.closingPromise = tracked;
     // Neutraliser la sortie avec la génération encore autoritative, avant de fencer tous les
     // callbacks du peer. Aucun paquet mis en file ne reste audible pendant le teardown.
     this.cancelNativeProviderDrainedTail(true);
@@ -830,6 +867,9 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     }
     ++this.generation;
     this.transition({ type: 'CLOSE' });
+    // Le transport est l'unique propriétaire du hangup de bootstrap. L'AbortController RN 0.86
+    // perd tout `reason` : la cause reste donc dans armedTerminationDiagnostics, puis accompagne
+    // l'unique DELETE émis par hangupSession().
     this.bootstrapAbort?.abort();
     this.bootstrapAbort = null;
     if (this.statsTimer) clearInterval(this.statsTimer);
@@ -857,6 +897,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
       remoteAudioTrack: this.remoteAudioTrack,
       agentMissionSession: null,
     };
+    const bootstrapSettlement = this.bootstrapSettlement;
     this.responseActive = false;
     this.responseGenerationDone = false;
     this.responseStatus = null;
@@ -877,10 +918,12 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     const closing = Promise.resolve().then(async (): Promise<void> => {
       // Le hangup est armé avant CLOSED, mais ne retarde pas la preuve de fermeture native.
       // Un connect réentrant verra `closingPromise` et attendra quand même sa résolution.
-      const hangup = this.hangupSession(
-        resources.sessionHandle,
-        clientTerminationDiagnostic,
-      );
+      const hangup = bootstrapSettlement === null
+        ? this.hangupSession(resources.sessionHandle, clientTerminationDiagnostic)
+        : bootstrapSettlement.then(() => this.hangupSession(
+            resources.sessionHandle,
+            clientTerminationDiagnostic,
+          ));
       const nativeDisposed = this.disposeAttemptResources(resources);
       if (!nativeDisposed) {
         await hangup;
@@ -907,10 +950,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
       this.emit({ type: 'metrics', metrics: this.metrics.snapshot() });
       await hangup;
     });
-    const tracked = closing.finally(() => {
-      if (this.closingPromise === tracked) this.closingPromise = null;
-    });
-    this.closingPromise = tracked;
+    void closing.then(resolveClosing, rejectClosing);
     // Le gate est visible AVANT CLOSED : un observateur réentrant ne peut pas démarrer un nouveau
     // peer avant la preuve de fermeture native. Une erreur conserve les références et le lease
     // pour permettre une relance explicite, tout en interdisant tout fallback concurrent.
@@ -1051,12 +1091,33 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
   ): void {
     const transceivers = peer.getTransceivers();
     const expectedDirection = this.nativeDownlink ? 'sendrecv' : 'sendonly';
-    if (
+    const exactTransceiver =
       transceivers.length === 1
       && transceivers[0] === expectedAudioTransceiver
-      && expectedAudioTransceiver.direction === expectedDirection
-      && expectedAudioTransceiver.currentDirection === expectedDirection
-    ) return;
+      && expectedAudioTransceiver.direction === expectedDirection;
+    // Le type RN annonce string, mais Android peut omettre entièrement la clé native lors
+    // d'un événement track et le cache JS reçoit alors `undefined` (RN-WebRTC 124.x).
+    const currentDirection: unknown = expectedAudioTransceiver.currentDirection;
+    if (exactTransceiver && currentDirection === expectedDirection) return;
+
+    // react-native-webrtc 124.x peut conserver `currentDirection = null` dans son cache JS
+    // Android après un setRemoteDescription natif pourtant réussi. Ne jamais attendre/poller ce
+    // cache : getTransceivers() relit le même objet. Le seul repli acceptable est donc une preuve
+    // indépendante sur les descriptions EFFECTIVEMENT appliquées au peer, en conservant la même
+    // transceiver unique et sa direction locale exacte. Une valeur non nulle incompatible reste
+    // toujours un refus ; `null` n'est jamais assimilé tout seul à une négociation réussie.
+    const localDescription = peer.localDescription;
+    const remoteDescription = peer.remoteDescription;
+    const appliedDescriptionsProveDirection =
+      (currentDirection === null || currentDirection === undefined)
+      && localDescription?.type === 'offer'
+      && remoteDescription?.type === 'answer'
+      && typeof localDescription.sdp === 'string'
+      && typeof remoteDescription.sdp === 'string'
+      && activeAudioDirection(localDescription.sdp) === expectedDirection
+      && activeAudioDirection(remoteDescription.sdp)
+        === (this.nativeDownlink ? 'sendrecv' : 'recvonly');
+    if (exactTransceiver && appliedDescriptionsProveDirection) return;
 
     for (const transceiver of transceivers) {
       try { transceiver.receiver.track?.stop(); } catch { /* piste provider déjà arrêtée */ }
@@ -2320,6 +2381,14 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
         terminationSource: 'automatic_failure',
         lastSuccessfulCheckpoint: checkpoint,
         failureCode: this.clientFailureCode ?? 'unknown',
+      };
+    }
+    if (this.clientPolicyCloseReason !== null) {
+      return {
+        version: 1,
+        terminationSource: 'policy',
+        lastSuccessfulCheckpoint: checkpoint,
+        closeReason: this.clientPolicyCloseReason,
       };
     }
     if (reason === 'user') {

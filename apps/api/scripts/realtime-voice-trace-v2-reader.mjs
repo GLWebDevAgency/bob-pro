@@ -191,7 +191,7 @@ function readerSql() {
 SET statement_timeout = '5s';
 SELECT pg_catalog.json_build_object('kind', 'reader', 'actor', session_user)::TEXT;
 SELECT pg_catalog.row_to_json(trace)::TEXT
-  FROM public.read_realtime_voice_trace_session_v2(
+  FROM public.read_realtime_voice_trace_session_v3(
     :'request_id'::UUID,
     :'company_id'::TEXT,
     :'user_id'::UUID,

@@ -14,6 +14,10 @@ const nativeRetryMigrationPath = path.join(
   repositoryRoot,
   'apps/api/prisma/migrations/20260801051000_openai_native_retry_scenario_expand/migration.sql',
 );
+const traceClientCloseMigrationPath = path.join(
+  repositoryRoot,
+  'apps/api/prisma/migrations/20260803010000_realtime_voice_trace_client_close_expand/migration.sql',
+);
 const traceSourcePath = path.join(
   repositoryRoot,
   'packages/core/src/observability/realtime-voice-trace.ts',
@@ -92,7 +96,7 @@ const BLOCKS = Object.freeze([
   ],
   [
     'REALTIME_TRACE_SESSION_CLOSE_REASONS',
-    traceMigrationPath,
+    traceClientCloseMigrationPath,
     traceSourcePath,
     'REALTIME_VOICE_TRACE_SESSION_CLOSE_REASONS',
   ],

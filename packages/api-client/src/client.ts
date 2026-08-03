@@ -705,7 +705,7 @@ export interface RealtimeVoiceContextUpdate {
 export type RealtimeVoiceClientTerminationDiagnostic =
   CoreRealtimeVoiceClientTerminationDiagnostic;
 
-export type RealtimeVoiceCallInput =
+export type RealtimeVoiceCallInput = (
   | {
       transport?: 'webrtc';
       sdp: string;
@@ -731,7 +731,15 @@ export type RealtimeVoiceCallInput =
       speechDelivery: 'audited-signed-url-v1';
       sessionHandle?: string;
       agentMissionProtocolVersion?: RealtimeAgentMissionProtocolVersion | null;
-    };
+    }
+) & {
+  /**
+   * Propriétaire unique de la compensation après création du handle. `client` reste le défaut
+   * rétrocompatible ; `transport` n'est valide que si l'appelant connaît le sessionHandle et
+   * garantit son propre hangup idempotent sur chaque sortie du bootstrap.
+   */
+  readonly bootstrapTerminationOwner?: 'client' | 'transport';
+};
 
 export interface RealtimeVoiceControlReference {
   turnId: string;

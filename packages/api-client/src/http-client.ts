@@ -2292,9 +2292,11 @@ export class HttpBobClient implements BobClient {
     decode?: (value: unknown) => T | null,
     timeoutMs?: number,
     externalSignal?: AbortSignal,
+    externalAbortPolicy: 'cancel_immediately' | 'settle_inflight' = 'cancel_immediately',
   ): Promise<Result<T, AppError>> {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let removeExternalAbort: (() => void) | undefined;
+    let networkStarted = false;
     const startedAt = Date.now();
     const localCorrelationId = newCorrelationId();
     try {
@@ -2306,8 +2308,15 @@ export class HttpBobClient implements BobClient {
           ? null
           : new Promise<never>((_resolve, reject) => {
               const abort = (): void => {
-                controller?.abort();
-                reject(new LocalInterruptError('Requête annulée.'));
+                if (externalAbortPolicy === 'cancel_immediately') {
+                  controller?.abort();
+                  reject(new LocalInterruptError('Requête annulée.'));
+                  return;
+                }
+                // En mode transport-owner, l'abort avant fetch interdit tout départ réseau.
+                // Après départ, il est seulement logique : la réponse/receipt en vol constitue
+                // la barrière que le transport attend avant son DELETE.
+                if (!networkStarted) reject(new LocalInterruptError('Requête annulée.'));
               };
               externalSignal.addEventListener('abort', abort, { once: true });
               removeExternalAbort = () => externalSignal.removeEventListener('abort', abort);
@@ -2348,6 +2357,7 @@ export class HttpBobClient implements BobClient {
       };
       if (body !== undefined) init.body = JSON.stringify(body);
       const requestUrl = `${this.opts.baseUrl}${path}`;
+      networkStarted = true;
       const res = await withinDeadline(fetch(requestUrl, init));
       if (
         typeof res.url === 'string' &&
@@ -2807,6 +2817,53 @@ export class HttpBobClient implements BobClient {
     input: RealtimeVoiceCallInput,
     signal?: AbortSignal,
   ): Promise<Result<RealtimeVoiceCall, AppError>> {
+    const bootstrapTerminationOwner = (
+      input as RealtimeVoiceCallInput & { readonly bootstrapTerminationOwner?: unknown }
+    ).bootstrapTerminationOwner;
+    if (
+      Object.hasOwn(input, 'bootstrapTerminationOwner')
+      && bootstrapTerminationOwner !== 'client'
+      && bootstrapTerminationOwner !== 'transport'
+    ) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceCall>(
+        'bootstrapTerminationOwner',
+        'Le propriétaire de terminaison du bootstrap est invalide.',
+      );
+    }
+    const transportOwnsBootstrapTermination = bootstrapTerminationOwner === 'transport';
+    if (
+      transportOwnsBootstrapTermination
+      && (
+        input.transport === 'mistral-pcm'
+        || typeof input.sessionHandle !== 'string'
+        || !UUID_PATTERN.test(input.sessionHandle)
+      )
+    ) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceCall>(
+        'bootstrapTerminationOwner',
+        'Seul un transport WebRTC lié à un handle UUID peut posséder la terminaison.',
+      );
+    }
+    // Le transport WebRTC libère ses ressources natives dès l'arrêt, puis attend le règlement
+    // réseau du bootstrap avant son DELETE. Propager son AbortSignal au POST/ACK ferait gagner la
+    // course locale d'annulation alors que le serveur peut encore traiter la requête. Dans ce
+    // mode propriétaire uniquement, un abort produit rend le résultat annulé APRES règlement du
+    // POST et, si accordée, de la receipt Mission. Le timeout réseau reste volontairement borné :
+    // il avorte le fetch puis rend la main ; le tombstone durable du DELETE fence alors toute
+    // réponse/bootstrap tardif du serveur au lieu de bloquer l'UI sur un binding natif défaillant.
+    if (transportOwnsBootstrapTermination && signal?.aborted) {
+      return {
+        ok: false,
+        error: {
+          kind: 'dependency',
+          port: 'api',
+          cause: 'Requête annulée.',
+        },
+      };
+    }
+    const bootstrapAbortPolicy = transportOwnsBootstrapTermination
+      ? 'settle_inflight'
+      : 'cancel_immediately';
     const currentWire = input.configVersion === REALTIME_CONFIG_VERSION_CURRENT;
     const legacyWire =
       input.configVersion === REALTIME_CONFIG_VERSION_N_MINUS_ONE
@@ -2880,10 +2937,12 @@ export class HttpBobClient implements BobClient {
       ),
       REALTIME_BOOTSTRAP_TIMEOUT_MS,
       signal,
+      bootstrapAbortPolicy,
     );
     if (!bootstrap.ok) {
       if (
-        typeof requestedAgentMissionProtocol === 'number'
+        !transportOwnsBootstrapTermination
+        && typeof requestedAgentMissionProtocol === 'number'
         && typeof input.sessionHandle === 'string'
       ) {
         await this.terminateRealtimeBootstrapSession(input.sessionHandle);
@@ -2908,6 +2967,7 @@ export class HttpBobClient implements BobClient {
         decodeRealtimeAgentMissionBootstrapReceipt,
         AGENT_MISSION_BOOTSTRAP_RECEIPT_REQUEST_TIMEOUT_MS,
         signal,
+        bootstrapAbortPolicy,
       );
       let receipt = await acknowledgeReceipt();
       for (
@@ -2921,7 +2981,9 @@ export class HttpBobClient implements BobClient {
         receipt = await acknowledgeReceipt();
       }
       if (!receipt.ok || signal?.aborted) {
-        await this.terminateRealtimeBootstrapSession(call.sessionHandle);
+        if (!transportOwnsBootstrapTermination) {
+          await this.terminateRealtimeBootstrapSession(call.sessionHandle);
+        }
         return receipt.ok
           ? {
               ok: false,
@@ -2933,6 +2995,17 @@ export class HttpBobClient implements BobClient {
             }
           : { ok: false, error: receipt.error };
       }
+    }
+
+    if (signal?.aborted) {
+      return {
+        ok: false,
+        error: {
+          kind: 'dependency',
+          port: 'api',
+          cause: 'Requête annulée.',
+        },
+      };
     }
 
     const request: HttpAgentMissionRequester = <T>(
@@ -2971,7 +3044,9 @@ export class HttpBobClient implements BobClient {
         ),
       };
     } catch {
-      await this.terminateRealtimeBootstrapSession(call.sessionHandle);
+      if (!transportOwnsBootstrapTermination) {
+        await this.terminateRealtimeBootstrapSession(call.sessionHandle);
+      }
       return {
         ok: false,
         error: {

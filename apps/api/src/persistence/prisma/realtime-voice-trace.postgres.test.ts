@@ -90,6 +90,35 @@ function storedSessionReady(input: {
   };
 }
 
+function storedSessionClosed(input: {
+  readonly companyId: string;
+  readonly userId: string;
+  readonly sessionHandle: string;
+  readonly closeReason: 'user' | 'policy';
+}): RealtimeVoiceTraceStoredEvent {
+  return {
+    id: randomUUID(),
+    event: {
+      version: 1,
+      companyId: input.companyId,
+      userId: input.userId,
+      traceAttemptId: randomUUID(),
+      sessionHandle: input.sessionHandle,
+      ownerEpoch: 1,
+      eventOrdinal: 1,
+      eventKind: 'session_closed',
+      occurredAt: new Date().toISOString(),
+      outcome: 'closed',
+      sessionCloseReason: input.closeReason,
+    },
+    eventDigest: input.closeReason === 'user' ? 'e'.repeat(64) : 'f'.repeat(64),
+    eventDigestKeyVersion: 1,
+    encryptionKeyVersion: null,
+    transcriptCiphertext: null,
+    canonicalReplyCiphertext: null,
+  };
+}
+
 const TRANSCRIPT_CIPHERTEXT = `v1.${'A'.repeat(16)}.${'B'.repeat(8)}.${'C'.repeat(22)}`;
 const REPLY_CIPHERTEXT = `v1.${'D'.repeat(16)}.${'E'.repeat(8)}.${'F'.repeat(22)}`;
 
@@ -199,7 +228,8 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
     }) {
       const requestId = input.requestId ?? randomUUID();
       const rows = await admin.$transaction(async (transaction) => {
-        await transaction.$executeRawUnsafe('SET LOCAL ROLE bob_realtime_voice_trace_reader');
+        // Le CLI staging appelle la SECURITY DEFINER avec le role deployeur. Ne pas SET ROLE
+        // ici : ce test doit casser si le GRANT staging manque, meme si l'owner interne reste sain.
         return transaction.$queryRaw<
           Array<{
             id: string;
@@ -214,6 +244,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
             speechDelivery: string | null;
             stage: string | null;
             outcome: string | null;
+            sessionCloseReason: string | null;
             transcriptCiphertext: string | null;
             canonicalReplyCiphertext: string | null;
           }>
@@ -230,9 +261,10 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
                  trace."speechDelivery",
                  trace.stage,
                  trace.outcome,
+                 trace."sessionCloseReason",
                  trace."transcriptCiphertext",
                  trace."canonicalReplyCiphertext"
-            FROM public.read_realtime_voice_trace_session_v2(
+            FROM public.read_realtime_voice_trace_session_v3(
               ${requestId}::uuid,
               ${input.companyId},
               ${input.userId}::uuid,
@@ -281,6 +313,104 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         },
         { readOnly: false, maxWaitMs: 1_000, timeoutMs: 3_000 },
       );
+    }
+
+    async function traceTableOwnerIdentifier(): Promise<string> {
+      const [owner] = await admin.$queryRaw<Array<{ roleName: string; canSet: boolean }>>`
+        SELECT pg_catalog.pg_get_userbyid(relation.relowner) AS "roleName",
+               pg_catalog.pg_has_role(current_user, relation.relowner, 'SET') AS "canSet"
+          FROM pg_catalog.pg_class AS relation
+         WHERE relation.oid = 'public.realtime_voice_trace_events'::regclass
+      `;
+      if (
+        !owner ||
+        !owner.canSet ||
+        owner.roleName.length < 1 ||
+        owner.roleName.length > 63 ||
+        Array.from(owner.roleName).some((character) => {
+          const codePoint = character.codePointAt(0);
+          return codePoint !== undefined && (codePoint <= 31 || codePoint === 127);
+        })
+      ) {
+        throw new Error('Realtime Voice Trace table owner is not an assumable PostgreSQL role.');
+      }
+      return `"${owner.roleName.replaceAll('"', '""')}"`;
+    }
+
+    async function installClientCloseExpandState(): Promise<void> {
+      const ownerIdentifier = await traceTableOwnerIdentifier();
+      const [constraint] = await admin.$queryRaw<Array<{ definition: string; validated: boolean }>>`
+        SELECT pg_catalog.pg_get_constraintdef(constraint_catalog.oid, TRUE) AS definition,
+               constraint_catalog.convalidated AS validated
+          FROM pg_catalog.pg_constraint AS constraint_catalog
+         WHERE constraint_catalog.conrelid =
+               'public.realtime_voice_trace_events'::regclass
+           AND constraint_catalog.conname = 'realtime_voice_trace_close_reason_check'
+      `;
+      if (
+        !constraint ||
+        !constraint.validated ||
+        !constraint.definition.startsWith('CHECK (') ||
+        !constraint.definition.includes('automatic_failure') ||
+        !constraint.definition.includes('lifecycle') ||
+        !constraint.definition.includes('policy') ||
+        constraint.definition.includes(';')
+      ) {
+        throw new Error('Realtime Voice Trace final close-reason constraint is not canonical.');
+      }
+
+      await admin.$transaction(
+        async (transaction) => {
+          await transaction.$executeRawUnsafe(`SET LOCAL ROLE ${ownerIdentifier}`);
+          await transaction.$executeRawUnsafe(`
+            ALTER TABLE public.realtime_voice_trace_events
+              DROP CONSTRAINT realtime_voice_trace_close_reason_check
+          `);
+          await transaction.$executeRawUnsafe(`
+            ALTER TABLE public.realtime_voice_trace_events
+              ADD CONSTRAINT realtime_voice_trace_close_reason_check_v2
+              ${constraint.definition} NOT VALID
+          `);
+        },
+        { timeout: 30_000 },
+      );
+
+      const [expanded] = await admin.$queryRaw<Array<{ validated: boolean }>>`
+        SELECT constraint_catalog.convalidated AS validated
+          FROM pg_catalog.pg_constraint AS constraint_catalog
+         WHERE constraint_catalog.conrelid =
+               'public.realtime_voice_trace_events'::regclass
+           AND constraint_catalog.conname = 'realtime_voice_trace_close_reason_check_v2'
+      `;
+      expect(expanded).toEqual({ validated: false });
+    }
+
+    async function installClientCloseValidatedState(): Promise<void> {
+      const ownerIdentifier = await traceTableOwnerIdentifier();
+      await admin.$transaction(
+        async (transaction) => {
+          await transaction.$executeRawUnsafe(`SET LOCAL ROLE ${ownerIdentifier}`);
+          await transaction.$executeRawUnsafe(`
+            ALTER TABLE public.realtime_voice_trace_events
+              VALIDATE CONSTRAINT realtime_voice_trace_close_reason_check_v2
+          `);
+          await transaction.$executeRawUnsafe(`
+            ALTER TABLE public.realtime_voice_trace_events
+              RENAME CONSTRAINT realtime_voice_trace_close_reason_check_v2
+              TO realtime_voice_trace_close_reason_check
+          `);
+        },
+        { timeout: 30_000 },
+      );
+
+      const [validated] = await admin.$queryRaw<Array<{ validated: boolean }>>`
+        SELECT constraint_catalog.convalidated AS validated
+          FROM pg_catalog.pg_constraint AS constraint_catalog
+         WHERE constraint_catalog.conrelid =
+               'public.realtime_voice_trace_events'::regclass
+           AND constraint_catalog.conname = 'realtime_voice_trace_close_reason_check'
+      `;
+      expect(validated).toEqual({ validated: true });
     }
 
     beforeAll(async () => {
@@ -426,6 +556,25 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           { readOnly: true, maxWaitMs: 1_000, timeoutMs: 3_000 },
         ),
       ).rejects.toThrow(/permission denied for function read_realtime_voice_trace_session_v2/u);
+      await expect(
+        runtime.withIsolatedOwner(
+          companyId,
+          userId,
+          (transaction) => transaction.$queryRaw`
+          SELECT *
+            FROM public.read_realtime_voice_trace_session_v3(
+              ${randomUUID()}::uuid,
+              ${companyId},
+              ${userId}::uuid,
+              ${sessionHandle}::uuid,
+              'runtime_must_not_read',
+              'CERT-RUNTIME-REFUSAL',
+              FALSE
+            )
+        `,
+          { readOnly: true, maxWaitMs: 1_000, timeoutMs: 3_000 },
+        ),
+      ).rejects.toThrow(/permission denied for function read_realtime_voice_trace_session_v3/u);
     });
 
     it('lit un snapshot exact via la RPC, masque le contenu et audite chaque accès', async () => {
@@ -975,6 +1124,59 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         intent: 'create_customer',
         reply: 'Je prépare le nouveau client.',
       });
+    });
+
+    it('garde le writer N-1 exact sous les états expand puis validate des motifs client', async () => {
+      await installClientCloseExpandState();
+      try {
+        const legacyExpand = storedSessionClosed({
+          companyId,
+          userId,
+          sessionHandle: randomUUID(),
+          closeReason: 'user',
+        });
+        await expect(repository.append(legacyExpand)).resolves.toEqual({
+          status: 'inserted',
+          eventId: legacyExpand.id,
+        });
+      } finally {
+        await installClientCloseValidatedState();
+      }
+
+      const legacyValidated = storedSessionClosed({
+        companyId,
+        userId,
+        sessionHandle: randomUUID(),
+        closeReason: 'user',
+      });
+      const policySessionHandle = randomUUID();
+      const policy = storedSessionClosed({
+        companyId,
+        userId,
+        sessionHandle: policySessionHandle,
+        closeReason: 'policy',
+      });
+      await expect(repository.append(legacyValidated)).resolves.toEqual({
+        status: 'inserted',
+        eventId: legacyValidated.id,
+      });
+      await expect(repository.append(policy)).resolves.toEqual({
+        status: 'inserted',
+        eventId: policy.id,
+      });
+      const policyRead = await readSession({
+        companyId,
+        userId,
+        sessionHandle: policySessionHandle,
+      });
+      expect(policyRead.rows).toMatchObject([{
+        id: policy.id,
+        eventKind: 'session_closed',
+        sessionCloseReason: 'policy',
+      }]);
+      await expect(admin.realtimeVoiceTraceAccessAudit.count({
+        where: { requestId: policyRead.requestId },
+      })).resolves.toBe(1);
     });
   },
 );
