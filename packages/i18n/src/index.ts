@@ -7618,6 +7618,9 @@ const legacyFr = {
     direct: 'Activité',
   },
   'notif.feedDone': { pote: 'Envoyée', pro: 'Envoyée', direct: 'Envoyée' },
+  // Papa vocal (vague hors-lots) : « non lue » se dit en TEXTE dans le label composé —
+  // le détournement d'accessibilityState.selected faisait annoncer « sélectionné ».
+  'notif.a11yUnread': { pote: 'non lue', pro: 'non lue', direct: 'non lue' },
   'notif.feedPending': {
     pote: 'En cours d’envoi…',
     pro: 'Envoi en cours…',
