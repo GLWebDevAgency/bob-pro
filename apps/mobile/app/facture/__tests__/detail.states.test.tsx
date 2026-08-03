@@ -205,6 +205,34 @@ const treeOf = (renderer: ReactTestRenderer): string =>
     return value;
   });
 
+// ── Leçon transverse du verdict (PR #61) : les assertions de COULEUR se scopent AU NŒUD.
+//    Ici en particulier : le b2b #1B3A63 vit LÉGITIMEMENT ailleurs dans l'écran (badge de
+//    canal, encres) — un not.toContain global rougirait du code NON muté. ──
+type StyleEntry = Record<string, unknown> | null | undefined | false | readonly StyleEntry[];
+function flattenStyle(style: StyleEntry): Record<string, unknown> {
+  if (style === null || style === undefined || style === false) return {};
+  if (Array.isArray(style)) {
+    return (style as readonly StyleEntry[]).reduce<Record<string, unknown>>(
+      (acc, entry) => ({ ...acc, ...flattenStyle(entry) }),
+      {},
+    );
+  }
+  return { ...(style as Record<string, unknown>) };
+}
+interface NodeLike {
+  props: Record<string, unknown> & { style?: unknown };
+  parent: NodeLike | null;
+}
+/** Le Text d'un StatusBadge (label exact) ET son conteneur (radius 6 du kit) — scopé au nœud. */
+function statusBadgeOf(renderer: ReactTestRenderer, label: string): { text: NodeLike; frame: NodeLike } {
+  const text = (renderer.root.findAllByType('Text' as never) as unknown as NodeLike[]).find((n) => {
+    if ((n.props as { children?: unknown }).children !== label) return false;
+    return flattenStyle((n.parent?.props.style ?? null) as StyleEntry)['borderRadius'] === 6; // BADGE_RADIUS
+  });
+  expect(text, `StatusBadge « ${label} » introuvable`).toBeDefined();
+  return { text: text!, frame: text!.parent! };
+}
+
 beforeEach(() => {
   configure();
 });
@@ -239,7 +267,7 @@ describe('« Jamais transmise » — LE risque cash domine la colonne', () => {
 });
 
 describe('Relances — « en attente » redevient neutre', () => {
-  it('entrée pending ⇒ badge NEUTRE (slate500 sur lineSoft), done ⇒ success', async () => {
+  it('entrée pending ⇒ badge NEUTRE SCOPÉ AU NŒUD : encre slate500 SUR fond lineSoft — plus jamais la paire b2b', async () => {
     configure({
       feedItems: [
         {
@@ -252,10 +280,38 @@ describe('Relances — « en attente » redevient neutre', () => {
         },
       ],
     });
-    const rendered = treeOf(await render());
-    expect(rendered).toContain('Relance J+7');
-    // Badge neutre : encre slate500 #5B6B7B — plus jamais le b2b #1B3A63 pour un fait neutre.
-    expect(rendered).toContain('"color":"#5B6B7B"');
+    const renderer = await render();
+    expect(treeOf(renderer)).toContain('Relance J+7');
+    // SCOPÉ AU NŒUD du badge (verdict PR #61, P1) : #5B6B7B est l'encre courante de la moitié
+    // de l'écran — l'asserter sur l'arbre entier ne prouvait RIEN (le mutant b2b survivait).
+    // Et un not.toContain('#1B3A63') global rougirait du code non muté (b2b légitime ailleurs).
+    const { text, frame } = statusBadgeOf(renderer, 'En cours');
+    const textStyle = flattenStyle(text.props.style as StyleEntry);
+    const frameStyle = flattenStyle(frame.props.style as StyleEntry);
+    expect(textStyle['color']).toBe('#5B6B7B'); // neutralInk = slate500
+    expect(frameStyle['backgroundColor']).toBe('#F1F4F7'); // neutralBg = lineSoft
+    // La paire b2b (#1B3A63 sur #E6EDF6) ne peut pas repeindre CE badge sans rougir ici.
+    expect(textStyle['color']).not.toBe('#1B3A63');
+    expect(frameStyle['backgroundColor']).not.toBe('#E6EDF6');
+  });
+
+  it('entrée done ⇒ badge SUCCESS scopé (encre #0E7C5A sur #EAF2EC) — la dérivation par statut tient', async () => {
+    configure({
+      feedItems: [
+        {
+          id: 'n2',
+          kind: 'invoice-relance',
+          route: '/facture/i1',
+          title: 'Relance J+7',
+          status: 'done',
+          createdAt: '2026-07-10T08:00:00.000Z',
+        },
+      ],
+    });
+    const renderer = await render();
+    const { text, frame } = statusBadgeOf(renderer, 'Envoyée');
+    expect(flattenStyle(text.props.style as StyleEntry)['color']).toBe('#0E7C5A');
+    expect(flattenStyle(frame.props.style as StyleEntry)['backgroundColor']).toBe('#EAF2EC');
   });
 });
 

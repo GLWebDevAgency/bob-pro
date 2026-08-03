@@ -1,12 +1,20 @@
 /**
- * VENTES — RENDU MULTI-ÉTATS (critères de preuve Lot 3, plan DA 01/08).
+ * VENTES — RENDU MULTI-ÉTATS (critères de preuve Lot 3, plan DA 01/08 + verdict PR #61).
  *
  * Ce que ce fichier verrouille :
  *  · EXTINCTION : les badges de liste passent par la table FIGÉE du Lot 0
  *    (StatusBadge 11/700) et les chips liées parlent le ton NEUTRE de navigation —
  *    l'indigo (semantic.ai #4338CA / aiBg #F1EBFA) a quitté les sélections utilisateur ;
- *  · PARITÉ VOCALE : l'affordance ventes.filterKind pilote LE MÊME state que le
- *    SegmentedControl — « que les devis » fait disparaître la section Factures ;
+ *  · « L'INDIGO RENDU À BOB » verrouillé sur SES TROIS NŒUDS, SCOPÉ (verdict P1) :
+ *    chip liée + chip de nature (nominal) et bouton filtres actifs (fixture filtre ACTIF
+ *    par deep link — la branche hasActiveFilterChips est rendue et prouvée en theme.ink) ;
+ *  · CIBLES TACTILES du plan : chips ≥ 28 pt + hitSlop 8 → 44, au nœud ;
+ *  · PARITÉ VOCALE dans LES DEUX SENS : l'affordance ventes.filterKind pilote le state
+ *    (la section Factures disparaît) ET le SegmentedControl le REFLÈTE (selected) ;
+ *  · A11Y du kindFilter : pendant le chargement, chaque onglet est disabled + ANNONCÉ
+ *    disabled (plus d'enveloppe pointerEvents muette) — la garde onChange tient en double ;
+ *  · ISO-INFORMATION : aucun eyebrow « Ventes » ajouté par la migration BackHeader ;
+ *  · ÉCART DE CASSE DÉCLARÉ : badge du brouillon = « Brouillon » i18n (fin du .toUpperCase()) ;
  *  · LE CATCH MANQUANT (correction d'état sous freeze) : un échec réseau de
  *    deletePersistedDraft ouvre l'ErrorSheet — plus JAMAIS un échec muet ;
  *  · états : chargement (skeletons), erreur (ErrorRetry), vide (invitation), nominal.
@@ -70,9 +78,13 @@ vi.mock('react-native-safe-area-context', () => ({
 vi.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons', Feather: 'Feather' }));
 
 const nav = vi.hoisted(() => ({ push: vi.fn(), back: vi.fn() }));
+// Params de route CONFIGURABLES : le deep link vocal (« les devis de Mairie de Sèvres »)
+// est LE chemin réel qui allume hasActiveFilterChips — la branche « filtre actif » se
+// prouve par lui (verdict PR #61, P1 : elle n'était jamais rendue par la suite).
+const routeParams = vi.hoisted(() => ({ value: {} as Record<string, string> }));
 vi.mock('expo-router', () => ({
   useRouter: () => nav,
-  useLocalSearchParams: () => ({}),
+  useLocalSearchParams: () => routeParams.value,
 }));
 
 // La surface vocale publiée est CAPTURÉE : la parité se prouve en pilotant l'affordance.
@@ -195,6 +207,7 @@ const LINKED_INVOICE = {
 
 function configure(over: Partial<Record<string, unknown>> = {}): void {
   agent.surface = null;
+  routeParams.value = {};
   draft.value = {
     persistence: { ready: false },
     pendingResume: null,
@@ -229,6 +242,45 @@ const treeOf = (renderer: ReactTestRenderer): string =>
     return value;
   });
 
+// ── Leçon transverse du verdict (PR #61) : les assertions de COULEUR se scopent AU NŒUD —
+//    un toContain('<hex>') d'arbre entier ne prouve rien, le même hex vit ailleurs. ──
+type StyleEntry = Record<string, unknown> | null | undefined | false | readonly StyleEntry[];
+/** Aplati un style RN (objet ou tableaux imbriqués) — la DERNIÈRE valeur gagne, comme RN. */
+function flattenStyle(style: StyleEntry): Record<string, unknown> {
+  if (style === null || style === undefined || style === false) return {};
+  if (Array.isArray(style)) {
+    return (style as readonly StyleEntry[]).reduce<Record<string, unknown>>(
+      (acc, entry) => ({ ...acc, ...flattenStyle(entry) }),
+      {},
+    );
+  }
+  return { ...(style as Record<string, unknown>) };
+}
+
+interface NodeLike {
+  props: Record<string, unknown> & { style?: unknown; accessibilityLabel?: string; accessibilityRole?: string };
+  parent: NodeLike | null;
+  children: unknown[];
+}
+/** Le Text d'un StatusBadge (label exact) ET son conteneur (radius 6 du kit) — scopé au nœud. */
+function statusBadgeOf(renderer: ReactTestRenderer, label: string): { text: NodeLike; frame: NodeLike } {
+  const text = (renderer.root.findAllByType('Text' as never) as unknown as NodeLike[]).find((n) => {
+    const children = (n.props as { children?: unknown }).children;
+    if (children !== label) return false;
+    const parentStyle = flattenStyle((n.parent?.props.style ?? null) as StyleEntry);
+    return parentStyle['borderRadius'] === 6; // BADGE_RADIUS — discrimine des textes homonymes
+  });
+  expect(text, `StatusBadge « ${label} » introuvable`).toBeDefined();
+  return { text: text!, frame: text!.parent! };
+}
+/** Les onglets du SegmentedControl (rôle tab) indexés par libellé. */
+function segmentTabs(renderer: ReactTestRenderer): Map<string, NodeLike> {
+  const tabs = (renderer.root.findAllByType('Pressable' as never) as unknown as NodeLike[]).filter(
+    (n) => n.props.accessibilityRole === 'tab',
+  );
+  return new Map(tabs.map((n) => [String(n.props.accessibilityLabel), n]));
+}
+
 beforeEach(() => {
   configure();
 });
@@ -253,14 +305,109 @@ describe('Nominal — extinction legacy : la table figée et le ton neutre des c
     expect(JSON.stringify((chip!.props as { style: unknown }).style)).not.toContain('#F1EBFA');
   });
 
+  it('chip liée (PressableScale) SCOPÉE AU NŒUD : bord line, encre slate500, cible 28 + hitSlop 8 = 44', async () => {
+    const renderer = await render();
+    const chip = (renderer.root.findAllByType('Pressable' as never) as unknown as NodeLike[]).find(
+      (n) => n.props.accessibilityLabel === 'Facture F-2026-012',
+    );
+    expect(chip).toBeDefined();
+    const style = flattenStyle(chip!.props.style as StyleEntry);
+    // NEUTRE de navigation, au nœud : jamais l'indigo de Bob (#4338CA / #F1EBFA).
+    expect(style['borderColor']).toBe('#E0E6EE');
+    expect(style['backgroundColor']).toBeUndefined();
+    // Cible tactile du plan (« chips liées ≥ 28 pt + hitSlop → 44 ») — témoin anti-régression.
+    expect(style['minHeight']).toBe(28);
+    expect(style['minWidth']).toBe(28);
+    expect(chip!.props['hitSlop']).toBe(8);
+    expect(28 + 2 * 8).toBeGreaterThanOrEqual(44);
+    // L'encre de la chip : slate500 — sur CE nœud, pas ailleurs dans l'arbre.
+    const chipText = (chip!.children as NodeLike[]).find(
+      (c) => typeof c === 'object' && c !== null && 'props' in c,
+    );
+    expect(flattenStyle(chipText!.props.style as StyleEntry)['color']).toBe('#5B6B7B');
+  });
+
+  it('chip de NATURE (« Acompte ») SCOPÉE AU NŒUD : bord line, sans fond, encre slate500 — jamais semantic.ai', async () => {
+    const renderer = await render();
+    const text = (renderer.root.findAllByType('Text' as never) as unknown as NodeLike[]).find(
+      (n) => (n.props as { children?: unknown }).children === 'Acompte',
+    );
+    expect(text, 'chip de nature « Acompte » introuvable').toBeDefined();
+    const textStyle = flattenStyle(text!.props.style as StyleEntry);
+    expect(textStyle['color']).toBe('#5B6B7B'); // slate500 — l'indigo est rendu à Bob
+    expect(textStyle['color']).not.toBe('#4338CA');
+    const frame = flattenStyle((text!.parent?.props.style ?? null) as StyleEntry);
+    expect(frame['borderColor']).toBe('#E0E6EE'); // colors.line
+    expect(frame['backgroundColor']).toBeUndefined(); // jamais aiBg #F1EBFA
+    expect(frame['minHeight']).toBe(28); // cible du plan, même témoin que les chips liées
+  });
+
   it('la liste montre le netToPay de la pièce (règle acompte) — 415,80 €, jamais 1 386 €', async () => {
     const rendered = treeOf(await render());
     expect(rendered).toContain('415,80');
   });
+
+  it('ISO-INFORMATION (verdict PR #61) : aucun eyebrow « Ventes » — l’en-tête n’ajoute aucun texte', async () => {
+    const renderer = await render();
+    const texts = (renderer.root.findAllByType('Text' as never) as unknown as NodeLike[]).map((n) =>
+      String((n.props as { children?: unknown }).children),
+    );
+    // L'en-tête d'origine : retour « Accueil » + titre « Devis & Factures » — rien au-dessus.
+    expect(texts).toContain('Accueil');
+    expect(texts).toContain('Devis & Factures');
+    expect(texts).not.toContain('Ventes');
+  });
+});
+
+describe('Filtre ACTIF (deep link vocal) — la branche hasActiveFilterChips rendue et SCOPÉE (verdict PR #61, P1)', () => {
+  it('bouton filtres actifs = theme.ink AU NŒUD (bord + icône) — jamais semantic.ai ; le FilterChip client rend en ink', async () => {
+    // Chemin réel : deep link « les documents de Mairie de Sèvres » → customerId en route param.
+    routeParams.value = { customerId: 'c1' };
+    sources.value['serverSearch'] = q({ data: { hits: [{ id: 'q1' }, { id: 'i1' }] } });
+    const renderer = await render();
+    // La branche « filtre actif » est bien EXERCÉE : le FilterChip kit du client est là.
+    const chipText = (renderer.root.findAllByType('Text' as never) as unknown as NodeLike[]).find(
+      (n) => (n.props as { children?: unknown }).children === 'Client : Mairie de Sèvres',
+    );
+    expect(chipText, 'FilterChip « Client : … » introuvable — branche filtre actif non rendue').toBeDefined();
+    // SCOPÉ AU NŒUD du chip : sélection utilisateur = theme.ink (bord #0C2340, fond teinté 9 %).
+    const chipFrame = flattenStyle((chipText!.parent?.props.style ?? null) as StyleEntry);
+    expect(chipFrame['borderColor']).toBe('#0C2340');
+    expect(chipFrame['backgroundColor']).toBe('#E9EBEE');
+    expect(chipFrame['borderColor']).not.toBe('#4338CA');
+    expect(chipFrame['backgroundColor']).not.toBe('#F1EBFA');
+    // SCOPÉ AU NŒUD du bouton filtres : bord theme.ink, icône theme.ink — l'indigo est à Bob.
+    const btn = (renderer.root.findAllByType('Pressable' as never) as unknown as NodeLike[]).find(
+      (n) => n.props.accessibilityLabel === 'Recherche avancée',
+    );
+    expect(btn).toBeDefined();
+    const btnStyle = flattenStyle(
+      (btn!.props.style as (s: { pressed: boolean }) => StyleEntry)({ pressed: false }),
+    );
+    expect(btnStyle['borderColor']).toBe('#0C2340'); // theme.ink (marine) — PAS #4338CA
+    expect(btnStyle['borderColor']).not.toBe('#4338CA');
+    const icon = (renderer.root.findAllByType('Ionicons' as never) as unknown as NodeLike[]).find(
+      (n) => (n.props as { name?: string }).name === 'options-outline',
+    );
+    expect(icon).toBeDefined();
+    expect(icon!.props['color']).toBe('#0C2340');
+    expect(icon!.props['color']).not.toBe('#4338CA');
+  });
+
+  it('au repos (aucun filtre) : le MÊME nœud bouton retombe sur colors.line — la teinte est bien pilotée par l’état', async () => {
+    const renderer = await render();
+    const btn = (renderer.root.findAllByType('Pressable' as never) as unknown as NodeLike[]).find(
+      (n) => n.props.accessibilityLabel === 'Recherche avancée',
+    );
+    const btnStyle = flattenStyle(
+      (btn!.props.style as (s: { pressed: boolean }) => StyleEntry)({ pressed: false }),
+    );
+    expect(btnStyle['borderColor']).toBe('#E0E6EE');
+  });
 });
 
 describe('Parité vocale — ventes.filterKind pilote le MÊME state que le SegmentedControl', () => {
-  it('« que les devis » → la SECTION Factures disparaît (l’option du contrôle reste), say non vide', async () => {
+  it('« que les devis » → la SECTION Factures disparaît ET le SegmentedControl REFLÈTE le state (selected), say non vide', async () => {
     const renderer = await render();
     const sectionHeaders = (): string[] =>
       renderer.root
@@ -268,6 +415,9 @@ describe('Parité vocale — ventes.filterKind pilote le MÊME state que le Segm
         .filter((n) => (n.props as { accessibilityRole?: string }).accessibilityRole === 'header')
         .map((n) => String((n.props as { children: unknown }).children));
     expect(sectionHeaders()).toContain('Factures');
+    // Avant la voix : « Tout » est l'onglet sélectionné.
+    expect(segmentTabs(renderer).get('Tout')!.props['accessibilityState']).toMatchObject({ selected: true });
+    expect(segmentTabs(renderer).get('Devis')!.props['accessibilityState']).toMatchObject({ selected: false });
     const affordance = agent.surface?.affordances.find((a) => a.id === 'ventes.filterKind');
     expect(affordance).toBeDefined();
     const thunk = affordance!.match('affiche que les devis');
@@ -281,6 +431,10 @@ describe('Parité vocale — ventes.filterKind pilote le MÊME state que le Segm
     // SegmentedControl (dont l'option « Factures » reste sélectionnable, parité stricte).
     expect(sectionHeaders()).not.toContain('Factures');
     expect(sectionHeaders()).toContain('Devis');
+    // …ET le contrôle REFLÈTE le state piloté à la voix (value={kindFilter}, verdict PR #61 :
+    // sans ce témoin, Bob dirait « je n'affiche que les devis » avec « Tout » surligné).
+    expect(segmentTabs(renderer).get('Devis')!.props['accessibilityState']).toMatchObject({ selected: true });
+    expect(segmentTabs(renderer).get('Tout')!.props['accessibilityState']).toMatchObject({ selected: false });
   });
 });
 
@@ -312,6 +466,21 @@ describe('Le catch manquant de deletePersistedDraft — plus JAMAIS un échec mu
     expect((trashAfter!.props as { accessibilityState: { disabled: boolean } }).accessibilityState.disabled).toBe(false);
   });
 
+  it('ÉCART DE CASSE DÉCLARÉ (verdict PR #61) : le badge du brouillon rend « Brouillon » i18n tel quel — plus jamais « BROUILLON »', async () => {
+    draft.value = {
+      persistence: { ready: true },
+      pendingResume: { customer: { name: 'Chantier Bernard' } },
+      state: { saved: null },
+      discard: vi.fn(() => Promise.resolve()),
+    };
+    const renderer = await render();
+    // Témoin du NOUVEAU rendu (le .toUpperCase() du site legacy a disparu, StatusBadge ne
+    // transforme pas la casse) : le libellé du badge est la clé i18n telle quelle.
+    const { text } = statusBadgeOf(renderer, 'Brouillon');
+    expect(flattenStyle(text.props.style as StyleEntry)['fontSize']).toBe(11); // le cran badge du kit
+    expect(treeOf(renderer)).not.toContain('BROUILLON');
+  });
+
   it('annulation dans la ConfirmSheet ⇒ AUCUN appel discard (plancher inchangé)', async () => {
     confirmDouble.result = false;
     draft.value = {
@@ -337,6 +506,34 @@ describe('États — chargement / erreur / vide (une source absente n’est jama
     const rendered = treeOf(await render());
     expect(rendered).toContain('"accessibilityElementsHidden":true');
     expect(rendered).not.toContain('D-2026-004');
+  });
+
+  it('chargement ⇒ le kindFilter est inerte ET ANNONCÉ désactivé (verdict PR #61, P2 a11y) — la garde tient', async () => {
+    configure({ quotes: q({ isLoading: true }), invoices: q(), customers: q() });
+    const renderer = await render();
+    const tabs = segmentTabs(renderer);
+    expect(tabs.size).toBe(3);
+    for (const tab of tabs.values()) {
+      // VoiceOver n'annonce plus trois onglets actionnables qui ne répondent pas :
+      // disabled porté PAR SEGMENT (kit), plus d'enveloppe pointerEvents='none' muette.
+      expect(tab.props['disabled']).toBe(true);
+      expect(tab.props['accessibilityState']).toMatchObject({ disabled: true });
+    }
+    // Double verrou : même si un press passait (lecteur d'écran), la garde onChange tient —
+    // la sélection ne bouge pas.
+    await act(async () => {
+      (tabs.get('Devis')!.props['onPress'] as () => void)();
+    });
+    expect(segmentTabs(renderer).get('Tout')!.props['accessibilityState']).toMatchObject({ selected: true });
+    expect(segmentTabs(renderer).get('Devis')!.props['accessibilityState']).toMatchObject({ selected: false });
+  });
+
+  it('données servies ⇒ les onglets ne sont PLUS annoncés désactivés (state selected seul)', async () => {
+    const renderer = await render();
+    for (const tab of segmentTabs(renderer).values()) {
+      expect(tab.props['disabled']).toBeUndefined();
+      expect(Object.keys(tab.props['accessibilityState'] as object)).toEqual(['selected']);
+    }
   });
 
   it('échec réseau ⇒ ErrorRetry (Réessayer), jamais une liste vide silencieuse', async () => {
