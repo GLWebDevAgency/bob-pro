@@ -167,3 +167,63 @@ survivent au changement de compte et restent la source de contexte long. À lire
 2. Lire les journaux des workflows Lot 3 / Lot 5 (§1) : si les verdicts y sont, appliquer les
    findings puis merger dans l'ordre ; sinon relancer les vérifications adversariales.
 3. Répondre au fondateur sur ses verdicts en attente (§2) et lui proposer le rebuild APK après merge.
+
+---
+
+## AMENDEMENT — verdict du Lot 5 (PR #60) rendu APRÈS l'écriture de ce document
+
+Le workflow de vérification du Lot 5 a rendu son verdict juste avant la coupure de session.
+**Il change l'instruction du §1 : la PR #60 n'est PAS mergeable en l'état.**
+
+### Verdict : `CORRIGER` — `conformePlan: false`, `datavizHonnete: false`, `mutantsTousRouges: false`
+
+Rituel du vérificateur intégralement vert (typecheck 17/17, test 15/15, lint 9/9, mobile 1960 tests,
+ui 476 tests, flags-matrix 19/19 ; 10/10 mutants déclarés rejoués rouges ; lanes GPT intactes,
+aucun statut de spec promu). **Ce sont les findings qui bloquent, pas la CI.**
+
+#### P1 — bloquants
+
+1. **`packages/ui/src/components/trend-bars.tsx` — la dataviz s'effondre à 0 après avoir peint la
+   vraie valeur** (cas nominal, reduce-motion OFF). La préférence démarre à `unknown` → barre
+   statique à n% ; la promesse `AccessibilityInfo` se résout une frame plus tard → bascule sur
+   l'`Animated.Value` initialisé à 0 → repeint 0 % puis remonte en 400 ms. Sur `main` les barres
+   étaient des `View` statiques toujours justes : **régression visuelle nouvelle**.
+   Preuve (sonde, un seul montage) : `FRAME1(unknown)= "width":"42%"` → `FRAME2(inactive)= "width":0`.
+   *Correctif attendu* : figer la décision au montage comme le fait `FadeIn` du kit (garde `started`,
+   arbitrage FAIL-CLOSED MOTION du Lot 0), ou initialiser `progress` à `target` avant d'animer.
+2. **`apps/mobile/app/depenses.tsx` — le héros dette perd l'AA** : montant `semantic.warning`
+   (#C77A12) sur le nouveau fond pastel `warningBg` (#FBF0DF) = **2,99:1** (< 3:1 AA gros texte),
+   alors qu'il était à 3,38:1 sur blanc avant le lot. Le Lot 0 a créé `semantic.warningInk`
+   (#8A5A12, **5,25:1**) exactement pour ce cas. L'eyebrow tombe à 2,59:1.
+3. **`apps/mobile/app/__tests__/depenses.states.test.tsx` — test tautologique** : la « PLANCHE
+   matière argent » ne prouve rien du héros ; ses deux littéraux sont produits par d'autres éléments
+   (la pastille catégorie et le badge de statut partagent les mêmes hex). Mutants : suppression
+   totale du voile → 9/9 verts ; montant jamais teinté → 9/9 verts.
+4. **`apps/mobile/app/__tests__/pilotage.states.test.tsx` — l'honnêteté des null n'est verrouillée
+   par AUCUN test**, alors que c'est le cœur de la doctrine du derive. Les branches null sont
+   rendues par les fixtures mais aucune assertion ne les touche : DSO null→0, taux null→0, part
+   client null→barre fantôme 0 % passent tous verts.
+
+#### P2 / P3 — à traiter dans le même passage
+
+- `cloture.tsx` : parité `disabled/loading` du CTA « Envoyer au comptable » non prouvée (`sendingDossier`
+  jamais asserté) ; deux libellés visibles hors i18n (`"Fermer"`, `"OK"`) ; `disabled={done}` ajouté sur
+  `CheckRow` inverse la sémantique VoiceOver d'une rangée réglée.
+- `depenses.tsx` : **perte des centimes** sur des chiffres fiscaux (`KpiTile` formate en euros entiers
+  là où l'écran affichait les centimes) — changement d'information sous feature freeze.
+- `diagnostic.tsx` : toute la phase `result` hors couverture (count-up compris).
+- `comptabilite.tsx` / `recherche.tsx` / `depenses.tsx` : tons de typologie client résiduels
+  (`b2g`, `b2b`) hors des 4 sites énumérés par l'arbitrage — hors périmètre formel, mais la doctrine
+  « fini les tons recyclés » n'est pas vraie à l'écran à la fin du lot.
+
+### Instruction de reprise pour le Lot 5
+
+Reprendre le worktree du lot (branche `claude/lot5-pilotage-compta`, PR #60), solder les 4 P1 puis
+les P2/P3, **chaque correctif avec son témoin vu mourir**, relancer le rituel, puis **re-vérification
+adversariale** avant merge. Le journal complet du verdict :
+`~/.claude/projects/…/8adbf03e-…/subagents/workflows/wf_bcc1ae72-887/journal.jsonl`.
+
+### Lot 3 (PR #61)
+
+Son workflow (`wf_ef4555a4-f09`) n'avait pas rendu son verdict à la coupure — **même consigne** :
+lire son journal, et si le verdict n'y est pas, relancer une vérification adversariale avant tout merge.
