@@ -22,23 +22,28 @@
  *   (BiometricGate) — la biométrie ne REMPLACE pas le premier login par mot de passe ;
  * · l'écran succès (auth3) est omis : la session réelle bascule l'app immédiatement.
  * · fond 172° navy→nuit : même rampe tokens que l'onboarding C22 (marine.d1 → graphite.d1).
+ *
+ * Vague hors-lots (audit 03/08) : AuthCta/AuthField partagés (fin des 4 CTA × 3 grammaires),
+ * erreurs en encre danger on-dark certifiée, une SEULE taille de H1 (screenH1 27), corps
+ * white80 / détails white70, toggle afficher/masquer sur les mots de passe (parité avec la
+ * récupération), cibles 44 sur back/« J'ai déjà un compte », fade-through fail-closed entre
+ * les étapes.
  */
-import { useEffect, useState, type ComponentProps } from 'react';
+import { useEffect, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
   ScrollView,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Siret, type CompanyLookupResult } from '@bob/core';
-import { themes } from '@bob/tokens';
+import { surfaceTint, themes } from '@bob/tokens';
 import { t, type I18nKey } from '@bob/i18n';
-import { Card, Stepper, font, useTheme } from '@bob/ui';
+import { Card, FadeIn, Stepper, font, useTheme } from '@bob/ui';
 import { useAuth, type AuthErrorCode } from '../data/auth';
 import { markFreshLogin } from '../data/biometric';
 import { useLookupCompany } from '../data/hooks';
@@ -47,6 +52,8 @@ import {
   type SiretLookupFailureReason,
 } from '../lib/siret-lookup-error';
 import { CompanyFicheCard, formatSiret } from '../components/CompanyFicheCard';
+import { AuthCta } from '../components/auth/AuthCta';
+import { AuthField } from '../components/auth/AuthField';
 import { ChevronLeftIcon, LockIcon, MailIcon, SparkIcon } from '../components/icons';
 
 type Step = 'login' | 'siret' | 'company' | 'account' | 'verify';
@@ -83,74 +90,6 @@ const lookupErrorKey = (error: unknown): I18nKey =>
 
 const MIN_PASSWORD_LENGTH = 8;
 
-/** Champ de saisie sur navy — voile blanc 7 %, bord 16 %, texte surface (proto §auth). */
-function NavyField({
-  label,
-  error,
-  ...input
-}: {
-  label: string;
-  error?: boolean;
-} & ComponentProps<typeof TextInput>) {
-  const { colors, overlays, semantic } = useTheme();
-  return (
-    <View style={{ gap: 7 }}>
-      <Text style={[font('label', 600), { fontSize: 12, color: overlays.white60 }]}>{label}</Text>
-      <TextInput
-        accessibilityLabel={label}
-        placeholderTextColor={overlays.white50}
-        style={[
-          font('body'),
-          {
-            backgroundColor: overlays.white07,
-            borderWidth: 1,
-            borderColor: error ? semantic.dangerVivid : overlays.white16,
-            borderRadius: 15,
-            paddingHorizontal: 16,
-            paddingVertical: 15,
-            fontSize: 15,
-            color: colors.surface,
-          },
-        ]}
-        {...input}
-      />
-    </View>
-  );
-}
-
-/** CTA blanc plein du proto (Se connecter / Continuer / Créer mon compte). */
-function PrimaryCta({
-  label,
-  busy,
-  onPress,
-}: {
-  label: string;
-  busy?: boolean;
-  onPress: () => void;
-}) {
-  const { colors } = useTheme();
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      accessibilityState={{ disabled: busy === true, busy: busy === true }}
-      disabled={busy}
-      onPress={onPress}
-      style={({ pressed }) => ({
-        backgroundColor: colors.surface,
-        borderRadius: 15,
-        minHeight: 52,
-        justifyContent: 'center',
-        alignItems: 'center',
-        opacity: busy ? 0.7 : 1,
-        transform: [{ scale: pressed && !busy ? 0.97 : 1 }],
-      })}
-    >
-      <Text style={[font('button'), { color: colors.ink900 }]}>{busy ? '…' : label}</Text>
-    </Pressable>
-  );
-}
-
 /** Lien texte discret sur navy (mdp oublié, bascule login/inscription, passer l'étape). */
 function GhostLink({
   label,
@@ -178,20 +117,21 @@ function GhostLink({
         opacity: disabled ? 0.55 : 1,
       }}
     >
-      <Text style={[font('label', 600), { fontSize: 13.5, color: overlays.white70 }]}>{label}</Text>
+      <Text style={[font('label', 600), { color: overlays.white70 }]}>{label}</Text>
     </Pressable>
   );
 }
 
-/** Message d'erreur voix Bob, annoncé aux lecteurs d'écran. */
+/** Message d'erreur voix Bob, annoncé aux lecteurs d'écran — encre danger on-dark AA. */
 function ErrorLine({ message }: { message: string | null }) {
-  const { semantic } = useTheme();
   if (!message) return null;
   return (
     <Text
       accessibilityRole="alert"
       accessibilityLiveRegion="polite"
-      style={[font('sub'), { fontSize: 13.5, color: semantic.dangerVivid }]}
+      // surfaceTint.dark.danger.ink (certifiée ≥8:1 on-dark) — dangerVivid ≈4,3:1 échouait
+      // l'AA petit texte sur marine.d1 pour LE message qui débloque l'utilisateur.
+      style={[font('sub'), { color: surfaceTint.dark.danger.ink }]}
     >
       {message}
     </Text>
@@ -405,16 +345,17 @@ export function LoginScreen() {
       >
         <SparkIcon color={colors.ink900} size={32} strokeWidth={1.9} />
       </View>
-      <Text style={[font('screenH1'), { fontSize: 22, color: colors.surface }]}>Bob Pro</Text>
+      {/* UNE seule taille de H1 dans la famille auth : screenH1 (27) — plus de 22/26/28/29. */}
+      <Text style={[font('screenH1'), { color: colors.surface }]}>Bob Pro</Text>
       <View style={{ gap: 6, marginBottom: 6 }}>
-        <Text style={[font('screenH1'), { fontSize: 29, lineHeight: 32, color: colors.surface }]}>
+        <Text style={[font('screenH1'), { lineHeight: 32, color: colors.surface }]}>
           {say('auth.loginTitle')}
         </Text>
-        <Text style={[font('body'), { fontSize: 15, lineHeight: 22, color: overlays.white60 }]}>
+        <Text style={[font('body'), { lineHeight: 22, color: overlays.white70 }]}>
           {say('auth.loginSub')}
         </Text>
       </View>
-      <NavyField
+      <AuthField
         label={say('auth.emailLabel')}
         value={email}
         onChangeText={setEmail}
@@ -424,15 +365,18 @@ export function LoginScreen() {
         autoComplete="email"
         keyboardType="email-address"
       />
-      <NavyField
+      <AuthField
         label={say('auth.passwordLabel')}
         value={password}
         onChangeText={setPassword}
         placeholder="••••••••"
-        secureTextEntry
+        autoCapitalize="none"
+        autoCorrect={false}
         autoComplete="current-password"
         returnKeyType="go"
         onSubmitEditing={() => void submitLogin()}
+        // Parité d'affordance avec la récupération : même champ, même geste afficher/masquer.
+        secureToggle
       />
       <GhostLink label={say('auth.forgot')} align="right" onPress={() => void submitReset()} />
       <ErrorLine message={error} />
@@ -450,12 +394,12 @@ export function LoginScreen() {
       {notice ? (
         <Text
           accessibilityLiveRegion="polite"
-          style={[font('sub'), { fontSize: 13.5, color: semantic.successOnDark }]}
+          style={[font('sub'), { color: semantic.successOnDark }]}
         >
           {notice}
         </Text>
       ) : null}
-      <PrimaryCta label={say('auth.loginCta')} busy={busy} onPress={() => void submitLogin()} />
+      <AuthCta label={say('auth.loginCta')} busy={busy} onPress={() => void submitLogin()} />
       <GhostLink label={say('auth.switchToSignup')} onPress={() => goTo('siret')} />
     </View>
   );
@@ -463,14 +407,14 @@ export function LoginScreen() {
   const siretStep = (
     <View style={{ flex: 1, justifyContent: 'center', gap: 14 }}>
       <View style={{ gap: 6, marginBottom: 6 }}>
-        <Text style={[font('screenH1'), { fontSize: 26, lineHeight: 30, color: colors.surface }]}>
+        <Text style={[font('screenH1'), { lineHeight: 30, color: colors.surface }]}>
           {say('auth.siretTitle')}
         </Text>
-        <Text style={[font('body'), { fontSize: 15, lineHeight: 22, color: overlays.white60 }]}>
+        <Text style={[font('body'), { lineHeight: 22, color: overlays.white70 }]}>
           {say('auth.siretSub')}
         </Text>
       </View>
-      <NavyField
+      <AuthField
         label={say('auth.stepSiret')}
         value={formatSiret(siret)}
         onChangeText={(raw) => setSiret(raw.replace(/\D/g, '').slice(0, 14))}
@@ -481,7 +425,7 @@ export function LoginScreen() {
         error={error !== null}
       />
       <ErrorLine message={error} />
-      <PrimaryCta
+      <AuthCta
         label={say('auth.siretCta')}
         busy={lookup.isPending}
         onPress={() => void submitSiret()}
@@ -499,17 +443,17 @@ export function LoginScreen() {
   const companyStep = company ? (
     <View style={{ flex: 1, justifyContent: 'center', gap: 14 }}>
       <View style={{ gap: 6 }}>
-        <Text style={[font('screenH1'), { fontSize: 26, lineHeight: 30, color: colors.surface }]}>
+        <Text style={[font('screenH1'), { lineHeight: 30, color: colors.surface }]}>
           {say('auth.companyTitle')}
         </Text>
-        <Text style={[font('body'), { fontSize: 15, lineHeight: 22, color: overlays.white60 }]}>
+        <Text style={[font('body'), { lineHeight: 22, color: overlays.white70 }]}>
           {say('auth.companySub')}
         </Text>
       </View>
       {/* Fiche société COMPLÈTE (C24b) : tout ce que l'annuaire officiel connaît —
           composant partagé avec le ProvisioningScreen (lignes absentes masquées). */}
       <CompanyFicheCard company={company} />
-      <PrimaryCta label={say('auth.companyConfirm')} onPress={() => goTo('account')} />
+      <AuthCta label={say('auth.companyConfirm')} onPress={() => goTo('account')} />
       <GhostLink label={say('auth.companyEdit')} onPress={() => goTo('siret')} />
     </View>
   ) : (
@@ -520,14 +464,14 @@ export function LoginScreen() {
   const accountStep = (
     <View style={{ flex: 1, justifyContent: 'center', gap: 14 }}>
       <View style={{ gap: 6, marginBottom: 6 }}>
-        <Text style={[font('screenH1'), { fontSize: 26, lineHeight: 30, color: colors.surface }]}>
+        <Text style={[font('screenH1'), { lineHeight: 30, color: colors.surface }]}>
           {say('auth.accountTitle')}
         </Text>
-        <Text style={[font('body'), { fontSize: 15, lineHeight: 22, color: overlays.white60 }]}>
+        <Text style={[font('body'), { lineHeight: 22, color: overlays.white70 }]}>
           {say('auth.accountSub')}
         </Text>
       </View>
-      <NavyField
+      <AuthField
         label={say('auth.firstNameLabel')}
         value={firstName}
         onChangeText={setFirstName}
@@ -535,7 +479,7 @@ export function LoginScreen() {
         autoComplete="given-name"
         autoCorrect={false}
       />
-      <NavyField
+      <AuthField
         label={say('auth.emailLabel')}
         value={email}
         onChangeText={setEmail}
@@ -546,22 +490,24 @@ export function LoginScreen() {
         keyboardType="email-address"
       />
       <View style={{ gap: 7 }}>
-        <NavyField
+        <AuthField
           label={say('auth.passwordLabel')}
           value={password}
           onChangeText={setPassword}
           placeholder="••••••••"
-          secureTextEntry
+          autoCapitalize="none"
+          autoCorrect={false}
           autoComplete="new-password"
           returnKeyType="go"
           onSubmitEditing={() => void submitAccount()}
+          secureToggle
         />
-        <Text style={[font('meta'), { fontSize: 12, color: overlays.white50 }]}>
+        <Text style={[font('meta'), { color: overlays.white70 }]}>
           {say('auth.passwordHint')}
         </Text>
       </View>
       <ErrorLine message={error} />
-      <PrimaryCta label={say('auth.signupCta')} busy={busy} onPress={() => void submitAccount()} />
+      <AuthCta label={say('auth.signupCta')} busy={busy} onPress={() => void submitAccount()} />
     </View>
   );
 
@@ -581,7 +527,7 @@ export function LoginScreen() {
         <MailIcon color={colors.ink900} size={40} strokeWidth={1.9} />
       </View>
       <Text
-        style={[font('screenH1'), { fontSize: 26, color: colors.surface, textAlign: 'center' }]}
+        style={[font('screenH1'), { color: colors.surface, textAlign: 'center' }]}
       >
         {say('auth.verifyTitle')}
       </Text>
@@ -589,18 +535,17 @@ export function LoginScreen() {
         style={[
           font('body'),
           {
-            fontSize: 15,
             lineHeight: 23,
             maxWidth: 300,
             textAlign: 'center',
-            color: overlays.white66,
+            color: overlays.white80,
           },
         ]}
       >
         {say('auth.verifyBody', { email: email.trim() })}
       </Text>
       <View style={{ alignSelf: 'stretch', marginTop: 12 }}>
-        <PrimaryCta
+        <AuthCta
           label={say('auth.verifyCta')}
           onPress={() => {
             setPassword('');
@@ -614,7 +559,7 @@ export function LoginScreen() {
           accessibilityLiveRegion="polite"
           style={[
             font('sub'),
-            { fontSize: 13.5, color: semantic.successOnDark, textAlign: 'center' },
+            { color: semantic.successOnDark, textAlign: 'center' },
           ]}
         >
           {notice}
@@ -672,13 +617,14 @@ export function LoginScreen() {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          {/* En-tête : retour (inscription) + bascule vers la connexion */}
+          {/* En-tête : retour (inscription) + bascule vers la connexion — cibles 44 réelles
+              (les échappatoires du flux étaient sous la barre terrain). */}
           <View
             style={{
               flexDirection: 'row',
               alignItems: 'center',
               justifyContent: 'space-between',
-              minHeight: 34,
+              minHeight: 44,
             }}
           >
             {back !== undefined ? (
@@ -687,10 +633,10 @@ export function LoginScreen() {
                 accessibilityLabel={say('onboard.back')}
                 onPress={() => goTo(back)}
                 hitSlop={8}
-                style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 4, minHeight: 44 }}
               >
                 <ChevronLeftIcon color={overlays.white70} size={17} strokeWidth={2.2} />
-                <Text style={[font('label', 600), { fontSize: 14.5, color: overlays.white70 }]}>
+                <Text style={[font('body', 600), { color: overlays.white70 }]}>
                   {say('onboard.back')}
                 </Text>
               </Pressable>
@@ -703,8 +649,9 @@ export function LoginScreen() {
                 accessibilityLabel={say('auth.switchToLogin')}
                 onPress={() => goTo('login')}
                 hitSlop={8}
+                style={{ minHeight: 44, justifyContent: 'center' }}
               >
-                <Text style={[font('label', 600), { fontSize: 13.5, color: overlays.white60 }]}>
+                <Text style={[font('label', 600), { color: overlays.white70 }]}>
                   {say('auth.switchToLogin')}
                 </Text>
               </Pressable>
@@ -716,7 +663,10 @@ export function LoginScreen() {
               <Stepper total={3} current={signupStepIndex} labels={stepLabels} />
             </Card>
           ) : null}
-          {content}
+          {/* Fade-through fail-closed entre les étapes — coupé net sous reduce-motion. */}
+          <FadeIn key={step} style={{ flex: 1 }}>
+            {content}
+          </FadeIn>
           {/* Pied sécurité du proto (sans « 2FA » — non implémenté, on ne le promet pas) */}
           <View
             style={{
@@ -727,8 +677,8 @@ export function LoginScreen() {
               paddingTop: 16,
             }}
           >
-            <LockIcon color={overlays.white50} size={13} strokeWidth={2} />
-            <Text style={[font('meta'), { fontSize: 11.5, color: overlays.white50 }]}>
+            <LockIcon color={overlays.white70} size={13} strokeWidth={2} />
+            <Text style={[font('meta'), { color: overlays.white70 }]}>
               {say('auth.footerSecure')}
             </Text>
           </View>
