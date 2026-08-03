@@ -45,6 +45,7 @@ import {
   planAgentSessionFallback,
   planAgentSessionFailedClosed,
   revalidateAgentSessionBackgroundAfterPermission,
+  realtimeGenericReconnectBudget,
   realtimeOwnsAgentSession,
   shouldRecoverLegacyListeningSilence,
   shouldStopAgentSessionForAppState,
@@ -377,7 +378,10 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
             legacyFallback,
             // Une reconnexion générique recréerait une deuxième mission v2. Le runtime v2 est
             // seul propriétaire de ses routes ; l'orchestrateur attend son verdict/fallback.
-            maxReconnectAttempts: conversationV2 ? 0 : 1,
+            maxReconnectAttempts: realtimeGenericReconnectBudget(
+              agentMissionProtocolVersion,
+              conversationV2,
+            ),
           });
         },
         createControlGate: (currentFence) =>

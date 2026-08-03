@@ -1,4 +1,8 @@
 import type { AgentContext } from '@bob/ai';
+import {
+  REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
+  type RealtimeAgentMissionProtocolVersion,
+} from '@bob/api-client';
 import type { RealtimeFallbackReason } from '../realtime/realtime-transport';
 import type { LegacyFallbackChannel } from '../realtime/realtime-recovery-policy';
 
@@ -49,6 +53,21 @@ export function planAgentSessionFallback(
 
 export function realtimeOwnsAgentSession(driver: AgentSessionDriver): boolean {
   return driver === 'live_bootstrap' || driver === 'live';
+}
+
+/**
+ * Une mission M2-A possède sa reprise durable. La recréer via l'orchestrateur générique
+ * dupliquerait la capability puis masquerait la première cause terminale derrière un 429.
+ * Le runtime Conversation V2 garde le même contrat, y compris avant M2-A.
+ */
+export function realtimeGenericReconnectBudget(
+  agentMissionProtocolVersion: RealtimeAgentMissionProtocolVersion | null,
+  conversationRuntimeOwnsRecovery: boolean,
+): 0 | 1 {
+  return agentMissionProtocolVersion === REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
+    || conversationRuntimeOwnsRecovery
+    ? 0
+    : 1;
 }
 
 /**

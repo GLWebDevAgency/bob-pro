@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentContext } from '@bob/ai';
 import {
+  REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
+  REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
+} from '@bob/api-client';
+import {
   agentContextSemanticKey,
   composeHandoffSpeech,
   planAgentSessionFallback,
   planAgentSessionFailedClosed,
   revalidateAgentSessionBackgroundAfterPermission,
+  realtimeGenericReconnectBudget,
   realtimeOwnsAgentSession,
   shouldRecoverLegacyListeningSilence,
   shouldStopAgentSessionForAppState,
@@ -46,6 +51,20 @@ describe('agent session runtime fences', () => {
     expect(shouldStopAgentSessionForAppState('active')).toBe(false);
     expect(shouldStopAgentSessionForAppState('background')).toBe(true);
     expect(shouldStopAgentSessionForAppState('background', true)).toBe(false);
+  });
+
+  it('interdit la reconnexion générique à toute mission M2-A, quel que soit le provider', () => {
+    expect(realtimeGenericReconnectBudget(
+      REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
+      false,
+    )).toBe(0);
+    expect(realtimeGenericReconnectBudget(null, true)).toBe(0);
+
+    expect(realtimeGenericReconnectBudget(null, false)).toBe(1);
+    expect(realtimeGenericReconnectBudget(
+      REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
+      false,
+    )).toBe(1);
   });
 
   it('respecte le repli texte sans jamais réarmer un micro legacy', () => {
