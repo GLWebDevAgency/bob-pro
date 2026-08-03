@@ -19,8 +19,11 @@ import {
   EmptyState,
   ErrorRetry,
   FadeIn,
+  FilterChip,
   MoneyText,
+  PressableScale,
   SectionHeader,
+  SegmentedControl,
   SkeletonRow,
   StatusBadge,
   font,
@@ -65,48 +68,8 @@ type InvoiceStatus = InvoiceView['status'];
 const QUOTE_ORDER: Record<QuoteStatus, number> = { draft: 0, sent: 1, viewed: 1, signed: 2, refused: 4, expired: 4 };
 const INVOICE_ORDER: Record<InvoiceStatus, number> = { draft: 0, late: 1, issued: 2, partially_paid: 2, paid: 4, cancelled: 4 };
 
-/** B9 — chip de filtre actif, supprimable (croix) — état visible au-dessus des résultats. */
-function ActiveFilterChip({ label, onRemove }: { label: string; onRemove: () => void }) {
-  const { semantic, personality } = useTheme();
-  return (
-    <View
-      style={{
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
-        borderWidth: 1,
-        borderColor: semantic.ai,
-        backgroundColor: semantic.aiBg,
-        borderRadius: 999,
-        paddingLeft: 10,
-        paddingRight: 6,
-        height: 30,
-      }}
-    >
-      <Text style={[font('meta'), { fontWeight: '600', color: semantic.aiInk }]} numberOfLines={1}>
-        {label}
-      </Text>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`${t('ventes.activeFilter.remove', { personality })} — ${label}`}
-        onPress={onRemove}
-        hitSlop={8}
-        style={({ pressed }) => ({
-          width: 18,
-          height: 18,
-          alignItems: 'center',
-          justifyContent: 'center',
-          opacity: pressed ? 0.6 : 1,
-        })}
-      >
-        <Ionicons name="close" size={14} color={semantic.aiInk} />
-      </Pressable>
-    </View>
-  );
-}
-
 export default function Ventes() {
-  const { colors, semantic, personality } = useTheme();
+  const { colors, semantic, personality, theme } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: 40 });
@@ -263,6 +226,22 @@ export default function Ventes() {
     if (composedQuery.length > 0) setQuery(composedQuery);
   };
   const hasActiveFilterChips = advancedCustomerId !== null || dateRange !== null || advancedStatus !== null || debouncedQuery.length > 0;
+  const dateRangeChipLabel =
+    dateRange === null
+      ? null
+      : dateRange.preset === 'thisMonth'
+        ? t('ventes.dateChip.thisMonth', { personality })
+        : dateRange.preset === 'lastMonth'
+          ? t('ventes.dateChip.lastMonth', { personality })
+          : dateRange.preset === 'last2Months'
+            ? t('ventes.dateChip.last2Months', { personality })
+            : t('ventes.dateChip.customRange', {
+                personality,
+                params: { from: frDateLabel(dateRange.from), to: frDateLabel(dateRange.to) },
+              });
+  /** Croix des FilterChip — libellé i18n composé (« Retirer ce filtre — {label} »). */
+  const removeFilterLabel = (label: string): string =>
+    `${t('ventes.activeFilter.remove', { personality })} — ${label}`;
 
   // Liaison devis ↔ factures : chips discrètes automatiques sur chaque pièce.
   const invoicesOfQuote = (quoteId: string) =>
@@ -459,41 +438,28 @@ export default function Ventes() {
             vocale : « retrouve les factures avec un chauffe-eau » pilote les mêmes états) ;
             seul le CORPS des sections en dessous bascule skeleton → erreur → données. */}
         <View style={{ gap: 10 }}>
-          <View style={{ flexDirection: 'row', gap: 8 }}>
-            {(
-              [
-                ['all', 'ventes.filterAll'],
-                ['quotes', 'ventes.filterQuotes'],
-                ['invoices', 'ventes.filterInvoices'],
-              ] as const
-            ).map(([key, labelKey]) => (
-              <Pressable
-                key={key}
-                accessibilityRole="button"
-                accessibilityState={{ selected: kindFilter === key, disabled: !ventesDataReady }}
-                disabled={!ventesDataReady}
-                onPress={() => setKindFilter(key)}
-                style={({ pressed }) => ({
-                  paddingHorizontal: 14,
-                  paddingVertical: 8,
-                  borderRadius: 999,
-                  borderWidth: 1,
-                  borderColor: kindFilter === key ? semantic.ai : colors.line,
-                  backgroundColor: kindFilter === key ? semantic.aiBg : colors.surface,
-                  opacity: !ventesDataReady ? 0.5 : pressed ? 0.7 : 1,
-                  transform: [{ scale: pressed && ventesDataReady ? 0.97 : 1 }],
-                })}
-              >
-                <Text
-                  style={[
-                    font('meta'),
-                    { fontWeight: kindFilter === key ? '700' : '600', color: kindFilter === key ? semantic.aiInk : colors.ink800 },
-                  ]}
-                >
-                  {t(labelKey, { personality })}
-                </Text>
-              </Pressable>
-            ))}
+          {/* PURGE DE L'INDIGO DÉVOYÉ (plan DA 01/08, Lot 3) : le kindFilter parle le
+              SegmentedControl kit — l'indigo redevient le canal EXCLUSIF « Bob agit ».
+              Le state ventes.filterKind est STRICTEMENT conservé (parité vocale) ; tant
+              que les données ne sont pas servies, le contrôle est inerte (garde onChange
+              + voile 0.5), exactement comme les anciennes pilules désactivées. */}
+          <View
+            pointerEvents={ventesDataReady ? 'auto' : 'none'}
+            style={{ opacity: ventesDataReady ? 1 : 0.5 }}
+          >
+            <SegmentedControl
+              options={[
+                { key: 'all', label: t('ventes.filterAll', { personality }) },
+                { key: 'quotes', label: t('ventes.filterQuotes', { personality }) },
+                { key: 'invoices', label: t('ventes.filterInvoices', { personality }) },
+              ]}
+              value={kindFilter}
+              onChange={(key) => {
+                if (!ventesDataReady) return;
+                setKindFilter(key);
+              }}
+              accessibilityLabel={t('ventes.filterKindLabel', { personality })}
+            />
           </View>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
             <TextInput
@@ -520,6 +486,8 @@ export default function Ventes() {
                 },
               ]}
             />
+            {/* Filtres actifs = sélection UTILISATEUR : bord theme.ink (arbitrage), plus
+                jamais l'indigo aiBg — l'indigo reste à Bob. */}
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={t('ventes.searchAdvancedButton', { personality })}
@@ -531,15 +499,15 @@ export default function Ventes() {
                 height: 44,
                 borderRadius: 12,
                 borderWidth: 1,
-                borderColor: hasActiveFilterChips ? semantic.ai : colors.line,
-                backgroundColor: hasActiveFilterChips ? semantic.aiBg : colors.surface,
+                borderColor: hasActiveFilterChips ? theme.ink : colors.line,
+                backgroundColor: colors.surface,
                 alignItems: 'center',
                 justifyContent: 'center',
                 opacity: !ventesDataReady ? 0.5 : pressed ? 0.7 : 1,
                 transform: [{ scale: pressed && ventesDataReady ? 0.95 : 1 }],
               })}
             >
-              <Ionicons name="options-outline" size={20} color={hasActiveFilterChips ? semantic.aiInk : colors.ink800} />
+              <Ionicons name="options-outline" size={20} color={hasActiveFilterChips ? theme.ink : colors.ink800} />
             </Pressable>
           </View>
           {suggestOpen && ventesDataReady ? (
@@ -573,35 +541,37 @@ export default function Ventes() {
             />
           ) : null}
           {hasActiveFilterChips ? (
+            // B9 — chips de filtre actif : FilterChip kit (sélection theme.ink, croix 44).
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
               {debouncedQuery.length > 0 ? (
-                <ActiveFilterChip label={debouncedQuery} onRemove={() => setQuery('')} />
-              ) : null}
-              {activeAdvancedCustomerName !== null ? (
-                <ActiveFilterChip
-                  label={t('ventes.activeFilter.customer', { personality, params: { name: activeAdvancedCustomerName } })}
-                  onRemove={() => setAdvancedCustomerId(null)}
+                <FilterChip
+                  label={debouncedQuery}
+                  onRemove={() => setQuery('')}
+                  removeAccessibilityLabel={removeFilterLabel(debouncedQuery)}
                 />
               ) : null}
-              {dateRange !== null ? (
-                <ActiveFilterChip
-                  label={
-                    dateRange.preset === 'thisMonth'
-                      ? t('ventes.dateChip.thisMonth', { personality })
-                      : dateRange.preset === 'lastMonth'
-                        ? t('ventes.dateChip.lastMonth', { personality })
-                        : dateRange.preset === 'last2Months'
-                          ? t('ventes.dateChip.last2Months', { personality })
-                          : t('ventes.dateChip.customRange', {
-                              personality,
-                              params: { from: frDateLabel(dateRange.from), to: frDateLabel(dateRange.to) },
-                            })
-                  }
+              {activeAdvancedCustomerName !== null ? (
+                <FilterChip
+                  label={t('ventes.activeFilter.customer', { personality, params: { name: activeAdvancedCustomerName } })}
+                  onRemove={() => setAdvancedCustomerId(null)}
+                  removeAccessibilityLabel={removeFilterLabel(
+                    t('ventes.activeFilter.customer', { personality, params: { name: activeAdvancedCustomerName } }),
+                  )}
+                />
+              ) : null}
+              {dateRangeChipLabel !== null ? (
+                <FilterChip
+                  label={dateRangeChipLabel}
                   onRemove={() => setDateRange(null)}
+                  removeAccessibilityLabel={removeFilterLabel(dateRangeChipLabel)}
                 />
               ) : null}
               {statusLabel !== null ? (
-                <ActiveFilterChip label={statusLabel} onRemove={() => setAdvancedStatus(null)} />
+                <FilterChip
+                  label={statusLabel}
+                  onRemove={() => setAdvancedStatus(null)}
+                  removeAccessibilityLabel={removeFilterLabel(statusLabel)}
+                />
               ) : null}
             </View>
           ) : null}
@@ -756,27 +726,32 @@ export default function Ventes() {
                               </Text>
                             ) : null}
                             {invoicesOfQuote(q.id).length > 0 ? (
+                              // Chips liées : NAVIGATION, pas « Bob agit » — l'indigo rendu à
+                              // Bob, ton neutre (parité chip devis des cartes facture) ;
+                              // cible ≥ 28 pt + hitSlop 8 (→ 44) + press feedback standard.
                               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
                                 {invoicesOfQuote(q.id).map((li) => (
-                                  <Pressable
+                                  <PressableScale
                                     key={li.id}
                                     accessibilityRole="button"
                                     accessibilityLabel={`Facture ${li.number ?? ''}`}
+                                    hitSlop={8}
                                     onPress={() => router.push(`/facture/${li.id}`)}
-                                    style={({ pressed }) => ({
+                                    style={{
+                                      minHeight: 28,
+                                      minWidth: 28,
+                                      justifyContent: 'center',
                                       borderWidth: 1,
-                                      borderColor: semantic.ai,
-                                      backgroundColor: semantic.aiBg,
+                                      borderColor: colors.line,
                                       borderRadius: 999,
-                                      paddingHorizontal: 8,
+                                      paddingHorizontal: 9,
                                       paddingVertical: 3,
-                                      opacity: pressed ? 0.6 : 1,
-                                    })}
+                                    }}
                                   >
-                                    <Text style={[font('meta'), { fontSize: 11, fontWeight: '600', color: semantic.aiInk }]}>
+                                    <Text style={[font('meta', 600), { color: colors.slate500 }]}>
                                       {li.number ?? '—'} · {formatEUR(li.totals.netToPay)}
                                     </Text>
-                                  </Pressable>
+                                  </PressableScale>
                                 ))}
                               </View>
                             ) : null}
@@ -894,17 +869,20 @@ export default function Ventes() {
                                 .join(' · ')}
                             </Text>
                             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+                              {/* Chip de nature : information neutre — l'indigo rendu à Bob ;
+                                  ≥ 28 pt, cran meta 12 (fin du 11 ad hoc). */}
                               <View
                                 style={{
+                                  minHeight: 28,
+                                  justifyContent: 'center',
                                   borderWidth: 1,
-                                  borderColor: semantic.ai,
-                                  backgroundColor: semantic.aiBg,
+                                  borderColor: colors.line,
                                   borderRadius: 999,
-                                  paddingHorizontal: 8,
+                                  paddingHorizontal: 9,
                                   paddingVertical: 3,
                                 }}
                               >
-                                <Text style={[font('meta'), { fontSize: 11, fontWeight: '600', color: semantic.aiInk }]}>
+                                <Text style={[font('meta', 600), { color: colors.slate500 }]}>
                                   {kindChip(inv)}
                                 </Text>
                               </View>
@@ -913,37 +891,42 @@ export default function Ventes() {
                               {inv.kind !== 'credit_note' && creditedInvoiceIds.has(inv.id) ? (
                                 <View
                                   style={{
+                                    minHeight: 28,
+                                    justifyContent: 'center',
                                     borderWidth: 1,
                                     borderColor: pieceDetail.creditBorder,
                                     backgroundColor: semantic.warningBg,
                                     borderRadius: 999,
-                                    paddingHorizontal: 8,
+                                    paddingHorizontal: 9,
                                     paddingVertical: 3,
                                   }}
                                 >
-                                  <Text style={[font('meta'), { fontSize: 11, fontWeight: '600', color: pieceDetail.creditInk }]}>
+                                  <Text style={[font('meta', 600), { color: pieceDetail.creditInk }]}>
                                     {t('ventes.tagAvoirEmis', { personality })}
                                   </Text>
                                 </View>
                               ) : null}
                               {quoteOf(inv) !== null ? (
-                                <Pressable
+                                <PressableScale
                                   accessibilityRole="button"
                                   accessibilityLabel={`Devis ${quoteOf(inv)?.number ?? ''}`}
+                                  hitSlop={8}
                                   onPress={() => router.push(`/devis/${inv.parentQuoteId}`)}
-                                  style={({ pressed }) => ({
+                                  style={{
+                                    minHeight: 28,
+                                    minWidth: 28,
+                                    justifyContent: 'center',
                                     borderWidth: 1,
                                     borderColor: colors.line,
                                     borderRadius: 999,
-                                    paddingHorizontal: 8,
+                                    paddingHorizontal: 9,
                                     paddingVertical: 3,
-                                    opacity: pressed ? 0.6 : 1,
-                                  })}
+                                  }}
                                 >
-                                  <Text style={[font('meta'), { fontSize: 11, fontWeight: '600', color: colors.slate500 }]}>
+                                  <Text style={[font('meta', 600), { color: colors.slate500 }]}>
                                     {t('piece.kindDevis', { personality })} {quoteOf(inv)?.number ?? ''}
                                   </Text>
-                                </Pressable>
+                                </PressableScale>
                               ) : null}
                             </View>
                           </View>

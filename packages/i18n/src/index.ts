@@ -3923,6 +3923,12 @@ const legacyFr = {
   'ventes.filterAll': { pote: 'Tout', pro: 'Tout', direct: 'Tout' },
   'ventes.filterQuotes': { pote: 'Devis', pro: 'Devis', direct: 'Devis' },
   'ventes.filterInvoices': { pote: 'Factures', pro: 'Factures', direct: 'Factures' },
+  // Lot 3 — libellé accessible du SegmentedControl (kindFilter, ex-pilules indigo).
+  'ventes.filterKindLabel': {
+    pote: 'Filtrer : tout, devis ou factures',
+    pro: 'Filtrer : tout, devis ou factures',
+    direct: 'Filtrer devis/factures',
+  },
   'ventes.noResults': {
     pote: 'Rien ne colle à ta recherche — essaie un autre mot.',
     pro: 'Aucun résultat pour cette recherche.',
