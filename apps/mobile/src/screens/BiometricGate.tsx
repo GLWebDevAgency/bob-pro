@@ -18,9 +18,10 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { ActivityIndicator, AppState, Pressable, Text, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { themes } from '@bob/tokens';
+import { surfaceTint, themes } from '@bob/tokens';
 import { t } from '@bob/i18n';
-import { Button, Sheet, Toast, font, useReduceMotion, useTheme } from '@bob/ui';
+import { Button, Sheet, Toast, font, useTheme } from '@bob/ui';
+import { AuthCta } from '../components/auth/AuthCta';
 import { useAuth } from '../data/auth';
 import {
   authenticateBiometric,
@@ -46,7 +47,6 @@ const BIOMETRIC_RELOCK_GRACE_MS = 30_000;
 
 export function BiometricGate({ children }: { children: ReactNode }) {
   const { colors, overlays, semantic, personality } = useTheme();
-  const reduceMotion = useReduceMotion();
   const insets = useSafeAreaInsets();
   const { enabled, session, signOut } = useAuth();
 
@@ -230,9 +230,17 @@ export function BiometricGate({ children }: { children: ReactNode }) {
           backgroundColor: themes.marine.d1,
         }}
       >
+        {/* Même rampe navy→nuit que l'écran verrouillé — l'attente ne change pas de scène. */}
+        <LinearGradient
+          pointerEvents="none"
+          colors={[themes.marine.d1, themes.graphite.d1]}
+          start={{ x: 0.45, y: 0 }}
+          end={{ x: 0.55, y: 1 }}
+          style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+        />
         <LockIcon color={colors.surface} size={32} strokeWidth={1.9} />
         <ActivityIndicator color={colors.surface} />
-        <Text style={[font('sub'), { color: overlays.white66 }]}>{say('auth.bioChecking')}</Text>
+        <Text style={[font('sub'), { color: overlays.white70 }]}>{say('auth.bioChecking')}</Text>
       </View>
     );
   }
@@ -272,7 +280,7 @@ export function BiometricGate({ children }: { children: ReactNode }) {
             <Text
               style={[
                 font('screenH1'),
-                { fontSize: 26, color: colors.surface, textAlign: 'center' },
+                { color: colors.surface, textAlign: 'center' },
               ]}
             >
               {say('auth.lockTitle')}
@@ -281,11 +289,10 @@ export function BiometricGate({ children }: { children: ReactNode }) {
               style={[
                 font('body'),
                 {
-                  fontSize: 15,
                   lineHeight: 22,
                   maxWidth: 280,
                   textAlign: 'center',
-                  color: overlays.white66,
+                  color: overlays.white80,
                 },
               ]}
             >
@@ -295,38 +302,22 @@ export function BiometricGate({ children }: { children: ReactNode }) {
               <Text
                 accessibilityRole="alert"
                 accessibilityLiveRegion="polite"
-                style={[font('sub'), { fontSize: 13.5, color: semantic.dangerVivid }]}
+                // Encre danger on-dark certifiée — dangerVivid ≈4,3:1 échouait sur marine.d1.
+                style={[font('sub'), { color: surfaceTint.dark.danger.ink }]}
               >
                 {lockError}
               </Text>
             ) : null}
           </View>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={say('auth.lockCta')}
-            accessibilityState={{ disabled: unlocking, busy: unlocking }}
-            disabled={unlocking}
-            onPress={() => void unlock()}
-            style={({ pressed }) => ({
-              minHeight: 52,
-              backgroundColor: colors.surface,
-              borderRadius: 15,
-              paddingVertical: 16,
-              justifyContent: 'center',
-              alignItems: 'center',
-              opacity: unlocking ? 0.7 : 1,
-              transform: [{ scale: pressed && !reduceMotion ? 0.97 : 1 }],
-            })}
-          >
-            <Text style={[font('button'), { color: colors.ink900 }]}>{say('auth.lockCta')}</Text>
-          </Pressable>
+          {/* AuthCta partagé : busy = spinner + a11y, press scale gaté reduce-motion. */}
+          <AuthCta label={say('auth.lockCta')} busy={unlocking} onPress={() => void unlock()} />
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={say('auth.lockFallback')}
             onPress={() => void signOut()}
             style={{ minHeight: 44, justifyContent: 'center', alignItems: 'center' }}
           >
-            <Text style={[font('label', 600), { fontSize: 14.5, color: overlays.white60 }]}>
+            <Text style={[font('body', 600), { color: overlays.white70 }]}>
               {say('auth.lockFallback')}
             </Text>
           </Pressable>
@@ -341,17 +332,18 @@ export function BiometricGate({ children }: { children: ReactNode }) {
       {/* Proposition d'opt-in après le premier login réussi (Sheet @bob/ui) */}
       <Sheet visible={proposalVisible} onClose={() => void declineOptIn()}>
         <View style={{ gap: 10, paddingBottom: 6 }}>
-          <Text style={[font('cardTitle'), { fontSize: 19, color: colors.ink900 }]}>
+          {/* 19 ad hoc → cran sheetTitle (20/700), créé exactement pour ce rôle. */}
+          <Text style={[font('sheetTitle'), { color: colors.ink900 }]}>
             {say('auth.bioTitle', { method })}
           </Text>
-          <Text style={[font('body'), { fontSize: 14.5, lineHeight: 21, color: colors.slate500 }]}>
+          <Text style={[font('body'), { lineHeight: 21, color: colors.slate500 }]}>
             {say('auth.bioBody')}
           </Text>
           {sheetError ? (
             <Text
               accessibilityRole="alert"
               accessibilityLiveRegion="polite"
-              style={[font('sub'), { fontSize: 13.5, color: semantic.danger }]}
+              style={[font('sub'), { color: semantic.danger }]}
             >
               {sheetError}
             </Text>

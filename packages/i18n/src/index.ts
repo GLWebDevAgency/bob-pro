@@ -7375,6 +7375,18 @@ const legacyFr = {
     pro: 'Forme juridique de l’entreprise',
     direct: 'Forme juridique ?',
   },
+  // Erreurs de validation DÉDIÉES (vague hors-lots) : les libellés de champ servaient de
+  // messages d'erreur (« Forme juridique » comme texte d'erreur n'explique rien).
+  'auth.errLegalFormRequired': {
+    pote: 'Choisis ta forme juridique pour continuer.',
+    pro: 'Sélectionnez la forme juridique pour continuer.',
+    direct: 'Choisis la forme juridique.',
+  },
+  'auth.errVatRequired': {
+    pote: 'Choisis ton régime de TVA pour continuer.',
+    pro: 'Sélectionnez le régime de TVA pour continuer.',
+    direct: 'Choisis le régime de TVA.',
+  },
   'auth.provisioningConfirmCta': {
     pote: 'Créer mon espace',
     pro: 'Créer mon espace',
