@@ -29,6 +29,13 @@ aux clients runtime `PrismaService`. Sur Supabase distant, la transaction intera
 donc expiré avec `P2028` avant de produire le reçu predeploy. Le correctif doit réutiliser le même
 contrat transactionnel WAN, sans masquer une dépendance oubliée ni affaiblir le nettoyage strict.
 
+La CI suivante (`30934039453`) a confirmé la disparition de `P2028` et le passage des 15 scénarios,
+mais a révélé un second défaut du contrat de nettoyage : le scénario « signature gagnante » crée
+volontairement l'ordre durable et le snapshot append-only du devis signé. La garde les traitait à
+tort comme des archives étrangères. Le certificat doit conserver ce chemin de bout en bout, puis
+reconnaître et retirer uniquement son graphe synthétique exact ; il ne doit ni désactiver le scénario
+d'archive ni élargir la purge à une archive utilisateur.
+
 ## 2. Périmètre
 
 ### Inclus
@@ -99,9 +106,24 @@ contrat transactionnel WAN, sans masquer une dépendance oubliée ni affaiblir l
     durablement ni élargir la purge à une donnée utilisateur.
 14. Ce certificat mutatif refuse tout environnement autre que `development` ou `staging`, y compris
     `production`, même si son flag Vitest est activé manuellement.
-15. Cette suite ne crée aucune archive : la présence d'un job, artefact, snapshot ou intent archive
-    sur une fixture bloque la purge. Le certificat ne désactive et ne supprime jamais une donnée
-    d'archive immuable pour se nettoyer lui-même.
+15. Le scénario « signature gagnante » crée légitimement un graphe d'archive synthétique
+    `quote-signed`. Son adapter de certificat appelle d'abord le vrai enqueue V3, puis parque ce job
+    précis hors horizon dans la MÊME transaction de signature : ni le scheduler local, ni un ancien
+    serveur staging partageant la base ne peut matérialiser la fixture après le commit. Avant sa
+    purge, la transaction verrouille les jobs puis exige, pour chaque job, le tenant de
+    certification, l'identifiant de devis déterministe de la fixture, le motif `quote-signed`, un
+    état non terminal sans preuve, un snapshot bijectif de même identité et, pour récupérer un run
+    antérieur déjà interrompu, au plus l'intention `signed_quote` déterministe associée au même
+    snapshot. Un lease encore détenu provoque une attente/reprise bornée hors transaction ; après
+    la deadline, la purge échoue fermée. Toute autre forme échoue fermée.
+16. Une fixture possédant un artefact d'archive terminé, un document/version matérialisé ou un job
+    terminal n'est jamais purgée par ce certificat. Chaque `storageKey` préparée est recherchée
+    directement dans `storage.objects` et doit être absente ; aucune suppression Storage n'est
+    tentée. Pour le seul graphe synthétique non matérialisé prouvé, les triggers append-only sont
+    neutralisés localement le temps de supprimer intentions puis snapshots ; ils sont rétablis
+    avant la suppression normale du job et des lignes métier. Les compteurs de suppression doivent
+    égaler les ensembles validés, puis le graphe est recompté à zéro. La bijection des sociétés
+    reste tenue sous verrou pendant toute l'opération.
 
 ## 4. Critères d'acceptation binaires
 
@@ -131,8 +153,9 @@ contrat transactionnel WAN, sans masquer une dépendance oubliée ni affaiblir l
       contre une base distante avec `PRISMA_TRANSACTION_TIMEOUT_MS` actif.
 - [ ] Le rejeu staging récupère les fixtures du run interrompu puis prouve qu'il ne reste aucune
       société portant les trois marqueurs réservés.
-- [ ] La preuve distante confirme zéro donnée archive sur les fixtures et aucune suppression
-      d'archive par le certificat.
+- [ ] La preuve distante confirme que le seul graphe archive éventuellement rencontré est le
+      `quote-signed` synthétique non matérialisé attendu, qu'il est intégralement nettoyé et
+      qu'aucune archive utilisateur ni objet Storage n'est supprimé.
 - [ ] Un nouveau workflow staging au SHA mergé termine audit, activation et postdeploy.
 
 ## 5. Blocage explicite de promotion production

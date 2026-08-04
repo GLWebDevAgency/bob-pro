@@ -18,6 +18,11 @@ import type { SupabaseAdminPort } from '../../auth/supabase-admin';
 import type { NotificationDeliveryService } from '../../jobs/notification-delivery.service';
 import type { AppLogger } from '../../observability/logger';
 import type { Metrics } from '../../observability/metrics';
+import {
+  generatedQuoteDocumentId,
+  generatedQuoteDocumentVersionId,
+} from '../../documents/generated-document-ids';
+import { openDocumentArchiveRenderSnapshot } from '../../documents/document-archive-render-snapshot';
 import type {
   Persistence,
   ServerCompanyRepository,
@@ -37,7 +42,11 @@ const CERT_CLEANUP_BATCH_SIZE = 32;
 const CERT_MAX_STALE_FIXTURES = 96;
 const CERT_STALE_RECOVERY_HOOK_TIMEOUT_MS = 180_000;
 const CERT_CURRENT_RUN_CLEANUP_HOOK_TIMEOUT_MS = 60_000;
+const CERT_ARCHIVE_QUIESCENCE_TIMEOUT_MS = 5_000;
+const CERT_ARCHIVE_QUIESCENCE_POLL_MS = 25;
+const CERT_ARCHIVE_PARKED_UNTIL = new Date('9999-12-31T23:59:59.999Z');
 const CERT_ALLOWED_RELEASE_ENVIRONMENTS = new Set(['development', 'staging']);
+const CERT_UUID_SUFFIX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const CERT_NOW = new Date().toISOString();
 const CLOSE_NOW = new Date(Date.parse(CERT_NOW) + 1_000).toISOString();
 const clock: ClockPort = {
@@ -54,6 +63,30 @@ interface Fixture {
   quoteId: string;
   invoiceId: string;
 }
+
+interface CertificationFixtureIdentity {
+  companyId: string;
+  customerId: string;
+  quoteId: string;
+  invoiceId: string;
+  subscriptionId: string;
+}
+
+function certificationFixtureIdentity(companyId: string): CertificationFixtureIdentity {
+  const suffix = companyId.slice(CERT_COMPANY_ID_PREFIX.length);
+  if (!companyId.startsWith(CERT_COMPANY_ID_PREFIX) || !CERT_UUID_SUFFIX.test(suffix)) {
+    throw new Error('Public lifecycle certification fixture ID is malformed.');
+  }
+  return {
+    companyId,
+    customerId: `public-lifecycle-customer-${suffix}`,
+    quoteId: `public-lifecycle-quote-${suffix}`,
+    invoiceId: `public-lifecycle-invoice-${suffix}`,
+    subscriptionId: `public-lifecycle-subscription-${suffix}`,
+  };
+}
+
+class CertificationArchiveLeaseActiveError extends Error {}
 
 interface Gate<T> {
   acquired: ReturnType<typeof deferred<T>>;
@@ -237,12 +270,57 @@ function gateFirstLocator(input: {
 
 function persistenceWith(
   base: PrismaPersistence,
-  overrides: Partial<Pick<Persistence, 'companies' | 'publicAccessTokens'>>,
+  overrides: Partial<Pick<Persistence, 'companies' | 'publicAccessTokens' | 'documentArchiveJobs'>>,
 ): Persistence {
   return new Proxy(base as Persistence, {
     get(target, property, receiver) {
       if (Object.prototype.hasOwnProperty.call(overrides, property)) {
         return Reflect.get(overrides, property);
+      }
+      const value = Reflect.get(target, property, receiver) as unknown;
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
+function parkCertificationArchiveJobs(
+  repository: Persistence['documentArchiveJobs'],
+  worker: PrismaService,
+): Persistence['documentArchiveJobs'] {
+  return new Proxy(repository, {
+    get(target, property, receiver) {
+      if (property === 'enqueue') {
+        return async (input: Parameters<Persistence['documentArchiveJobs']['enqueue']>[0]) => {
+          const identity = certificationFixtureIdentity(input.companyId);
+          if (input.pieceId !== identity.quoteId || input.reason !== 'quote-signed') {
+            throw new Error('Public lifecycle certification archive enqueue identity is unsafe.');
+          }
+          if (!worker.inTransaction()) {
+            throw new Error(
+              'Public lifecycle certification archive enqueue is outside transaction.',
+            );
+          }
+          // Appelle le vrai writer V3 (job + snapshot scellé), puis parque CE job dans la même
+          // transaction métier. Un scheduler staging partageant la base ne peut donc jamais voir
+          // une fixture due entre le commit de signature et le cleanup du certificat.
+          await target.enqueue(input);
+          const parked = await worker.client().documentArchiveJob.updateMany({
+            where: {
+              id: input.id,
+              companyId: input.companyId,
+              invoiceId: input.pieceId,
+              reason: 'quote-signed',
+              status: { in: ['pending', 'failed'] },
+              integrityProof: { equals: Prisma.DbNull },
+              integrityProofSha256: null,
+              completedAt: null,
+            },
+            data: { nextAttemptAt: CERT_ARCHIVE_PARKED_UNTIL },
+          });
+          if (parked.count !== 1) {
+            throw new Error('Public lifecycle certification archive job could not be parked.');
+          }
+        };
       }
       const value = Reflect.get(target, property, receiver) as unknown;
       return typeof value === 'function' ? value.bind(target) : value;
@@ -487,14 +565,21 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
 
     async function cleanupFixtureBatch(companyIdsToDelete: string[]): Promise<void> {
       const where = { companyId: { in: companyIdsToDelete } };
-      await admin.$transaction(async (tx) => {
-        // La découverte stale est volontairement hors transaction, mais elle n'autorise aucune
-        // suppression. Revalide ici les trois marqueurs sous verrou de ligne et exige la bijection
-        // exacte : une société renommée/requalifiée entre-temps fait échouer la purge.
-        const lockedFixtures = await tx.$queryRaw<Array<{ id: string }>>(
-          Prisma.sql`
+      const fixtureIdentityByCompanyId = new Map(
+        companyIdsToDelete.map((companyId) => {
+          const identity = certificationFixtureIdentity(companyId);
+          return [companyId, identity] as const;
+        }),
+      );
+      const cleanupOnce = () =>
+        admin.$transaction(async (tx) => {
+          // La découverte stale est volontairement hors transaction, mais elle n'autorise aucune
+          // suppression. Revalide ici les trois marqueurs sous verrou de ligne et exige la bijection
+          // exacte : une société renommée/requalifiée entre-temps fait échouer la purge.
+          const lockedFixtures = await tx.$queryRaw<Array<{ id: string }>>(
+            Prisma.sql`
             SELECT id
-            FROM companies
+            FROM public.companies
             WHERE id IN (${Prisma.join(companyIdsToDelete)})
               AND id LIKE ${`${CERT_COMPANY_ID_PREFIX}%`}
               AND siren = ${CERT_SIREN}
@@ -502,56 +587,377 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
             ORDER BY id
             FOR UPDATE
           `,
-        );
-        const expectedIds = [...companyIdsToDelete].sort();
-        const lockedIds = lockedFixtures.map(({ id }) => id).sort();
-        if (
-          lockedIds.length !== expectedIds.length ||
-          lockedIds.some((id, i) => id !== expectedIds[i])
-        ) {
-          throw new Error(
-            'Public lifecycle certification fixture identity changed before cleanup.',
           );
-        }
-        // Cette suite ne crée aucune archive. Une archive immuable présente sur une fixture est
-        // donc un drift à examiner, jamais une donnée à effacer en désactivant ses triggers.
-        const [archiveIntents, archiveSnapshots, archiveArtifacts, archiveJobs] = await Promise.all(
-          [
-            tx.documentArchiveArtifactIntent.count({ where }),
-            tx.documentArchiveRenderSnapshot.count({ where }),
+          const expectedIds = [...companyIdsToDelete].sort();
+          const lockedIds = lockedFixtures.map(({ id }) => id).sort();
+          if (
+            lockedIds.length !== expectedIds.length ||
+            lockedIds.some((id, i) => id !== expectedIds[i])
+          ) {
+            throw new Error(
+              'Public lifecycle certification fixture identity changed before cleanup.',
+            );
+          }
+          const fixtureIdentities = [...fixtureIdentityByCompanyId.values()];
+          const [customers, quotes, invoices, subscriptions, publicAccessTokens] =
+            await Promise.all([
+              tx.customer.findMany({
+                where,
+                select: { id: true, companyId: true },
+              }),
+              tx.quote.findMany({
+                where,
+                select: { id: true, companyId: true, customerId: true },
+              }),
+              tx.invoice.findMany({
+                where,
+                select: { id: true, companyId: true, customerId: true },
+              }),
+              tx.subscription.findMany({
+                where,
+                select: { id: true, companyId: true },
+              }),
+              tx.publicAccessToken.findMany({
+                where,
+                select: {
+                  id: true,
+                  companyId: true,
+                  resourceType: true,
+                  resourceId: true,
+                  scope: true,
+                },
+              }),
+            ]);
+          const customerById = new Map(customers.map((row) => [row.id, row] as const));
+          const quoteById = new Map(quotes.map((row) => [row.id, row] as const));
+          const invoiceById = new Map(invoices.map((row) => [row.id, row] as const));
+          const subscriptionById = new Map(subscriptions.map((row) => [row.id, row] as const));
+          const unsafePublicAccessToken = publicAccessTokens.some((token) => {
+            const identity = fixtureIdentityByCompanyId.get(token.companyId);
+            if (identity === undefined) return true;
+            return !(
+              (token.resourceType === 'quote' &&
+                token.resourceId === identity.quoteId &&
+                (token.scope === 'quote_signature' || token.scope === 'document_view')) ||
+              (token.resourceType === 'invoice' &&
+                token.resourceId === identity.invoiceId &&
+                token.scope === 'document_view')
+            );
+          });
+          if (
+            customers.length !== fixtureIdentities.length ||
+            quotes.length !== fixtureIdentities.length ||
+            invoices.length !== fixtureIdentities.length ||
+            subscriptions.length !== fixtureIdentities.length ||
+            unsafePublicAccessToken ||
+            fixtureIdentities.some((identity) => {
+              const customer = customerById.get(identity.customerId);
+              const quote = quoteById.get(identity.quoteId);
+              const invoice = invoiceById.get(identity.invoiceId);
+              const subscription = subscriptionById.get(identity.subscriptionId);
+              return (
+                customer?.companyId !== identity.companyId ||
+                quote?.companyId !== identity.companyId ||
+                quote.customerId !== identity.customerId ||
+                invoice?.companyId !== identity.companyId ||
+                invoice.customerId !== identity.customerId ||
+                subscription?.companyId !== identity.companyId
+              );
+            })
+          ) {
+            throw new Error('Public lifecycle certification fixture dependency graph is unsafe.');
+          }
+          // `publicSignQuote` doit rester exercé de bout en bout : la signature gagnante écrit son
+          // job + snapshot append-only dans la transaction métier, puis son kick peut préparer une
+          // intention avant que le faux Storage refuse l'upload. Verrouille les jobs afin qu'un kick
+          // concurrent termine avant l'inspection, puis accepte UNIQUEMENT ce graphe synthétique
+          // non matérialisé et déterministe. Une autre archive reste un blocage, jamais une purge.
+          const lockedArchiveJobs = await tx.$queryRaw<
+            Array<{
+              id: string;
+              companyId: string;
+              pieceId: string;
+              reason: string;
+              status: string;
+              leaseToken: string | null;
+              hasTerminalProof: boolean;
+            }>
+          >(Prisma.sql`
+          SELECT id,
+                 "companyId" AS "companyId",
+                 "invoiceId" AS "pieceId",
+                 reason,
+                 status::text AS status,
+                 "leaseToken" AS "leaseToken",
+                 (
+                   "integrityProof" IS NOT NULL
+                   OR "integrityProofSha256" IS NOT NULL
+                   OR "completedAt" IS NOT NULL
+                 ) AS "hasTerminalProof"
+          FROM public.document_archive_jobs
+          WHERE "companyId" IN (${Prisma.join(companyIdsToDelete)})
+          ORDER BY id
+          FOR UPDATE
+        `);
+          for (const job of lockedArchiveJobs) {
+            const identity = fixtureIdentityByCompanyId.get(job.companyId);
+            if (job.leaseToken !== null) {
+              throw new CertificationArchiveLeaseActiveError();
+            }
+            if (
+              identity === undefined ||
+              job.pieceId !== identity.quoteId ||
+              job.reason !== 'quote-signed' ||
+              (job.status !== 'pending' && job.status !== 'failed') ||
+              job.hasTerminalProof
+            ) {
+              throw new Error('Public lifecycle certification archive job identity is unsafe.');
+            }
+          }
+          const archiveJobIds = lockedArchiveJobs.map(({ id }) => id);
+          const archiveJobById = new Map(lockedArchiveJobs.map((job) => [job.id, job] as const));
+          const archiveSnapshots = await tx.documentArchiveRenderSnapshot.findMany({
+            where,
+            select: {
+              jobId: true,
+              companyId: true,
+              pieceId: true,
+              reason: true,
+              schemaVersion: true,
+              rendererVersion: true,
+              payload: true,
+              payloadSha256: true,
+            },
+          });
+          if (archiveSnapshots.length !== lockedArchiveJobs.length) {
+            throw new Error('Public lifecycle certification archive snapshot identity is unsafe.');
+          }
+          const archiveSnapshotByJobId = new Map<
+            string,
+            {
+              companyId: string;
+              payloadSha256: string;
+              artifact: ReturnType<typeof openDocumentArchiveRenderSnapshot>['artifacts'][number];
+            }
+          >();
+          for (const snapshot of archiveSnapshots) {
+            const job = archiveJobById.get(snapshot.jobId);
+            const identity = fixtureIdentityByCompanyId.get(snapshot.companyId);
+            let opened: ReturnType<typeof openDocumentArchiveRenderSnapshot>;
+            try {
+              opened = openDocumentArchiveRenderSnapshot({
+                snapshotSchemaVersion: snapshot.schemaVersion as 1,
+                rendererVersion: snapshot.rendererVersion as 1,
+                json: snapshot.payload,
+                sha256: snapshot.payloadSha256,
+              });
+            } catch {
+              throw new Error(
+                'Public lifecycle certification archive snapshot identity is unsafe.',
+              );
+            }
+            const artifact = opened.artifacts[0];
+            if (
+              job === undefined ||
+              identity === undefined ||
+              snapshot.companyId !== job.companyId ||
+              snapshot.pieceId !== job.pieceId ||
+              snapshot.reason !== job.reason ||
+              opened.companyId !== job.companyId ||
+              opened.pieceId !== identity.quoteId ||
+              opened.reason !== 'quote-signed' ||
+              opened.artifacts.length !== 1 ||
+              artifact === undefined ||
+              artifact.kind !== 'signed_quote' ||
+              artifact.expectedContentProfile !== 'plain_pdf' ||
+              artifact.documentId !==
+                generatedQuoteDocumentId(identity.companyId, identity.quoteId, 'signed_quote') ||
+              artifact.versionId !==
+                generatedQuoteDocumentVersionId(
+                  identity.companyId,
+                  identity.quoteId,
+                  'signed_quote',
+                ) ||
+              artifact.mimeType !== 'application/pdf' ||
+              artifact.linkedEntityType !== 'quote'
+            ) {
+              throw new Error(
+                'Public lifecycle certification archive snapshot identity is unsafe.',
+              );
+            }
+            archiveSnapshotByJobId.set(snapshot.jobId, {
+              companyId: snapshot.companyId,
+              payloadSha256: snapshot.payloadSha256,
+              artifact,
+            });
+          }
+          const archiveIntents = await tx.documentArchiveArtifactIntent.findMany({
+            where,
+            select: {
+              jobId: true,
+              companyId: true,
+              snapshotSha256: true,
+              kind: true,
+              contentProfile: true,
+              documentId: true,
+              versionId: true,
+              versionNumber: true,
+              filename: true,
+              storageKey: true,
+              mimeType: true,
+              byteSize: true,
+              sha256: true,
+            },
+          });
+          const intentJobIds = new Set<string>();
+          const intentStorageKeys = new Set<string>();
+          for (const intent of archiveIntents) {
+            const snapshot = archiveSnapshotByJobId.get(intent.jobId);
+            const expectedStorageKey =
+              snapshot === undefined
+                ? null
+                : `companies/${snapshot.companyId}/documents/${intent.documentId}/v1/${intent.sha256}.pdf`;
+            if (
+              snapshot === undefined ||
+              intentJobIds.has(intent.jobId) ||
+              intentStorageKeys.has(intent.storageKey) ||
+              intent.companyId !== snapshot.companyId ||
+              intent.snapshotSha256 !== snapshot.payloadSha256 ||
+              intent.kind !== 'signed_quote' ||
+              intent.contentProfile !== 'plain_pdf' ||
+              intent.documentId !== snapshot.artifact.documentId ||
+              intent.versionId !== snapshot.artifact.versionId ||
+              intent.versionNumber !== 1 ||
+              intent.filename !== snapshot.artifact.filename ||
+              intent.storageKey !== expectedStorageKey ||
+              intent.mimeType !== 'application/pdf' ||
+              !Number.isSafeInteger(intent.byteSize) ||
+              intent.byteSize <= 0 ||
+              !/^[a-f0-9]{64}$/u.test(intent.sha256)
+            ) {
+              throw new Error('Public lifecycle certification archive intent identity is unsafe.');
+            }
+            intentJobIds.add(intent.jobId);
+            intentStorageKeys.add(intent.storageKey);
+          }
+          let storageObjectCount = 0;
+          if (intentStorageKeys.size > 0) {
+            const storageRows = await tx.$queryRaw<Array<{ objectCount: number }>>(Prisma.sql`
+            SELECT count(*)::integer AS "objectCount"
+            FROM storage.objects
+            WHERE name IN (${Prisma.join([...intentStorageKeys])})
+          `);
+            if (storageRows.length !== 1 || !Number.isSafeInteger(storageRows[0]?.objectCount)) {
+              throw new Error('Public lifecycle certification Storage proof is unavailable.');
+            }
+            storageObjectCount = storageRows[0]!.objectCount;
+          }
+          const [
+            archiveArtifacts,
+            materializedDocuments,
+            materializedVersions,
+            materializedAttestations,
+          ] = await Promise.all([
             tx.documentArchiveJobArtifact.count({ where }),
-            tx.documentArchiveJob.count({ where }),
-          ],
-        );
-        if (
-          archiveIntents !== 0 ||
-          archiveSnapshots !== 0 ||
-          archiveArtifacts !== 0 ||
-          archiveJobs !== 0
-        ) {
-          throw new Error(
-            'Public lifecycle certification fixture unexpectedly owns immutable archive data.',
-          );
-        }
-        // La plupart des fixtures ont été clôturées par CloseAccount : les triggers légaux
-        // interdisent alors réouverture (companies_closure_monotonicity) comme hard-delete
-        // (companies_closed_delete_fence). Réouverture technique locale des seules fixtures :
-        // neutralise ces triggers le temps du seul updateMany, puis les réactive AVANT les
-        // DELETE. Aucune erreur n'est avalée : toute future dépendance oubliée doit faire
-        // échouer le gate au lieu de fuir des sociétés dans la base partagée des suites.
-        await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'replica'");
-        await tx.company.updateMany({
-          where: { id: { in: companyIdsToDelete } },
-          data: { closedAt: null, closureReason: null },
+            tx.storedDocument.count({ where }),
+            tx.storedDocumentVersion.count({
+              where: { document: { companyId: { in: companyIdsToDelete } } },
+            }),
+            tx.documentInvoicePdfAttestation.count({ where }),
+          ]);
+          if (
+            archiveArtifacts !== 0 ||
+            materializedDocuments !== 0 ||
+            materializedVersions !== 0 ||
+            materializedAttestations !== 0 ||
+            storageObjectCount !== 0
+          ) {
+            throw new Error('Public lifecycle certification archive is materially persisted.');
+          }
+          if (archiveJobIds.length > 0) {
+            // Les deux enfants sont append-only. `replica` est local à cette transaction et n'est
+            // utilisé qu'après preuve exacte du graphe ; retour à `origin` AVANT le parent/job.
+            await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'replica'");
+            const deletedArchiveIntents = await tx.documentArchiveArtifactIntent.deleteMany({
+              where: { jobId: { in: archiveJobIds } },
+            });
+            const deletedArchiveSnapshots = await tx.documentArchiveRenderSnapshot.deleteMany({
+              where: { jobId: { in: archiveJobIds } },
+            });
+            await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'origin'");
+            if (
+              deletedArchiveIntents.count !== archiveIntents.length ||
+              deletedArchiveSnapshots.count !== archiveSnapshots.length
+            ) {
+              throw new Error('Public lifecycle certification archive cleanup is incomplete.');
+            }
+            const deletedArchiveJobs = await tx.documentArchiveJob.deleteMany({
+              where: { id: { in: archiveJobIds }, companyId: { in: companyIdsToDelete } },
+            });
+            if (deletedArchiveJobs.count !== archiveJobIds.length) {
+              throw new Error('Public lifecycle certification archive cleanup is incomplete.');
+            }
+          }
+          const [remainingArchiveIntents, remainingArchiveSnapshots, remainingArchiveJobs] =
+            await Promise.all([
+              tx.documentArchiveArtifactIntent.count({ where }),
+              tx.documentArchiveRenderSnapshot.count({ where }),
+              tx.documentArchiveJob.count({ where }),
+            ]);
+          if (
+            remainingArchiveIntents !== 0 ||
+            remainingArchiveSnapshots !== 0 ||
+            remainingArchiveJobs !== 0
+          ) {
+            throw new Error('Public lifecycle certification archive cleanup is incomplete.');
+          }
+          // La plupart des fixtures ont été clôturées par CloseAccount : les triggers légaux
+          // interdisent alors réouverture (companies_closure_monotonicity) comme hard-delete
+          // (companies_closed_delete_fence). Réouverture technique locale des seules fixtures :
+          // neutralise ces triggers le temps du seul updateMany, puis les réactive AVANT les
+          // DELETE. Aucune erreur n'est avalée : toute future dépendance oubliée doit faire
+          // échouer le gate au lieu de fuir des sociétés dans la base partagée des suites.
+          await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'replica'");
+          const reopenedCompanies = await tx.company.updateMany({
+            where: { id: { in: companyIdsToDelete } },
+            data: { closedAt: null, closureReason: null },
+          });
+          await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'origin'");
+          const deletedPublicAccessTokens = await tx.publicAccessToken.deleteMany({ where });
+          const deletedSubscriptions = await tx.subscription.deleteMany({ where });
+          const deletedInvoices = await tx.invoice.deleteMany({ where });
+          const deletedQuotes = await tx.quote.deleteMany({ where });
+          const deletedCustomers = await tx.customer.deleteMany({ where });
+          const deletedCompanies = await tx.company.deleteMany({
+            where: { id: { in: companyIdsToDelete } },
+          });
+          if (
+            reopenedCompanies.count !== fixtureIdentities.length ||
+            deletedPublicAccessTokens.count !== publicAccessTokens.length ||
+            deletedSubscriptions.count !== subscriptions.length ||
+            deletedInvoices.count !== invoices.length ||
+            deletedQuotes.count !== quotes.length ||
+            deletedCustomers.count !== customers.length ||
+            deletedCompanies.count !== fixtureIdentities.length
+          ) {
+            throw new Error('Public lifecycle certification fixture cleanup is incomplete.');
+          }
         });
-        await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'origin'");
-        await tx.publicAccessToken.deleteMany({ where });
-        await tx.subscription.deleteMany({ where });
-        await tx.invoice.deleteMany({ where });
-        await tx.quote.deleteMany({ where });
-        await tx.customer.deleteMany({ where });
-        await tx.company.deleteMany({ where: { id: { in: companyIdsToDelete } } });
-      });
+      const quiescenceDeadline = Date.now() + CERT_ARCHIVE_QUIESCENCE_TIMEOUT_MS;
+      for (;;) {
+        try {
+          await cleanupOnce();
+          return;
+        } catch (error) {
+          if (!(error instanceof CertificationArchiveLeaseActiveError)) throw error;
+          if (Date.now() >= quiescenceDeadline) {
+            throw new Error(
+              'Public lifecycle certification archive lease did not quiesce before cleanup.',
+            );
+          }
+          await new Promise((resolve) => setTimeout(resolve, CERT_ARCHIVE_QUIESCENCE_POLL_MS));
+        }
+      }
     }
 
     async function cleanupFixtures(ids: readonly string[]): Promise<void> {
@@ -938,6 +1344,10 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       });
       const publicPersistence = persistenceWith(firstPersistence, {
         companies: gatedCompanies,
+        documentArchiveJobs: parkCertificationArchiveJobs(
+          firstPersistence.documentArchiveJobs,
+          firstWorker,
+        ),
       });
       const { service } = makeBackend(publicPersistence);
       const signPromise = service.publicSignQuote(issued.value.token, 'Client certification');

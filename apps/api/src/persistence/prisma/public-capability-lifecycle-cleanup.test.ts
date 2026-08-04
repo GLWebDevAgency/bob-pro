@@ -55,12 +55,36 @@ describe('Public capability lifecycle — contrat de nettoyage distant', () => {
     expect(certificateSource).toMatch(
       /Public lifecycle certification fixture cleanup is incomplete\./u,
     );
+    expect(certificateSource).toMatch(/FROM public\.document_archive_jobs[\s\S]*FOR UPDATE/u);
     expect(certificateSource).toMatch(
-      /Public lifecycle certification fixture unexpectedly owns immutable archive data\./u,
+      /await target\.enqueue\(input\);[\s\S]*nextAttemptAt: CERT_ARCHIVE_PARKED_UNTIL/u,
     );
-    expect(certificateSource).not.toMatch(
-      /tx\.documentArchive(?:ArtifactIntent|RenderSnapshot|JobArtifact|Job)\.deleteMany/u,
+    expect(certificateSource).toMatch(/documentArchiveJobs: parkCertificationArchiveJobs/u);
+    expect(certificateSource).toMatch(
+      /job\.pieceId !== identity\.quoteId[\s\S]*job\.reason !== 'quote-signed'[\s\S]*job\.hasTerminalProof/u,
     );
+    expect(certificateSource).toMatch(
+      /CertificationArchiveLeaseActiveError[\s\S]*archive lease did not quiesce before cleanup/u,
+    );
+    expect(certificateSource).toMatch(
+      /openDocumentArchiveRenderSnapshot[\s\S]*generatedQuoteDocumentId[\s\S]*generatedQuoteDocumentVersionId/u,
+    );
+    expect(certificateSource).toMatch(
+      /Public lifecycle certification archive intent identity is unsafe\./u,
+    );
+    expect(certificateSource).toMatch(/FROM storage\.objects[\s\S]*storageObjectCount !== 0/u);
+    expect(certificateSource).toMatch(
+      /archiveArtifacts !== 0[\s\S]*materializedDocuments !== 0[\s\S]*materializedVersions !== 0[\s\S]*materializedAttestations !== 0/u,
+    );
+    expect(certificateSource).toMatch(
+      /session_replication_role = 'replica'[\s\S]*documentArchiveArtifactIntent\.deleteMany[\s\S]*documentArchiveRenderSnapshot\.deleteMany[\s\S]*session_replication_role = 'origin'[\s\S]*documentArchiveJob\.deleteMany/u,
+    );
+    expect(certificateSource).toMatch(
+      /deletedArchiveIntents\.count !== archiveIntents\.length[\s\S]*deletedArchiveSnapshots\.count !== archiveSnapshots\.length/u,
+    );
+    expect(certificateSource).not.toMatch(/tx\.documentArchiveJobArtifact\.deleteMany/u);
+    expect(certificateSource).not.toMatch(/tx\.storedDocument\.deleteMany/u);
+    expect(certificateSource).not.toMatch(/DELETE FROM storage\.objects/u);
     expect(certificateSource).not.toMatch(/cleanupFixtures\([^)]*\)\.catch/u);
   });
 });
