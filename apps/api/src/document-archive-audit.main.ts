@@ -692,6 +692,10 @@ class PrismaArchivePreactivationRepository implements ArchivePreactivationReposi
            SELECT 1 FROM public.chantier_photos AS photo
             WHERE photo."storageKey" = object.name
          )
+         AND NOT EXISTS (
+           SELECT 1 FROM public.document_archive_artifact_intents AS intent
+            WHERE intent."storageKey" = object.name
+         )
        ORDER BY object.created_at, object.name
     `,
       this.bucket,
@@ -715,6 +719,10 @@ class PrismaArchivePreactivationRepository implements ArchivePreactivationReposi
         SELECT photo."storageKey" AS "storageKey",
                ('chantier_photo:' || photo.id)::text AS reference
           FROM public.chantier_photos AS photo
+        UNION ALL
+        SELECT intent."storageKey" AS "storageKey",
+               ('archive_intent:' || intent."jobId" || ':' || intent.kind)::text AS reference
+          FROM public.document_archive_artifact_intents AS intent
       )
       SELECT reference."storageKey" AS "storageKey",
              array_agg(reference.reference ORDER BY reference.reference) AS "referencedBy"
@@ -913,8 +921,12 @@ class PrismaArchivePreactivationRepository implements ArchivePreactivationReposi
              AND (
                version.id IS NULL
                OR object.id IS NULL
+               OR object.created_at IS NULL
                OR object.updated_at IS NULL
-               OR object.updated_at > greatest(document."createdAt", version."createdAt")
+               OR (
+                 object.updated_at > object.created_at
+                 AND object.updated_at > greatest(document."createdAt", version."createdAt")
+               )
              )
         `,
           input.storageBucket,

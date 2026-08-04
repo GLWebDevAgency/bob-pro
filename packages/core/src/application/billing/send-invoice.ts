@@ -189,6 +189,16 @@ export class SendInvoice {
       );
     }
 
+    // PDF ARCHIVÉ joint (l'original immuable de l'émission) — fail-closed : archive absente =
+    // indisponibilité honnête, l'e-mail ne part pas avec une pièce régénérée ou sans pièce. Cette
+    // lecture DOIT précéder la rotation du lien public : un archive encore en préparation ne doit
+    // ni révoquer l'ancien lien ni créer un secret que l'appelant ne recevra jamais.
+    const attachment = await this.deps.archivePdf.loadIssuedInvoicePdf(
+      invoice.companyId,
+      invoice.id,
+    );
+    if (!attachment.ok) return attachment;
+
     // Lien public de consultation (rotation) — mêmes gardes transactionnelles que le bouton
     // « Partager le lien » (CreateDocumentViewLink : company vivante, pièce émise).
     const link = await new CreateDocumentViewLink({
@@ -200,14 +210,6 @@ export class SendInvoice {
       clock: this.deps.clock,
     }).execute({ kind: 'invoice', id: invoice.id });
     if (!link.ok) return link;
-
-    // PDF ARCHIVÉ joint (l'original immuable de l'émission) — fail-closed : archive absente =
-    // indisponibilité honnête, l'e-mail ne part pas avec une pièce régénérée ou sans pièce.
-    const attachment = await this.deps.archivePdf.loadIssuedInvoicePdf(
-      invoice.companyId,
-      invoice.id,
-    );
-    if (!attachment.ok) return attachment;
 
     const message = buildInvoiceDeliveryEmail({
       companyName: company.name,

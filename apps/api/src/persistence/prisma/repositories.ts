@@ -52,12 +52,18 @@ import {
 } from '@bob/core';
 import type { ServerCompanyRepository } from '../persistence';
 import {
+  openDocumentArchiveRenderSnapshot,
+  type DocumentArchiveRenderSnapshotSeal,
+} from '../../documents/document-archive-render-snapshot';
+import {
   documentArchiveIntegrityProofSha256,
   isValidDocumentArchiveIntegrityProof,
+  type DocumentArchiveArtifactIntent,
   type DocumentArchiveIntegrityProof,
   type DocumentArchiveJob,
   type DocumentArchiveJobRepository,
   type EnqueueDocumentArchiveJobInput,
+  type PreparedDocumentArchiveArtifactIntent,
 } from '../document-archive-jobs';
 import {
   NotificationDedupeConflictError,
@@ -1257,9 +1263,50 @@ interface DocumentArchiveJobRow {
   completedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
+  snapshotSchemaVersion: number | null;
+  snapshotRendererVersion: number | null;
+  snapshotPayload: string | null;
+  snapshotSha256: string | null;
 }
 
-function archiveJobRowToView(row: DocumentArchiveJobRow): DocumentArchiveJob {
+function archiveRenderSnapshotFromRow(
+  row: DocumentArchiveJobRow,
+  verifySeal = true,
+): DocumentArchiveRenderSnapshotSeal | null {
+  const values = [
+    row.snapshotSchemaVersion,
+    row.snapshotRendererVersion,
+    row.snapshotPayload,
+    row.snapshotSha256,
+  ];
+  if (values.every((value) => value === null)) return null;
+  if (
+    row.snapshotSchemaVersion !== 1
+    || row.snapshotRendererVersion !== 1
+    || row.snapshotPayload === null
+    || row.snapshotSha256 === null
+  ) throw new Error('Document archive render snapshot row is partial or unsupported.');
+  const seal: DocumentArchiveRenderSnapshotSeal = {
+    snapshotSchemaVersion: 1,
+    rendererVersion: 1,
+    json: row.snapshotPayload,
+    sha256: row.snapshotSha256,
+  };
+  if (verifySeal) {
+    const snapshot = openDocumentArchiveRenderSnapshot(seal);
+    if (
+      snapshot.companyId !== row.companyId
+      || snapshot.pieceId !== row.invoiceId
+      || snapshot.reason !== row.reason
+    ) throw new Error('Document archive render snapshot identity mismatch.');
+  }
+  return seal;
+}
+
+function archiveJobRowToView(
+  row: DocumentArchiveJobRow,
+  options: { verifyRenderSnapshot?: boolean } = {},
+): DocumentArchiveJob {
   if (
     row.reason !== 'invoice-issued'
     && row.reason !== 'invoice-issued-pdf-only-b2c'
@@ -1287,6 +1334,7 @@ function archiveJobRowToView(row: DocumentArchiveJobRow): DocumentArchiveJob {
     // le renommage de colonne serait une migration non additive, interdite.
     pieceId: row.invoiceId,
     reason: row.reason,
+    renderSnapshot: archiveRenderSnapshotFromRow(row, options.verifyRenderSnapshot ?? true),
     status: row.status,
     attempts: row.attempts,
     nextAttemptAt: row.nextAttemptAt.toISOString(),
@@ -1377,11 +1425,31 @@ export class PrismaDocumentArchiveJobRepository implements DocumentArchiveJobRep
     // l'hôte n'entre jamais dans le calendrier durable : une machine réglée en 2099 ne doit pas
     // pouvoir immobiliser une archive pendant 73 ans.
     void input.now;
-    const [result] = await this.prisma.client().$queryRaw<Array<{ accepted: boolean }>>`
-      SELECT public.document_archive_job_enqueue_v2(
-        ${input.id}, ${input.companyId}, ${input.pieceId}, ${input.reason}
-      ) AS accepted
-    `;
+    if (input.renderSnapshot !== undefined) {
+      const snapshot = openDocumentArchiveRenderSnapshot(input.renderSnapshot);
+      if (
+        snapshot.companyId !== input.companyId
+        || snapshot.pieceId !== input.pieceId
+        || snapshot.reason !== input.reason
+      ) {
+        throw new Error('Document archive enqueue snapshot identity mismatch.');
+      }
+    }
+    const [result] = input.renderSnapshot === undefined
+      ? await this.prisma.client().$queryRaw<Array<{ accepted: boolean }>>`
+          SELECT public.document_archive_job_enqueue_v2(
+            ${input.id}, ${input.companyId}, ${input.pieceId}, ${input.reason}
+          ) AS accepted
+        `
+      : await this.prisma.client().$queryRaw<Array<{ accepted: boolean }>>`
+          SELECT public.document_archive_job_enqueue_v3(
+            ${input.id}, ${input.companyId}, ${input.pieceId}, ${input.reason},
+            ${input.renderSnapshot.snapshotSchemaVersion}::smallint,
+            ${input.renderSnapshot.rendererVersion}::smallint,
+            ${input.renderSnapshot.json},
+            ${input.renderSnapshot.sha256}
+          ) AS accepted
+        `;
     if (result?.accepted !== true) {
       throw new Error('Document archive enqueue identity conflict.');
     }
@@ -1392,18 +1460,41 @@ export class PrismaDocumentArchiveJobRepository implements DocumentArchiveJobRep
     pieceId: string,
     reason: DocumentArchiveJob['reason'],
   ): Promise<DocumentArchiveJob | null> {
-    const row = await this.prisma.client().documentArchiveJob.findUnique({
-      where: { uniq_document_archive_job: { companyId, invoiceId: pieceId, reason } },
-    });
-    return row === null ? null : archiveJobRowToView(row);
+    const [row] = await this.prisma.client().$queryRaw<DocumentArchiveJobRow[]>`
+      SELECT job.id, job."companyId", job."invoiceId", job.reason, job.status,
+             job.attempts, job."nextAttemptAt", job."leaseToken", job."lastError",
+             job."integrityProof", job."integrityProofSha256", job."completedAt",
+             job."createdAt", job."updatedAt",
+             snapshot."schemaVersion" AS "snapshotSchemaVersion",
+             snapshot."rendererVersion" AS "snapshotRendererVersion",
+             snapshot.payload AS "snapshotPayload",
+             snapshot."payloadSha256" AS "snapshotSha256"
+        FROM document_archive_jobs AS job
+        LEFT JOIN document_archive_render_snapshots AS snapshot ON snapshot."jobId" = job.id
+       WHERE job."companyId" = ${companyId}
+         AND job."invoiceId" = ${pieceId}
+         AND job.reason = ${reason}
+       LIMIT 1
+    `;
+    return row === undefined ? null : archiveJobRowToView(row);
   }
 
   async countIncomplete(companyId: string, reason: DocumentArchiveJob['reason']): Promise<number> {
     // La seule présence SQL d'un JSON/digest ne constitue pas une preuve. On repasse chaque
     // terminaison par le parseur + digest canoniques de l'application avant de lever la barrière.
-    const rows = await this.prisma.client().documentArchiveJob.findMany({
-      where: { companyId, reason },
-    });
+    const rows = await this.prisma.client().$queryRaw<DocumentArchiveJobRow[]>`
+      SELECT job.id, job."companyId", job."invoiceId", job.reason, job.status,
+             job.attempts, job."nextAttemptAt", job."leaseToken", job."lastError",
+             job."integrityProof", job."integrityProofSha256", job."completedAt",
+             job."createdAt", job."updatedAt",
+             snapshot."schemaVersion" AS "snapshotSchemaVersion",
+             snapshot."rendererVersion" AS "snapshotRendererVersion",
+             snapshot.payload AS "snapshotPayload",
+             snapshot."payloadSha256" AS "snapshotSha256"
+        FROM document_archive_jobs AS job
+        LEFT JOIN document_archive_render_snapshots AS snapshot ON snapshot."jobId" = job.id
+       WHERE job."companyId" = ${companyId} AND job.reason = ${reason}
+    `;
     return rows.reduce((count, row) => {
       const job = archiveJobRowToView(row);
       return count + (
@@ -1425,20 +1516,27 @@ export class PrismaDocumentArchiveJobRepository implements DocumentArchiveJobRep
     // l'autorité du runtime. Un worker en retard ne doit pas masquer les jobs réellement dus.
     void now;
     const rows = await this.prisma.client().$queryRaw<DocumentArchiveJobRow[]>`
-      SELECT id, "companyId", "invoiceId", reason, status, attempts,
-             "nextAttemptAt", "leaseToken", "lastError", "integrityProof",
-             "integrityProofSha256", "completedAt", "createdAt", "updatedAt"
-        FROM "document_archive_jobs"
-       WHERE "companyId" = ${companyId}
+      SELECT job.id, job."companyId", job."invoiceId", job.reason, job.status, job.attempts,
+             job."nextAttemptAt", job."leaseToken", job."lastError", job."integrityProof",
+             job."integrityProofSha256", job."completedAt", job."createdAt", job."updatedAt",
+             snapshot."schemaVersion" AS "snapshotSchemaVersion",
+             snapshot."rendererVersion" AS "snapshotRendererVersion",
+             snapshot.payload AS "snapshotPayload",
+             snapshot."payloadSha256" AS "snapshotSha256"
+        FROM "document_archive_jobs" AS job
+        LEFT JOIN document_archive_render_snapshots AS snapshot ON snapshot."jobId" = job.id
+       WHERE job."companyId" = ${companyId}
          AND (
-           status IN ('pending'::"DocumentArchiveJobStatus", 'failed'::"DocumentArchiveJobStatus")
-           OR (status = 'done'::"DocumentArchiveJobStatus" AND "integrityProof" IS NULL)
+           job.status IN ('pending'::"DocumentArchiveJobStatus", 'failed'::"DocumentArchiveJobStatus")
+           OR (job.status = 'done'::"DocumentArchiveJobStatus" AND job."integrityProof" IS NULL)
          )
-         AND "nextAttemptAt" <= statement_timestamp()
-       ORDER BY "nextAttemptAt" ASC, "createdAt" ASC
+         AND job."nextAttemptAt" <= statement_timestamp()
+       ORDER BY job."nextAttemptAt" ASC, job."createdAt" ASC
        LIMIT ${limit}
     `;
-    return rows.map(archiveJobRowToView);
+    // Le LIST ne doit jamais ouvrir un snapshot : une ligne corrompue reste un échec isolé du job
+    // après CLAIM, où elle sera marquée/rejouée sans empêcher les candidats suivants de la page.
+    return rows.map((row) => archiveJobRowToView(row, { verifyRenderSnapshot: false }));
   }
 
   async claimForArchive(
@@ -1463,10 +1561,100 @@ export class PrismaDocumentArchiveJobRepository implements DocumentArchiveJobRep
       ) AS accepted
     `;
     if (claim?.accepted !== true) return { outcome: 'skipped' };
-    const row = await this.prisma.client().documentArchiveJob.findFirst({
-      where: { id, companyId, leaseToken },
+    const [row] = await this.prisma.client().$queryRaw<DocumentArchiveJobRow[]>`
+      SELECT job.id, job."companyId", job."invoiceId", job.reason, job.status,
+             job.attempts, job."nextAttemptAt", job."leaseToken", job."lastError",
+             job."integrityProof", job."integrityProofSha256", job."completedAt",
+             job."createdAt", job."updatedAt",
+             snapshot."schemaVersion" AS "snapshotSchemaVersion",
+             snapshot."rendererVersion" AS "snapshotRendererVersion",
+             snapshot.payload AS "snapshotPayload",
+             snapshot."payloadSha256" AS "snapshotSha256"
+        FROM document_archive_jobs AS job
+        LEFT JOIN document_archive_render_snapshots AS snapshot ON snapshot."jobId" = job.id
+       WHERE job.id = ${id} AND job."companyId" = ${companyId} AND job."leaseToken" = ${leaseToken}
+       LIMIT 1
+    `;
+    return row === undefined
+      ? { outcome: 'skipped' }
+      : {
+          outcome: 'claimed',
+          // L'ouverture canonique appartient à la phase render, dans le try/catch par job.
+          job: archiveJobRowToView(row, { verifyRenderSnapshot: false }),
+        };
+  }
+
+  async prepareArtifactIntents(input: {
+    jobId: string;
+    companyId: string;
+    leaseToken: string;
+    snapshotSha256: string;
+    intents: PreparedDocumentArchiveArtifactIntent[];
+    now: string;
+  }): Promise<boolean> {
+    void input.now;
+    const [prepared] = await this.prisma.client().$queryRaw<Array<{ accepted: boolean }>>`
+      SELECT public.document_archive_artifact_intents_prepare_v1(
+        ${input.jobId}, ${input.companyId}, ${input.leaseToken}, ${input.snapshotSha256},
+        ${JSON.stringify(input.intents)}::jsonb
+      ) AS accepted
+    `;
+    return prepared?.accepted === true;
+  }
+
+  async listArtifactIntents(
+    jobId: string,
+    companyId: string,
+  ): Promise<DocumentArchiveArtifactIntent[]> {
+    const rows = await this.prisma.client().$queryRaw<Array<{
+      jobId: string;
+      companyId: string;
+      snapshotSha256: string;
+      kind: string;
+      contentProfile: string;
+      documentId: string;
+      versionId: string;
+      versionNumber: number;
+      filename: string;
+      storageKey: string;
+      mimeType: string;
+      byteSize: number;
+      sha256: string;
+      preparedAt: Date;
+    }>>`
+      SELECT *
+        FROM public.document_archive_artifact_intents_list_v1(${jobId}, ${companyId})
+    `;
+    return rows.map((row) => {
+      if (
+        (row.kind !== 'invoice_pdf' && row.kind !== 'facturx_xml' && row.kind !== 'signed_quote')
+        || (
+          row.contentProfile !== 'plain_pdf'
+          && row.contentProfile !== 'facturx_pdfa3'
+          && row.contentProfile !== 'facturx_xml'
+        )
+        || row.versionNumber !== 1
+        || !Number.isSafeInteger(row.byteSize)
+        || row.byteSize <= 0
+        || !/^[a-f0-9]{64}$/u.test(row.sha256)
+      ) throw new Error('Document archive artifact intent row is invalid.');
+      return {
+        jobId: row.jobId,
+        companyId: row.companyId,
+        snapshotSha256: row.snapshotSha256,
+        kind: row.kind,
+        contentProfile: row.contentProfile,
+        documentId: row.documentId,
+        versionId: row.versionId,
+        version: 1,
+        filename: row.filename,
+        storageKey: row.storageKey,
+        mimeType: row.mimeType,
+        byteSize: row.byteSize,
+        sha256: row.sha256,
+        preparedAt: row.preparedAt.toISOString(),
+      };
     });
-    return row === null ? { outcome: 'skipped' } : { outcome: 'claimed', job: archiveJobRowToView(row) };
   }
 
   async markDone(
@@ -1485,15 +1673,23 @@ export class PrismaDocumentArchiveJobRepository implements DocumentArchiveJobRep
       return false;
     }
     void at;
-    const [completion] = await this.prisma.client().$queryRaw<Array<{ accepted: boolean }>>`
-      SELECT public.document_archive_job_complete_v2(
-        ${id},
-        ${companyId},
-        ${leaseToken},
-        ${JSON.stringify(proof)}::jsonb,
-        ${proofSha256}
-      ) AS accepted
+    const [snapshot] = await this.prisma.client().$queryRaw<Array<{ present: boolean }>>`
+      SELECT EXISTS(
+        SELECT 1 FROM document_archive_render_snapshots
+         WHERE "jobId" = ${id} AND "companyId" = ${companyId}
+      ) AS present
     `;
+    const [completion] = snapshot?.present === true
+      ? await this.prisma.client().$queryRaw<Array<{ accepted: boolean }>>`
+          SELECT public.document_archive_job_complete_v3(
+            ${id}, ${companyId}, ${leaseToken}, ${JSON.stringify(proof)}::jsonb, ${proofSha256}
+          ) AS accepted
+        `
+      : await this.prisma.client().$queryRaw<Array<{ accepted: boolean }>>`
+          SELECT public.document_archive_job_complete_v2(
+            ${id}, ${companyId}, ${leaseToken}, ${JSON.stringify(proof)}::jsonb, ${proofSha256}
+          ) AS accepted
+        `;
     return completion?.accepted === true;
   }
 

@@ -1931,11 +1931,19 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
     });
     await p.seed();
     await asPrincipal(MERCIER, async () => {
-      const { number } = await issueFinalInvoice(service, {
+      const { invoiceId, number } = await issueFinalInvoice(service, {
         customerId: 'cust-martin',
         unitPriceHT: 100_000,
         vatRate: 20,
       });
+      let archiveReady = false;
+      for (let attempt = 0; attempt < 20 && !archiveReady; attempt += 1) {
+        const archived = await service.runDocumentArchiveJobs({ limit: 50 });
+        expect(archived.ok).toBe(true);
+        archiveReady = (await service.invoicePdf(invoiceId)).ok;
+        if (!archiveReady) await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      expect(archiveReady, `archive facture ${invoiceId} non matérialisée`).toBe(true);
       // La fixture d'émission a déjà enfilé l'e-mail du devis : on repart d'une outbox vierge
       // pour n'observer QUE le sortant de l'envoi de facture.
       vi.mocked(notificationDelivery.enqueue).mockClear();

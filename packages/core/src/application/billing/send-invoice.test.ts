@@ -212,10 +212,22 @@ describe('SendInvoice', () => {
     expect(orders[0]!.notification.to).toBe('compta@martin-renov.fr');
   });
 
-  it('archive PDF indisponible : refus fail-closed, aucun e-mail sans la pièce', async () => {
+  it('archive PDF indisponible : aucun e-mail et aucune rotation de lien public', async () => {
     const env = makeEnv();
     const { orders, port } = makeOutbox();
     const invoiceId = await issuedInvoice(env);
+    let createCount = 0;
+    let revokeCount = 0;
+    const baseCreate = env.publicAccessTokens.create;
+    const baseRevoke = env.publicAccessTokens.revokeActiveFor;
+    env.publicAccessTokens.create = async (input) => {
+      createCount += 1;
+      return baseCreate(input);
+    };
+    env.publicAccessTokens.revokeActiveFor = async (input) => {
+      revokeCount += 1;
+      return baseRevoke(input);
+    };
     const archiveKo: InvoiceArchivePdfPort = {
       loadIssuedInvoicePdf: async () => ({
         ok: false,
@@ -225,6 +237,8 @@ describe('SendInvoice', () => {
     const r = await useCase(env, port, archiveKo).execute({ invoiceId });
     expect(!r.ok && r.error.kind).toBe('unavailable');
     expect(orders).toHaveLength(0);
+    expect(createCount).toBe(0);
+    expect(revokeCount).toBe(0);
   });
 
   it('rejouer le MÊME lien (clé identique) se déduplique : deliveryStatus `sent`', async () => {

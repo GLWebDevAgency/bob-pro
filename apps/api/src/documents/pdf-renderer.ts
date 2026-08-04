@@ -1343,6 +1343,37 @@ async function embedLogo(
   }
 }
 
+function parsePdfMetadataDate(value: string | null | undefined): Date | null {
+  if (value === undefined || value === null) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error('PDF_METADATA_DATE_INVALID');
+  }
+  return parsed;
+}
+
+/**
+ * pdf-lib renseigne sinon CreationDate/ModDate depuis l'horloge à la création ET au save. Pour
+ * un original adressé par hash, cette commodité devient une source d'orphelins au retry. Tous les
+ * rendus partent donc sans métadonnée implicite ; une archive fournit son instant durable exact.
+ */
+async function createDeterministicPdf(input: {
+  title: string;
+  createdAt?: string | null;
+}): Promise<PDFDocument> {
+  const doc = await PDFDocument.create({ updateMetadata: false });
+  doc.setTitle(input.title);
+  doc.setCreator('Bob Pro');
+  doc.setProducer('Bob Pro');
+  doc.setLanguage('fr-FR');
+  const createdAt = parsePdfMetadataDate(input.createdAt);
+  if (createdAt !== null) {
+    doc.setCreationDate(createdAt);
+    doc.setModificationDate(createdAt);
+  }
+  return doc;
+}
+
 /* ── PR-16 : fiche de passage — sobriété de terrain, honnêteté des faits ─── */
 
 /** `2026-08-04T10:31:00.000Z` → `04/08/2026 10:31` (heure locale Europe/Paris, jour métier). */
@@ -1400,7 +1431,14 @@ export class PdfRenderer implements PdfRendererPort, InterventionReportRendererP
    * pour un même état de fiche.
    */
   async renderInterventionReport(data: InterventionReportData): Promise<Uint8Array> {
-    const doc = await PDFDocument.create();
+    const doc = await createDeterministicPdf({
+      title: data.title,
+      createdAt:
+        data.signature?.capturedAt
+        ?? data.finishedAt
+        ?? data.startedAt
+        ?? data.plannedAt,
+    });
     const fonts = await embedFonts(doc);
     const accent = accentRoles('navy');
     const pieceTitle = data.title;
@@ -1576,12 +1614,10 @@ export class PdfRenderer implements PdfRendererPort, InterventionReportRendererP
     return doc.save();
   }
 
-  async renderInvoice(data: InvoicePdfData, facturX?: { xml: string }): Promise<Uint8Array> {
-    const doc = await PDFDocument.create();
-    const fonts = await embedFonts(doc);
-    const accent = accentRoles(data.billingPresentation.accentColor);
-    const logo = await embedLogo(doc, data.logoBytes);
-
+  async renderInvoice(
+    data: InvoicePdfData,
+    facturX?: { xml: string; createdAt: string },
+  ): Promise<Uint8Array> {
     // A5 — une pièce rectificative s'intitule « Avoir », jamais « Facture » : le titre suit
     // data.kind (le domaine ne fabrique que des avoirs TOTAUX, Invoice.creditNoteFor).
     const isCreditNote = data.kind === 'credit_note';
@@ -1591,6 +1627,14 @@ export class PdfRenderer implements PdfRendererPort, InterventionReportRendererP
         ? 'Facture d’acompte'
         : 'Facture';
     const pieceTitle = `${pieceLabel} ${data.number}`;
+
+    const doc = await createDeterministicPdf({
+      title: pieceTitle,
+      createdAt: data.documentCreatedAt,
+    });
+    const fonts = await embedFonts(doc);
+    const accent = accentRoles(data.billingPresentation.accentColor);
+    const logo = await embedLogo(doc, data.logoBytes);
 
     const ctx: Ctx = {
       doc,
@@ -1798,20 +1842,21 @@ export class PdfRenderer implements PdfRendererPort, InterventionReportRendererP
       // Pièce jointe associée : le profil EN16931 impose la relation Alternative
       // (Data est réservé aux profils MINIMUM/BASIC-WL).
       const xmlBytes = new TextEncoder().encode(facturX.xml);
-      const now = new Date();
+      const createdAt = parsePdfMetadataDate(facturX.createdAt);
+      if (createdAt === null) throw new Error('PDF_METADATA_DATE_REQUIRED');
       await doc.attach(xmlBytes, 'factur-x.xml', {
         mimeType: 'application/xml',
         description: 'Facture electronique Factur-X (CII)',
         afRelationship: AFRelationship.Alternative,
-        creationDate: now,
-        modificationDate: now,
+        creationDate: createdAt,
+        modificationDate: createdAt,
       });
       const metaStream = doc.context.stream(facturXXmp(), { Type: 'Metadata', Subtype: 'XML' });
       doc.catalog.set(PDFName.of('Metadata'), doc.context.register(metaStream));
       applyPdfA3bEnvelope(doc, {
         facturXXml: facturX.xml,
         title: pieceTitle,
-        createdAt: now,
+        createdAt,
       });
     }
 
@@ -1823,7 +1868,10 @@ export class PdfRenderer implements PdfRendererPort, InterventionReportRendererP
    *  que la facture) ; absent → navy (compat adapters existants). Le devis signé est servi depuis
    *  l'archive A8 : un changement de couleur ne re-rend JAMAIS un contrat. */
   async renderQuote(data: QuotePdfData): Promise<Uint8Array> {
-    const doc = await PDFDocument.create();
+    const doc = await createDeterministicPdf({
+      title: `Devis ${data.number}`,
+      createdAt: data.documentCreatedAt,
+    });
     const fonts = await embedFonts(doc);
     const accent = accentRoles(data.accentColor ?? 'navy');
     const logo = await embedLogo(doc, data.logoBytes);

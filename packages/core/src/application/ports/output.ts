@@ -11,6 +11,8 @@ export interface InvoicePdfData {
   customerAddress: string;
   issuedAt: string | null;
   dueAt: string | null;
+  /** Instant durable utilisé uniquement pour les métadonnées binaires de l'original. */
+  documentCreatedAt?: string | null;
   kind: string;
   /**
    * B3 — `discount` optionnel par ligne (compat ascendante) : le renderer imprime la remise à
@@ -121,6 +123,8 @@ export interface QuotePdfData {
   customerName: string;
   customerAddress: string;
   validUntil: string | null;
+  /** Même ancre binaire immuable ; absente sur un aperçu dynamique. */
+  documentCreatedAt?: string | null;
   /** B3 — `discount` optionnel par ligne (compat ascendante) : remise imprimée à côté de la ligne.
    *  `lineTotalCents` — total HT brut de la ligne résolu par le domaine (mêmes garanties que la
    *  facture) ; optionnel ADDITIF. */
@@ -172,7 +176,10 @@ export interface PdfRendererPort {
    * Rend une facture conforme en PDF (octets). Si `facturX` est fourni, le XML CII est embarqué
    * comme pièce jointe associée (AFRelationship Data) + métadonnées XMP Factur-X (hybride e-invoicing).
    */
-  renderInvoice(data: InvoicePdfData, facturX?: { xml: string }): Promise<Uint8Array>;
+  renderInvoice(
+    data: InvoicePdfData,
+    facturX?: { xml: string; createdAt: string },
+  ): Promise<Uint8Array>;
   /** Rend un devis (octets) — lien public de visualisation (document_view). */
   renderQuote(data: QuotePdfData): Promise<Uint8Array>;
 }

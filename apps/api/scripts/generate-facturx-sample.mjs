@@ -14,6 +14,8 @@ import {
 } from '@bob/core';
 import { PdfRenderer } from '../dist/documents/pdf-renderer.js';
 
+const DOCUMENT_CREATED_AT = '2026-06-29T10:00:00.000Z';
+
 const unwrap = (r, label) => {
   if (!r || r.ok !== true) {
     console.error(`Échec ${label} :`, r && r.error);
@@ -90,6 +92,7 @@ const pdfData = {
   customerAddress: `${buyer.address.line1}, ${buyer.address.zip} ${buyer.address.city}`,
   issuedAt: inv.issuedAt,
   dueAt: inv.dueAt,
+  documentCreatedAt: DOCUMENT_CREATED_AT,
   kind: inv.kind,
   lines: inv.lines.map((l) => ({ label: l.label, qty: l.qty, unitPriceHT: l.unitPriceHT, vatRate: l.vatRate })),
   totals: { ht: t.ht, vat: t.vat, ttc: t.ttc, netToPay: t.netToPay },
@@ -98,7 +101,10 @@ const pdfData = {
   // d'un ancien fallback implicite qui masquerait une rupture du contrat InvoicePdfData.
   billingPresentation: { accentColor: 'navy', rib: null, insurance: null },
 };
-const bytes = await new PdfRenderer().renderInvoice(pdfData, { xml });
+const bytes = await new PdfRenderer().renderInvoice(pdfData, {
+  xml,
+  createdAt: DOCUMENT_CREATED_AT,
+});
 
 const out = process.argv[2] ?? 'facturx-sample';
 mkdirSync(out, { recursive: true });

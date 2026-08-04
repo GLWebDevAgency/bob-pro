@@ -2886,6 +2886,7 @@ export class QuotesController {
     return unwrap(await this.backend.createQuoteViewLink(id));
   }
   @Post(':id/sign')
+  @WithoutTenantPersistenceTransaction()
   async sign(@Param('id') id: string, @Body() body: unknown) {
     assertJsonObjectBody(body);
     return unwrap(await this.backend.signQuote({ quoteId: id, ...parseSignQuoteBody(body) }));
@@ -3026,6 +3027,7 @@ export class InvoicesController {
    * (art. L441-9 c. com., 242 nonies A CGI). Validé ici en forme, puis revalidé et FIGÉ par le
    * domaine (Invoice.issue) — un rejet n'consomme aucun numéro. */
   @Post(':id/issue')
+  @WithoutTenantPersistenceTransaction()
   async issue(@Param('id') id: string, @Body() body?: unknown) {
     const input: {
       invoiceId: string;

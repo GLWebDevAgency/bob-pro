@@ -78,6 +78,67 @@ describe('SupabaseDocumentStorage — 400 not_found = absence, pas une erreur', 
     return storage;
   }
 
+  it('borne une I/O suspendue avec un AbortSignal réel', async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = ((_: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        expect(signal).toBeInstanceOf(AbortSignal);
+        signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+      })) as typeof fetch;
+    const storage = new SupabaseDocumentStorage({
+      url: 'https://stub.supabase.co',
+      serviceRoleKey: 'srk',
+      requestTimeoutMs: 5,
+    });
+    try {
+      await expect(storage.get('co-1', KEY)).rejects.toMatchObject({ name: 'TimeoutError' });
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it('attache une deadline à GET, POST, readback, signature, stat et DELETE', async () => {
+    const calls: Array<{ method: string; signal: AbortSignal | null }> = [];
+    let objectGets = 0;
+    const storage = makeStorage((async (url: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      calls.push({ method, signal: init?.signal ?? null });
+      const value = String(url);
+      if (value.includes('/object/sign/')) {
+        return new Response(JSON.stringify({ signedURL: '/storage/v1/object/sign/x' }));
+      }
+      if (value.includes('/object/info/')) {
+        return new Response(JSON.stringify({ size: BYTES.byteLength, content_type: 'application/xml' }));
+      }
+      if (method === 'DELETE') return new Response('{}');
+      if (method === 'POST') return new Response('{}');
+      objectGets += 1;
+      return objectGets === 1
+        ? new Response(NOT_FOUND_BODY, { status: 400 })
+        : new Response(Buffer.from(BYTES), {
+            headers: { 'content-type': 'application/xml' },
+          });
+    }) as typeof fetch);
+    try {
+      await storage.put({
+        companyId: 'co-1',
+        key: KEY,
+        bytes: BYTES,
+        contentType: 'application/xml',
+      });
+      await storage.getSignedUrl('co-1', KEY, 60);
+      await storage.stat('co-1', KEY);
+      await storage.remove('co-1', KEY);
+      expect(calls.map((call) => call.method)).toEqual([
+        'GET', 'POST', 'GET', 'POST', 'GET', 'DELETE',
+      ]);
+      expect(calls.every((call) => call.signal instanceof AbortSignal)).toBe(true);
+    } finally {
+      (storage as unknown as { __restore: () => void }).__restore();
+    }
+  });
+
   it('stat sur un objet inexistant (400 + corps not_found) → null, sans throw', async () => {
     const storage = makeStorage(
       (async () => new Response(NOT_FOUND_BODY, { status: 400 })) as typeof fetch,

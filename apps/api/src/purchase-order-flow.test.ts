@@ -6,6 +6,8 @@ import { QuotesController, InvoicesController } from './api.controllers';
 import { PdfRenderer } from './documents/pdf-renderer';
 import { pdfVisibleText } from './documents/pdf-text.testing';
 import { InMemoryDocumentStorage } from './documents/storage.testing';
+import { renderPdfFixture } from './documents/pdf-fixtures.testing';
+import { waitForDocumentArchive } from './documents/archive-test-wait.testing';
 import type { NotificationDeliveryService } from './jobs/notification-delivery.service';
 import type { RelanceService } from './jobs/relance.service';
 import type { Metrics } from './observability/metrics';
@@ -33,11 +35,11 @@ function makeService() {
   const persistence = new InMemoryPersistence();
   const rendered: InvoicePdfData[] = [];
   const renderer: PdfRendererPort = {
-    renderInvoice: vi.fn(async (data) => {
+    renderInvoice: vi.fn(async (data, facturX) => {
       rendered.push(structuredClone(data));
-      return new TextEncoder().encode(`%PDF-1.7\narchive:${data.number}`);
+      return renderPdfFixture(`archive:${data.number}`, facturX?.xml);
     }),
-    renderQuote: vi.fn(async (data) => new TextEncoder().encode(`%PDF-1.7\nquote:${data.number}`)),
+    renderQuote: vi.fn(async (data) => renderPdfFixture(`quote:${data.number}`)),
   };
   const notificationDelivery = {
     enqueue: vi.fn(async (input: { notification: unknown }) => ({
@@ -143,6 +145,11 @@ describe('B8 — flow serveur bon de commande (devis → facture → PDF émis)'
       // Émission : le PDF (archivé immuable) porte le numéro d'engagement.
       const issued = await service.issueInvoice({ invoiceId: generated.value.invoiceId });
       expect(issued.ok).toBe(true);
+      await waitForDocumentArchive({
+        label: `invoice ${generated.value.invoiceId}`,
+        drain: () => service.runDocumentArchiveJobs({ limit: 50 }),
+        ready: () => rendered.some((data) => data.kind === 'final' || data.kind === 'invoice'),
+      });
       const emitted = rendered.find((data) => data.kind === 'final' || data.kind === 'invoice');
       expect(emitted).toBeDefined();
       expect(emitted?.purchaseOrder).toEqual({

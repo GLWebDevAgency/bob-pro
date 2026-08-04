@@ -294,8 +294,16 @@ certify_invoice_settlement_protocol() {
 
 certify_document_archive_protocol() {
   local_version="$(
-    psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 \
-      -c 'SELECT "activeVersion" FROM public.document_archive_protocol_state WHERE id = 1'
+    psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN TRANSACTION READ ONLY;
+SELECT pg_catalog.format('SET LOCAL ROLE %I', owner.rolname)
+  FROM pg_catalog.pg_class AS relation
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = relation.relowner
+ WHERE relation.oid = 'public.document_archive_protocol_state'::regclass
+\gexec
+SELECT "activeVersion" FROM public.document_archive_protocol_state WHERE id = 1;
+ROLLBACK;
+SQL
   )"
   case "$local_version" in
     1)
@@ -304,13 +312,65 @@ certify_document_archive_protocol() {
           src/persistence/prisma/document-archive-rollout.postgres.test.ts
       ;;
     2)
-      DOCUMENT_ARCHIVE_CERT_WORKER_COUNT=4 \
-      RUN_POSTGRES_DOCUMENT_ARCHIVE_CERT=true \
-        pnpm --filter @bob/api exec vitest run --testTimeout=30000 \
-          src/persistence/prisma/document-archive-integrity.postgres.test.ts
+      snapshot_version="$(
+        psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN TRANSACTION READ ONLY;
+SELECT pg_catalog.format('SET LOCAL ROLE %I', owner.rolname)
+  FROM pg_catalog.pg_class AS relation
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = relation.relowner
+ WHERE relation.oid = 'public.document_archive_snapshot_protocol_state'::regclass
+\gexec
+SELECT "activeVersion" FROM public.document_archive_snapshot_protocol_state WHERE id = 1;
+ROLLBACK;
+SQL
+      )"
+      case "$snapshot_version" in
+        1)
+          DOCUMENT_ARCHIVE_CERT_WORKER_COUNT=4 \
+          RUN_POSTGRES_DOCUMENT_ARCHIVE_CERT=true \
+            pnpm --filter @bob/api exec vitest run --testTimeout=30000 \
+              src/persistence/prisma/document-archive-integrity.postgres.test.ts
+          ;;
+        2)
+          # Le cutover snapshot terminal révoque volontairement enqueue/complete V2. Relancer son
+          # ancien certificat demanderait de réaccorder N-1 et rouvrirait la faille que V3 ferme.
+          # Le certificat snapshot V3, appelé juste après, devient l'unique preuve mutable.
+          echo "Legacy document archive V2 is terminal; V3 snapshot certificate owns runtime proof"
+          ;;
+        *)
+          echo "document archive snapshot protocol singleton is missing or invalid" >&2
+          return 1
+          ;;
+      esac
       ;;
     *)
       echo "document archive protocol singleton is missing or invalid" >&2
+      return 1
+      ;;
+  esac
+}
+
+certify_document_archive_snapshot_protocol() {
+  snapshot_version="$(
+    psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN TRANSACTION READ ONLY;
+SELECT pg_catalog.format('SET LOCAL ROLE %I', owner.rolname)
+  FROM pg_catalog.pg_class AS relation
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = relation.relowner
+ WHERE relation.oid = 'public.document_archive_snapshot_protocol_state'::regclass
+\gexec
+SELECT "activeVersion" FROM public.document_archive_snapshot_protocol_state WHERE id = 1;
+ROLLBACK;
+SQL
+  )"
+  case "$snapshot_version" in
+    1|2)
+      RUN_POSTGRES_DOCUMENT_ARCHIVE_SNAPSHOT_CERT=true \
+        pnpm --filter @bob/api exec vitest run --testTimeout=60000 \
+          src/persistence/prisma/document-archive-snapshot.postgres.test.ts
+      ;;
+    *)
+      echo "document archive snapshot protocol singleton is missing or invalid" >&2
       return 1
       ;;
   esac
@@ -431,19 +491,25 @@ DECLARE
     'document_archive_job_claim_v1',
     'document_archive_job_complete_v1',
     'document_archive_job_complete_v2',
+    'document_archive_job_complete_v3',
     'document_archive_job_enqueue_v1',
     'document_archive_job_enqueue_v2',
+    'document_archive_job_enqueue_v3',
     'document_archive_job_fail_v1',
     'document_archive_job_pdf_attestation_v2_is_valid',
     'document_archive_job_scope_v2_is_valid',
+    'document_archive_artifact_intents_list_v1',
+    'document_archive_artifact_intents_prepare_v1',
     'document_archive_protocol_v2_is_active',
     'enforce_document_archive_audit_evidence_immutable',
     'enforce_document_archive_protocol_monotonicity',
+    'enforce_document_archive_snapshot_protocol_monotonicity',
     'generated_invoice_pdf_attestation_visible_v2',
     'generated_legal_archive_representation_v2_is_valid',
     'guard_customer_type_after_legal_piece_v1',
     'guard_document_archive_job_proof_v1',
     'guard_document_archive_job_scope_v2',
+    'guard_document_archive_job_snapshot_required_v1',
     'guard_document_invoice_pdf_attestation_immutable_v1',
     'guard_document_original_facts_v1',
     'guard_document_version_immutable_v1',
@@ -451,6 +517,8 @@ DECLARE
     'guard_generated_legal_archive_cutover_v2',
     'guard_generated_legal_archive_representation_v2',
     'prevent_generated_legal_storage_object_mutation',
+    'prevent_document_archive_artifact_intent_mutation',
+    'prevent_document_archive_snapshot_mutation',
     'spool_document_archive_job_during_v2_cutover'
   ]::TEXT[];
   archive_function RECORD;
@@ -517,7 +585,9 @@ BEGIN
 
   FOREACH private_table IN ARRAY ARRAY[
     'document_archive_job_artifacts',
-    'document_invoice_pdf_attestations'
+    'document_invoice_pdf_attestations',
+    'document_archive_render_snapshots',
+    'document_archive_artifact_intents'
   ]::TEXT[] LOOP
     SELECT relation.oid, relation.relacl, relation.relowner,
            relation.relrowsecurity, relation.relforcerowsecurity
@@ -557,6 +627,7 @@ BEGIN
 
   FOREACH control_table IN ARRAY ARRAY[
     'document_archive_protocol_state',
+    'document_archive_snapshot_protocol_state',
     'invoice_settlement_protocol_state'
   ]::TEXT[] LOOP
     SELECT relation.oid, relation.relacl, relation.relowner
@@ -797,6 +868,33 @@ REVOKE UPDATE ON TABLE public.maintenance_contract_equipments FROM :"app_role";
 -- PR-15 : une fiche de passage s'ANNULE (statut cancelled), elle ne se supprime jamais — la
 -- preuve du passage (checklist, photos, signature) doit survivre à toute erreur applicative.
 REVOKE DELETE ON TABLE public.interventions FROM :"app_role";
+-- Toute la famille archive est possédée par l'autorité canonique NOLOGIN. Le déployeur Supabase
+-- est volontairement non-superuser : il doit prendre ce rôle AVANT le premier REVOKE/GRANT/SELECT
+-- de la famille, pas seulement avant les nouvelles tables V3. Cette garde rend le rejeu exact
+-- indépendant d'anciens grant-options accidentels du déployeur.
+DO $archive_acl_owner$
+DECLARE
+  protected_owner_oid OID;
+BEGIN
+  SELECT relation.relowner
+    INTO STRICT protected_owner_oid
+    FROM pg_catalog.pg_class AS relation
+   WHERE relation.oid = 'public.document_archive_jobs'::regclass;
+  IF (
+       SELECT role.oid
+         FROM pg_catalog.pg_roles AS role
+        WHERE role.rolname = current_user
+     ) <> protected_owner_oid
+     AND NOT pg_catalog.pg_has_role(session_user, protected_owner_oid, 'SET') THEN
+    RAISE EXCEPTION 'archive schema owner is unavailable for ACL reconstruction';
+  END IF;
+END;
+$archive_acl_owner$;
+SELECT pg_catalog.format('SET LOCAL ROLE %I', owner.rolname)
+  FROM pg_catalog.pg_class AS relation
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = relation.relowner
+ WHERE relation.oid = 'public.document_archive_jobs'::regclass
+\gexec
 -- Rail global monotone de l'archive : lecture runtime seulement, activation via DIRECT_URL.
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE
   public.document_archive_protocol_state
@@ -811,6 +909,17 @@ REVOKE DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE
   public.document_archive_job_artifacts
 FROM :"app_role";
 REVOKE INSERT, UPDATE ON TABLE public.document_archive_job_artifacts FROM :"app_role";
+-- Les objets V3 sont créés directement sous le propriétaire canonique, contrairement aux objets
+-- historiques transférés qui peuvent encore porter des grant-options du déployeur. Reconstruire
+-- leurs ACL sous l'owner exact ferme le replay Supabase non-superuser.
+REVOKE ALL ON TABLE
+  public.document_archive_artifact_intents,
+  public.document_archive_snapshot_protocol_state
+FROM :"app_role";
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE
+  public.document_archive_render_snapshots
+FROM :"app_role";
+GRANT SELECT ON TABLE public.document_archive_render_snapshots TO :"app_role";
 -- Le détecteur d'octets écrit l'attestation par une capacité bornée. Le runtime peut la relire via
 -- RLS mais n'a aucun geste SQL direct ; le helper profond non tenant-scopé reste privé.
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE
@@ -827,15 +936,37 @@ GRANT EXECUTE ON FUNCTION public.attest_generated_invoice_pdf_v1(
 ) TO :"app_role";
 GRANT EXECUTE ON FUNCTION public.generated_invoice_pdf_attestation_visible_v2(TEXT, TEXT)
   TO :"app_role";
-GRANT EXECUTE ON FUNCTION public.document_archive_job_enqueue_v2(TEXT, TEXT, TEXT, TEXT)
-  TO :"app_role";
 GRANT EXECUTE ON FUNCTION public.document_archive_job_claim_v1(
   TEXT, TEXT, TIMESTAMP WITHOUT TIME ZONE, BIGINT, TEXT
 ) TO :"app_role";
 GRANT EXECUTE ON FUNCTION public.document_archive_job_fail_v1(TEXT, TEXT, TEXT, BIGINT, TEXT)
   TO :"app_role";
-GRANT EXECUTE ON FUNCTION public.document_archive_job_complete_v2(TEXT, TEXT, TEXT, JSONB, TEXT)
+GRANT EXECUTE ON FUNCTION public.document_archive_job_enqueue_v3(
+  TEXT, TEXT, TEXT, TEXT, SMALLINT, SMALLINT, TEXT, TEXT
+) TO :"app_role";
+GRANT EXECUTE ON FUNCTION public.document_archive_artifact_intents_prepare_v1(
+  TEXT, TEXT, TEXT, TEXT, JSONB
+) TO :"app_role";
+GRANT EXECUTE ON FUNCTION public.document_archive_artifact_intents_list_v1(TEXT, TEXT)
   TO :"app_role";
+GRANT EXECUTE ON FUNCTION public.document_archive_job_complete_v3(TEXT, TEXT, TEXT, JSONB, TEXT)
+  TO :"app_role";
+SELECT ("activeVersion" = 1)::text AS document_archive_snapshot_expand
+  FROM public.document_archive_snapshot_protocol_state
+ WHERE id = 1
+\gset
+\if :document_archive_snapshot_expand
+  -- Compatibilité N-1 strictement bornée à la fenêtre expand du nouveau rail snapshot.
+  GRANT EXECUTE ON FUNCTION public.document_archive_job_enqueue_v2(TEXT, TEXT, TEXT, TEXT)
+    TO :"app_role";
+  GRANT EXECUTE ON FUNCTION public.document_archive_job_complete_v2(TEXT, TEXT, TEXT, JSONB, TEXT)
+    TO :"app_role";
+\else
+  REVOKE EXECUTE ON FUNCTION public.document_archive_job_enqueue_v2(TEXT, TEXT, TEXT, TEXT)
+    FROM :"app_role";
+  REVOKE EXECUTE ON FUNCTION public.document_archive_job_complete_v2(TEXT, TEXT, TEXT, JSONB, TEXT)
+    FROM :"app_role";
+\endif
 SELECT ("activeVersion" = 1)::text AS document_archive_expand
   FROM public.document_archive_protocol_state
  WHERE id = 1
@@ -873,6 +1004,7 @@ SELECT ("activeVersion" = 1)::text AS document_archive_expand
     TEXT, TEXT, TEXT, JSONB, TEXT
   ) FROM :"app_role";
 \endif
+RESET ROLE;
 -- Une société se clôture, elle ne se supprime jamais depuis le runtime : son identité légale
 -- reste nécessaire aux pièces conservées et un DELETE suivi d'un INSERT la ressusciterait.
 REVOKE DELETE ON TABLE public.companies FROM :"app_role";
@@ -2657,6 +2789,7 @@ SELECT pg_catalog.set_config('bob.postactivation_release_sha', :'release_sha', t
 DO $postactivation_protocol_certificate$
 DECLARE
   archive_state public.document_archive_protocol_state%ROWTYPE;
+  archive_snapshot_state public.document_archive_snapshot_protocol_state%ROWTYPE;
   settlement_state public.invoice_settlement_protocol_state%ROWTYPE;
   expected_outbox_tenant_policy CONSTANT TEXT :=
     '(("companyId" = current_setting(''app.current_company_id''::text, true)) ' ||
@@ -2698,6 +2831,16 @@ BEGIN
        )
   ) THEN
     RAISE EXCEPTION 'document archive protocol V2 has no exact-release terminal audit evidence';
+  END IF;
+
+  SELECT *
+    INTO STRICT archive_snapshot_state
+    FROM public.document_archive_snapshot_protocol_state
+   WHERE id = 1;
+  IF archive_snapshot_state."activeVersion" <> 2
+     OR archive_snapshot_state."activatedAt" IS NULL
+     OR btrim(archive_snapshot_state."activatedByReleaseSha"::TEXT) !~ '^[0-9a-f]{40}$' THEN
+    RAISE EXCEPTION 'document archive snapshot protocol V2 terminal proof is incomplete';
   END IF;
 
   SELECT *
@@ -2856,6 +2999,7 @@ run_nonproduction_mutating_certifications() {
   RUN_POSTGRES_INVOICE_ISSUE_LIFECYCLE_CERT=true \
     pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/invoice-issue-lifecycle.postgres.test.ts
   certify_document_archive_protocol
+  certify_document_archive_snapshot_protocol
   RUN_POSTGRES_CREDIT_NOTE_CERT=true \
     pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/credit-note-traceability.postgres.test.ts
   certify_invoice_settlement_protocol
@@ -2894,6 +3038,12 @@ SELECT CASE WHEN EXISTS (
    WHERE state.id = 1
      AND state."activeVersion" = 2
      AND btrim(state."activatedByReleaseSha"::TEXT) = :'release_sha'
+     AND EXISTS (
+       SELECT 1
+         FROM public.document_archive_snapshot_protocol_state AS snapshot_state
+        WHERE snapshot_state.id = 1
+          AND snapshot_state."activeVersion" = 1
+     )
 ) THEN 'true' ELSE 'false' END;
 SQL
   )"
@@ -2903,6 +3053,8 @@ SQL
       pnpm --filter @bob/api exec vitest run --testTimeout=30000 \
         src/persistence/prisma/document-archive-integrity.postgres.test.ts
   fi
+
+  certify_document_archive_snapshot_protocol
 
   settlement_activated_now="$(
     psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 \
@@ -2933,6 +3085,7 @@ command -v node >/dev/null 2>&1 || { echo "node is required" >&2; exit 1; }
 # La migration n'est rejouable que si chaque CHECK fermé correspond encore à sa source TS.
 # Cette preuve précède le reçu et toute mutation de rôle, de flag ou de schéma.
 node apps/api/scripts/generate-realtime-voice-trace-migration-values.mjs --check
+node apps/api/scripts/generate-document-archive-snapshot-migration-values.mjs --check
 
 node apps/api/scripts/release-phase-receipt.mjs preflight
 if [ "$BOB_RELEASE_PHASE" = predeploy ]; then
@@ -3038,6 +3191,12 @@ certify_realtime_reaper_release_metadata
 certify_realtime_global_capacity_release_metadata
 certify_document_archive_evidence_privacy
 
+if [ "$CABINET_RELEASE_ENV" != production ]; then
+  # Une release non-production interrompue peut laisser ses fixtures bornées. Les retirer avant
+  # les contrôles de couverture cabinet rend le rituel auto-réparable sans élargir le cleanup à
+  # la production. Le trap de la certification reste la seconde ligne de défense.
+  cleanup_rls_cert
+fi
 node apps/api/scripts/bootstrap-cabinet-pilots.mjs
 certify_cabinet_worker_scope
 if [ "$CABINET_RELEASE_ENV" != production ]; then

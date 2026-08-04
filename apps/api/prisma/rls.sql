@@ -39,6 +39,9 @@ DECLARE
     'document_invoice_pdf_attestations',
     'document_archive_jobs',
     'document_archive_job_artifacts',
+    'document_archive_render_snapshots',
+    'document_archive_artifact_intents',
+    'document_archive_snapshot_protocol_state',
     'notification_jobs',
     'devices',
     'push_installations',
@@ -1505,6 +1508,14 @@ DROP POLICY IF EXISTS document_archive_job_artifacts_tenant_select
   ON document_archive_job_artifacts;
 CREATE POLICY document_archive_job_artifacts_tenant_select ON document_archive_job_artifacts
   FOR SELECT USING ("companyId" = current_setting('app.current_company_id', true));
+
+DROP POLICY IF EXISTS document_archive_render_snapshots_tenant_select
+  ON document_archive_render_snapshots;
+CREATE POLICY document_archive_render_snapshots_tenant_select
+  ON document_archive_render_snapshots FOR SELECT
+  USING ("companyId" = current_setting('app.current_company_id', true));
+-- Intentions et singleton de cutover : aucune policy runtime. Leur lecture/écriture passe
+-- exclusivement par les capacités SECURITY DEFINER tenant-scopées et les opérateurs DIRECT_URL.
 
 DROP POLICY IF EXISTS document_invoice_pdf_attestations_tenant_select
   ON document_invoice_pdf_attestations;

@@ -241,6 +241,12 @@ jobs:
         run: |
           DOCUMENT_ARCHIVE_V2_ACTIVATION_RELEASE_SHA="$GITHUB_SHA" \
             sh apps/api/scripts/activate-document-archive-v2.sh
+          RUN_POSTGRES_DOCUMENT_ARCHIVE_SNAPSHOT_ACTIVATION_CERT=true \
+          DOCUMENT_ARCHIVE_SNAPSHOT_V2_ACTIVATION_RELEASE_SHA="$GITHUB_SHA" \
+            pnpm --filter @bob/api exec vitest run --testTimeout=60000 \
+              src/persistence/prisma/document-archive-snapshot-activation.postgres.test.ts
+          DOCUMENT_ARCHIVE_SNAPSHOT_V2_ACTIVATION_RELEASE_SHA="$GITHUB_SHA" \
+            sh apps/api/scripts/activate-document-archive-snapshot-v2.sh
           INVOICE_SETTLEMENT_V2_ACTIVATION_RELEASE_SHA="$GITHUB_SHA" \
             sh apps/api/scripts/activate-invoice-settlement-v2.sh
           sh apps/api/scripts/activate-notification-outbox-v2.sh

@@ -1,6 +1,6 @@
 import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName } from 'pdf-lib';
-import { describe, expect, it } from 'vitest';
-import type { InvoicePdfData, QuotePdfData } from '@bob/core';
+import { describe, expect, it, vi } from 'vitest';
+import type { InterventionReportData, InvoicePdfData, QuotePdfData } from '@bob/core';
 import {
   PDF_ACCENT_HEX,
   PdfRenderer,
@@ -43,6 +43,7 @@ const baseInvoice: InvoicePdfData = {
   customerAddress: '3 place du Marché, 92310 Sèvres',
   issuedAt: '2026-07-19',
   dueAt: '2026-08-18',
+  documentCreatedAt: '2026-07-19T10:15:00.000Z',
   kind: 'final',
   lines: [{ label: 'Rénovation fournil', qty: 1, unitPriceHT: 180_000, vatRate: 20 }],
   totals: { ht: 180_000, vat: 36_000, ttc: 216_000, netToPay: 216_000 },
@@ -58,6 +59,7 @@ const baseQuote: QuotePdfData = {
   customerName: 'Mme Durand',
   customerAddress: '12 rue des Lilas, 92310 Sèvres',
   validUntil: '2026-08-19',
+  documentCreatedAt: '2026-07-19T10:15:00.000Z',
   lines: [{ label: 'Remplacement chauffe-eau', qty: 1, unitPriceHT: 120_000, vatRate: 10 }],
   totals: { ht: 120_000, vat: 12_000, ttc: 132_000, netToPay: 132_000 },
   depositPct: null,
@@ -314,6 +316,7 @@ describe('Factur-X — hybride PDF/A-3b complet', () => {
   it('attache le XML en Alternative et porte toutes les structures PDF/A-3b', async () => {
     const bytes = await new PdfRenderer().renderInvoice(baseInvoice, {
       xml: '<rsm:CrossIndustryInvoice>fixture</rsm:CrossIndustryInvoice>',
+      createdAt: '2026-07-19T10:15:00.000Z',
     });
     const structural = pdfStructuralText(bytes);
     expect(structural).toContain('factur-x.xml');
@@ -437,4 +440,57 @@ describe('Réconciliation finale — sémantique de règlement V1 vs V2 (L441-9)
     expect(text).toContain('-120,00');
     expect(text).not.toContain('hors ce document');
   });
+});
+
+describe('Déterminisme binaire — retry d’archive adressé par hash', () => {
+  const facturX = {
+    xml: '<rsm:CrossIndustryInvoice>deterministic</rsm:CrossIndustryInvoice>',
+    createdAt: '2026-07-19T10:15:00.000Z',
+  };
+  const report: InterventionReportData = {
+    title: 'Fiche de passage',
+    companyName: 'Mercier Plomberie',
+    customerName: 'Mme Durand',
+    chantierName: 'Bastille',
+    chantierAddress: '1 place de la Bastille, Paris',
+    equipmentLabel: 'Fontaine accueil',
+    kind: 'maintenance',
+    technicianLabel: 'Samir',
+    plannedAt: '2026-07-19T08:00:00.000Z',
+    startedAt: '2026-07-19T08:10:00.000Z',
+    finishedAt: '2026-07-19T09:00:00.000Z',
+    checklist: [{ label: 'Contrôle', done: true }],
+    summary: 'RAS',
+    photos: [],
+    notes: [],
+    signature: null,
+  };
+
+  it('produit exactement les mêmes octets pour B2B, B2C, devis signé et fiche de passage', async () => {
+    // Seule Date est simulée : les promesses et l'I/O PDF restent réelles. Le test traverse deux
+    // secondes distinctes sans attente murale et conserve un budget explicite pour les huit rendus
+    // sous charge CI — un blocage réel reste donc borné et rouge.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2031-01-01T00:00:00.000Z'));
+      const renderer = new PdfRenderer();
+      const first = await Promise.all([
+        renderer.renderInvoice(baseInvoice, facturX),
+        renderer.renderInvoice(baseInvoice),
+        renderer.renderQuote({ ...baseQuote, signedBy: 'Mme Durand' }),
+        renderer.renderInterventionReport(report),
+      ]);
+      vi.setSystemTime(new Date('2031-01-01T00:00:02.000Z'));
+      const second = await Promise.all([
+        renderer.renderInvoice(baseInvoice, facturX),
+        renderer.renderInvoice(baseInvoice),
+        renderer.renderQuote({ ...baseQuote, signedBy: 'Mme Durand' }),
+        renderer.renderInterventionReport(report),
+      ]);
+
+      expect(second).toEqual(first);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 15_000);
 });

@@ -1,4 +1,8 @@
 import { createHash } from 'node:crypto';
+import type {
+  DocumentArchiveReason,
+  DocumentArchiveRenderSnapshotSeal,
+} from '../documents/document-archive-render-snapshot';
 
 export type DocumentArchiveJobStatus = 'pending' | 'done' | 'failed';
 
@@ -11,10 +15,7 @@ export type DocumentArchiveJobStatus = 'pending' | 'done' | 'failed';
  *   10 ans des contrats électroniques B2C ≥ 120 €, art. L213-1 code conso ; valeur probante
  *   de l'écrit électronique, art. 1366-1367 code civil).
  */
-export type DocumentArchiveJobReason =
-  | 'invoice-issued'
-  | 'invoice-issued-pdf-only-b2c'
-  | 'quote-signed';
+export type DocumentArchiveJobReason = DocumentArchiveReason;
 
 export const LEGACY_ARCHIVE_PROOF_REQUIRED = '[archive-integrity-proof-required]';
 
@@ -160,6 +161,8 @@ export interface DocumentArchiveJob {
    */
   pieceId: string;
   reason: DocumentArchiveJobReason;
+  /** Preuve append-only de l'entrée exacte du renderer ; null = ordre legacy N-1. */
+  renderSnapshot: DocumentArchiveRenderSnapshotSeal | null;
   status: DocumentArchiveJobStatus;
   attempts: number;
   nextAttemptAt: string;
@@ -179,7 +182,31 @@ export interface EnqueueDocumentArchiveJobInput {
   pieceId: string;
   reason: DocumentArchiveJobReason;
   now: string;
+  /** Requis par le writer V3 ; absent uniquement pour la compatibilité writer N-1. */
+  renderSnapshot?: DocumentArchiveRenderSnapshotSeal;
 }
+
+export interface DocumentArchiveArtifactIntent {
+  jobId: string;
+  companyId: string;
+  snapshotSha256: string;
+  kind: DocumentArchiveArtifactProof['kind'];
+  contentProfile: DocumentArchiveArtifactProof['contentProfile'];
+  documentId: string;
+  versionId: string;
+  version: 1;
+  filename: string;
+  storageKey: string;
+  mimeType: string;
+  byteSize: number;
+  sha256: string;
+  preparedAt: string;
+}
+
+export type PreparedDocumentArchiveArtifactIntent = Omit<
+  DocumentArchiveArtifactIntent,
+  'jobId' | 'companyId' | 'snapshotSha256' | 'preparedAt'
+>;
 
 export interface DocumentArchiveJobRepository {
   enqueue(input: EnqueueDocumentArchiveJobInput): Promise<void>;
@@ -193,6 +220,19 @@ export interface DocumentArchiveJobRepository {
     leaseUntil: string,
     leaseToken: string,
   ): Promise<{ outcome: 'claimed'; job: DocumentArchiveJob } | { outcome: 'skipped' }>;
+  /** Persiste atomiquement le jeu COMPLET avant tout upload ; un replay doit être exact. */
+  prepareArtifactIntents(input: {
+    jobId: string;
+    companyId: string;
+    leaseToken: string;
+    snapshotSha256: string;
+    intents: PreparedDocumentArchiveArtifactIntent[];
+    now: string;
+  }): Promise<boolean>;
+  listArtifactIntents(
+    jobId: string,
+    companyId: string,
+  ): Promise<DocumentArchiveArtifactIntent[]>;
   /** Ordre d'archivage d'UNE pièce, quel que soit son statut — null = aucun ordre jamais émis
    *  (pièce antérieure à la mécanique d'archivage : legacy honnête, jamais rétro-générée). */
   findByPiece(
