@@ -1320,8 +1320,8 @@ export default function ClientDetail() {
                     ) : null}
                     <Card>
                       <EmptyState
-                        title={t('chantiers.moduleTitle', { personality })}
-                        body={t('chantiers.moduleBody', { personality })}
+                        title={t('chantiers.moduleTitle', { personality, params: worksiteParams })}
+                        body={t('chantiers.moduleBody', { personality, params: worksiteParams })}
                         cta={
                           chantiersFresh
                             ? {
@@ -1654,7 +1654,7 @@ export default function ClientDetail() {
               setChantierAddressQuery(v);
               setChantierAddressLocked(false);
             }}
-            placeholder={t('chantiers.addressPlaceholder', { personality })}
+            placeholder={t('chantiers.addressPlaceholder', { personality, params: worksiteParams })}
             placeholderTextColor={colors.slate300}
             accessibilityLabel={t('chantiers.addressLabel', { personality })}
             style={[

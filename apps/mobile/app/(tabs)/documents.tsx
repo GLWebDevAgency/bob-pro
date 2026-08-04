@@ -69,6 +69,7 @@ import {
 } from '../../src/documents/pending-card-copy';
 import { useBobClient } from '../../src/data/client';
 import { shareFec } from '../../src/lib/share-fec';
+import { DEFAULT_WORKSITE_TERM, worksiteParamsFor } from '../../src/lib/worksite-terminology';
 import { useChantiers, useCustomers, useExpenses, useExportFec, useInvoices } from '../../src/data/hooks';
 import { useCreateDocumentFolder, useDocumentFolders, useDocuments } from '../../src/data/documents';
 import { usePublishAgentContext, type AgentContext } from '../../src/agent';
@@ -1654,7 +1655,12 @@ export default function Documents() {
           </View>
         ) : chantiers.isError ? (
           <ErrorRetry
-            message={t('chantiers.dataError', { personality })}
+            // Terme par défaut : cet écran n'a pas le profil sous la main, et un {plural}
+            // brut à l'écran est pire qu'un générique.
+            message={t('chantiers.dataError', {
+              personality,
+              params: worksiteParamsFor(DEFAULT_WORKSITE_TERM),
+            })}
             onRetry={() => void chantiers.refetch()}
           />
         ) : (
