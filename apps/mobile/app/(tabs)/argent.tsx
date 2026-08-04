@@ -95,6 +95,7 @@ import {
   useExpenses,
   useFiscalCalendar,
   useInvoices,
+  useQuotes,
   useLatestBankBalance,
   usePayments,
 } from '../../src/data/hooks';
@@ -346,6 +347,37 @@ export default function Argent() {
       deriveAgedBalance({ invoices: invoices.data ?? [], customers: customers.data ?? [], today }),
     [invoices.data, customers.data, today],
   );
+
+  // Audit QA A1 — l'argent GAGNÉ à la signature était invisible tant que rien n'était émis :
+  // devis SIGNÉS avec acompte dont la facture d'acompte n'est pas encore émise. Données déjà
+  // à l'écran (quotes + invoices) ; montant = brouillon réel s'il existe, sinon TTC × pct
+  // (la même règle que le wizard). Jamais un montant inventé : depositPct et totaux sont des
+  // faits du devis signé.
+  const quotes = useQuotes();
+  const signedDepositsAwaiting = useMemo(() => {
+    const invoiceList = invoices.data ?? [];
+    const byId = new Map((customers.data ?? []).map((customer) => [customer.id, customer.name]));
+    return (quotes.data ?? [])
+      .filter((quote) => quote.status === 'signed' && (quote.depositPct ?? 0) > 0)
+      .flatMap((quote) => {
+        const deposit = invoiceList.find(
+          (invoice) => invoice.parentQuoteId === quote.id && invoice.kind === 'deposit',
+        );
+        if (deposit !== undefined && deposit.status !== 'draft') return []; // émise : déjà dans l'encours
+        return [
+          {
+            quoteId: quote.id,
+            number: quote.number ?? '—',
+            customerName: byId.get(quote.customerId) ?? '—',
+            amountCents:
+              deposit !== undefined
+                ? deposit.totals.ttc
+                : Math.round((quote.totals.ttc * (quote.depositPct ?? 0)) / 100),
+            hasDraft: deposit !== undefined,
+          },
+        ];
+      });
+  }, [quotes.data, invoices.data, customers.data]);
 
   const overdueCustomers = useMemo(() => {
     const byId = new Map((customers.data ?? []).map((customer) => [customer.id, customer]));
@@ -1261,6 +1293,37 @@ export default function Argent() {
                   }
                 : {})}
             />
+            {signedDepositsAwaiting.length > 0 ? (
+              <Card radius={18} style={{ marginBottom: 8 }}>
+                <Text style={[font('label', 700), { color: colors.ink800, marginBottom: 6 }]}>
+                  {t('argent.signedDepositsTitle', { personality })}
+                </Text>
+                {signedDepositsAwaiting.map((row) => (
+                  <Pressable
+                    key={row.quoteId}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${t('argent.signedDepositRow', { personality, params: { name: row.customerName } })}, ${formatEUR(row.amountCents)}`}
+                    onPress={() => router.push(`/devis/${row.quoteId}`)}
+                    style={{ minHeight: 44, justifyContent: 'center', paddingVertical: 6 }}
+                  >
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', columnGap: 10 }}>
+                      <Text style={[font('sub', 600), { color: colors.ink800, flexShrink: 1 }]} numberOfLines={1}>
+                        {t('argent.signedDepositRow', { personality, params: { name: row.customerName } })}
+                      </Text>
+                      <Text style={[font('sub', 700), { color: semantic.success, fontVariant: ['tabular-nums'] }]}>
+                        {formatEUR(row.amountCents)}
+                      </Text>
+                    </View>
+                    <Text style={[font('meta'), { color: colors.slate500, marginTop: 1 }]} numberOfLines={2}>
+                      {t(row.hasDraft ? 'argent.signedDepositNoteDraft' : 'argent.signedDepositNoteGenerate', {
+                        personality,
+                        params: { number: row.number },
+                      })}
+                    </Text>
+                  </Pressable>
+                ))}
+              </Card>
+            ) : null}
             {agedLoading ? (
               <Card>
                 <Skeleton width="62%" height={15} />

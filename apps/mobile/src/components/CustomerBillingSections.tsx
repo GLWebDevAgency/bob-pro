@@ -103,6 +103,7 @@ export function CustomerBillingSections({ customer }: { customer: CustomerListIt
   const [portailNom, setPortailNom] = useState('');
   const [portailUrl, setPortailUrl] = useState('');
   const [canalError, setCanalError] = useState(false);
+  const [poError, setPoError] = useState(false);
 
   const terms = customer.paymentTerms ?? null;
   const isPro = customer.type !== 'b2c';
@@ -254,12 +255,16 @@ export function CustomerBillingSections({ customer }: { customer: CustomerListIt
             : t('poGuard.enable', { personality }),
           () => {
             if (update.isPending) return;
-            update.mutate({
-              id: customer.id,
-              patch: buildCustomerReplacementPayload(customer, {
-                requiresPurchaseOrder: customer.requiresPurchaseOrder !== true,
-              }),
-            });
+            setPoError(false);
+            update.mutate(
+              {
+                id: customer.id,
+                patch: buildCustomerReplacementPayload(customer, {
+                  requiresPurchaseOrder: customer.requiresPurchaseOrder !== true,
+                }),
+              },
+              { onError: () => setPoError(true) },
+            );
           },
         )}
       />
@@ -277,9 +282,14 @@ export function CustomerBillingSections({ customer }: { customer: CustomerListIt
             label={t('legal.poGuard.inline', { personality })}
             lawKey="legal.poGuard.law"
             whyKey="legal.poGuard.why"
-            source="EN 16931 (BT-13) · exigence des acheteurs publics et grands comptes (Chorus Pro : n° d'engagement)"
+            source="EN 16931 (BT-13) · exigence des acheteurs publics et grands comptes (Chorus Pro : n° d’engagement)"
           />
         </View>
+        {poError ? (
+          <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.danger, marginTop: 10 }]}>
+            {t('poGuard.saveError', { personality })}
+          </Text>
+        ) : null}
       </Card>
 
       {/* ── Feuille : conditions de paiement ── */}

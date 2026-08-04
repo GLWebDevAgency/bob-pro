@@ -13,6 +13,7 @@
  */
 
 import { isNoCompanyError } from './no-company-state';
+import { isExpectedMissingBankingInput } from './cashflow-banking-state';
 
 /** Nombre maximal de retrys AUTOMATIQUES après l'échec initial (transitoires uniquement). */
 export const MAX_TRANSIENT_QUERY_RETRIES = 2;
@@ -31,6 +32,9 @@ const HTTP_4XX_CAUSE = /^HTTP 4\d\d$/;
 export function isTransientQueryError(error: unknown): boolean {
   // NO_COMPANY/PROVISIONING_REQUIRED : jamais de retry — la réponse est un routage, pas une panne.
   if (isNoCompanyError(error)) return false;
+  // Solde/source bancaire à (re)confirmer : état STABLE jusqu'à une action utilisateur — le
+  // 503 « unavailable » du serveur n'est pas une panne, le rejouer fabriquait des rafales.
+  if (isExpectedMissingBankingInput(error)) return false;
   // Erreur non structurée (fetch qui throw, timeout, JSON invalide) → transitoire.
   if (error === null || typeof error !== 'object') return true;
   const candidate = error as { kind?: unknown; cause?: unknown };

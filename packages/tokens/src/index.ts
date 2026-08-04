@@ -438,7 +438,7 @@ export const conformityCard = {
 /** Écran Documents — coffre-fort & compta (v1.4, réf dc.html §isDocs). */
 export const vault = {
   aiDeep: '#6D28D9', // violet fournisseur/OCR (badge, dossier Fiscal, mémoire)
-  aiDeepBg: '#E5DBF6', // puce du bandeau mémoire fournisseurs
+  aiDeepBg: '#E5DBF6', // puce mémoire fournisseurs + fond du dossier Fiscal (jamais aiBg : canal Bob)
   scanChipBg: 'rgba(124,108,246,.2)', // puce caméra de la carte Scan (sur dégradé cta)
   scanChipBorder: 'rgba(124,108,246,.34)',
   scanChipIcon: '#B7AEFB',
@@ -490,7 +490,7 @@ export const vaultFolderTints: readonly [
   { tint: semantic.b2b, bg: semantic.b2bBg }, // 0 — marine (Chantiers)
   { tint: semantic.success, bg: semantic.successBg }, // 1 — vert (Achats)
   { tint: semantic.particulier, bg: semantic.particulierBg }, // 2 — ambre (Assurances)
-  { tint: vault.aiDeep, bg: semantic.aiBg }, // 3 — violet (Fiscal)
+  { tint: vault.aiDeep, bg: vault.aiDeepBg }, // 3 — violet (Fiscal) — aiBg reste au canal Bob
   { tint: vault.folderSteel, bg: vault.folderSteelBg }, // 4 — acier (Banque, NOUVEAU)
   { tint: vault.folderTeal, bg: vault.folderTealBg }, // 5 — sarcelle (Comptable, NOUVEAU)
 ] as const;

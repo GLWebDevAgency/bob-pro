@@ -5,6 +5,27 @@ import { type DateOnly, type Instant } from '../../shared-kernel/time';
 import { validateFrenchVatId } from '../../shared-kernel/french-vat-id';
 
 export type LegalForm = 'EI' | 'EURL' | 'SASU' | 'SARL' | 'SAS' | 'micro';
+
+/** Champ d'identité dont l'absence bloque l'émission (vocabulaire du pré-vol). */
+export type IssueBlockerField = 'rcsOrRm' | 'address' | 'capitalSocialCents' | 'tvaIntracom';
+
+/** L'erreur historique d'`assertCanIssue` par champ — messages inchangés au caractère près. */
+const ISSUE_BLOCKER_ERROR: Readonly<
+  Record<IssueBlockerField, { code: 'VALIDATION'; field: string; message: string }>
+> = {
+  rcsOrRm: { code: 'VALIDATION', field: 'rcsOrRm', message: 'RCS ou RM requis pour emettre.' },
+  address: { code: 'VALIDATION', field: 'address', message: 'Adresse complete requise.' },
+  capitalSocialCents: {
+    code: 'VALIDATION',
+    field: 'capitalSocialCents',
+    message: 'Capital social requis pour émettre au nom de cette société.',
+  },
+  tvaIntracom: {
+    code: 'VALIDATION',
+    field: 'tvaIntracom',
+    message: 'Numéro de TVA intracommunautaire réel requis pour émettre avec TVA.',
+  },
+};
 export type VatRegime = 'franchise' | 'reel_simpl' | 'reel_normal';
 /** Clientèle principale explicitement confirmée par le propriétaire pendant l'onboarding. */
 export type CustomerPortfolio = 'b2c' | 'b2b' | 'b2g' | 'mixte';
@@ -329,28 +350,28 @@ export class Company {
   hasValidDecennale(asOf: DateOnly): boolean {
     return !!this.p.decennale && this.p.decennale.expiresAt >= asOf;
   }
-  assertCanIssue(): DomainResult<void> {
-    if (!this.p.rcsOrRm)
-      return err({ code: 'VALIDATION', field: 'rcsOrRm', message: 'RCS ou RM requis pour emettre.' });
+  /** TOUS les champs d'identité manquants pour émettre — le pré-vol les nomme d'un coup
+   *  au lieu de les faire découvrir un par un à chaque tentative (audit QA A6). */
+  issueBlockers(): readonly IssueBlockerField[] {
+    const missing: IssueBlockerField[] = [];
+    if (!this.p.rcsOrRm) missing.push('rcsOrRm');
     if (
       this.p.address.line1.trim().length === 0
       || this.p.address.zip.trim().length === 0
       || this.p.address.city.trim().length === 0
     )
-      return err({ code: 'VALIDATION', field: 'address', message: 'Adresse complete requise.' });
+      missing.push('address');
     if (this.isSociete() && this.p.capitalSocialCents === undefined)
-      return err({
-        code: 'VALIDATION',
-        field: 'capitalSocialCents',
-        message: 'Capital social requis pour émettre au nom de cette société.',
-      });
-    if (!this.isVatFranchise() && !this.p.tvaIntracom)
-      return err({
-        code: 'VALIDATION',
-        field: 'tvaIntracom',
-        message: 'Numéro de TVA intracommunautaire réel requis pour émettre avec TVA.',
-      });
-    return ok(undefined);
+      missing.push('capitalSocialCents');
+    if (!this.isVatFranchise() && !this.p.tvaIntracom) missing.push('tvaIntracom');
+    return missing;
+  }
+
+  assertCanIssue(): DomainResult<void> {
+    // Dérive du pré-vol : le PREMIER manquant fait l'erreur — une seule source de vérité.
+    const first = this.issueBlockers()[0];
+    if (first === undefined) return ok(undefined);
+    return err(ISSUE_BLOCKER_ERROR[first]);
   }
 
   /** Snapshot de persistance (réhydratation via Company.of). */

@@ -528,7 +528,12 @@ export function CustomerForm({
                 accessibilityRole="button"
                 accessibilityLabel={suggestion.label}
                 onPress={() => {
-                  setSelectedAddress(suggestion);
+                  // Ne garder que l'adresse : le label BAN est un affichage, pas un champ d'API.
+                  setSelectedAddress({
+                    line1: suggestion.line1,
+                    zip: suggestion.zip,
+                    city: suggestion.city,
+                  });
                   setAddressQuery(suggestion.label);
                   setAddressLocked(true);
                   search.reset();

@@ -170,7 +170,10 @@ function buildInvoiceAccountingEntry(input: {
   const debit = new Map<string, number>();
   const credit = new Map<string, number>();
   // E7 : un avoir se lit « Avoir A-… » au journal — jamais « Facture » (libellé probant).
-  const label = `${invoice.kind === 'credit_note' ? 'Avoir' : 'Facture'} ${input.reference}`;
+  // Le sentinel technique 'a-emettre' (référence stable, testée) s'humanise à l'AFFICHAGE :
+  // l'artisan lisait « Facture a-emettre » dans la confirmation d'émission.
+  const displayReference = input.reference === 'a-emettre' ? 'à émettre' : input.reference;
+  const label = `${invoice.kind === 'credit_note' ? 'Avoir' : 'Facture'} ${displayReference}`;
 
   if (isCreditNote) addAmount(credit, accounts.receivable, totals.netToPay);
   else addAmount(debit, accounts.receivable, totals.netToPay);

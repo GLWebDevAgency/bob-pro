@@ -28,8 +28,8 @@
  * · avatar en pastel sémantique par type (Avatar tone — gamme tokens), pas l'aplat navy
  *   du proto (hex hors tokens) — même écart documenté que C12 ; taille 54 (réf) au-delà
  *   de la fourchette 34–44 des redlines §8 (avatars de liste) ;
- * · la date des rangées d'activité est l'échéance (dueAt) / validité (validUntil) — la
- *   seule date réelle exposée par les vues ; le proto affichait la date d'émission ;
+ * · la date des rangées d'activité : devis = date d'établissement (issuedAt, repli
+ *   validUntil pour les vues legacy) ; factures = échéance (dueAt) ;
  * · pas de rangée « Règlement reçu » : aucun flux paiements par client côté BobClient
  *   aujourd'hui (TODO C40) — les statuts Réglée/Réglée en partie portent l'info.
  * Zéro hex/rgba : useTheme()/@bob/tokens. Zéro import de src/components/ui (ancien kit).
@@ -824,7 +824,9 @@ export default function ClientDetail() {
         href: `/devis/${quote.id}` as const,
         key: `quote-${quote.id}`,
         title: `${t('fiche.docQuote', { personality })}${quote.number ? ` ${quote.number}` : ''}`,
-        date: quote.validUntil,
+        // La date d'ÉVÉNEMENT (établissement) — pas la fin de validité, qui se lisait comme
+        // une date de signature (« 2 sept. · Signé » pour un devis signé le 3 août).
+        date: quote.issuedAt ?? quote.validUntil,
         note: t(note, { personality }),
         amountCents: quote.totals.ttc,
         amountColor:
@@ -1318,8 +1320,8 @@ export default function ClientDetail() {
                     ) : null}
                     <Card>
                       <EmptyState
-                        title={t('chantiers.moduleTitle', { personality })}
-                        body={t('chantiers.moduleBody', { personality })}
+                        title={t('chantiers.moduleTitle', { personality, params: worksiteParams })}
+                        body={t('chantiers.moduleBody', { personality, params: worksiteParams })}
                         cta={
                           chantiersFresh
                             ? {
@@ -1652,7 +1654,7 @@ export default function ClientDetail() {
               setChantierAddressQuery(v);
               setChantierAddressLocked(false);
             }}
-            placeholder={t('chantiers.addressPlaceholder', { personality })}
+            placeholder={t('chantiers.addressPlaceholder', { personality, params: worksiteParams })}
             placeholderTextColor={colors.slate300}
             accessibilityLabel={t('chantiers.addressLabel', { personality })}
             style={[

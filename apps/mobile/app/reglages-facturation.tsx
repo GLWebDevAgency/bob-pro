@@ -19,9 +19,9 @@
  *    fichier) ; seul le DERNIER numéro réellement émis est affiché, décision déjà actée avant ce
  *    chantier et conservée ici.
  */
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { shadowNative, spacing, themes } from '@bob/tokens';
 import { t, type I18nKey } from '@bob/i18n';
@@ -141,6 +141,11 @@ export default function ReglagesFacturation() {
   const insets = useSafeAreaInsets();
   const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: insets.bottom + 34 });
   const router = useRouter();
+  // Ancre de section (gate « Choisis ton délai ») : la page fait plusieurs écrans de haut,
+  // le CTA défile jusqu'aux Valeurs par défaut — one-shot, jamais rejoué sur re-layout.
+  const { section } = useLocalSearchParams<{ section?: string }>();
+  const scrollRef = useRef<ScrollView>(null);
+  const sectionAnchorConsumed = useRef(false);
   const company = useCompanyMe();
   const invoices = useInvoices();
   const updateProfile = useUpdateCompanyProfile();
@@ -251,6 +256,7 @@ export default function ReglagesFacturation() {
       />
 
       <ScrollView
+        ref={scrollRef}
         style={{ flex: 1 }}
         contentContainerStyle={{
           paddingHorizontal: spacing.gutter,
@@ -839,7 +845,15 @@ export default function ReglagesFacturation() {
 
             {/* ── Valeurs par défaut PostgreSQL — validité et acompte appliqués au prochain
                 nouveau devis ; couleur appliquée aux prochaines pièces émises. ── */}
-            <SectionHeader title={t('reglages.sectionDefaults', { personality })} />
+            <View
+              onLayout={(event) => {
+                if (section !== 'paymentTerms' || sectionAnchorConsumed.current) return;
+                sectionAnchorConsumed.current = true;
+                scrollRef.current?.scrollTo({ y: event.nativeEvent.layout.y, animated: true });
+              }}
+            >
+              <SectionHeader title={t('reglages.sectionDefaults', { personality })} />
+            </View>
             <Card style={{ marginBottom: 8 }}>
               <Text style={[font('sub'), { color: colors.slate500, marginBottom: 9 }]}>
                 {t('reglages.defaultsValidityLabel', { personality })}

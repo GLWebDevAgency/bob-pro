@@ -28,6 +28,10 @@ export function AccountingLinesView({
   const { colors } = useTheme();
   if (lines.length === 0) return null;
 
+  // Filet d'affichage : une API pas encore redéployée sert le sentinel technique brut
+  // (« Facture a-emettre ») — l'artisan doit toujours lire du français.
+  const humanize = (label: string) => label.replace(/\ba-emettre\b/g, 'à émettre');
+
   const totals =
     typeof totalDebitCents === 'number' && typeof totalCreditCents === 'number'
       ? { debitCents: totalDebitCents, creditCents: totalCreditCents }
@@ -44,7 +48,7 @@ export function AccountingLinesView({
           <View
             key={`${line.account}-${index}`}
             accessible
-            accessibilityLabel={`${line.account}, ${line.label}. ${side} : ${formatEUR(amountCents)}.`}
+            accessibilityLabel={`${line.account}, ${humanize(line.label)}. ${side} : ${formatEUR(amountCents)}.`}
             style={{
               flexDirection: 'row',
               flexWrap: 'wrap',
@@ -67,7 +71,7 @@ export function AccountingLinesView({
                 },
               ]}
             >
-              {line.account} · {line.label}
+              {line.account} · {humanize(line.label)}
             </Text>
             <Text
               accessible={false}

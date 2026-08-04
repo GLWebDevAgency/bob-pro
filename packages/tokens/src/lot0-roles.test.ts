@@ -55,7 +55,7 @@ describe('Lot 0 — teintes des dossiers du coffre (folderTintFor)', () => {
     expect(folderTintFor({ id: 'uuid-projects', systemKey: 'projects' })).toEqual({ tint: '#1B3A63', bg: '#E6EDF6' }); // marine
     expect(folderTintFor({ id: 'uuid-purchases', systemKey: 'purchases' })).toEqual({ tint: '#0E7C5A', bg: '#EAF2EC' }); // vert
     expect(folderTintFor({ id: 'uuid-insurance', systemKey: 'insurance' })).toEqual({ tint: '#C77A12', bg: '#FBF0DF' }); // ambre
-    expect(folderTintFor({ id: 'uuid-tax', systemKey: 'tax_social' })).toEqual({ tint: '#6D28D9', bg: '#F1EBFA' }); // violet
+    expect(folderTintFor({ id: 'uuid-tax', systemKey: 'tax_social' })).toEqual({ tint: '#6D28D9', bg: '#E5DBF6' }); // violet
     expect(folderTintFor({ id: 'uuid-bank', systemKey: 'bank' })).toEqual({ tint: '#3B5B85', bg: '#E9EFF7' }); // acier (NOUVEAU)
     expect(folderTintFor({ id: 'uuid-accounting', systemKey: 'accounting' })).toEqual({ tint: '#0E6E73', bg: '#DFEFF0' }); // sarcelle (NOUVEAU)
   });
@@ -73,7 +73,7 @@ describe('Lot 0 — teintes des dossiers du coffre (folderTintFor)', () => {
     //  'sous-traitants-2026'  → 3549554955 ; 3549554955 % 6 = 3 → violet.
     expect(folderTintFor({ id: 'garanties-decennales', systemKey: null })).toEqual({ tint: '#3B5B85', bg: '#E9EFF7' });
     expect(folderTintFor({ id: 'photos-avant-apres', systemKey: null })).toEqual({ tint: '#0E7C5A', bg: '#EAF2EC' });
-    expect(folderTintFor({ id: 'sous-traitants-2026', systemKey: null })).toEqual({ tint: '#6D28D9', bg: '#F1EBFA' });
+    expect(folderTintFor({ id: 'sous-traitants-2026', systemKey: null })).toEqual({ tint: '#6D28D9', bg: '#E5DBF6' });
     // Stabilité : le même id rend la MÊME paire à chaque appel (référence de palette comprise).
     expect(folderTintFor({ id: 'garanties-decennales', systemKey: null })).toBe(
       folderTintFor({ id: 'garanties-decennales', systemKey: null }),

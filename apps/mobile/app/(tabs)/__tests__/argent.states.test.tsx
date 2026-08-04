@@ -149,6 +149,9 @@ vi.mock('../../../src/data/hooks', () => ({
   useExpenses: () => sources.value['expenses'],
   useFiscalCalendar: () => sources.value['fiscal'],
   useInvoices: () => sources.value['invoices'],
+  // A1 — acomptes signés en attente : neutre par défaut (aucun devis), les états existants
+  // de l'écran ne changent pas d'un pixel.
+  useQuotes: () => ({ data: [], isLoading: false, isError: false }),
   useLatestBankBalance: () => sources.value['bankBalance'],
   usePayments: () => sources.value['payments'],
 }));

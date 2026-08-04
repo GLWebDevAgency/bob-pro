@@ -54,6 +54,21 @@ describe('isTransientQueryError — définitif vs transitoire', () => {
     expect(isTransientQueryError(new Error('Network request failed'))).toBe(true);
     expect(isTransientQueryError(undefined)).toBe(true);
   });
+
+  it('solde/source bancaire à confirmer : unavailable STABLE, jamais de retry automatique (audit QA A11)', () => {
+    // Un solde périmé ne redevient pas frais en rejouant la requête : seul l'utilisateur qui
+    // confirme son solde change l'état. Le retry automatique fabriquait des rafales (observé
+    // en veille : 21 requêtes par cycle d'écran au lieu de 7).
+    expect(isTransientQueryError({ kind: 'unavailable', service: 'bank-balance-stale' })).toBe(
+      false,
+    );
+    expect(isTransientQueryError({ kind: 'unavailable', service: 'cashflow-banking-source' })).toBe(
+      false,
+    );
+    expect(isTransientQueryError({ kind: 'not_found', entity: 'bank_balance_snapshot' })).toBe(
+      false,
+    );
+  });
 });
 
 describe('shouldRetryQueryFailure — bornage', () => {

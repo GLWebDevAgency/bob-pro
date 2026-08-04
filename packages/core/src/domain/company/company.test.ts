@@ -31,6 +31,19 @@ describe('Company', () => {
     const r = Company.of(baseProps);
     if (r.ok) expect(r.value.assertCanIssue().ok).toBe(true);
   });
+  it('issueBlockers liste TOUS les manquants d’un coup — le pré-vol ne fait plus découvrir un par un (audit QA A6)', () => {
+    const { rcsOrRm: _rcs, capitalSocialCents: _cap, tvaIntracom: _tva, ...incomplete } = baseProps;
+    const r = Company.of({ ...incomplete, legalForm: 'SARL', vatRegime: 'reel_simpl' });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.issueBlockers()).toEqual(['rcsOrRm', 'capitalSocialCents', 'tvaIntracom']);
+      // Et l'erreur unitaire reste le PREMIER manquant : une seule source de vérité.
+      expect(r.value.assertCanIssue()).toMatchObject({
+        ok: false,
+        error: { code: 'VALIDATION', field: 'rcsOrRm' },
+      });
+    }
+  });
   it('refuse aussi un code postal vide avant émission', () => {
     const r = Company.of({ ...baseProps, address: { line1: '1 rue X', zip: '   ', city: 'Nanterre' } });
     expect(r.ok && r.value.assertCanIssue()).toMatchObject({

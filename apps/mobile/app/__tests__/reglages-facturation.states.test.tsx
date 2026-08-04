@@ -75,6 +75,8 @@ vi.mock('react-native-safe-area-context', () => ({
 const nav = vi.hoisted(() => ({ push: vi.fn(), back: vi.fn() }));
 vi.mock('expo-router', () => ({
   useRouter: () => ({ push: nav.push, back: nav.back, canGoBack: () => true }),
+  // A4 — ancre de section : pas de param dans ces états, l'écran ne défile pas.
+  useLocalSearchParams: () => ({}),
 }));
 vi.mock('../../src/components/use-bob-aware-scroll-insets', () => ({
   useBobAwareScrollInsets: () => ({

@@ -24,6 +24,7 @@ import {
   useScheduleEmbargoPayment,
   useSendInvoice,
   useCustomerContacts,
+  useCustomers,
   appErrorMessage,
 } from '../data/hooks';
 import {
@@ -34,9 +35,11 @@ import {
 import { useConfirm } from './ConfirmSheet';
 import { useErrorSheet, type ErrorSheetHandle } from './ErrorSheet';
 import { useBobClient } from '../data/client';
-import { companyCanIssue, companyIssueBlocker } from '../data/company-completeness';
+import { companyCanIssue, companyIssueBlocker, companyIssueBlockers } from '../data/company-completeness';
 import {
   companyIncompleteGateSpec,
+  customerBillingAddressComplete,
+  issuePreflightGateSpec,
   paymentTermsMissingGateSpec,
   type GateSpec,
 } from './document-gates.logic';
@@ -923,7 +926,7 @@ export const QuoteActions = forwardRef<
     const choiceOptions = [
       { value: 'final', label: 'Facture de 100 %' },
       ...(depositPathAvailable && quote.depositPct !== null
-        ? [{ value: 'deposit', label: `Facture d'acompte (${quote.depositPct} %)` }]
+        ? [{ value: 'deposit', label: `Facture d’acompte (${quote.depositPct} %)` }]
         : []),
       // Le repli occupe la PLACE de l'acompte fermé : sélectionner ouvre d'abord l'explication
       // légale (LegalHint) — jamais une écriture directe.
@@ -1087,6 +1090,9 @@ export function InvoiceActions({
   // « e-mail de la fiche client » (défaut). Sans aucun contact, le flux confirm existant
   // reste inchangé au bit près (non-régression).
   const contacts = useCustomerContacts(invoice.customerId);
+  // Pré-vol A6 : l'adresse de facturation du client se vérifie AVANT la confirmation — la
+  // liste est déjà en cache sur ce parcours ; non chargée = on laisse la garde serveur parler.
+  const customersForPreflight = useCustomers();
   const [recipientSheetOpen, setRecipientSheetOpen] = useState(false);
   const [recipientEmail, setRecipientEmail] = useState<string | null>(null);
 
@@ -1190,7 +1196,7 @@ export function InvoiceActions({
         label={t('legal.poGuard.inline', { personality })}
         lawKey="legal.poGuard.law"
         whyKey="legal.poGuard.why"
-        source="EN 16931 (BT-13) · exigence des acheteurs publics et grands comptes (Chorus Pro : n° d'engagement)"
+        source="EN 16931 (BT-13) · exigence des acheteurs publics et grands comptes (Chorus Pro : n° d’engagement)"
       />
       <View style={{ gap: 8, marginTop: 14, marginBottom: 8 }}>
         <Button
@@ -1302,7 +1308,7 @@ export function InvoiceActions({
         void (async () => {
           const ok = await confirm({
             title: 'Créer un avoir',
-            message: `Avoir total sur ${invoice.number ?? 'cette facture'} : il s'émettra avec son propre numéro (A-) et passera l'écriture comptable inverse.`,
+            message: `Avoir total sur ${invoice.number ?? 'cette facture'} : il s’émettra avec son propre numéro (A-) et passera l’écriture comptable inverse.`,
             challenge: challengeFor(FISCAL, 'confirm_all'),
           });
           if (!ok) return;
@@ -1336,16 +1342,38 @@ export function InvoiceActions({
             disabled={!!busy || billingSettings.isLoading}
             onPress={() =>
               void (async () => {
-                if (!companyComplete) {
-                  // Même correctif que côté devis : le champ fautif est nommé (FLY SERVICES).
-                  setGate(companyIncompleteGateSpec(companyIssueBlocker(companyMe.data), personality));
-                  return;
-                }
                 if (billingSettings.isError || billingSettings.data === undefined) {
                   showError(t('reglages.dataError', { personality }));
                   return;
                 }
                 const paymentTermsDays = billingSettings.data.defaultInvoicePaymentTermsDays;
+                // PRÉ-VOL (audit QA A6) : tout ce qui manque est nommé d'un coup, AVANT la
+                // confirmation définitive — identité, délai, adresse du client. Les gates
+                // unitaires restent en filet (données périmées) ; le serveur reste l'autorité.
+                const targetCustomer = customersForPreflight.data?.find(
+                  (candidate) => candidate.id === invoice.customerId,
+                );
+                const preflight = issuePreflightGateSpec(
+                  {
+                    companyBlockers: companyIssueBlockers(companyMe.data),
+                    paymentTermsMissing: paymentTermsDays === null,
+                    customerAddressMissing:
+                      targetCustomer !== undefined
+                      && !customerBillingAddressComplete(targetCustomer.address)
+                        ? { customerId: targetCustomer.id }
+                        : null,
+                  },
+                  personality,
+                );
+                if (preflight !== null) {
+                  setGate(preflight);
+                  return;
+                }
+                if (!companyComplete) {
+                  // Filet : blocage non nommable (fiche absente, Company.of en échec).
+                  setGate(companyIncompleteGateSpec(companyIssueBlocker(companyMe.data), personality));
+                  return;
+                }
                 if (paymentTermsDays === null) {
                   setGate(paymentTermsMissingGateSpec(personality));
                   return;

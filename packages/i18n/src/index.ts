@@ -44,7 +44,7 @@ const legacyFr = {
   // ── Lot 1 — chrome : libellés des 5 onglets (source unique ITEMS, (tabs)/_layout.tsx).
   // Chaînes IDENTIQUES dans les 3 tons au premier jour (plan DA 01/08 : « zéro changement
   // visible ») — la voix de Bob POURRA les différencier plus tard sans toucher au layout.
-  'tabs.index': { pote: "Aujourd'hui", pro: "Aujourd'hui", direct: "Aujourd'hui" },
+  'tabs.index': { pote: "Aujourd’hui", pro: "Aujourd’hui", direct: "Aujourd’hui" },
   'tabs.clients': { pote: 'Clients', pro: 'Clients', direct: 'Clients' },
   'tabs.argent': { pote: 'Argent', pro: 'Argent', direct: 'Argent' },
   'tabs.documents': { pote: 'Documents', pro: 'Documents', direct: 'Documents' },
@@ -892,6 +892,29 @@ const legacyFr = {
     pro: 'Aucun encours client — poste clients à jour.',
     direct: 'Aucun encours.',
   },
+  // ── Acomptes signés pas encore facturés (audit QA A1) — l'argent GAGNÉ à la signature
+  // était invisible partout tant que rien n'était émis : l'artisan qui vient de faire signer
+  // doit voir SON acompte et le chemin pour l'encaisser.
+  'argent.signedDepositsTitle': {
+    pote: 'Signé, pas encore facturé',
+    pro: 'Acomptes signés à facturer',
+    direct: 'Acomptes à facturer',
+  },
+  'argent.signedDepositRow': {
+    pote: 'Acompte · {name}',
+    pro: 'Acompte · {name}',
+    direct: 'Acompte · {name}',
+  },
+  'argent.signedDepositNoteGenerate': {
+    pote: 'Devis {number} signé — génère la facture d’acompte pour encaisser.',
+    pro: 'Devis {number} signé — générez la facture d’acompte pour encaisser.',
+    direct: 'Devis {number} signé — facture à générer.',
+  },
+  'argent.signedDepositNoteDraft': {
+    pote: 'Devis {number} — brouillon d’acompte prêt, il reste à l’émettre.',
+    pro: 'Devis {number} — brouillon d’acompte prêt à émettre.',
+    direct: 'Devis {number} — brouillon à émettre.',
+  },
   // Astuce « première fois » (coach-mark, dismiss persisté).
   'argent.tipEyebrow': {
     pote: 'Astuce · première fois',
@@ -1274,9 +1297,9 @@ const legacyFr = {
   },
   'clients.createAddressLabel': { pote: 'Adresse', pro: 'Adresse', direct: 'Adresse' },
   'clients.createAddressPlaceholder': {
-    pote: 'Commence à taper une adresse (facultatif)',
-    pro: 'Adresse (facultative)',
-    direct: 'Adresse facultative',
+    pote: 'Commence à taper une adresse (requise pour facturer)',
+    pro: 'Adresse (requise pour facturer)',
+    direct: 'Adresse — requise pour facturer',
   },
 
   // ── Chantiers — états honnêtes, création assistée et suivi terrain ───────────
@@ -9535,6 +9558,54 @@ const legacyFr = {
   'gate.companyIncompleteCta': { pote: 'Compléter', pro: 'Compléter', direct: 'Compléter' },
   'gate.companyIncompleteCancel': { pote: 'Plus tard', pro: 'Plus tard', direct: 'Plus tard' },
 
+  // ── Pré-vol d'émission (audit QA A6) — TOUT ce qui manque, nommé d'un coup, AVANT la
+  // confirmation définitive : fini la découverte des exigences une par une à chaque tentative.
+  'gate.preflightTitle': {
+    pote: 'Avant d’émettre, il manque {count} :',
+    pro: 'Avant d’émettre, {count} éléments manquent :',
+    direct: '{count} manquants pour émettre :',
+  },
+  'gate.preflightTitleOne': {
+    pote: 'Avant d’émettre, il manque une chose :',
+    pro: 'Avant d’émettre, un élément manque :',
+    direct: 'Un manquant pour émettre :',
+  },
+  'gate.preflightItemRcsOrRm': {
+    pote: 'ton n° d’immatriculation (RCS ou RM)',
+    pro: 'le n° d’immatriculation (RCS ou RM)',
+    direct: 'n° RCS/RM',
+  },
+  'gate.preflightItemAddress': {
+    pote: 'l’adresse de ton entreprise',
+    pro: 'l’adresse de l’entreprise',
+    direct: 'adresse entreprise',
+  },
+  'gate.preflightItemCapitalSocial': {
+    pote: 'ton capital social',
+    pro: 'le capital social',
+    direct: 'capital social',
+  },
+  'gate.preflightItemTvaIntracom': {
+    pote: 'ton n° de TVA intracommunautaire',
+    pro: 'le n° de TVA intracommunautaire',
+    direct: 'n° TVA intracom',
+  },
+  'gate.preflightItemPaymentTerms': {
+    pote: 'ton délai de paiement par défaut',
+    pro: 'le délai de paiement par défaut',
+    direct: 'délai de paiement',
+  },
+  'gate.preflightItemCustomerAddress': {
+    pote: 'l’adresse de facturation du client',
+    pro: 'l’adresse de facturation du client',
+    direct: 'adresse du client',
+  },
+  'gate.preflightCta': {
+    pote: 'Compléter maintenant',
+    pro: 'Compléter maintenant',
+    direct: 'Compléter',
+  },
+
   // ── C26 — Compte & abonnement ───────────────────────────────────────────────
   // « Fermer » (pas « Retour ») : Compte est désormais atteint depuis la modale menu profil
   // (bottom sheet) — on ferme un écran ouvert depuis une modale, on n'y « retourne » pas.
@@ -10069,6 +10140,23 @@ const legacyFr = {
     pote: 'Les références des derniers pépins, à partager au support',
     pro: 'Références des derniers incidents, partageables au support',
     direct: 'Références incidents',
+  },
+
+  // ── Route inconnue (+not-found) — jamais l'écran anglais brut du routeur ───
+  'notFound.title': {
+    pote: 'Cette page n’existe pas',
+    pro: 'Cette page n’existe pas',
+    direct: 'Page inexistante',
+  },
+  'notFound.body': {
+    pote: 'Le lien que tu as suivi ne mène nulle part — un vieux lien ou une page déplacée, ça arrive. Tout le reste est à sa place.',
+    pro: 'Le lien suivi ne correspond à aucune page — lien obsolète ou page déplacée. Le reste de l’application est accessible normalement.',
+    direct: 'Lien mort. Le reste est en place.',
+  },
+  'notFound.cta': {
+    pote: 'Retour à l’accueil',
+    pro: 'Retour à l’accueil',
+    direct: 'Accueil',
   },
 } as const satisfies Record<string, Copy>;
 
