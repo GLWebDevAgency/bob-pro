@@ -6,6 +6,9 @@
 **Incident source :** workflow staging `30921527702`, SHA
 `3af32e1230e168866b60f2b125ce0764d16c69d6`
 
+**Incident de certification découvert après merge :** workflow staging `30930082557`, SHA
+`87583d32aa43c7a87f97bbf485ace76a9b04f5fd`
+
 ## 1. Objectif
 
 Une release ne doit pas échouer parce que le flux de logs attaché du CLI Railway est interrompu
@@ -19,6 +22,13 @@ Le 4 août 2026, Railway a créé le déploiement
 archive, l'activation et le postdeploy alors que l'API saine servait déjà le bon SHA. Le flux de
 logs n'est donc pas une autorité de publication.
 
+Le premier rituel staging exécuté avec ce transport a ensuite prouvé les 15 scénarios métier de
+`public-capability-lifecycle.postgres.test.ts`, puis a échoué uniquement dans son `afterAll` : le
+client administrateur du nettoyage n'héritait pas de `PRISMA_TRANSACTION_TIMEOUT_MS`, contrairement
+aux clients runtime `PrismaService`. Sur Supabase distant, la transaction interactive de purge a
+donc expiré avec `P2028` avant de produire le reçu predeploy. Le correctif doit réutiliser le même
+contrat transactionnel WAN, sans masquer une dépendance oubliée ni affaiblir le nettoyage strict.
+
 ## 2. Périmètre
 
 ### Inclus
@@ -31,6 +41,9 @@ logs n'est donc pas une autorité de publication.
 - certification qu'une seule réplique sert et qu'elle correspond au déploiement attendu ;
 - readiness HTTPS au SHA et à l'environnement exacts, conservée comme autorité applicative ;
 - absence d'erreur secondaire d'artefact quand l'audit n'a jamais démarré ;
+- parité du timeout transactionnel certifié entre clients runtime et administrateur du certificat
+  de cycle de vie des capacités publiques ;
+- récupération bornée des seules fixtures de ce certificat laissées par une interruption ;
 - chemin de reprise staging manuel et explicite lorsqu'un déploiement Railway terminal en échec
   est plus récent que l'unique réplique saine ;
 - réutilisation du même contrat de déploiement par les opérateurs staging existants.
@@ -38,7 +51,8 @@ logs n'est donc pas une autorité de publication.
 ### Exclus
 
 - aucune mutation métier, fiscale ou documentaire ;
-- aucune modification des données staging ou production ;
+- aucune modification des données métier utilisateur staging ou production ; les seules lignes
+  nettoyées ici sont les fixtures réservées du certificat en development/staging ;
 - aucune activation Bob Live ou Archive hors du workflow canonique ;
 - aucune relance automatique d'un upload dont l'acceptation est ambiguë ;
 - aucune quarantaine ou suppression des objets Storage historiques.
@@ -73,6 +87,21 @@ logs n'est donc pas une autorité de publication.
     avant les migrations. Dès le nouvel upload, toutes les preuves redeviennent strictes sans
     exception. Un appel réutilisable, une cible production, une autre ref ou un latest transitoire
     sont refusés. L'audit, les activations et le postdeploy restent intégralement obligatoires.
+12. Le nettoyage du certificat PostgreSQL des capacités publiques utilise `PrismaService` pour son
+    accès administrateur : il hérite ainsi du timeout WAN borné et réservé au rituel par
+    `PRISMA_TRANSACTION_TIMEOUT_MS`. Les erreurs de FK, triggers ou dépendances restent propagées ;
+    aucune erreur de purge n'est avalée.
+13. Avant de créer de nouvelles fixtures, le certificat purge par lots bornés uniquement les
+    sociétés portant simultanément son préfixe d'identifiant réservé, son SIREN de certification et
+    son préfixe de nom. Chaque lot reverrouille les sociétés, revalide les trois marqueurs dans la
+    transaction et exige une bijection exacte avant toute neutralisation de trigger. Il recompte
+    ensuite les sociétés visées et exige zéro ; une interruption ne doit ni polluer staging
+    durablement ni élargir la purge à une donnée utilisateur.
+14. Ce certificat mutatif refuse tout environnement autre que `development` ou `staging`, y compris
+    `production`, même si son flag Vitest est activé manuellement.
+15. Cette suite ne crée aucune archive : la présence d'un job, artefact, snapshot ou intent archive
+    sur une fixture bloque la purge. Le certificat ne désactive et ne supprime jamais une donnée
+    d'archive immuable pour se nettoyer lui-même.
 
 ## 4. Critères d'acceptation binaires
 
@@ -96,7 +125,14 @@ logs n'est donc pas une autorité de publication.
 - [x] Un audit non démarré ne crée pas une seconde erreur `No files were found`.
 - [x] Les tests de contrat du workflow empêchent le retour à un `railway up` attaché.
 - [x] Les suites ciblées, la suite API complète, le typecheck, le lint et le build API passent.
-- [ ] La CI complète de la PR passe.
+- [x] La CI complète de la PR de transport passe (`30928805632`) et la CI post-merge de `main`
+      passe au SHA exact (`30929418952`).
+- [ ] Le certificat PostgreSQL des capacités publiques termine aussi son nettoyage administrateur
+      contre une base distante avec `PRISMA_TRANSACTION_TIMEOUT_MS` actif.
+- [ ] Le rejeu staging récupère les fixtures du run interrompu puis prouve qu'il ne reste aucune
+      société portant les trois marqueurs réservés.
+- [ ] La preuve distante confirme zéro donnée archive sur les fixtures et aucune suppression
+      d'archive par le certificat.
 - [ ] Un nouveau workflow staging au SHA mergé termine audit, activation et postdeploy.
 
 ## 5. Blocage explicite de promotion production

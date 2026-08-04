@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
 import {
   CloseAccount,
   CreateDocumentViewLink,
@@ -31,6 +31,13 @@ const RUN_POSTGRES_CERT = process.env.RUN_POSTGRES_PUBLIC_CAPABILITY_CERT === 't
 // 4 chiffres) : chaque suite Postgres possède donc son propre SIREN afin qu'aucune collision de
 // SIRET inter-suites ne soit possible sur l'unique companies.siret de la base partagée du gate.
 const CERT_SIREN = '552100109';
+const CERT_COMPANY_ID_PREFIX = 'public-lifecycle-company-';
+const CERT_COMPANY_NAME_PREFIX = 'Certification ';
+const CERT_CLEANUP_BATCH_SIZE = 32;
+const CERT_MAX_STALE_FIXTURES = 96;
+const CERT_STALE_RECOVERY_HOOK_TIMEOUT_MS = 180_000;
+const CERT_CURRENT_RUN_CLEANUP_HOOK_TIMEOUT_MS = 60_000;
+const CERT_ALLOWED_RELEASE_ENVIRONMENTS = new Set(['development', 'staging']);
 const CERT_NOW = new Date().toISOString();
 const CLOSE_NOW = new Date(Date.parse(CERT_NOW) + 1_000).toISOString();
 const clock: ClockPort = {
@@ -365,7 +372,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
     const companyIds: string[] = [];
     let fixtureSequence =
       10_000 + (parseInt(randomUUID().replaceAll('-', '').slice(0, 8), 16) % 80_000);
-    let admin!: PrismaClient;
+    let admin!: PrismaService;
     let firstWorker!: PrismaService;
     let secondWorker!: PrismaService;
     let firstPersistence!: PrismaPersistence;
@@ -374,11 +381,11 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
 
     async function seedFixture(label: string): Promise<Fixture> {
       const id = randomUUID();
-      const companyId = `public-lifecycle-company-${id}`;
+      const companyId = `${CERT_COMPANY_ID_PREFIX}${id}`;
       const customerId = `public-lifecycle-customer-${id}`;
       const quoteId = `public-lifecycle-quote-${id}`;
       const invoiceId = `public-lifecycle-invoice-${id}`;
-      const companyName = `Certification ${label} ${id.slice(0, 8)}`;
+      const companyName = `${CERT_COMPANY_NAME_PREFIX}${label} ${id.slice(0, 8)}`;
       const siret = validSiret(CERT_SIREN, fixtureSequence);
       fixtureSequence += 1;
       await admin.company.create({
@@ -478,16 +485,126 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       });
     }
 
+    async function cleanupFixtureBatch(companyIdsToDelete: string[]): Promise<void> {
+      const where = { companyId: { in: companyIdsToDelete } };
+      await admin.$transaction(async (tx) => {
+        // La découverte stale est volontairement hors transaction, mais elle n'autorise aucune
+        // suppression. Revalide ici les trois marqueurs sous verrou de ligne et exige la bijection
+        // exacte : une société renommée/requalifiée entre-temps fait échouer la purge.
+        const lockedFixtures = await tx.$queryRaw<Array<{ id: string }>>(
+          Prisma.sql`
+            SELECT id
+            FROM companies
+            WHERE id IN (${Prisma.join(companyIdsToDelete)})
+              AND id LIKE ${`${CERT_COMPANY_ID_PREFIX}%`}
+              AND siren = ${CERT_SIREN}
+              AND name LIKE ${`${CERT_COMPANY_NAME_PREFIX}%`}
+            ORDER BY id
+            FOR UPDATE
+          `,
+        );
+        const expectedIds = [...companyIdsToDelete].sort();
+        const lockedIds = lockedFixtures.map(({ id }) => id).sort();
+        if (
+          lockedIds.length !== expectedIds.length ||
+          lockedIds.some((id, i) => id !== expectedIds[i])
+        ) {
+          throw new Error(
+            'Public lifecycle certification fixture identity changed before cleanup.',
+          );
+        }
+        // Cette suite ne crée aucune archive. Une archive immuable présente sur une fixture est
+        // donc un drift à examiner, jamais une donnée à effacer en désactivant ses triggers.
+        const [archiveIntents, archiveSnapshots, archiveArtifacts, archiveJobs] = await Promise.all(
+          [
+            tx.documentArchiveArtifactIntent.count({ where }),
+            tx.documentArchiveRenderSnapshot.count({ where }),
+            tx.documentArchiveJobArtifact.count({ where }),
+            tx.documentArchiveJob.count({ where }),
+          ],
+        );
+        if (
+          archiveIntents !== 0 ||
+          archiveSnapshots !== 0 ||
+          archiveArtifacts !== 0 ||
+          archiveJobs !== 0
+        ) {
+          throw new Error(
+            'Public lifecycle certification fixture unexpectedly owns immutable archive data.',
+          );
+        }
+        // La plupart des fixtures ont été clôturées par CloseAccount : les triggers légaux
+        // interdisent alors réouverture (companies_closure_monotonicity) comme hard-delete
+        // (companies_closed_delete_fence). Réouverture technique locale des seules fixtures :
+        // neutralise ces triggers le temps du seul updateMany, puis les réactive AVANT les
+        // DELETE. Aucune erreur n'est avalée : toute future dépendance oubliée doit faire
+        // échouer le gate au lieu de fuir des sociétés dans la base partagée des suites.
+        await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'replica'");
+        await tx.company.updateMany({
+          where: { id: { in: companyIdsToDelete } },
+          data: { closedAt: null, closureReason: null },
+        });
+        await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'origin'");
+        await tx.publicAccessToken.deleteMany({ where });
+        await tx.subscription.deleteMany({ where });
+        await tx.invoice.deleteMany({ where });
+        await tx.quote.deleteMany({ where });
+        await tx.customer.deleteMany({ where });
+        await tx.company.deleteMany({ where: { id: { in: companyIdsToDelete } } });
+      });
+    }
+
+    async function cleanupFixtures(ids: readonly string[]): Promise<void> {
+      const companyIdsToDelete = [...new Set(ids)];
+      if (companyIdsToDelete.length === 0) return;
+      for (let offset = 0; offset < companyIdsToDelete.length; offset += CERT_CLEANUP_BATCH_SIZE) {
+        await cleanupFixtureBatch(
+          companyIdsToDelete.slice(offset, offset + CERT_CLEANUP_BATCH_SIZE),
+        );
+      }
+      const remainingCompanies = await admin.company.count({
+        where: { id: { in: companyIdsToDelete } },
+      });
+      if (remainingCompanies !== 0) {
+        throw new Error('Public lifecycle certification fixture cleanup is incomplete.');
+      }
+    }
+
     beforeAll(async () => {
       if (!runtimeUrl || !directUrl) {
         throw new Error('DATABASE_URL (rôle runtime) et DIRECT_URL (admin) sont requis.');
       }
-      admin = new PrismaClient({ datasourceUrl: directUrl });
+      if (!CERT_ALLOWED_RELEASE_ENVIRONMENTS.has(process.env.CABINET_RELEASE_ENV ?? '')) {
+        throw new Error(
+          'Public lifecycle PostgreSQL certification is restricted to development and staging.',
+        );
+      }
+      // Le cleanup admin utilise lui aussi une transaction interactive. PrismaService applique le
+      // timeout WAN borné du rituel (`PRISMA_TRANSACTION_TIMEOUT_MS`) ; un PrismaClient brut
+      // retomberait au défaut de 5 s et pourrait expirer après des tests métier pourtant verts.
+      admin = new PrismaService({ datasourceUrl: directUrl });
       firstWorker = new PrismaService({ datasourceUrl: runtimeUrl });
       secondWorker = new PrismaService({ datasourceUrl: runtimeUrl });
       firstPersistence = new PrismaPersistence(firstWorker);
       secondPersistence = new PrismaPersistence(secondWorker);
       await Promise.all([admin.$connect(), firstWorker.$connect(), secondWorker.$connect()]);
+      // Une interruption de processus peut empêcher afterAll. La suite récupère uniquement ses
+      // fixtures réservées, sous trois marqueurs concordants, avant d'allouer de nouveaux SIRET.
+      const staleFixtures = await admin.company.findMany({
+        where: {
+          id: { startsWith: CERT_COMPANY_ID_PREFIX },
+          siren: CERT_SIREN,
+          name: { startsWith: CERT_COMPANY_NAME_PREFIX },
+        },
+        select: { id: true },
+        take: CERT_MAX_STALE_FIXTURES + 1,
+      });
+      if (staleFixtures.length > CERT_MAX_STALE_FIXTURES) {
+        throw new Error(
+          `Public lifecycle certification stale fixture limit exceeded (${CERT_MAX_STALE_FIXTURES}).`,
+        );
+      }
+      await cleanupFixtures(staleFixtures.map(({ id }) => id));
       const sentinel = await seedFixture('sentinel-second-tenant');
       const issuedSentinel = await issueCapability({
         kind: 'quote_view',
@@ -503,50 +620,11 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           where: { companyId: sentinel.companyId, revokedAt: null },
         })
       ).id;
-    }, 30_000);
+    }, CERT_STALE_RECOVERY_HOOK_TIMEOUT_MS);
 
     afterAll(async () => {
       try {
-        if (admin && companyIds.length > 0) {
-          const where = { companyId: { in: companyIds } };
-          await admin.$transaction(async (tx) => {
-            // La plupart des fixtures ont été clôturées par CloseAccount : les triggers légaux
-            // interdisent alors réouverture (companies_closure_monotonicity) comme hard-delete
-            // (companies_closed_delete_fence). Réouverture technique locale des seules fixtures :
-            // neutralise ces triggers le temps du seul updateMany, puis les réactive AVANT les
-            // DELETE. Aucune erreur n'est avalée : toute future dépendance oubliée doit faire
-            // échouer le gate au lieu de fuir des sociétés dans la base partagée des suites.
-            await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'replica'");
-            await tx.company.updateMany({
-              where: { id: { in: companyIds } },
-              data: { closedAt: null, closureReason: null },
-            });
-            await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'origin'");
-            await tx.publicAccessToken.deleteMany({ where });
-            await tx.subscription.deleteMany({ where });
-            // L'archive V3 est append-only, y compris pour l'autorité de migration. Seule la
-            // purge locale des fixtures de certification neutralise donc ses deux triggers,
-            // dans l'ordre relationnel exact. On réactive immédiatement toutes les contraintes
-            // puis on prouve qu'aucun enfant immuable n'a survécu avant de supprimer le job.
-            await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'replica'");
-            await tx.documentArchiveArtifactIntent.deleteMany({ where });
-            await tx.documentArchiveRenderSnapshot.deleteMany({ where });
-            await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'origin'");
-            const [remainingIntents, remainingSnapshots] = await Promise.all([
-              tx.documentArchiveArtifactIntent.count({ where }),
-              tx.documentArchiveRenderSnapshot.count({ where }),
-            ]);
-            if (remainingIntents !== 0 || remainingSnapshots !== 0) {
-              throw new Error('Document archive immutable fixture cleanup is incomplete.');
-            }
-            await tx.documentArchiveJobArtifact.deleteMany({ where });
-            await tx.documentArchiveJob.deleteMany({ where });
-            await tx.invoice.deleteMany({ where });
-            await tx.quote.deleteMany({ where });
-            await tx.customer.deleteMany({ where });
-            await tx.company.deleteMany({ where: { id: { in: companyIds } } });
-          });
-        }
+        if (admin) await cleanupFixtures(companyIds);
       } finally {
         await Promise.allSettled([
           firstWorker?.$disconnect(),
@@ -554,7 +632,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           admin?.$disconnect(),
         ]);
       }
-    });
+    }, CERT_CURRENT_RUN_CLEANUP_HOOK_TIMEOUT_MS);
 
     it('exécute sous un rôle runtime sans superuser/bypass RLS et FORCE RLS sur les quatre tables critiques', async () => {
       const roleRows = await firstWorker.$queryRaw<
