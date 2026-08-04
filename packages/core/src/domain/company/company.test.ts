@@ -32,14 +32,8 @@ describe('Company', () => {
     if (r.ok) expect(r.value.assertCanIssue().ok).toBe(true);
   });
   it('issueBlockers liste TOUS les manquants d’un coup — le pré-vol ne fait plus découvrir un par un (audit QA A6)', () => {
-    const r = Company.of({
-      ...baseProps,
-      legalForm: 'SARL',
-      vatRegime: 'reel_simpl',
-      rcsOrRm: undefined,
-      capitalSocialCents: undefined,
-      tvaIntracom: undefined,
-    });
+    const { rcsOrRm: _rcs, capitalSocialCents: _cap, tvaIntracom: _tva, ...incomplete } = baseProps;
+    const r = Company.of({ ...incomplete, legalForm: 'SARL', vatRegime: 'reel_simpl' });
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.value.issueBlockers()).toEqual(['rcsOrRm', 'capitalSocialCents', 'tvaIntracom']);
