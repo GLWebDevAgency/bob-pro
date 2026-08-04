@@ -7,6 +7,14 @@ const certificateSource = readFileSync(
   'utf8',
 );
 const releaseSource = readFileSync(resolve(process.cwd(), 'scripts/release.sh'), 'utf8');
+const releaseEnvGateSource = readFileSync(
+  resolve(process.cwd(), 'scripts/check-release-env.sh'),
+  'utf8',
+);
+const tenantDirectorySource = readFileSync(
+  resolve(process.cwd(), 'src/jobs/tenant-directory.ts'),
+  'utf8',
+);
 
 describe('Public capability lifecycle — contrat de nettoyage distant', () => {
   it('applique au client admin le timeout transactionnel WAN du rituel', () => {
@@ -57,9 +65,11 @@ describe('Public capability lifecycle — contrat de nettoyage distant', () => {
     );
     expect(certificateSource).toMatch(/FROM public\.document_archive_jobs[\s\S]*FOR UPDATE/u);
     expect(certificateSource).toMatch(
-      /await target\.enqueue\(input\);[\s\S]*nextAttemptAt: CERT_ARCHIVE_PARKED_UNTIL/u,
+      /vi\.spyOn\(service, 'runDocumentArchiveJobs'\)\.mockResolvedValue\(\{[\s\S]*scanned: 0,[\s\S]*archived: 0,[\s\S]*failed: 0/u,
     );
-    expect(certificateSource).toMatch(/documentArchiveJobs: parkCertificationArchiveJobs/u);
+    expect(certificateSource).not.toMatch(/parkCertificationArchiveJobs/u);
+    expect(certificateSource).not.toMatch(/documentArchiveJob\.updateMany/u);
+    expect(certificateSource).not.toMatch(/CERT_ARCHIVE_PARKED_UNTIL/u);
     expect(certificateSource).toMatch(
       /job\.pieceId !== identity\.quoteId[\s\S]*job\.reason !== 'quote-signed'[\s\S]*job\.hasTerminalProof/u,
     );
@@ -86,5 +96,20 @@ describe('Public capability lifecycle — contrat de nettoyage distant', () => {
     expect(certificateSource).not.toMatch(/tx\.storedDocument\.deleteMany/u);
     expect(certificateSource).not.toMatch(/DELETE FROM storage\.objects/u);
     expect(certificateSource).not.toMatch(/cleanupFixtures\([^)]*\)\.catch/u);
+  });
+
+  it('borne le scheduler staging à une allowlist explicite avant de créer les fixtures', () => {
+    expect(releaseEnvGateSource).toMatch(
+      /const required = \[[\s\S]*'JOB_COMPANY_IDS',[\s\S]*\];/u,
+    );
+    expect(tenantDirectorySource).toMatch(
+      /const configured = jobCompanyIds\(\);[\s\S]*if \(configured\.length > 0\) return configured;[\s\S]*companies\.list\(\)/u,
+    );
+    expect(certificateSource).toMatch(
+      /process\.env\.CABINET_RELEASE_ENV === 'staging'[\s\S]*jobCompanyIds\(\)\.length === 0[\s\S]*Public lifecycle staging certification requires a non-empty JOB_COMPANY_IDS allowlist\./u,
+    );
+    expect(certificateSource).toMatch(
+      /toHaveBeenCalledWith\(\{ companyId: fixture\.companyId, limit: 5 \}\)[\s\S]*assertPendingSignedQuoteArchive\(fixture\)/u,
+    );
   });
 });
