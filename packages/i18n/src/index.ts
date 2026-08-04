@@ -1274,9 +1274,9 @@ const legacyFr = {
   },
   'clients.createAddressLabel': { pote: 'Adresse', pro: 'Adresse', direct: 'Adresse' },
   'clients.createAddressPlaceholder': {
-    pote: 'Commence à taper une adresse (facultatif)',
-    pro: 'Adresse (facultative)',
-    direct: 'Adresse facultative',
+    pote: 'Commence à taper une adresse (requise pour facturer)',
+    pro: 'Adresse (requise pour facturer)',
+    direct: 'Adresse — requise pour facturer',
   },
 
   // ── Chantiers — états honnêtes, création assistée et suivi terrain ───────────
