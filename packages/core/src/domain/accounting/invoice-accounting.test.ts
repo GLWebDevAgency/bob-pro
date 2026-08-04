@@ -285,10 +285,10 @@ describe('buildInvoiceAccountingPreviewEntry', () => {
       expect(r.value.entryDate).toBe(ISSUED);
       expect(r.value.totalDebitCents).toBe(162800);
       expect(r.value.lines).toEqual([
-        { account: '411', label: 'Facture a-emettre', debitCents: 162800, creditCents: 0 },
-        { account: '707', label: 'Facture a-emettre', debitCents: 0, creditCents: 80000 },
-        { account: '706', label: 'Facture a-emettre', debitCents: 0, creditCents: 68000 },
-        { account: '44571', label: 'Facture a-emettre', debitCents: 0, creditCents: 14800 },
+        { account: '411', label: 'Facture à émettre', debitCents: 162800, creditCents: 0 },
+        { account: '707', label: 'Facture à émettre', debitCents: 0, creditCents: 80000 },
+        { account: '706', label: 'Facture à émettre', debitCents: 0, creditCents: 68000 },
+        { account: '44571', label: 'Facture à émettre', debitCents: 0, creditCents: 14800 },
       ]);
     }
   });

@@ -80,4 +80,18 @@ describe('AccountingLinesView', () => {
       accessibilityLabels(complete).some((label) => /^Total\. Débit : .*Crédit : /.test(label)),
     ).toBe(true);
   });
+
+  it('humanise le sentinel « a-emettre » servi par une API pas encore redéployée (audit QA A5)', async () => {
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <AccountingLinesView
+          lines={[{ account: '411', label: 'Facture a-emettre', debitCents: 50_820, creditCents: 0 }]}
+        />,
+      );
+    });
+    const labels = accessibilityLabels(renderer);
+    expect(labels.some((label) => label.includes('Facture à émettre'))).toBe(true);
+    expect(labels.some((label) => label.includes('a-emettre'))).toBe(false);
+  });
 });
