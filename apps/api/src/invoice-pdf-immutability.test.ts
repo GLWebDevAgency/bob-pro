@@ -89,6 +89,10 @@ async function prepareFinalInvoice(service: BackendService): Promise<string> {
     signerName: 'Client archive',
   });
   if (!signed.ok) throw new Error('signQuote failed');
+  const signedArchive = await service.runDocumentArchiveJobs({ limit: 50 });
+  if (!signedArchive.ok || signedArchive.value.failed !== 0) {
+    throw new Error('signed quote archive worker failed');
+  }
   const generated = await service.generateInvoice({ quoteId: quote.value.quoteId, mode: 'final' });
   if (!generated.ok) throw new Error('generateInvoice failed');
   return generated.value.invoiceId;
@@ -98,6 +102,8 @@ async function issueInvoice(service: BackendService): Promise<string> {
   const invoiceId = await prepareFinalInvoice(service);
   const issued = await service.issueInvoice({ invoiceId });
   if (!issued.ok) throw new Error('issueInvoice failed');
+  const archived = await service.runDocumentArchiveJobs({ limit: 50 });
+  if (!archived.ok || archived.value.failed !== 0) throw new Error('archive worker failed');
   return invoiceId;
 }
 
@@ -145,6 +151,7 @@ describe('facture PDF émise — original immuable', () => {
       const first = await service.issueInvoice({ invoiceId });
       expect(first.ok).toBe(true);
       if (!first.ok) return;
+      await service.runDocumentArchiveJobs({ limit: 50 });
 
       const settings = await service.getCompanyBillingSettings();
       expect(settings.ok).toBe(true);
@@ -226,6 +233,7 @@ describe('facture PDF émise — original immuable', () => {
       const replay = await service.issueInvoice({ invoiceId });
 
       expect(replay.ok).toBe(true);
+      await service.runDocumentArchiveJobs({ limit: 50 });
       expect(renderer.renderInvoice).toHaveBeenCalledTimes(1);
       const entries = await persistence.accountingEntries.listByCompany(MERCIER_PROPS.id);
       expect(entries.filter((entry) => entry.sourceId === invoiceId)).toHaveLength(1);
@@ -375,6 +383,7 @@ describe('facture PDF émise — original immuable', () => {
       const retry = await service.issueInvoice({ invoiceId });
       expect(retry.ok).toBe(true);
       if (!retry.ok) return;
+      await service.runDocumentArchiveJobs({ limit: 50 });
       expect(retry.value.number).toMatch(/^F-\d{4}-0001$/u);
       expect(renderer.renderInvoice).toHaveBeenCalledTimes(1);
       const persisted = await persistence.invoices.findById(invoiceId);

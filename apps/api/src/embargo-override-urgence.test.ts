@@ -10,6 +10,8 @@ import { retractationExpiresAt } from '@bob/core';
 import { MERCIER_PROPS } from '@bob/core/testing';
 import { BackendService } from './backend.service';
 import { InMemoryDocumentStorage } from './documents/storage.testing';
+import { renderPdfFixture } from './documents/pdf-fixtures.testing';
+import { waitForDocumentArchive } from './documents/archive-test-wait.testing';
 import type { NotificationDeliveryService } from './jobs/notification-delivery.service';
 import type { Metrics } from './observability/metrics';
 import { requestContext, type AppLogger, type Principal } from './observability/logger';
@@ -41,12 +43,12 @@ function makeService() {
   const persistence = new InMemoryPersistence();
   const renderedQuotes: QuotePdfData[] = [];
   const renderer: PdfRendererPort = {
-    renderInvoice: vi.fn(async (data: InvoicePdfData) =>
-      new TextEncoder().encode(`%PDF-1.7\narchive:${data.number}`),
+    renderInvoice: vi.fn(async (data: InvoicePdfData, facturX) =>
+      renderPdfFixture(`archive:${data.number}`, facturX?.xml),
     ),
     renderQuote: vi.fn(async (data: QuotePdfData) => {
       renderedQuotes.push(structuredClone(data));
-      return new TextEncoder().encode(`%PDF-1.7\nquote:${data.number}`);
+      return renderPdfFixture(`quote:${data.number}`);
     }),
   };
   const enqueue = vi.fn(
@@ -90,6 +92,7 @@ function makeService() {
 /** Devis B2C envoyé puis signé SUR PLACE (onsite_draw → contrat hors établissement). */
 async function onsiteSignedQuote(
   service: BackendService,
+  persistence: InMemoryPersistence,
   input: { customerId?: string; urgentRepairRequested?: boolean } = {},
 ): Promise<string> {
   return asOwner(async () => {
@@ -109,6 +112,16 @@ async function onsiteSignedQuote(
       signerName: 'Mme Durand',
     });
     if (!signed.ok) throw new Error('signQuote failed');
+    await waitForDocumentArchive({
+      label: `signed quote ${quote.value.quoteId}`,
+      drain: () => service.runDocumentArchiveJobs({ limit: 50 }),
+      ready: async () =>
+        (await persistence.documentArchiveJobs.findByPiece(
+          MERCIER_PROPS.id,
+          quote.value.quoteId,
+          'quote-signed',
+        ))?.status === 'done',
+    });
     return quote.value.quoteId;
   });
 }
@@ -118,7 +131,7 @@ describe('L221-10 — refus serveur par défaut, porteur de l’affordance d’o
     vi.stubEnv('SIGN_WEB_BASE_URL', 'https://signature.example.test');
     const { persistence, service } = makeService();
     await persistence.seed();
-    const quoteId = await onsiteSignedQuote(service);
+    const quoteId = await onsiteSignedQuote(service, persistence);
 
     const refused = await asOwner(() =>
       service.generateInvoice({ quoteId, mode: 'deposit' }),
@@ -141,7 +154,7 @@ describe('L221-10 — override responsabilisé (flag explicite, journalisé)', (
     vi.stubEnv('SIGN_WEB_BASE_URL', 'https://signature.example.test');
     const { persistence, service, audit } = makeService();
     await persistence.seed();
-    const quoteId = await onsiteSignedQuote(service);
+    const quoteId = await onsiteSignedQuote(service, persistence);
 
     const overridden = await asOwner(() =>
       service.generateInvoice({ quoteId, mode: 'deposit', embargoOverride: true }),
@@ -160,7 +173,7 @@ describe('L221-10 — override responsabilisé (flag explicite, journalisé)', (
     vi.stubEnv('SIGN_WEB_BASE_URL', 'https://signature.example.test');
     const { persistence, service, audit } = makeService();
     await persistence.seed();
-    const quoteId = await onsiteSignedQuote(service);
+    const quoteId = await onsiteSignedQuote(service, persistence);
 
     const refused = await asOwner(() => service.generateInvoice({ quoteId, mode: 'deposit' }));
     expect(refused.ok).toBe(false);
@@ -175,7 +188,7 @@ describe('L221-10 — DÉFAUT légal : encaissement programmé à J+7 (outbox pl
     vi.stubEnv('SIGN_WEB_BASE_URL', 'https://signature.example.test');
     const { persistence, service, enqueue, audit } = makeService();
     await persistence.seed();
-    const quoteId = await onsiteSignedQuote(service);
+    const quoteId = await onsiteSignedQuote(service, persistence);
 
     const scheduled = await asOwner(() => service.scheduleEmbargoPayment(quoteId));
     expect(scheduled.ok).toBe(true);
@@ -253,7 +266,7 @@ describe('L221-10 — DÉFAUT légal : encaissement programmé à J+7 (outbox pl
     vi.stubEnv('SIGN_WEB_BASE_URL', 'https://signature.example.test');
     const { persistence, service } = makeService();
     await persistence.seed();
-    const quoteId = await onsiteSignedQuote(service, { customerId: 'cust-martin' });
+    const quoteId = await onsiteSignedQuote(service, persistence, { customerId: 'cust-martin' });
 
     const scheduled = await asOwner(() => service.scheduleEmbargoPayment(quoteId));
     expect(scheduled.ok).toBe(false);
@@ -267,7 +280,7 @@ describe('Exception dépannage urgent (L221-10, al. 2 / L221-28, 8°)', () => {
     vi.stubEnv('SIGN_WEB_BASE_URL', 'https://signature.example.test');
     const { persistence, service, audit } = makeService();
     await persistence.seed();
-    const quoteId = await onsiteSignedQuote(service, { urgentRepairRequested: true });
+    const quoteId = await onsiteSignedQuote(service, persistence, { urgentRepairRequested: true });
 
     const quote = await persistence.quotes.findById(quoteId);
     expect(quote?.urgentRepair).not.toBeNull();
@@ -306,7 +319,7 @@ describe('Exception dépannage urgent (L221-10, al. 2 / L221-28, 8°)', () => {
     const { persistence, service, renderedQuotes } = makeService();
     await persistence.seed();
     // L'original du contrat est rendu et archivé À LA SIGNATURE (A8) — c'est CE rendu qu'on vérifie.
-    await onsiteSignedQuote(service, { urgentRepairRequested: true });
+    await onsiteSignedQuote(service, persistence, { urgentRepairRequested: true });
     const data = renderedQuotes.at(-1);
     expect(data).toBeDefined();
     if (!data) return;
@@ -340,7 +353,7 @@ describe('Exception dépannage urgent (L221-10, al. 2 / L221-28, 8°)', () => {
     vi.stubEnv('SIGN_WEB_BASE_URL', 'https://signature.example.test');
     const { persistence, service, renderedQuotes } = makeService();
     await persistence.seed();
-    await onsiteSignedQuote(service);
+    await onsiteSignedQuote(service, persistence);
     const data = renderedQuotes.at(-1);
     expect(data?.retractation?.noticeLines[0]).toBe('Droit de rétractation');
     expect(

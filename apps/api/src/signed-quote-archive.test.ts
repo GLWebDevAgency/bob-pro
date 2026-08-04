@@ -109,6 +109,12 @@ async function signedQuoteArchive(persistence: InMemoryPersistence, quoteId: str
   );
 }
 
+async function drainArchive(service: BackendService, companyId?: string): Promise<void> {
+  const run = await service.runDocumentArchiveJobs({ ...(companyId ? { companyId } : {}), limit: 50 });
+  expect(run.ok).toBe(true);
+  if (run.ok) expect(run.value.failed).toBe(0);
+}
+
 async function viewToken(service: BackendService, quoteId: string): Promise<string> {
   const link = await service.createQuoteViewLink(quoteId);
   if (!link.ok) throw new Error('fixture: createQuoteViewLink KO');
@@ -162,6 +168,7 @@ describe('A8 — signature sur place : le contrat est figé', () => {
 
       const signed = await service.signQuote({ quoteId, signerName: 'Mme Durand' });
       expect(signed.ok).toBe(true);
+      await drainArchive(service);
 
       // Archive présente : UN original actif, job d'archivage abouti.
       const archives = await signedQuoteArchive(persistence, quoteId);
@@ -212,6 +219,7 @@ describe('A8 — signature sur place : le contrat est figé', () => {
       const quoteId = await createSentQuote(service);
       const signed = await service.signQuote({ quoteId, signerName: 'Mme Durand' });
       expect(signed.ok).toBe(true);
+      await drainArchive(service);
       expect(await signedQuoteArchive(persistence, quoteId)).toHaveLength(1);
       const completed = await persistence.documentArchiveJobs.findByPiece(
         MERCIER_PROPS.id,
@@ -271,12 +279,58 @@ describe('A8 — signature sur place : le contrat est figé', () => {
 
       const retry = await service.signQuote({ quoteId, signerName: 'Mme Durand' });
       expect(retry.ok).toBe(true);
+      await drainArchive(service);
       expect(await signedQuoteArchive(persistence, quoteId)).toHaveLength(1);
     });
   });
 });
 
 describe('A8 — worker d’archive : terminaison fenced et observable', () => {
+  it('ne rend ni ne contacte Storage pendant une transaction tenant', async () => {
+    vi.stubEnv('SIGN_WEB_BASE_URL', 'https://signature.example.test');
+    const { persistence, renderer, service, storage } = makeService();
+    await persistence.seed();
+
+    await asOwner(async () => {
+      let tenantTransactionDepth = 0;
+      const runWithTenant = persistence.runWithTenant.bind(persistence);
+      vi.spyOn(persistence, 'runWithTenant').mockImplementation(async (companyId, operation) => {
+        tenantTransactionDepth += 1;
+        try {
+          return await runWithTenant(companyId, operation);
+        } finally {
+          tenantTransactionDepth -= 1;
+        }
+      });
+      const renderQuote = renderer.renderQuote.bind(renderer);
+      vi.spyOn(renderer, 'renderQuote').mockImplementation(async (data) => {
+        expect(tenantTransactionDepth).toBe(0);
+        return renderQuote(data);
+      });
+      const put = storage.put.bind(storage);
+      const get = storage.get.bind(storage);
+      vi.spyOn(storage, 'put').mockImplementation(async (input) => {
+        expect(tenantTransactionDepth).toBe(0);
+        return put(input);
+      });
+      vi.spyOn(storage, 'get').mockImplementation(async (companyId, key) => {
+        expect(tenantTransactionDepth).toBe(0);
+        return get(companyId, key);
+      });
+
+      const quoteId = await createSentQuote(service);
+      const signed = await service.signQuote({ quoteId, signerName: 'Mme Durand' });
+      expect(signed.ok).toBe(true);
+      const run = await service.runDocumentArchiveJobs();
+
+      expect(run).toEqual({
+        ok: true,
+        value: { scanned: 1, archived: 1, failed: 0 },
+      });
+      expect(await signedQuoteArchive(persistence, quoteId)).toHaveLength(1);
+    });
+  });
+
   it('réarme immédiatement le job si sa preuve est générée mais refusée à la finalisation', async () => {
     vi.stubEnv('SIGN_WEB_BASE_URL', 'https://signature.example.test');
     const { logger, persistence, service } = makeService();
@@ -454,6 +508,7 @@ describe('A8 — signature à distance (lien public tokenisé)', () => {
     // La signature publique n'a AUCUN principal authentifié (client final sur son téléphone).
     const signed = await service.publicSignQuote(token, 'Mme Durand');
     expect(signed.ok).toBe(true);
+    await drainArchive(service, MERCIER_PROPS.id);
 
     const archives = await signedQuoteArchive(persistence, quoteId);
     expect(archives).toHaveLength(1);
@@ -493,6 +548,68 @@ describe('A8 — devis non signé : jamais d’archive', () => {
 });
 
 describe('A8 — barrière de complétude', () => {
+  it('isole un snapshot scellé invalide et traite quand même le job suivant de la page', async () => {
+    vi.stubEnv('SIGN_WEB_BASE_URL', 'https://signature.example.test');
+    const { persistence, service } = makeService();
+    await persistence.seed();
+
+    await asOwner(async () => {
+      // Les kicks best-effort sont neutralisés : ce test exerce explicitement une seule page du
+      // scheduler durable avec deux candidats présents avant le LIST.
+      const kick = vi.spyOn(service, 'runDocumentArchiveJobs').mockResolvedValue({
+        ok: true,
+        value: { scanned: 0, archived: 0, failed: 0 },
+      });
+      const firstQuoteId = await createSentQuote(service);
+      const secondQuoteId = await createSentQuote(service);
+      expect((await service.signQuote({ quoteId: firstQuoteId, signerName: 'Mme Durand' })).ok)
+        .toBe(true);
+      expect((await service.signQuote({ quoteId: secondQuoteId, signerName: 'M. Martin' })).ok)
+        .toBe(true);
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      kick.mockRestore();
+
+      const state = persistence.documentArchiveJobs.snapshotState();
+      const first = state.jobs.find((job) => job.pieceId === firstQuoteId);
+      expect(first?.renderSnapshot).not.toBeNull();
+      persistence.documentArchiveJobs.restoreState({
+        ...state,
+        jobs: state.jobs.map((job) =>
+          job.pieceId === firstQuoteId && job.renderSnapshot !== null
+            ? {
+                ...job,
+                renderSnapshot: { ...job.renderSnapshot, json: '{}' },
+              }
+            : job),
+      });
+
+      await expect(service.runDocumentArchiveJobs({ limit: 10 })).resolves.toEqual({
+        ok: true,
+        value: { scanned: 2, archived: 1, failed: 1 },
+      });
+      expect(await signedQuoteArchive(persistence, firstQuoteId)).toHaveLength(0);
+      expect(await signedQuoteArchive(persistence, secondQuoteId)).toHaveLength(1);
+      expect(
+        (
+          await persistence.documentArchiveJobs.findByPiece(
+            MERCIER_PROPS.id,
+            firstQuoteId,
+            'quote-signed',
+          )
+        )?.status,
+      ).toBe('failed');
+      expect(
+        (
+          await persistence.documentArchiveJobs.findByPiece(
+            MERCIER_PROPS.id,
+            secondQuoteId,
+            'quote-signed',
+          )
+        )?.status,
+      ).toBe('done');
+    });
+  });
+
   it('bloque les données relues au rendu tant que l’original du contrat n’est pas archivé, puis débloque', async () => {
     vi.stubEnv('SIGN_WEB_BASE_URL', 'https://signature.example.test');
     const { persistence, renderer, service } = makeService();
@@ -505,6 +622,10 @@ describe('A8 — barrière de complétude', () => {
       vi.mocked(renderer.renderQuote).mockRejectedValueOnce(new Error('renderer down'));
       const signed = await service.signQuote({ quoteId, signerName: 'Mme Durand' });
       expect(signed.ok).toBe(true);
+      await expect(service.runDocumentArchiveJobs()).resolves.toEqual({
+        ok: true,
+        value: { scanned: 1, archived: 0, failed: 1 },
+      });
       expect(
         (
           await persistence.documentArchiveJobs.findByPiece(
@@ -570,6 +691,10 @@ describe('A8 — barrière de complétude', () => {
       vi.mocked(renderer.renderQuote).mockRejectedValueOnce(new Error('renderer down'));
       const signed = await service.signQuote({ quoteId, signerName: 'Mme Durand' });
       expect(signed.ok).toBe(true);
+      await expect(service.runDocumentArchiveJobs()).resolves.toEqual({
+        ok: true,
+        value: { scanned: 1, archived: 0, failed: 1 },
+      });
       expect(await signedQuoteArchive(persistence, quoteId)).toHaveLength(0);
 
       const settings = await service.getCompanyBillingSettings();
@@ -631,6 +756,7 @@ describe('A8 — fail-closed : archive corrompue, ambiguë ou absente', () => {
       const quoteId = await createSentQuote(service);
       const signed = await service.signQuote({ quoteId, signerName: 'Mme Durand' });
       expect(signed.ok).toBe(true);
+      await drainArchive(service);
       const archive = (await signedQuoteArchive(persistence, quoteId))[0]!.toProps();
       const original = await storage.get(MERCIER_PROPS.id, archive.storageKey);
       expect(original).not.toBeNull();

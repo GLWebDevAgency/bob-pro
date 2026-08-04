@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { requestContext } from '../observability/logger';
 import {
   AccountController,
+  AiController,
   ExpensesController,
   OnboardingController,
   QuotesController,
@@ -12,6 +13,7 @@ import {
 import { AgentMissionController } from '../agent-missions/agent-mission.controller';
 import type { Persistence } from './persistence';
 import { QuoteDraftController } from '../quotes/quote-draft.controller';
+import { deferUntilTenantCommit } from './post-commit';
 import {
   AllowsMissingCompanyRow,
   TenantPersistenceInterceptor,
@@ -68,6 +70,50 @@ describe('TenantPersistenceInterceptor — frontières transactionnelles', () =>
     expect(value).toBe('ok');
     expect(runWithTenant).toHaveBeenCalledOnce();
     expect(runWithTenant).toHaveBeenCalledWith('co-1', expect.any(Function));
+  });
+
+  it('libère une projection Bob seulement après le COMMIT tenant extérieur', async () => {
+    const events: string[] = [];
+    let transactionOpen = false;
+    const runWithTenant = vi.fn(async (_companyId: string, fn: () => Promise<unknown>) => {
+      transactionOpen = true;
+      try {
+        const value = await fn();
+        events.push('commit');
+        return value;
+      } finally {
+        transactionOpen = false;
+      }
+    });
+    const interceptor = new TenantPersistenceInterceptor(
+      { runWithTenant, companies: { findById: async () => openCompany } } as unknown as Persistence,
+      new Reflector(),
+    );
+    const next = {
+      handle: vi.fn(() => {
+        expect(transactionOpen).toBe(true);
+        expect(deferUntilTenantCommit(() => {
+          expect(transactionOpen).toBe(false);
+          events.push('archive-kick');
+        })).toBe('deferred');
+        events.push('confirm');
+        return of('confirmed');
+      }),
+    } satisfies CallHandler;
+
+    const value = await requestContext.run(
+      {
+        correlationId: 'agent-confirm-post-commit-test',
+        principal: { userId: 'user-1', companyId: 'co-1' },
+      },
+      () => lastValueFrom(interceptor.intercept(
+        contextFor(AiController.prototype.confirm, '/ai/confirm', AiController, 'POST'),
+        next,
+      )),
+    );
+
+    expect(value).toBe('confirmed');
+    expect(events).toEqual(['confirm', 'commit', 'archive-kick']);
   });
 
   it('refuse une route tenant ordinaire quand la company du JWT est ABSENTE de la base (403 NO_COMPANY)', async () => {

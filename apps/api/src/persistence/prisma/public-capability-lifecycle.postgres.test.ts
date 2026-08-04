@@ -524,6 +524,22 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
             await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'origin'");
             await tx.publicAccessToken.deleteMany({ where });
             await tx.subscription.deleteMany({ where });
+            // L'archive V3 est append-only, y compris pour l'autorité de migration. Seule la
+            // purge locale des fixtures de certification neutralise donc ses deux triggers,
+            // dans l'ordre relationnel exact. On réactive immédiatement toutes les contraintes
+            // puis on prouve qu'aucun enfant immuable n'a survécu avant de supprimer le job.
+            await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'replica'");
+            await tx.documentArchiveArtifactIntent.deleteMany({ where });
+            await tx.documentArchiveRenderSnapshot.deleteMany({ where });
+            await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'origin'");
+            const [remainingIntents, remainingSnapshots] = await Promise.all([
+              tx.documentArchiveArtifactIntent.count({ where }),
+              tx.documentArchiveRenderSnapshot.count({ where }),
+            ]);
+            if (remainingIntents !== 0 || remainingSnapshots !== 0) {
+              throw new Error('Document archive immutable fixture cleanup is incomplete.');
+            }
+            await tx.documentArchiveJobArtifact.deleteMany({ where });
             await tx.documentArchiveJob.deleteMany({ where });
             await tx.invoice.deleteMany({ where });
             await tx.quote.deleteMany({ where });

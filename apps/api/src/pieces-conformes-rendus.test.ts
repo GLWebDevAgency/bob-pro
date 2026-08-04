@@ -12,6 +12,7 @@ import { PdfRenderer } from './documents/pdf-renderer';
 import { pdfVisibleText } from './documents/pdf-text.testing';
 import { InMemoryDocumentStorage } from './documents/storage.testing';
 import { renderPdfFixture } from './documents/pdf-fixtures.testing';
+import { waitForDocumentArchive } from './documents/archive-test-wait.testing';
 import type { NotificationDeliveryService } from './jobs/notification-delivery.service';
 import type { Metrics } from './observability/metrics';
 import { requestContext, type AppLogger, type Principal } from './observability/logger';
@@ -292,6 +293,11 @@ describe('A5/A7 — flow serveur : données de rendu des nouvelles émissions', 
       deliveryAddress: 'Chantier — 8 allée des Roses, 92190 Meudon',
     });
     if (!issued.ok) throw new Error('issueInvoice failed');
+    await waitForDocumentArchive({
+      label: `invoice ${generated.value.invoiceId}`,
+      drain: () => service.runDocumentArchiveJobs({ limit: 50 }),
+      ready: async () => (await service.invoicePdf(generated.value.invoiceId)).ok,
+    });
     return { invoiceId: generated.value.invoiceId, number: issued.value.number };
   }
 
@@ -334,6 +340,11 @@ describe('A5/A7 — flow serveur : données de rendu des nouvelles émissions', 
       if (!credit.ok) return;
       const issuedCredit = await service.issueInvoice({ invoiceId: credit.value.creditNoteId });
       expect(issuedCredit.ok).toBe(true);
+      await waitForDocumentArchive({
+        label: `credit note ${credit.value.creditNoteId}`,
+        drain: () => service.runDocumentArchiveJobs({ limit: 50 }),
+        ready: async () => (await service.invoicePdf(credit.value.creditNoteId)).ok,
+      });
 
       const data = rendered.find((d) => d.kind === 'credit_note');
       expect(data).toBeDefined();

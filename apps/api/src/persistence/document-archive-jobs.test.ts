@@ -6,8 +6,57 @@ import {
   type DocumentArchiveJobReason,
 } from './document-archive-jobs';
 import { InMemoryDocumentArchiveJobRepository } from './in-memory';
+import {
+  sealDocumentArchiveRenderSnapshot,
+  type DocumentArchiveRenderSnapshot,
+} from '../documents/document-archive-render-snapshot';
 
 const SHA = 'a'.repeat(64);
+
+function pdfOnlySnapshot(): Extract<
+  DocumentArchiveRenderSnapshot,
+  { reason: 'invoice-issued' | 'invoice-issued-pdf-only-b2c' }
+> {
+  return {
+    schemaVersion: 1,
+    rendererVersion: 1,
+    companyId: 'co-b2c',
+    pieceId: 'invoice-b2c',
+    reason: 'invoice-issued-pdf-only-b2c',
+    metadataCreatedAt: '2026-08-04T10:00:00.000Z',
+    artifacts: [{
+      kind: 'invoice_pdf',
+      expectedContentProfile: 'plain_pdf',
+      documentId: 'document-pdf',
+      versionId: 'version-pdf',
+      filename: 'facture-F-2026-001.pdf',
+      mimeType: 'application/pdf',
+      linkedEntityType: 'invoice',
+      documentDate: '2026-08-04',
+      issuedAt: '2026-08-04',
+    }],
+    payload: {
+      kind: 'invoice',
+      data: {
+        number: 'F-2026-001',
+        companyName: 'Fly Services',
+        companyAddress: 'Paris',
+        companyRcsOrRm: null,
+        customerName: 'Client',
+        customerAddress: 'Lyon',
+        issuedAt: '2026-08-04',
+        dueAt: '2026-09-03',
+        documentCreatedAt: '2026-08-04T10:00:00.000Z',
+        kind: 'final',
+        lines: [{ label: 'Entretien', qty: 1, unitPriceHT: 10_000, vatRate: 20 }],
+        totals: { ht: 10_000, vat: 2_000, ttc: 12_000, netToPay: 12_000 },
+        mentions: [],
+        billingPresentation: { accentColor: 'navy', rib: null, insurance: null },
+      },
+      facturXXml: null,
+    },
+  };
+}
 
 function proof(
   companyId: string,
@@ -80,6 +129,64 @@ describe('InMemoryDocumentArchiveJobRepository', () => {
       now: '2026-07-01T10:01:00.000Z',
     })).rejects.toThrow('scope is immutable');
     expect(repo.snapshot()).toHaveLength(1);
+  });
+
+  it('impose le plan scellé et la clé content-addressed comme PostgreSQL', async () => {
+    const repo = new InMemoryDocumentArchiveJobRepository();
+    const seal = sealDocumentArchiveRenderSnapshot(pdfOnlySnapshot());
+    await repo.enqueue({
+      id: 'job-b2c-sealed',
+      companyId: 'co-b2c',
+      pieceId: 'invoice-b2c',
+      reason: 'invoice-issued-pdf-only-b2c',
+      renderSnapshot: seal,
+      now: '2026-08-04T10:00:00.000Z',
+    });
+    const candidate = (await repo.listDue('co-b2c', '2026-08-04T10:00:00.000Z', 1))[0]!;
+    expect((await repo.claimForArchive(
+      candidate.id,
+      candidate.companyId,
+      candidate.updatedAt,
+      '2026-08-04T10:00:00.000Z',
+      '2026-08-04T10:05:00.000Z',
+      'lease-b2c',
+    )).outcome).toBe('claimed');
+    const valid = {
+      kind: 'invoice_pdf' as const,
+      contentProfile: 'plain_pdf' as const,
+      documentId: 'document-pdf',
+      versionId: 'version-pdf',
+      version: 1 as const,
+      filename: 'facture-F-2026-001.pdf',
+      storageKey: `companies/co-b2c/documents/document-pdf/v1/${SHA}.pdf`,
+      mimeType: 'application/pdf',
+      byteSize: 42,
+      sha256: SHA,
+    };
+    const prepare = (intents: Array<typeof valid>) => repo.prepareArtifactIntents({
+      jobId: 'job-b2c-sealed',
+      companyId: 'co-b2c',
+      leaseToken: 'lease-b2c',
+      snapshotSha256: seal.sha256,
+      intents,
+      now: '2026-08-04T10:01:00.000Z',
+    });
+
+    await expect(prepare([{ ...valid, filename: 'autre.pdf' }])).resolves.toBe(false);
+    await expect(prepare([{
+      ...valid,
+      storageKey: `companies/co-b2c/documents/document-pdf/legacy-${SHA}.pdf`,
+    }])).resolves.toBe(false);
+    await expect(prepare([{
+      ...valid,
+      unexpected: 'forbidden',
+    } as typeof valid])).resolves.toBe(false);
+    await expect(prepare([valid])).resolves.toBe(true);
+    await expect(repo.listArtifactIntents('job-b2c-sealed', 'co-b2c')).resolves.toMatchObject([{
+      storageKey: valid.storageKey,
+      filename: valid.filename,
+      snapshotSha256: seal.sha256,
+    }]);
   });
 
   it('enqueue de façon idempotente et liste les jobs dus par tenant', async () => {

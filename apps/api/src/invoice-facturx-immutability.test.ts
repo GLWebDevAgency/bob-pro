@@ -104,6 +104,10 @@ async function prepareInvoice(service: BackendService): Promise<string> {
   if (!(await service.sendQuote(quote.value.quoteId)).ok) throw new Error('sendQuote failed');
   if (!(await service.signQuote({ quoteId: quote.value.quoteId, signerName: 'Client archive' })).ok)
     throw new Error('signQuote failed');
+  const signedArchive = await service.runDocumentArchiveJobs({ limit: 50 });
+  if (!signedArchive.ok || signedArchive.value.failed !== 0) {
+    throw new Error('signed quote archive worker failed');
+  }
   const generated = await service.generateInvoice({ quoteId: quote.value.quoteId, mode: 'final' });
   if (!generated.ok) throw new Error('generateInvoice failed');
   return generated.value.invoiceId;
@@ -113,6 +117,8 @@ async function issueInvoice(service: BackendService): Promise<string> {
   const invoiceId = await prepareInvoice(service);
   if (!(await service.issueInvoice({ invoiceId })).ok)
     throw new Error('issueInvoice failed');
+  const archived = await service.runDocumentArchiveJobs({ limit: 50 });
+  if (!archived.ok || archived.value.failed !== 0) throw new Error('archive worker failed');
   return invoiceId;
 }
 
@@ -189,6 +195,7 @@ describe('Factur-X émis — XML original immuable', () => {
 
       const issued = await service.issueInvoice({ invoiceId: composed.value.invoiceId });
       expect(issued.ok).toBe(true);
+      await service.runDocumentArchiveJobs({ limit: 50 });
       const documents = await persistence.documents.findByEntity(
         MERCIER_PROPS.id,
         'invoice',
@@ -230,6 +237,7 @@ describe('Factur-X émis — XML original immuable', () => {
 
         const issued = await service.issueInvoice({ invoiceId });
         expect(issued.ok).toBe(true);
+        await service.runDocumentArchiveJobs({ limit: 50 });
         const documents = await persistence.documents.findByEntity(
           MERCIER_PROPS.id,
           'invoice',

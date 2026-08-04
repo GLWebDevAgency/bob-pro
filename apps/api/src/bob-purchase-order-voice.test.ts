@@ -9,6 +9,7 @@ import type { NotificationDeliveryService } from './jobs/notification-delivery.s
 import type { Metrics } from './observability/metrics';
 import { InMemoryDocumentStorage } from './documents/storage.testing';
 import { renderPdfFixture } from './documents/pdf-fixtures.testing';
+import { waitForDocumentArchive } from './documents/archive-test-wait.testing';
 
 /**
  * B8 — outil vocal lier_bon_commande, HÔTE RÉEL (buildBobActions → use case core
@@ -182,6 +183,11 @@ describe('B8 — flow vocal lier_bon_commande (hôte réel → use case core →
       expect(derived).toBeDefined();
       const issued = await service.issueInvoice({ invoiceId: derived!.id });
       expect(issued.ok).toBe(true);
+      await waitForDocumentArchive({
+        label: `invoice ${derived!.id}`,
+        drain: () => service.runDocumentArchiveJobs({ limit: 50 }),
+        ready: async () => (await service.invoiceFacturXXml(derived!.id)).ok,
+      });
       const xml = await service.invoiceFacturXXml(derived!.id);
       expect(xml.ok).toBe(true);
       if (!xml.ok) return;

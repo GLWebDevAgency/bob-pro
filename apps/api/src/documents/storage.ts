@@ -3,6 +3,7 @@ import { type DocumentStoragePort, type LoadedStoredObject, type StoredObject } 
 import { loadEnv } from '../config/env';
 
 export const DOCUMENT_STORAGE = Symbol('DOCUMENT_STORAGE');
+const DOCUMENT_STORAGE_REQUEST_TIMEOUT_MS = 15_000;
 
 export function documentSha256(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
@@ -76,8 +77,22 @@ export class SupabaseDocumentStorage implements DocumentStoragePort {
       url: string;
       serviceRoleKey: string;
       bucket?: string;
+      requestTimeoutMs?: number;
     },
-  ) {}
+  ) {
+    const timeoutMs = this.requestTimeoutMs;
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) {
+      throw new Error('Document storage request timeout must be between 1 and 60000 ms.');
+    }
+  }
+
+  private get requestTimeoutMs(): number {
+    return this.config.requestTimeoutMs ?? DOCUMENT_STORAGE_REQUEST_TIMEOUT_MS;
+  }
+
+  private requestSignal(): AbortSignal {
+    return AbortSignal.timeout(this.requestTimeoutMs);
+  }
 
   private get bucket(): string {
     return this.config.bucket ?? 'bob-documents';
@@ -140,6 +155,7 @@ export class SupabaseDocumentStorage implements DocumentStoragePort {
         method: 'POST',
         headers: { ...this.headers(input.contentType), 'x-upsert': 'false' },
         body: Buffer.from(input.bytes),
+        signal: this.requestSignal(),
       });
     } catch (error) {
       // Une coupure après acceptation du POST est indiscernable d'un refus réseau. Une relecture
@@ -172,7 +188,11 @@ export class SupabaseDocumentStorage implements DocumentStoragePort {
     key: string,
   ): Promise<LoadedStoredObject | null> {
     assertTenantStorageKey(companyId, key);
-    const response = await fetch(this.objectUrl(key), { method: 'GET', headers: this.headers() });
+    const response = await fetch(this.objectUrl(key), {
+      method: 'GET',
+      headers: this.headers(),
+      signal: this.requestSignal(),
+    });
     if (!response.ok) {
       const text = await response.text();
       if (SupabaseDocumentStorage.isNotFound(response.status, text)) return null;
@@ -194,6 +214,7 @@ export class SupabaseDocumentStorage implements DocumentStoragePort {
       method: 'POST',
       headers: this.headers('application/json'),
       body: JSON.stringify({ expiresIn: ttlSeconds }),
+      signal: this.requestSignal(),
     });
     if (!response.ok)
       throw new Error(
@@ -216,7 +237,11 @@ export class SupabaseDocumentStorage implements DocumentStoragePort {
     assertTenantStorageKey(companyId, key);
     // GET /object/info/ et non HEAD : un HEAD sans corps ne permet pas de distinguer le 400
     // « not_found » de Supabase d'une vraie erreur (cause du xmlDocumentId null en prod).
-    const response = await fetch(this.infoUrl(key), { method: 'GET', headers: this.headers() });
+    const response = await fetch(this.infoUrl(key), {
+      method: 'GET',
+      headers: this.headers(),
+      signal: this.requestSignal(),
+    });
     if (!response.ok) {
       const text = await response.text();
       if (SupabaseDocumentStorage.isNotFound(response.status, text)) return null;
@@ -242,6 +267,7 @@ export class SupabaseDocumentStorage implements DocumentStoragePort {
     const response = await fetch(this.objectUrl(key), {
       method: 'DELETE',
       headers: this.headers(),
+      signal: this.requestSignal(),
     });
     if (!response.ok) {
       const text = await response.text();

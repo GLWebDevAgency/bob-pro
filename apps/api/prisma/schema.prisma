@@ -1638,11 +1638,70 @@ model DocumentArchiveJob {
   createdAt            DateTime                     @default(now())
   updatedAt            DateTime                     @updatedAt
   artifacts            DocumentArchiveJobArtifact[]
+  renderSnapshot       DocumentArchiveRenderSnapshot?
 
   @@unique([companyId, invoiceId, reason], name: "uniq_document_archive_job")
   @@unique([id, companyId], name: "uniq_document_archive_job_company", map: "uniq_document_archive_job_company")
   @@index([companyId, status, nextAttemptAt])
   @@map("document_archive_jobs")
+}
+
+/**
+ * Entrée exacte et append-only du renderer légal. Séparée du job mutable (lease/retry) afin
+ * qu'aucun UPDATE opérationnel ne puisse réécrire la représentation ordonnée au commit métier.
+ */
+model DocumentArchiveRenderSnapshot {
+  jobId           String             @id
+  companyId       String
+  job             DocumentArchiveJob @relation(fields: [jobId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict, map: "document_archive_render_snapshots_job_fkey")
+  pieceId         String
+  reason          String
+  schemaVersion   Int                @db.SmallInt
+  rendererVersion Int                @db.SmallInt
+  payload         String             @db.Text
+  payloadSha256   String             @db.Char(64)
+  renderAt        DateTime           @db.Timestamptz(6)
+  createdAt       DateTime           @default(now()) @db.Timestamptz(6)
+  artifactIntents DocumentArchiveArtifactIntent[]
+
+  @@unique([jobId, companyId], name: "uniq_document_archive_render_snapshot_company", map: "uniq_document_archive_render_snapshot_company")
+  @@unique([jobId, companyId, payloadSha256], name: "uniq_document_archive_render_snapshot_digest", map: "uniq_document_archive_render_snapshot_digest")
+  @@index([companyId, pieceId], map: "document_archive_render_snapshots_company_piece_idx")
+  @@map("document_archive_render_snapshots")
+}
+
+/** Intention durable écrite avant le premier upload Storage. */
+model DocumentArchiveArtifactIntent {
+  jobId          String
+  companyId      String
+  snapshotSha256 String                        @db.Char(64)
+  snapshot       DocumentArchiveRenderSnapshot @relation(fields: [jobId, companyId, snapshotSha256], references: [jobId, companyId, payloadSha256], onDelete: Restrict, onUpdate: Restrict, map: "document_archive_artifact_intents_snapshot_fkey")
+  kind           String
+  contentProfile String
+  documentId     String                        @unique
+  versionId      String                        @unique
+  versionNumber  Int                           @db.SmallInt
+  filename       String
+  storageKey     String                        @unique
+  mimeType       String
+  byteSize       Int
+  sha256         String                        @db.Char(64)
+  preparedAt     DateTime                      @default(now()) @db.Timestamptz(6)
+
+  @@id([jobId, kind], name: "document_archive_artifact_intents_pkey")
+  @@index([companyId, jobId], map: "document_archive_artifact_intents_company_job_idx")
+  @@map("document_archive_artifact_intents")
+}
+
+/** Cutover distinct : le protocole archive V2 historique est terminal et n'est jamais rouvert. */
+model DocumentArchiveSnapshotProtocolState {
+  id                    Int       @id @db.SmallInt
+  activeVersion         Int       @db.SmallInt
+  activatedAt           DateTime? @db.Timestamptz(6)
+  activatedByReleaseSha String?   @db.Char(40)
+  createdAt             DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@map("document_archive_snapshot_protocol_state")
 }
 
 /**

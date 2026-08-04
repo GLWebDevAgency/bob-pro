@@ -385,6 +385,11 @@ import { PDF_RENDERER } from './documents/pdf-renderer';
 import { inspectInvoicePdfRepresentation } from './documents/pdfa3';
 import { DOCUMENT_STORAGE, UnavailableDocumentStorage, documentSha256 } from './documents/storage';
 import {
+  openDocumentArchiveRenderSnapshot,
+  sealDocumentArchiveRenderSnapshot,
+  type DocumentArchiveArtifactPlan,
+} from './documents/document-archive-render-snapshot';
+import {
   generatedInterventionReportDocumentId,
   generatedInterventionReportVersionId,
   generatedInvoiceDocumentId,
@@ -415,9 +420,12 @@ import {
   documentArchiveIntegrityProofSha256,
   LEGACY_ARCHIVE_PROOF_REQUIRED,
   type DocumentArchiveArtifactProof,
+  type DocumentArchiveJob,
   type DocumentArchiveIntegrityProof,
   type DocumentArchiveJobReason,
+  type PreparedDocumentArchiveArtifactIntent,
 } from './persistence/document-archive-jobs';
+import { scheduleAfterTenantCommit } from './persistence/post-commit';
 import { SituationOrderConflictError } from './persistence/situation-order-conflict-error';
 // Import circulaire assumé (RelanceService ↔ BackendService) : résolu par forwardRef des deux
 // côtés — l'action Bob envoyer_relance délègue au MÊME service que POST /invoices/:id/relance.
@@ -1217,6 +1225,72 @@ interface ExpectedArchiveArtifact {
   mimeType: string;
 }
 
+interface RenderedArchiveArtifact {
+  plan: DocumentArchiveArtifactPlan;
+  bytes: Uint8Array;
+  intent: PreparedDocumentArchiveArtifactIntent;
+  invoicePdfAttestation?: InvoicePdfRepresentationAttestation;
+}
+
+/**
+ * Adapter mémoire borné à UN objet déjà relu depuis Storage. Il permet au use case commun
+ * `StoreDocument` de refaire toutes ses validations métier dans une transaction SQL courte sans
+ * effectuer la moindre I/O réseau sous cette transaction.
+ */
+function preverifiedArchiveStorage(input: {
+  companyId: string;
+  key: string;
+  bytes: Uint8Array;
+  contentType: string;
+  sha256: string;
+}): DocumentStoragePort {
+  const assertExact = (
+    companyId: string,
+    key: string,
+    bytes?: Uint8Array,
+    contentType?: string,
+  ): void => {
+    if (
+      companyId !== input.companyId
+      || key !== input.key
+      || (contentType !== undefined && contentType !== input.contentType)
+      || (bytes !== undefined && documentSha256(bytes) !== input.sha256)
+    ) throw new Error('Preverified archive object identity mismatch.');
+  };
+  return {
+    async put(request) {
+      assertExact(request.companyId, request.key, request.bytes, request.contentType);
+      return {
+        key: input.key,
+        sizeBytes: input.bytes.byteLength,
+        sha256: input.sha256,
+        contentType: input.contentType,
+        created: false,
+      };
+    },
+    async get(companyId, key) {
+      assertExact(companyId, key);
+      return {
+        key: input.key,
+        sizeBytes: input.bytes.byteLength,
+        sha256: input.sha256,
+        contentType: input.contentType,
+        bytes: input.bytes.slice(),
+      };
+    },
+    async stat(companyId, key) {
+      assertExact(companyId, key);
+      return { sizeBytes: input.bytes.byteLength, contentType: input.contentType };
+    },
+    async getSignedUrl() {
+      throw new Error('Preverified archive adapter cannot create signed URLs.');
+    },
+    async remove() {
+      throw new Error('Preverified archive adapter cannot remove immutable objects.');
+    },
+  };
+}
+
 /** Origine durcie de sign-web, commune à toutes les routes publiques tokenisées (signature ET
  *  visualisation) : HTTPS live canonique, jamais localhost/demo, jamais de credentials/query/hash
  *  embarqués dans l'URL de base. */
@@ -1859,40 +1933,41 @@ export class BackendService {
      *  SignQuote (ignorée pour un professionnel — aucun droit de rétractation à renoncer). */
     earlyExecutionRequested?: boolean;
   }) {
-    if (!(await this.ownedQuote(input.quoteId)))
-      return { ok: false as const, error: appNotFound('quote', input.quoteId) };
+    const companyId = this.companyId();
     let r: Result<SignQuoteOutput, AppError>;
     try {
-      r = await this.p.runInTransaction(async () => {
-        const signed = await new SignQuote({
-          companies: this.p.companies,
-          // A3 — le type du client (b2c) décide si la demande d'exécution anticipée est tracée.
-          customers: this.p.customers,
-          quotes: this.p.quotes,
-          publicAccessTokens: this.p.publicAccessTokens,
-          uow: this.p,
-          clock: this.clock,
-        }).execute({
-          quoteId: input.quoteId,
-          signerName: input.signerName,
-          ...(input.proofDataUrl ? { proofSha256: sha256Hex(input.proofDataUrl) } : {}),
-          ...(input.earlyExecutionRequested ? { earlyExecutionRequested: true } : {}),
-        });
-        if (!signed.ok) return signed;
-        try {
-          // A8 — outbox DANS la même transaction que la signature : un devis ne peut jamais
-          // être signé-commité sans ordre durable d'archivage de son original (le contrat,
-          // art. L213-1 c. conso ≥ 120 € B2C ; valeur probante art. 1366-1367 c. civ.) —
-          // même doctrine que l'émission de facture (enqueueInvoiceArchive).
-          await this.enqueueSignedQuoteArchive(this.companyId(), input.quoteId);
-        } catch (error) {
-          throw new RollbackAppError({
-            kind: 'dependency',
-            port: 'document-archive-outbox',
-            cause: error instanceof Error ? error.message : String(error),
-          });
+      r = await this.p.runWithTenant(companyId, async () => {
+        if (!(await this.ownedQuote(input.quoteId))) {
+          return { ok: false as const, error: appNotFound('quote', input.quoteId) };
         }
-        return signed;
+        return this.p.runInTransaction(async () => {
+          const signed = await new SignQuote({
+            companies: this.p.companies,
+            // A3 — le type du client (b2c) décide si la demande d'exécution anticipée est tracée.
+            customers: this.p.customers,
+            quotes: this.p.quotes,
+            publicAccessTokens: this.p.publicAccessTokens,
+            uow: this.p,
+            clock: this.clock,
+          }).execute({
+            quoteId: input.quoteId,
+            signerName: input.signerName,
+            ...(input.proofDataUrl ? { proofSha256: sha256Hex(input.proofDataUrl) } : {}),
+            ...(input.earlyExecutionRequested ? { earlyExecutionRequested: true } : {}),
+          });
+          if (!signed.ok) return signed;
+          try {
+            // Snapshot + ordre append-only DANS la transaction de signature.
+            await this.enqueueSignedQuoteArchive(companyId, input.quoteId);
+          } catch (error) {
+            throw new RollbackAppError({
+              kind: 'dependency',
+              port: 'document-archive-outbox',
+              cause: error instanceof Error ? error.message : String(error),
+            });
+          }
+          return signed;
+        });
       });
     } catch (e) {
       if (e instanceof RollbackAppError) return { ok: false as const, error: e.appError };
@@ -1900,15 +1975,19 @@ export class BackendService {
     }
     if (!r.ok) return r;
     // Jamais le nom du signataire ni le tracé dans les logs — corrélation technique seulement.
-    this.logger.audit('quote.signed_onsite', {
-      quoteId: input.quoteId,
-      withProof: Boolean(input.proofDataUrl),
-      // A3 — trace de l'ouverture de la fonctionnalité de rétractation (L221-21), sans jeton.
-      retractationFunction: r.value.retractation !== null,
-    });
-    // Rendu + stockage APRÈS le commit de la signature (pattern factures : snapshot BDD sous
-    // transaction, I/O d'archive hors transaction) ; le job outbox garantit le retry.
-    await this.runDocumentArchiveJobs({ limit: 5 });
+    scheduleAfterTenantCommit(
+      () => this.logger.audit('quote.signed_onsite', {
+        quoteId: input.quoteId,
+        withProof: Boolean(input.proofDataUrl),
+        // A3 — trace de l'ouverture de la fonctionnalité de rétractation (L221-21), sans jeton.
+        retractationFunction: r.value.retractation !== null,
+      }),
+      () => this.logger.warn(
+        'Audit post-commit quote.signed_onsite indisponible; l’acte signé reste acquis.',
+        'audit',
+      ),
+    );
+    this.scheduleDocumentArchiveKick(companyId, 5);
     // A3 — le jeton brut devient une URL sign-web : l'artisan la montre/transmet au client
     // (la fonctionnalité doit rester accessible pendant TOUT le délai — D221-5).
     return ok({
@@ -2531,55 +2610,50 @@ export class BackendService {
     /** PR-04 — override RESPONSABILISÉ de la garde « BC obligatoire » — `true` strict, journalisé. */
     purchaseOrderOverride?: boolean;
   }) {
-    // Locator IDOR uniquement : aucune décision d'émission ne repose sur ce snapshot hors fence.
-    const locator = await this.ownedInvoice(input.invoiceId);
-    if (!locator) return { ok: false as const, error: appNotFound('invoice', input.invoiceId) };
+    const companyId = this.companyId();
+    const accountingAudits: Array<{ entryId: string; created: boolean }> = [];
     let r: Result<{ number: string }, AppError>;
     try {
-      r = await this.p.runInTransaction(async () => {
-        // Ordre global impératif : Company SHARE -> réglages -> Invoice UPDATE -> compteur.
-        // CloseAccount prend Company UPDATE : aucune condition de paiement n'est donc lue, puis
-        // utilisée, à cheval sur une clôture. Le use case reprend ensuite ce même verrou de façon
-        // réentrante avant de figer le document et d'allouer son numéro légal.
-        const company = await this.p.companies.lockForShareById(locator.companyId);
-        let settings: CompanyBillingSettings | null | undefined;
-        if (!company || company.isClosed()) {
-          settings = undefined;
-        } else {
-          // Relire après le fence préserve le retry : si une émission concurrente a gagné depuis
-          // le locator, le numéro existant est rendu sans dépendre d'un réglage supprimé/modifié.
-          const currentInvoice = await this.p.invoices.findById(input.invoiceId);
-          settings =
-            currentInvoice !== null &&
-            currentInvoice.companyId === company.id &&
-            currentInvoice.number === null
-              ? await this.p.billingSettings.findByCompanyId(company.id)
-              : undefined;
-        }
-        const paymentTermsDays = settings?.defaultInvoicePaymentTermsDays;
-        // A7 : les données d'émission (période de prestation, adresse de chantier) suivent
-        // TOUJOURS — elles sont validées puis figées par le domaine (Invoice.issue).
-        const emissionData = {
-          ...(input.servicePeriod === undefined ? {} : { servicePeriod: input.servicePeriod }),
-          ...(input.deliveryAddress === undefined ? {} : { deliveryAddress: input.deliveryAddress }),
-          ...(input.operationCategory === undefined
-            ? {}
-            : { operationCategory: input.operationCategory }),
-        };
-        // B4 — le défaut société passe par `defaultTerms` (priorité 3), JAMAIS par `terms`
-        // (choix explicite de l'utilisateur, priorité 1 — non exposé par cette frontière à ce
-        // jour) : les conditions du CLIENT (Customer.paymentTerms, priorité 2) s'appliquent
-        // désormais réellement à l'émission, y compris « fin de mois ».
-        const issueInput: {
-          invoiceId: string;
-          defaultTerms?: { days: number; endOfMonth: boolean; label: string };
-          servicePeriod?: { start: string; end: string | null };
-          deliveryAddress?: string;
-          operationCategory?: 'goods' | 'services' | 'mixed';
-          embargoOverride?: boolean;
-          purchaseOrderOverride?: boolean;
-        } =
-          paymentTermsDays === null || paymentTermsDays === undefined
+      r = await this.p.runWithTenant(companyId, async () => {
+        // Locator IDOR dans la même transaction RLS que le geste : aucune lecture hors tenant.
+        const locator = await this.ownedInvoice(input.invoiceId);
+        if (!locator) return { ok: false as const, error: appNotFound('invoice', input.invoiceId) };
+        return this.p.runInTransaction(async () => {
+          // Ordre global impératif : Company SHARE -> réglages -> Invoice UPDATE -> compteur.
+          const company = await this.p.companies.lockForShareById(locator.companyId);
+          let settings: CompanyBillingSettings | null | undefined;
+          let invoiceWasAlreadyIssued = false;
+          if (!company || company.isClosed()) {
+            settings = undefined;
+          } else {
+            const currentInvoice = await this.p.invoices.findById(input.invoiceId);
+            invoiceWasAlreadyIssued = currentInvoice !== null && currentInvoice.number !== null;
+            settings =
+              currentInvoice !== null
+              && currentInvoice.companyId === company.id
+              && currentInvoice.number === null
+                ? await this.p.billingSettings.findByCompanyId(company.id)
+                : undefined;
+          }
+          const paymentTermsDays = settings?.defaultInvoicePaymentTermsDays;
+          const emissionData = {
+            ...(input.servicePeriod === undefined ? {} : { servicePeriod: input.servicePeriod }),
+            ...(input.deliveryAddress === undefined
+              ? {}
+              : { deliveryAddress: input.deliveryAddress }),
+            ...(input.operationCategory === undefined
+              ? {}
+              : { operationCategory: input.operationCategory }),
+          };
+          const issueInput: {
+            invoiceId: string;
+            defaultTerms?: { days: number; endOfMonth: boolean; label: string };
+            servicePeriod?: { start: string; end: string | null };
+            deliveryAddress?: string;
+            operationCategory?: 'goods' | 'services' | 'mixed';
+            embargoOverride?: boolean;
+            purchaseOrderOverride?: boolean;
+          } = paymentTermsDays === null || paymentTermsDays === undefined
             ? { invoiceId: input.invoiceId, ...emissionData }
             : {
                 invoiceId: input.invoiceId,
@@ -2590,78 +2664,89 @@ export class BackendService {
                   label: `Paiement à ${paymentTermsDays} jours`,
                 },
               };
-        // Jamais implicite : seul `true` strict traverse jusqu'au use case (qui journalise).
-        if (input.embargoOverride === true) issueInput.embargoOverride = true;
-        if (input.purchaseOrderOverride === true) issueInput.purchaseOrderOverride = true;
+          if (input.embargoOverride === true) issueInput.embargoOverride = true;
+          if (input.purchaseOrderOverride === true) issueInput.purchaseOrderOverride = true;
 
-        const issued = await new IssueInvoice({
-          invoices: this.p.invoices,
-          companies: this.p.companies,
-          customers: this.p.customers,
-          // A3 — revérification du gel/embargo à l'émission pour les pièces dérivées d'un devis.
-          quotes: this.p.quotes,
-          counters: this.p.counters,
-          uow: this.p,
-          clock: this.clock,
-          audit: this.embargoOverrideAudit(),
-          purchaseOrderAudit: this.purchaseOrderOverrideAudit(),
-          // PR-12b [direction 1] — garde d'émission des factures de CONTRAT : verrou contrat
-          // + relecture de couverture DANS la même transaction que le compteur.
-          contracts: this.p.maintenanceContracts,
-          contractInvoices: this.p.contractInvoices,
-        }).execute(issueInput);
-        if (!issued.ok) {
-          const missingTerms =
-            issueInput.defaultTerms === undefined &&
-            issued.error.kind === 'validation' &&
-            issued.error.issues.some((issue) => issue.field === 'paymentTerms');
-          if (missingTerms && settings === null) {
-            return err(appUnavailable('company-billing-settings'));
-          }
-          if (missingTerms && settings !== undefined) {
-            return err<AppError>({
-              kind: 'validation',
-              issues: [
-                {
+          const issued = await new IssueInvoice({
+            invoices: this.p.invoices,
+            companies: this.p.companies,
+            customers: this.p.customers,
+            quotes: this.p.quotes,
+            counters: this.p.counters,
+            uow: this.p,
+            clock: this.clock,
+            audit: this.embargoOverrideAudit(),
+            purchaseOrderAudit: this.purchaseOrderOverrideAudit(),
+            contracts: this.p.maintenanceContracts,
+            contractInvoices: this.p.contractInvoices,
+          }).execute(issueInput);
+          if (!issued.ok) {
+            const missingTerms =
+              issueInput.defaultTerms === undefined
+              && issued.error.kind === 'validation'
+              && issued.error.issues.some((issue) => issue.field === 'paymentTerms');
+            if (missingTerms && settings === null) {
+              return err(appUnavailable('company-billing-settings'));
+            }
+            if (missingTerms && settings !== undefined) {
+              return err<AppError>({
+                kind: 'validation',
+                issues: [{
                   field: 'paymentTerms',
                   message: 'Choisissez vos conditions de paiement avant d’émettre cette facture.',
-                },
-              ],
+                }],
+              });
+            }
+            return issued;
+          }
+          const accounting = await new RecordIssuedInvoiceAccountingEntry({
+            invoices: this.p.invoices,
+            entries: this.p.accountingEntries,
+            charts: this.p.chartOfAccounts,
+          }).execute(input);
+          if (!accounting.ok) throw new RollbackAppError(accounting.error);
+          accountingAudits.push({
+            entryId: accounting.value.id,
+            created: accounting.value.created,
+          });
+          try {
+            await this.enqueueInvoiceArchive(input.invoiceId, !invoiceWasAlreadyIssued);
+          } catch (error) {
+            throw new RollbackAppError({
+              kind: 'dependency',
+              port: 'document-archive-outbox',
+              cause: error instanceof Error ? error.message : String(error),
             });
           }
           return issued;
-        }
-        const accounting = await new RecordIssuedInvoiceAccountingEntry({
-          invoices: this.p.invoices,
-          entries: this.p.accountingEntries,
-          charts: this.p.chartOfAccounts,
-        }).execute(input);
-        if (!accounting.ok) throw new RollbackAppError(accounting.error);
-        this.logger.audit('accounting.invoice_posted', {
-          invoiceId: input.invoiceId,
-          entryId: accounting.value.id,
-          created: accounting.value.created,
         });
-        try {
-          // Outbox DANS la même transaction que le numéro légal et l'écriture comptable : une
-          // facture ne peut jamais être commitée sans ordre durable d'archivage de son original.
-          await this.enqueueInvoiceArchive(input.invoiceId);
-        } catch (error) {
-          throw new RollbackAppError({
-            kind: 'dependency',
-            port: 'document-archive-outbox',
-            cause: error instanceof Error ? error.message : String(error),
-          });
-        }
-        return issued;
       });
     } catch (e) {
       if (e instanceof RollbackAppError) return { ok: false as const, error: e.appError };
       throw e;
     }
     if (r.ok) {
-      this.logger.audit('invoice.issued', { invoiceId: input.invoiceId, number: r.value.number });
-      await this.runDocumentArchiveJobs({ limit: 5 });
+      const committedAccountingAudit = accountingAudits[0] ?? null;
+      scheduleAfterTenantCommit(
+        () => {
+          if (committedAccountingAudit !== null) {
+            this.logger.audit('accounting.invoice_posted', {
+              invoiceId: input.invoiceId,
+              entryId: committedAccountingAudit.entryId,
+              created: committedAccountingAudit.created,
+            });
+          }
+          this.logger.audit('invoice.issued', {
+            invoiceId: input.invoiceId,
+            number: r.value.number,
+          });
+        },
+        () => this.logger.warn(
+          'Audit post-commit invoice.issued indisponible; l’émission reste acquise.',
+          'audit',
+        ),
+      );
+      this.scheduleDocumentArchiveKick(companyId, 5);
     }
     return r;
   }
@@ -3211,20 +3296,18 @@ export class BackendService {
         }
         // La révocation de TOUS les grants actifs du devis a eu lieu DANS la transaction de
         // signature (SignQuote) — plus aucun effet token post-commit à rejouer ici.
-        // Le journal technique corrèle l'événement sans dupliquer le nom du signataire dans
-        // les logs. La future preuve probante appartiendra au stockage métier chiffré, pas à
-        // l'observabilité générale.
-        this.logger.audit('quote.public_signed', { quoteId: q.id });
         return r;
       });
     } catch (e) {
       if (e instanceof RollbackAppError) return { ok: false as const, error: e.appError };
       throw e;
     }
-    // A8 — rendu + stockage de l'original APRÈS le commit de la transaction tenant (I/O
-    // d'archive hors transaction de signature — pattern factures) ; retry par le worker sinon.
     if (!signedResult.ok) return signedResult;
-    await this.runDocumentArchiveJobs({ companyId: locator.value.companyId, limit: 5 });
+    // La transaction tenant est réellement commitée ici. Le journal et l'accélération du worker
+    // sont donc post-commit ; la réponse publique n'attend jamais les I/O Storage. Le cron/outbox
+    // reste l'autorité durable si le kick best-effort échoue ou si le processus s'arrête.
+    this.logger.audit('quote.public_signed', { quoteId: locator.value.quoteId });
+    this.scheduleDocumentArchiveKick(locator.value.companyId, 5);
     // A3 — la page de signature affiche au consommateur l'URL de sa fonctionnalité de
     // rétractation (L221-21) juste après la conclusion — la révocation des jetons de
     // signature ne le prive plus de toute interface pendant le délai.
@@ -8172,122 +8255,119 @@ export class BackendService {
     return Math.round((inv.totals().ht / marcheHt) * 1000) / 10;
   }
 
-  private async renderInvoicePdf(
+  /** Projection unique : les aperçus et le snapshot légal consomment exactement les mêmes faits. */
+  private async buildInvoicePdfData(
     inv: Invoice,
-    archiveReason?: Extract<DocumentArchiveJobReason, `invoice-${string}`>,
-    archiveFacturXXml?: string,
-  ): Promise<Result<Uint8Array, AppError>> {
+    documentCreatedAt?: string,
+  ): Promise<Result<{ data: InvoicePdfData; company: Company; customer: Customer }, AppError>> {
     const company = await this.p.companies.findById(inv.companyId);
     const customer = await this.p.customers.findById(inv.customerId);
-    if (!company || !customer || customer.companyId !== company.id)
+    if (!company || !customer || customer.companyId !== company.id) {
       return { ok: false, error: appNotFound('company-or-customer', inv.id) };
+    }
     const billingSettings = await this.p.billingSettings.findByCompanyId(inv.companyId);
     if (billingSettings === null) return err(appUnavailable('company-billing-settings'));
     const addr = customer.toProps().address;
     const companyProps = company.toProps();
     const totals = inv.totals();
-    const { netLineBases } = computeLineBases(inv.lines, {
-      globalDiscount: inv.globalDiscount,
-    });
+    const { netLineBases } = computeLineBases(inv.lines, { globalDiscount: inv.globalDiscount });
     const vatBases = new Map<number, number>();
     for (const [index, line] of inv.lines.entries()) {
       vatBases.set(line.vatRate, (vatBases.get(line.vatRate) ?? 0) + (netLineBases[index] ?? 0));
     }
-    const data: InvoicePdfData = {
-      number: inv.number ?? '(brouillon)',
-      companyName: company.name,
-      companyAddress: `${company.address.line1}, ${company.address.zip} ${company.address.city}`,
-      companyRcsOrRm: company.rcsOrRm ?? null,
-      customerName: customer.name,
-      customerAddress: `${addr.line1}, ${addr.zip} ${addr.city}`,
-      issuedAt: inv.issuedAt,
-      dueAt: inv.dueAt,
-      kind: inv.kind,
-      // V2 : lignes résiduelles — le renderer ne déduit que la part acompte du TTC imprimé
-      // (les situations passent en rangée contextuelle, jamais en déduction).
-      settlementSemanticsVersion: inv.settlementSemanticsVersion,
-      lines: inv.lines.map((l, index) => ({
-        label: l.label,
-        qty: l.qty,
-        ...(l.unit !== undefined ? { unit: l.unit } : {}),
-        unitPriceHT: l.unitPriceHT,
-        vatRate: l.vatRate,
-        lineTotalCents: netLineBases[index] ?? Math.round(l.qty * l.unitPriceHT),
-        // B3 : remise de ligne imprimée à côté de la ligne (L441-9 — détaillée, jamais cachée).
-        ...(l.discount !== undefined ? { discount: l.discount } : {}),
-      })),
-      totals: {
-        ht: totals.ht,
-        vat: totals.vat,
-        ttc: totals.ttc,
-        netToPay: totals.netToPay,
-        // B3/B5 : compléments présents UNIQUEMENT quand le fait existe (pièces antérieures
-        // imprimées à l'identique).
-        ...(totals.grossHt !== undefined ? { grossHt: totals.grossHt } : {}),
-        ...(totals.discountCents !== undefined ? { discountCents: totals.discountCents } : {}),
-        ...(totals.retenueGarantieCents !== undefined
-          ? { retenueGarantieCents: totals.retenueGarantieCents }
-          : {}),
-        vatByRate: [...vatBases.entries()]
-          .sort(([left], [right]) => left - right)
-          .map(([rate, base]) => ({
-            rate,
-            base,
-            tax: totals.vatByRate[String(rate)] ?? 0,
-          })),
-        ...(inv.depositDeductionCents > 0
-          ? { depositDeductionCents: inv.depositDeductionCents }
-          : {}),
-        ...(inv.situationDeductionCents > 0
-          ? { situationDeductionCents: inv.situationDeductionCents }
-          : {}),
-      },
-      // B2 : sous-titre « Situation n°N — avancement X % » (avancement dérivé du devis parent).
-      situation:
-        inv.kind === 'situation' && inv.situationOrder !== null
-          ? {
-              order: inv.situationOrder,
-              advancementPct: await this.situationAdvancementPct(inv),
-            }
-          : null,
-      // B5 : taux imprimé sur la ligne dédiée de retenue (le montant vient des totaux figés).
-      retenueGarantiePct: inv.retenueGarantiePct,
-      mentions: [...inv.mentions],
-      // B8 : le numéro d'engagement du client (bon de commande) figure sur la pièce émise —
-      // exigence de paiement grands comptes + Chorus Pro. Zone références de l'en-tête.
-      purchaseOrder: inv.purchaseOrder
-        ? { number: inv.purchaseOrder.number, receivedAt: inv.purchaseOrder.receivedAt }
-        : null,
-      // A5 : identité de la facture annulée (avoir total) — le renderer titre « Avoir » et
-      // imprime la référence à la pièce initiale (242 nonies A CGI). Null = pièce ordinaire.
-      // E3 : l'identité (invoiceId) fait partie de la projection figée.
-      creditNoteSource: inv.creditNoteSource
-        ? {
-            invoiceId: inv.creditNoteSource.invoiceId,
-            kind: inv.creditNoteSource.kind,
-            number: inv.creditNoteSource.number,
-            issuedAt: inv.creditNoteSource.issuedAt,
-          }
-        : null,
-      // A7 : figés à l'émission par le domaine ; null HONNÊTE pour les factures émises avant
-      // la migration (jamais rétro-remplis — le renderer n'imprime alors rien).
-      servicePeriod: inv.servicePeriod,
-      deliveryAddress: inv.deliveryAddress,
-      billingPresentation: {
-        accentColor: billingSettings.pdfAccentColor,
-        rib:
-          billingSettings.showRibOnInvoices && companyProps.iban
+    return ok({
+      company,
+      customer,
+      data: {
+        number: inv.number ?? '(brouillon)',
+        companyName: company.name,
+        companyAddress: `${company.address.line1}, ${company.address.zip} ${company.address.city}`,
+        companyRcsOrRm: company.rcsOrRm ?? null,
+        customerName: customer.name,
+        customerAddress: `${addr.line1}, ${addr.zip} ${addr.city}`,
+        issuedAt: inv.issuedAt,
+        dueAt: inv.dueAt,
+        ...(documentCreatedAt !== undefined ? { documentCreatedAt } : {}),
+        kind: inv.kind,
+        settlementSemanticsVersion: inv.settlementSemanticsVersion,
+        lines: inv.lines.map((line, index) => ({
+          label: line.label,
+          qty: line.qty,
+          ...(line.unit !== undefined ? { unit: line.unit } : {}),
+          unitPriceHT: line.unitPriceHT,
+          vatRate: line.vatRate,
+          lineTotalCents: netLineBases[index] ?? Math.round(line.qty * line.unitPriceHT),
+          ...(line.discount !== undefined ? { discount: line.discount } : {}),
+        })),
+        totals: {
+          ht: totals.ht,
+          vat: totals.vat,
+          ttc: totals.ttc,
+          netToPay: totals.netToPay,
+          ...(totals.grossHt !== undefined ? { grossHt: totals.grossHt } : {}),
+          ...(totals.discountCents !== undefined ? { discountCents: totals.discountCents } : {}),
+          ...(totals.retenueGarantieCents !== undefined
+            ? { retenueGarantieCents: totals.retenueGarantieCents }
+            : {}),
+          vatByRate: [...vatBases.entries()]
+            .sort(([left], [right]) => left - right)
+            .map(([rate, base]) => ({
+              rate,
+              base,
+              tax: totals.vatByRate[String(rate)] ?? 0,
+            })),
+          ...(inv.depositDeductionCents > 0
+            ? { depositDeductionCents: inv.depositDeductionCents }
+            : {}),
+          ...(inv.situationDeductionCents > 0
+            ? { situationDeductionCents: inv.situationDeductionCents }
+            : {}),
+        },
+        situation:
+          inv.kind === 'situation' && inv.situationOrder !== null
             ? {
-                iban: companyProps.iban,
-                bic: companyProps.bic ?? null,
+                order: inv.situationOrder,
+                advancementPct: await this.situationAdvancementPct(inv),
               }
             : null,
-        insurance:
-          billingSettings.showInsuranceOnInvoices && company.decennale
-            ? { ...company.decennale }
-            : null,
+        retenueGarantiePct: inv.retenueGarantiePct,
+        mentions: [...inv.mentions],
+        purchaseOrder: inv.purchaseOrder
+          ? { number: inv.purchaseOrder.number, receivedAt: inv.purchaseOrder.receivedAt }
+          : null,
+        creditNoteSource: inv.creditNoteSource
+          ? {
+              invoiceId: inv.creditNoteSource.invoiceId,
+              kind: inv.creditNoteSource.kind,
+              number: inv.creditNoteSource.number,
+              issuedAt: inv.creditNoteSource.issuedAt,
+            }
+          : null,
+        servicePeriod: inv.servicePeriod,
+        deliveryAddress: inv.deliveryAddress,
+        billingPresentation: {
+          accentColor: billingSettings.pdfAccentColor,
+          rib:
+            billingSettings.showRibOnInvoices && companyProps.iban
+              ? { iban: companyProps.iban, bic: companyProps.bic ?? null }
+              : null,
+          insurance:
+            billingSettings.showInsuranceOnInvoices && company.decennale
+              ? { ...company.decennale }
+              : null,
+        },
       },
-    };
+    });
+  }
+
+  private async renderInvoicePdf(
+    inv: Invoice,
+    archiveReason?: Extract<DocumentArchiveJobReason, `invoice-${string}`>,
+    archiveFacturXXml?: string,
+  ): Promise<Result<Uint8Array, AppError>> {
+    const built = await this.buildInvoicePdfData(inv);
+    if (!built.ok) return built;
+    const { data, company, customer } = built.value;
     // Pour une archive, la représentation vient du MOTIF FIGÉ du job, jamais d'une nouvelle
     // décision au rendu. La fiche client est tout de même recoupée (et son type est immuable en
     // base après émission) : toute divergence devient une indisponibilité, pas un faux original.
@@ -8308,12 +8388,13 @@ export class BackendService {
     }
     // Facture professionnelle émise -> PDF hybride Factur-X (Flux 2). Une facture B2C relève
     // de l'e-reporting : son original reste un PDF ordinaire, sans BT-49 ni XML inventé.
-    let facturX: { xml: string } | undefined;
+    let facturX: { xml: string; createdAt: string } | undefined;
+    const representationCreatedAt = data.documentCreatedAt ?? this.clock.now();
     const requiresFacturX = archiveReason === undefined
       ? customer.type !== 'b2c'
       : archiveReason === 'invoice-issued';
     if (archiveReason === 'invoice-issued' && archiveFacturXXml !== undefined) {
-      facturX = { xml: archiveFacturXXml };
+      facturX = { xml: archiveFacturXXml, createdAt: representationCreatedAt };
     } else if (inv.number && inv.issuedAt && requiresFacturX) {
       const buyer = customer.toProps();
       const fxData = facturXDataFromInvoice(inv, company, {
@@ -8328,7 +8409,7 @@ export class BackendService {
         isSubcontractingBtp: customer.isSubcontractingBtp,
         address: buyer.address,
       });
-      facturX = { xml: buildFacturXBasicXml(fxData) };
+      facturX = { xml: buildFacturXBasicXml(fxData), createdAt: representationCreatedAt };
     }
     const bytes = await this.pdf.renderInvoice(data, facturX);
     return ok(bytes);
@@ -8348,7 +8429,12 @@ export class BackendService {
     return ok(bytes);
   }
 
-  private async quotePdfData(q: Quote, company: Company, customer: Customer): Promise<QuotePdfData> {
+  private async quotePdfData(
+    q: Quote,
+    company: Company,
+    customer: Customer,
+    documentCreatedAt?: string,
+  ): Promise<QuotePdfData> {
     const addr = customer.toProps().address;
     const totals = q.totals();
     // L'accent tenant du devis vient des MÊMES billing settings que la facture. Réglages absents
@@ -8364,6 +8450,7 @@ export class BackendService {
       customerName: customer.name,
       customerAddress: `${addr.line1}, ${addr.zip} ${addr.city}`,
       validUntil: q.validUntil,
+      ...(documentCreatedAt !== undefined ? { documentCreatedAt } : {}),
       lines: q.lines.map((l) => ({
         label: l.label,
         qty: l.qty,
@@ -8596,9 +8683,9 @@ export class BackendService {
     });
     return new StoreDocument({
       documents: {
-        insertInitialOrConfirmExact: (document) =>
+        insertInitialOrConfirmExact: (document, invoicePdfAttestation) =>
           this.p.runWithTenant(companyId, () =>
-            this.p.documents.insertInitialOrConfirmExact(document),
+            this.p.documents.insertInitialOrConfirmExact(document, invoicePdfAttestation),
           ),
       },
       folders: {
@@ -8658,7 +8745,46 @@ export class BackendService {
     return ok(undefined);
   }
 
-  private async enqueueInvoiceArchive(invoiceId: string): Promise<void> {
+  /** Accélération best-effort : le cron/outbox restent l'autorité durable. */
+  private scheduleDocumentArchiveKick(companyId: string, limit: number): void {
+    const disposition = scheduleAfterTenantCommit(
+      () => {
+        // Le timer détache le worker de la continuation HTTP ayant observé le commit. Le client
+        // reçoit sa réponse sans attendre Storage et les tests/opérateurs peuvent drainer l'outbox
+        // explicitement sans course avec un worker déjà parti dans la même microtask.
+        const timer = setTimeout(() => {
+          void this.runDocumentArchiveJobs({ companyId, limit })
+            .then((result) => {
+              if (!result.ok) {
+                this.logger.warn(
+                  `Kick archivage différé refusé: ${appErrorSummary(result.error)}`,
+                  'documents',
+                );
+              }
+            })
+            .catch((cause: unknown) => {
+              this.logger.warn(
+                `Kick archivage différé impossible: ${cause instanceof Error ? cause.message : String(cause)}`,
+                'documents',
+              );
+            });
+        }, 0);
+        timer.unref();
+      },
+      () => this.logger.warn(
+        'Kick archivage post-commit non planifié; le scheduler durable reprendra.',
+        'documents',
+      ),
+    );
+    if (disposition === 'closed') {
+      this.logger.warn(
+        'Kick archivage ignoré dans une continuation post-commit fermée; le scheduler reprendra.',
+        'documents',
+      );
+    }
+  }
+
+  private async enqueueInvoiceArchive(invoiceId: string, allowCreate: boolean): Promise<void> {
     const invoice = await this.p.invoices.findById(invoiceId);
     if (!invoice || invoice.companyId !== this.companyId()) {
       throw new Error('Invoice archive scope cannot be resolved.');
@@ -8667,13 +8793,77 @@ export class BackendService {
     if (!customer || customer.companyId !== invoice.companyId) {
       throw new Error('Invoice archive customer scope cannot be resolved.');
     }
+    if (!invoice.number || !invoice.issuedAt) {
+      throw new Error('Invoice archive snapshot requires an issued invoice.');
+    }
+    const reason: Extract<DocumentArchiveJobReason, `invoice-${string}`> =
+      customer.type === 'b2c' ? 'invoice-issued-pdf-only-b2c' : 'invoice-issued';
+    const existing = await this.p.documentArchiveJobs.findByPiece(
+      invoice.companyId,
+      invoiceId,
+      reason,
+    );
+    if (existing !== null) {
+      if (existing.renderSnapshot === null) {
+        throw new Error('Issued invoice has a legacy archive job without renderer snapshot.');
+      }
+      // Le repository a déjà ouvert/vérifié le seal et son identité. Un replay de réponse ne
+      // relit donc aucune fiche mutable et ne crée jamais un nouvel instant de rendu.
+      return;
+    }
+    if (!allowCreate) {
+      throw new Error('Issued invoice has no renderer snapshot; retro-generation is forbidden.');
+    }
     const now = this.clock.now();
+    const built = await this.buildInvoicePdfData(invoice, now);
+    if (!built.ok) throw new Error(appErrorSummary(built.error));
+    let facturXXml: string | null = null;
+    if (reason === 'invoice-issued') {
+      const builtXml = await this.buildInvoiceFacturXXml(invoice);
+      if (!builtXml.ok) throw new Error(appErrorSummary(builtXml.error));
+      facturXXml = builtXml.value;
+    }
+    const artifacts: DocumentArchiveArtifactPlan[] = [{
+      kind: 'invoice_pdf',
+      expectedContentProfile: reason === 'invoice-issued' ? 'facturx_pdfa3' : 'plain_pdf',
+      documentId: generatedInvoiceDocumentId(invoice.companyId, invoiceId, 'invoice_pdf'),
+      versionId: generatedInvoiceDocumentVersionId(invoice.companyId, invoiceId, 'invoice_pdf'),
+      filename: `facture-${invoice.number}.pdf`,
+      mimeType: 'application/pdf',
+      linkedEntityType: 'invoice',
+      documentDate: invoice.issuedAt,
+      issuedAt: invoice.issuedAt,
+    }];
+    if (reason === 'invoice-issued') {
+      artifacts.push({
+        kind: 'facturx_xml',
+        expectedContentProfile: 'facturx_xml',
+        documentId: generatedInvoiceDocumentId(invoice.companyId, invoiceId, 'facturx_xml'),
+        versionId: generatedInvoiceDocumentVersionId(invoice.companyId, invoiceId, 'facturx_xml'),
+        filename: `factur-x-${invoice.number}.xml`,
+        mimeType: 'application/xml',
+        linkedEntityType: 'invoice',
+        documentDate: invoice.issuedAt,
+        issuedAt: invoice.issuedAt,
+      });
+    }
+    const renderSnapshot = sealDocumentArchiveRenderSnapshot({
+      schemaVersion: 1,
+      rendererVersion: 1,
+      companyId: invoice.companyId,
+      pieceId: invoiceId,
+      reason,
+      metadataCreatedAt: now,
+      artifacts,
+      payload: { kind: 'invoice', data: built.value.data, facturXXml },
+    });
     await this.p.documentArchiveJobs.enqueue({
       id: this.ids.newId(),
-      companyId: this.companyId(),
+      companyId: invoice.companyId,
       pieceId: invoiceId,
-      reason: customer.type === 'b2c' ? 'invoice-issued-pdf-only-b2c' : 'invoice-issued',
+      reason,
       now,
+      renderSnapshot,
     });
   }
 
@@ -8681,6 +8871,44 @@ export class BackendService {
    *  la transaction de signature ; `companyId` explicite car la signature publique n'a pas de
    *  principal authentifié. */
   private async enqueueSignedQuoteArchive(companyId: string, quoteId: string): Promise<void> {
+    const existing = await this.p.documentArchiveJobs.findByPiece(companyId, quoteId, 'quote-signed');
+    if (existing !== null) {
+      if (existing.renderSnapshot === null) {
+        throw new Error('Signed quote has a legacy archive job without renderer snapshot.');
+      }
+      return;
+    }
+    const quote = await this.p.quotes.findById(quoteId);
+    if (!quote || quote.companyId !== companyId || quote.signature === null) {
+      throw new Error('Signed quote archive snapshot cannot resolve the signed contract.');
+    }
+    const company = await this.p.companies.findById(companyId);
+    const customer = await this.p.customers.findById(quote.customerId);
+    if (!company || !customer || customer.companyId !== companyId) {
+      throw new Error('Signed quote archive snapshot cannot resolve company or customer.');
+    }
+    const metadataCreatedAt = quote.signature.signedAt;
+    const data = await this.quotePdfData(quote, company, customer, metadataCreatedAt);
+    const renderSnapshot = sealDocumentArchiveRenderSnapshot({
+      schemaVersion: 1,
+      rendererVersion: 1,
+      companyId,
+      pieceId: quoteId,
+      reason: 'quote-signed',
+      metadataCreatedAt,
+      artifacts: [{
+        kind: 'signed_quote',
+        expectedContentProfile: 'plain_pdf',
+        documentId: generatedQuoteDocumentId(companyId, quoteId, 'signed_quote'),
+        versionId: generatedQuoteDocumentVersionId(companyId, quoteId, 'signed_quote'),
+        filename: `devis-signe-${quote.number ?? quote.id}.pdf`,
+        mimeType: 'application/pdf',
+        linkedEntityType: 'quote',
+        documentDate: parisDateOnly(quote.signature.signedAt),
+        issuedAt: quote.issuedAt,
+      }],
+      payload: { kind: 'quote', data },
+    });
     const now = this.clock.now();
     await this.p.documentArchiveJobs.enqueue({
       id: this.ids.newId(),
@@ -8688,6 +8916,7 @@ export class BackendService {
       pieceId: quoteId,
       reason: 'quote-signed',
       now,
+      renderSnapshot,
     });
   }
 
@@ -8724,6 +8953,286 @@ export class BackendService {
     }];
   }
 
+  private buildRenderedArchiveArtifact(input: {
+    companyId: string;
+    plan: DocumentArchiveArtifactPlan;
+    bytes: Uint8Array;
+    contentProfile: DocumentArchiveArtifactProof['contentProfile'];
+    invoicePdfAttestation?: InvoicePdfRepresentationAttestation;
+  }): RenderedArchiveArtifact {
+    if (input.bytes.byteLength <= 0 || input.bytes.byteLength > 2_147_483_647) {
+      throw new Error('DOCUMENT_ARCHIVE_ARTIFACT_SIZE_INVALID');
+    }
+    if (input.contentProfile !== input.plan.expectedContentProfile) {
+      throw new Error('DOCUMENT_ARCHIVE_ARTIFACT_PROFILE_MISMATCH');
+    }
+    const sha256 = documentSha256(input.bytes);
+    const storageKey = buildDocumentStorageKey({
+      companyId: input.companyId,
+      documentId: input.plan.documentId,
+      version: 1,
+      sha256,
+      filename: input.plan.filename,
+      mimeType: input.plan.mimeType,
+    });
+    return {
+      plan: input.plan,
+      bytes: input.bytes,
+      intent: {
+        kind: input.plan.kind,
+        contentProfile: input.contentProfile,
+        documentId: input.plan.documentId,
+        versionId: input.plan.versionId,
+        version: 1,
+        filename: input.plan.filename,
+        storageKey,
+        mimeType: input.plan.mimeType,
+        byteSize: input.bytes.byteLength,
+        sha256,
+      },
+      ...(input.invoicePdfAttestation === undefined
+        ? {}
+        : { invoicePdfAttestation: input.invoicePdfAttestation }),
+    };
+  }
+
+  /** Rend exclusivement depuis le snapshot scellé — aucune relecture d'une fiche mutable. */
+  private async renderDocumentArchiveSnapshot(
+    job: DocumentArchiveJob,
+  ): Promise<Result<RenderedArchiveArtifact[], AppError>> {
+    const fail = (cause: string): Result<RenderedArchiveArtifact[], AppError> => err({
+      kind: 'dependency',
+      port: 'document-archive-render-snapshot',
+      cause,
+    });
+    if (job.renderSnapshot === null) return fail('Snapshot de rendu absent.');
+    try {
+      const snapshot = openDocumentArchiveRenderSnapshot(job.renderSnapshot);
+      if (
+        snapshot.companyId !== job.companyId
+        || snapshot.pieceId !== job.pieceId
+        || snapshot.reason !== job.reason
+      ) return fail('Identité du snapshot incohérente avec le job.');
+
+      if (snapshot.payload.kind === 'quote') {
+        if (job.reason !== 'quote-signed') return fail('Snapshot devis associé au mauvais motif.');
+        const plan = snapshot.artifacts[0];
+        if (plan === undefined || plan.kind !== 'signed_quote') {
+          return fail('Plan du devis signé invalide.');
+        }
+        const bytes = await this.pdf.renderQuote(snapshot.payload.data);
+        const observed = await inspectInvoicePdfRepresentation(bytes);
+        if (!observed.ok || observed.profile !== 'plain_pdf') {
+          return fail('Le rendu du devis signé contient une représentation embarquée inattendue.');
+        }
+        return ok([this.buildRenderedArchiveArtifact({
+          companyId: job.companyId,
+          plan,
+          bytes,
+          contentProfile: observed.profile,
+        })]);
+      }
+
+      if (job.reason === 'quote-signed') return fail('Snapshot facture associé au mauvais motif.');
+      const pdfPlan = snapshot.artifacts.find((artifact) => artifact.kind === 'invoice_pdf');
+      if (pdfPlan === undefined) return fail('Plan PDF facture absent.');
+      const facturXXml = snapshot.payload.facturXXml;
+      const pdfBytes = await this.pdf.renderInvoice(
+        snapshot.payload.data,
+        facturXXml === null
+          ? undefined
+          : { xml: facturXXml, createdAt: snapshot.metadataCreatedAt },
+      );
+      const observed = await inspectInvoicePdfRepresentation(pdfBytes);
+      const requiredProfile = job.reason === 'invoice-issued' ? 'facturx_pdfa3' : 'plain_pdf';
+      if (!observed.ok || observed.profile !== requiredProfile) {
+        return fail(`Profil PDF invalide : attendu ${requiredProfile}.`);
+      }
+      if (
+        facturXXml !== null
+        && (
+          observed.profile !== 'facturx_pdfa3'
+          || observed.embeddedXmlSha256 !== documentSha256(Buffer.from(facturXXml, 'utf8'))
+        )
+      ) return fail('Le XML Factur-X embarqué diffère du snapshot scellé.');
+      if (facturXXml === null && observed.embeddedXmlSha256 !== null) {
+        return fail('Une facture PDF-only contient un XML embarqué inattendu.');
+      }
+      const invoicePdfAttestation: InvoicePdfRepresentationAttestation =
+        observed.profile === 'plain_pdf'
+          ? {
+              documentSha256: observed.documentSha256,
+              profile: 'plain_pdf',
+              embeddedXmlSha256: null,
+              detectorVersion: observed.detectorVersion,
+            }
+          : {
+              documentSha256: observed.documentSha256,
+              profile: 'facturx_pdfa3',
+              embeddedXmlSha256: observed.embeddedXmlSha256,
+              detectorVersion: observed.detectorVersion,
+            };
+      const rendered = [this.buildRenderedArchiveArtifact({
+        companyId: job.companyId,
+        plan: pdfPlan,
+        bytes: pdfBytes,
+        contentProfile: observed.profile,
+        invoicePdfAttestation,
+      })];
+      if (facturXXml !== null) {
+        const xmlPlan = snapshot.artifacts.find((artifact) => artifact.kind === 'facturx_xml');
+        if (xmlPlan === undefined) return fail('Plan XML Factur-X absent.');
+        rendered.push(this.buildRenderedArchiveArtifact({
+          companyId: job.companyId,
+          plan: xmlPlan,
+          bytes: Buffer.from(facturXXml, 'utf8'),
+          contentProfile: 'facturx_xml',
+        }));
+      }
+      return ok(rendered.sort((left, right) => left.intent.kind.localeCompare(right.intent.kind)));
+    } catch (cause) {
+      return fail(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+
+  private async materializePreverifiedArchiveArtifact(input: {
+    job: DocumentArchiveJob;
+    artifact: RenderedArchiveArtifact;
+    verifiedBytes: Uint8Array;
+  }): Promise<Result<DocumentView, AppError>> {
+    const { job, artifact } = input;
+    return this.p.runWithTenant(job.companyId, () => new StoreDocument({
+      documents: this.p.documents,
+      folders: this.p.documentFolders,
+      linkTargets: this.documentLinkTargets(),
+      storage: preverifiedArchiveStorage({
+        companyId: job.companyId,
+        key: artifact.intent.storageKey,
+        bytes: input.verifiedBytes,
+        contentType: artifact.intent.mimeType,
+        sha256: artifact.intent.sha256,
+      }),
+      clock: this.clock,
+    }).execute({
+      id: artifact.plan.documentId,
+      versionId: artifact.plan.versionId,
+      companyId: job.companyId,
+      kind: artifact.plan.kind,
+      origin: 'generated',
+      filename: artifact.plan.filename,
+      mimeType: artifact.plan.mimeType,
+      bytes: input.verifiedBytes,
+      sha256: artifact.intent.sha256,
+      storageKey: artifact.intent.storageKey,
+      linkedEntityType: artifact.plan.linkedEntityType,
+      linkedEntityId: job.pieceId,
+      documentDate: artifact.plan.documentDate,
+      issuedAt: artifact.plan.issuedAt,
+      createdBy: null,
+      reason: job.reason,
+      tags: [],
+      ...(artifact.invoicePdfAttestation === undefined
+        ? {}
+        : { invoicePdfAttestation: artifact.invoicePdfAttestation }),
+    }));
+  }
+
+  /** Snapshot -> intentions atomiques -> Storage -> SQL court -> preuve relue. */
+  private async archiveDocumentRenderSnapshot(
+    job: DocumentArchiveJob,
+    leaseToken: string,
+  ): Promise<Result<{ created: number; skipped: number; proof: DocumentArchiveIntegrityProof }, AppError>> {
+    const rendered = await this.renderDocumentArchiveSnapshot(job);
+    if (!rendered.ok) return rendered;
+    const renderSnapshot = job.renderSnapshot;
+    if (renderSnapshot === null) return err(appUnavailable('document-archive-snapshot'));
+
+    const preparedAt = this.clock.now();
+    const prepared = await this.p.runWithTenant(job.companyId, () =>
+      this.p.documentArchiveJobs.prepareArtifactIntents({
+        jobId: job.id,
+        companyId: job.companyId,
+        leaseToken,
+        snapshotSha256: renderSnapshot.sha256,
+        intents: rendered.value.map((artifact) => artifact.intent),
+        now: preparedAt,
+      }),
+    );
+    if (!prepared) return err(appUnavailable('document-archive-intent-prepare'));
+
+    const durableIntents = await this.p.runWithTenant(job.companyId, () =>
+      this.p.documentArchiveJobs.listArtifactIntents(job.id, job.companyId),
+    );
+    const requested = rendered.value.map((artifact) => artifact.intent)
+      .sort((left, right) => left.kind.localeCompare(right.kind));
+    const durable = durableIntents.map(({ jobId, companyId, snapshotSha256, preparedAt, ...intent }) => {
+      void jobId;
+      void companyId;
+      void snapshotSha256;
+      void preparedAt;
+      return intent;
+    });
+    if (JSON.stringify(durable) !== JSON.stringify(requested)) {
+      return err(appUnavailable('document-archive-intent-readback'));
+    }
+
+    let created = 0;
+    let skipped = 0;
+    for (const artifact of rendered.value) {
+      let stored;
+      try {
+        stored = await this.documentStorage.put({
+          companyId: job.companyId,
+          key: artifact.intent.storageKey,
+          bytes: artifact.bytes,
+          contentType: artifact.intent.mimeType,
+        });
+      } catch (cause) {
+        return err({
+          kind: 'dependency',
+          port: 'document-storage',
+          cause: cause instanceof Error ? cause.message : String(cause),
+        });
+      }
+      const verified = await loadVerifiedStoredObject(this.documentStorage, {
+        companyId: job.companyId,
+        key: artifact.intent.storageKey,
+        sizeBytes: artifact.intent.byteSize,
+        sha256: artifact.intent.sha256,
+        contentType: artifact.intent.mimeType,
+      });
+      if (!verified.ok) return verified;
+      if (
+        stored.key !== artifact.intent.storageKey
+        || stored.sha256 !== artifact.intent.sha256
+        || stored.sizeBytes !== artifact.intent.byteSize
+      ) return err(appUnavailable('document-archive-storage-readback'));
+
+      const materialized = await this.materializePreverifiedArchiveArtifact({
+        job,
+        artifact,
+        verifiedBytes: verified.value.bytes,
+      });
+      if (!materialized.ok) return materialized;
+      if (stored.created) created += 1;
+      else skipped += 1;
+    }
+    const proof = await this.proveDocumentArchiveIntegrity({
+      companyId: job.companyId,
+      pieceId: job.pieceId,
+      reason: job.reason,
+      linkedEntityType: job.reason === 'quote-signed' ? 'quote' : 'invoice',
+      expected: rendered.value.map(({ plan }) => ({
+        kind: plan.kind,
+        documentId: plan.documentId,
+        versionId: plan.versionId,
+        filename: plan.filename,
+        mimeType: plan.mimeType,
+      })),
+    });
+    return proof.ok ? ok({ created, skipped, proof: proof.value }) : proof;
+  }
+
   /**
    * Construit une preuve uniquement depuis les originaux effectivement relus. Une ligne SQL,
    * même active, ne suffit jamais ; cardinalité, identité déterministe, version et stockage sont
@@ -8740,10 +9249,12 @@ export class BackendService {
       ok: false,
       error: { kind: 'dependency', port: 'document-archive-integrity', cause },
     });
-    const documents = await this.p.documents.findByEntity(
-      input.companyId,
-      input.linkedEntityType,
-      input.pieceId,
+    const documents = await this.p.runWithTenant(input.companyId, () =>
+      this.p.documents.findByEntity(
+        input.companyId,
+        input.linkedEntityType,
+        input.pieceId,
+      ),
     );
     const artifacts: DocumentArchiveArtifactProof[] = [];
     let invoicePdfEmbeddedXmlSha256: string | null | undefined;
@@ -8900,7 +9411,7 @@ export class BackendService {
     reason: Extract<DocumentArchiveJobReason, `invoice-${string}`>,
     allowGeneration: boolean,
   ): Promise<Result<{ created: number; skipped: number; proof: DocumentArchiveIntegrityProof }, AppError>> {
-    const inv = await this.p.invoices.findById(invoiceId);
+    const inv = await this.p.runWithTenant(companyId, () => this.p.invoices.findById(invoiceId));
     if (!inv || inv.companyId !== companyId)
       return { ok: false, error: appNotFound('invoice', invoiceId) };
     if (!inv.number || !inv.issuedAt)
@@ -8909,7 +9420,9 @@ export class BackendService {
     let skipped = 0;
     try {
       const expected = this.expectedInvoiceArchiveArtifacts(inv, reason);
-      const existing = await this.p.documents.findByEntity(companyId, 'invoice', invoiceId);
+      const existing = await this.p.runWithTenant(companyId, () =>
+        this.p.documents.findByEntity(companyId, 'invoice', invoiceId),
+      );
       const activePdfs = existing.filter(
         (document) => document.kind === 'invoice_pdf' && document.status === 'active',
       );
@@ -8921,6 +9434,10 @@ export class BackendService {
       }
       const hasPdf = activePdfs.length === 1;
       const hasFacturX = activeFacturX.length === 1;
+      if (
+        !allowGeneration
+        && (!hasPdf || (reason === 'invoice-issued' && !hasFacturX))
+      ) return err(appUnavailable('legacy-invoice-archive-missing'));
 
       // Pour une facture professionnelle, le XML n'est construit qu'une fois. S'il existe déjà,
       // le PDF manquant embarque exactement les octets de cet original ; sinon les mêmes octets
@@ -8984,9 +9501,6 @@ export class BackendService {
       }
 
       if (!hasPdf) {
-        if (!allowGeneration) {
-          return err(appUnavailable('legacy-invoice-archive-missing'));
-        }
         const pdf = await this.renderInvoicePdf(inv, reason, archiveFacturXXml);
         if (!pdf.ok) return pdf;
         const observed = await inspectInvoicePdfRepresentation(pdf.value);
@@ -9039,9 +9553,6 @@ export class BackendService {
       }
 
       if (reason === 'invoice-issued' && !hasFacturX) {
-        if (!allowGeneration) {
-          return err(appUnavailable('legacy-invoice-archive-missing'));
-        }
         const archived = await this.storeDocument({
           id: generatedInvoiceDocumentId(companyId, invoiceId, 'facturx_xml'),
           versionId: generatedInvoiceDocumentVersionId(companyId, invoiceId, 'facturx_xml'),
@@ -9095,13 +9606,15 @@ export class BackendService {
     quoteId: string,
     allowGeneration: boolean,
   ): Promise<Result<{ created: number; skipped: number; proof: DocumentArchiveIntegrityProof }, AppError>> {
-    const q = await this.p.quotes.findById(quoteId);
+    const q = await this.p.runWithTenant(companyId, () => this.p.quotes.findById(quoteId));
     if (!q || q.companyId !== companyId) return { ok: false, error: appNotFound('quote', quoteId) };
     if (q.signature === null)
       return { ok: false, error: appForbidden('Devis non signé : archivage impossible.') };
     try {
       const expected = this.expectedSignedQuoteArchiveArtifacts(q);
-      const existing = await this.p.documents.findByEntity(companyId, 'quote', quoteId);
+      const existing = await this.p.runWithTenant(companyId, () =>
+        this.p.documents.findByEntity(companyId, 'quote', quoteId),
+      );
       const hasPdf = existing.some(
         (document) => document.kind === 'signed_quote' && document.status === 'active',
       );
@@ -9157,75 +9670,80 @@ export class BackendService {
   ): Promise<Result<{ scanned: number; archived: number; failed: number }, AppError>> {
     const companyId = input.companyId ?? this.companyId();
     const limit = Math.max(1, Math.min(input.limit ?? 10, 50));
-    return this.p.runWithTenant(companyId, async () => {
+    try {
       const now = this.clock.now();
-      const jobs = await this.p.documentArchiveJobs.listDue(companyId, now, limit);
+      // Chaque accès SQL est une transaction tenant courte. Rendu PDF et Storage ne sont jamais
+      // exécutés sous une transaction PostgreSQL ouverte.
+      const jobs = await this.p.runWithTenant(companyId, () =>
+        this.p.documentArchiveJobs.listDue(companyId, now, limit),
+      );
       let archived = 0;
       let failed = 0;
       for (const candidate of jobs) {
-        const claimNow = this.clock.now();
-        const leaseToken = this.ids.newId();
-        const claimed = await this.p.documentArchiveJobs.claimForArchive(
-          candidate.id,
-          companyId,
-          candidate.updatedAt,
-          claimNow,
-          archiveLeaseUntil(claimNow),
-          leaseToken,
-        );
-        if (claimed.outcome !== 'claimed') continue;
-        const job = claimed.job;
-        // Un ancien `done` sans manifeste, ou une ligne marquée par la migration, est uniquement
-        // VÉRIFIÉ : une archive historique absente n'est jamais régénérée depuis des fiches mutées.
-        const verificationOnly =
-          candidate.status === 'done'
-          || candidate.lastError?.includes(LEGACY_ARCHIVE_PROOF_REQUIRED) === true;
-        // Dispatch par motif : même outbox, même worker, deux pièces à figer (facture émise,
-        // contrat signé) — jamais deux systèmes d'archivage parallèles.
-        const result =
-          job.reason === 'quote-signed'
-            ? await this.archiveSignedQuoteDocumentsForCompany(companyId, job.pieceId, !verificationOnly)
-            : await this.archiveIssuedInvoiceDocumentsForCompany(
-                companyId,
-                job.pieceId,
-                job.reason,
-                !verificationOnly,
-              );
-        if (result.ok) {
-          const completedAt = this.clock.now();
-          const proofSha256 = documentArchiveIntegrityProofSha256(result.value.proof);
-          const done = await this.p.documentArchiveJobs.markDone(
-            job.id,
-            companyId,
-            leaseToken,
-            result.value.proof,
-            proofSha256,
-            completedAt,
-          );
-          if (done) {
-            archived += result.value.created;
-            this.logger.audit('document.archive_job.done', {
+        try {
+          const claimNow = this.clock.now();
+          const leaseToken = this.ids.newId();
+          const claimed = await this.p.runWithTenant(companyId, () =>
+            this.p.documentArchiveJobs.claimForArchive(
+              candidate.id,
               companyId,
-              pieceId: job.pieceId,
-              reason: job.reason,
-              created: result.value.created,
-              skipped: result.value.skipped,
-              integrityProofSha256: proofSha256,
-            });
-          } else {
-            // `markDone=false` n'est pas un succès silencieux : soit la preuve a été refusée
-            // alors que ce worker possède encore son lease (on réarme immédiatement le job),
-            // soit le fence a été perdu. Dans ce second cas, `markFailed` échoue lui aussi par
-            // CAS ; on relit alors l'état pour distinguer une terminaison concurrente saine
-            // d'un lease perdu à investiguer, sans compter le premier comme un faux échec.
-            const rejectedAt = this.clock.now();
-            const rescheduled = await this.p.documentArchiveJobs.markFailed(
-              job.id,
-              companyId,
+              candidate.updatedAt,
+              claimNow,
+              archiveLeaseUntil(claimNow),
               leaseToken,
-              rejectedAt,
-              nextArchiveRetryAt(rejectedAt, job.attempts),
-              DOCUMENT_ARCHIVE_COMPLETION_REJECTED,
+            ),
+          );
+          if (claimed.outcome !== 'claimed') continue;
+          const job = claimed.job;
+          // Un writer N-1 peut encore avoir produit un ordre sans snapshot pendant l'expand.
+          // Celui-ci est vérifié seulement : jamais de rétro-génération depuis des fiches mutées.
+          const verificationOnly = job.renderSnapshot === null;
+          const result = job.renderSnapshot !== null
+            ? await this.archiveDocumentRenderSnapshot(job, leaseToken)
+            : job.reason === 'quote-signed'
+              ? await this.archiveSignedQuoteDocumentsForCompany(companyId, job.pieceId, false)
+              : await this.archiveIssuedInvoiceDocumentsForCompany(
+                  companyId,
+                  job.pieceId,
+                  job.reason,
+                  false,
+                );
+          if (result.ok) {
+            const completedAt = this.clock.now();
+            const proofSha256 = documentArchiveIntegrityProofSha256(result.value.proof);
+            const done = await this.p.runWithTenant(companyId, () =>
+              this.p.documentArchiveJobs.markDone(
+                job.id,
+                companyId,
+                leaseToken,
+                result.value.proof,
+                proofSha256,
+                completedAt,
+              ),
+            );
+            if (done) {
+              archived += result.value.created;
+              this.logger.audit('document.archive_job.done', {
+                companyId,
+                pieceId: job.pieceId,
+                reason: job.reason,
+                created: result.value.created,
+                skipped: result.value.skipped,
+                integrityProofSha256: proofSha256,
+              });
+              continue;
+            }
+
+            const rejectedAt = this.clock.now();
+            const rescheduled = await this.p.runWithTenant(companyId, () =>
+              this.p.documentArchiveJobs.markFailed(
+                job.id,
+                companyId,
+                leaseToken,
+                rejectedAt,
+                nextArchiveRetryAt(rejectedAt, job.attempts),
+                DOCUMENT_ARCHIVE_COMPLETION_REJECTED,
+              ),
             );
             if (rescheduled) {
               failed += 1;
@@ -9236,50 +9754,46 @@ export class BackendService {
                 outcome: 'retry_scheduled',
                 integrityProofSha256: proofSha256,
               });
+              continue;
+            }
+            const current = await this.p.runWithTenant(companyId, () =>
+              this.p.documentArchiveJobs.findByPiece(companyId, job.pieceId, job.reason),
+            );
+            const completedByConcurrentWorker = current?.status === 'done'
+              && current.integrityProof !== null
+              && current.integrityProofSha256 !== null;
+            this.logger.audit('document.archive_job.completion_cas_lost', {
+              companyId,
+              pieceId: job.pieceId,
+              reason: job.reason,
+              outcome: completedByConcurrentWorker
+                ? 'concurrent_completion_observed'
+                : 'lease_lost_without_completion',
+              currentStatus: current?.status ?? 'missing',
+              integrityProofSha256: current?.integrityProofSha256 ?? null,
+            });
+            if (!completedByConcurrentWorker) {
               this.logger.warn(
-                `Archivage ${job.reason === 'quote-signed' ? 'devis signé' : 'facture'} en retry: ${DOCUMENT_ARCHIVE_COMPLETION_REJECTED}`,
+                `Archivage ${job.reason === 'quote-signed' ? 'devis signé' : 'facture'}: finalisation refusée et lease perdu sans preuve persistée.`,
                 'documents',
               );
-            } else {
-              const current = await this.p.documentArchiveJobs.findByPiece(
-                companyId,
-                job.pieceId,
-                job.reason,
-              );
-              const completedByConcurrentWorker =
-                current?.status === 'done'
-                && current.integrityProof !== null
-                && current.integrityProofSha256 !== null;
-              this.logger.audit('document.archive_job.completion_cas_lost', {
-                companyId,
-                pieceId: job.pieceId,
-                reason: job.reason,
-                outcome: completedByConcurrentWorker
-                  ? 'concurrent_completion_observed'
-                  : 'lease_lost_without_completion',
-                currentStatus: current?.status ?? 'missing',
-                integrityProofSha256: current?.integrityProofSha256 ?? null,
-              });
-              if (!completedByConcurrentWorker) {
-                this.logger.warn(
-                  `Archivage ${job.reason === 'quote-signed' ? 'devis signé' : 'facture'}: finalisation refusée et lease perdu sans preuve persistée.`,
-                  'documents',
-                );
-              }
             }
+            continue;
           }
-        } else {
+
           const failedAt = this.clock.now();
           const errorSummary = appErrorSummary(result.error);
-          const marked = await this.p.documentArchiveJobs.markFailed(
-            job.id,
-            companyId,
-            leaseToken,
-            failedAt,
-            nextArchiveRetryAt(failedAt, job.attempts),
-            verificationOnly
-              ? `${LEGACY_ARCHIVE_PROOF_REQUIRED} ${errorSummary}`
-              : errorSummary,
+          const marked = await this.p.runWithTenant(companyId, () =>
+            this.p.documentArchiveJobs.markFailed(
+              job.id,
+              companyId,
+              leaseToken,
+              failedAt,
+              nextArchiveRetryAt(failedAt, job.attempts),
+              verificationOnly
+                ? `${LEGACY_ARCHIVE_PROOF_REQUIRED} ${errorSummary}`
+                : errorSummary,
+            ),
           );
           if (marked) {
             failed += 1;
@@ -9288,10 +9802,24 @@ export class BackendService {
               'documents',
             );
           }
+        } catch (cause) {
+          // Une anomalie d'un tenant ne fige jamais la page entière. Le lease expirera et le job
+          // sera redécouvert ; les candidats suivants sont tous tentés conformément au reaper.
+          failed += 1;
+          this.logger.warn(
+            `Archivage isolé en échec inattendu: ${cause instanceof Error ? cause.message : String(cause)}`,
+            'documents',
+          );
         }
       }
       return ok({ scanned: jobs.length, archived, failed });
-    });
+    } catch (cause) {
+      return err({
+        kind: 'dependency',
+        port: 'document-archive-jobs',
+        cause: cause instanceof Error ? cause.message : String(cause),
+      });
+    }
   }
 
   async runNotificationJobs(

@@ -12,6 +12,8 @@ import { BackendService } from './backend.service';
 import { PdfRenderer } from './documents/pdf-renderer';
 import { pdfVisibleText } from './documents/pdf-text.testing';
 import { InMemoryDocumentStorage } from './documents/storage.testing';
+import { renderPdfFixture } from './documents/pdf-fixtures.testing';
+import { waitForDocumentArchive } from './documents/archive-test-wait.testing';
 import type { NotificationDeliveryService } from './jobs/notification-delivery.service';
 import type { Metrics } from './observability/metrics';
 import { requestContext, type AppLogger, type Principal } from './observability/logger';
@@ -41,12 +43,12 @@ function makeService() {
   const persistence = new InMemoryPersistence();
   const renderedQuotes: QuotePdfData[] = [];
   const renderer: PdfRendererPort = {
-    renderInvoice: vi.fn(async (data: InvoicePdfData) => {
-      return new TextEncoder().encode(`%PDF-1.7\narchive:${data.number}`);
+    renderInvoice: vi.fn(async (data: InvoicePdfData, facturX) => {
+      return renderPdfFixture(`archive:${data.number}`, facturX?.xml);
     }),
     renderQuote: vi.fn(async (data: QuotePdfData) => {
       renderedQuotes.push(structuredClone(data));
-      return new TextEncoder().encode(`%PDF-1.7\nquote:${data.number}`);
+      return renderPdfFixture(`quote:${data.number}`);
     }),
   };
   const notificationDelivery = {
@@ -256,7 +258,13 @@ describe('A3 — PDF du devis B2C : bloc d’information + formulaire détachabl
     await persistence.seed();
 
     const b2c = await sentQuote(service, 'cust-durand');
+    const b2cRenderCount = renderedQuotes.length;
     expect((await service.publicSignQuote(b2c.token, 'Mme Durand')).ok).toBe(true);
+    await waitForDocumentArchive({
+      label: `signed quote ${b2c.quoteId}`,
+      drain: () => asOwner(() => service.runDocumentArchiveJobs({ limit: 50 })),
+      ready: () => renderedQuotes.length > b2cRenderCount,
+    });
     const renderedB2c = renderedQuotes.at(-1);
     expect(renderedB2c?.retractation).not.toBeNull();
     expect(renderedB2c?.retractation?.noticeLines[0]).toBe('Droit de rétractation');
@@ -267,7 +275,13 @@ describe('A3 — PDF du devis B2C : bloc d’information + formulaire détachabl
     ).toBe(true);
 
     const b2b = await sentQuote(service, 'cust-martin');
+    const b2bRenderCount = renderedQuotes.length;
     expect((await service.publicSignQuote(b2b.token, 'M. Martin')).ok).toBe(true);
+    await waitForDocumentArchive({
+      label: `signed quote ${b2b.quoteId}`,
+      drain: () => asOwner(() => service.runDocumentArchiveJobs({ limit: 50 })),
+      ready: () => renderedQuotes.length > b2bRenderCount,
+    });
     expect(renderedQuotes.at(-1)?.retractation).toBeNull();
   });
 });

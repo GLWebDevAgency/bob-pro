@@ -11,7 +11,7 @@ cd "$ROOT_DIR"
 
 command -v node >/dev/null 2>&1 || { echo "node is required" >&2; exit 1; }
 
-# Cette vérification et les trois activations partagent le même processus `railway run`, donc le
+# Cette vérification et les quatre activations partagent le même processus `railway run`, donc le
 # même snapshot de DATABASE_URL/DIRECT_URL, de cible et de configuration. Aucun cutover ne peut
 # commencer sur une base ou une configuration différente de celle certifiée au predeploy.
 node apps/api/scripts/assert-database-pair.mjs
@@ -19,6 +19,8 @@ node apps/api/scripts/release-phase-receipt.mjs verify
 
 DOCUMENT_ARCHIVE_V2_ACTIVATION_RELEASE_SHA="$BOB_RELEASE_SHA" \
   sh apps/api/scripts/activate-document-archive-v2.sh
+DOCUMENT_ARCHIVE_SNAPSHOT_V2_ACTIVATION_RELEASE_SHA="$BOB_RELEASE_SHA" \
+  sh apps/api/scripts/activate-document-archive-snapshot-v2.sh
 INVOICE_SETTLEMENT_V2_ACTIVATION_RELEASE_SHA="$BOB_RELEASE_SHA" \
   sh apps/api/scripts/activate-invoice-settlement-v2.sh
 sh apps/api/scripts/activate-notification-outbox-v2.sh

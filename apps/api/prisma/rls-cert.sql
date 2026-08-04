@@ -644,13 +644,43 @@ VALUES ('rls-co-a', 'quote', 2026, 2);
   INSERT INTO document_archive_jobs (id, "companyId", "invoiceId", reason, status, attempts, "nextAttemptAt", "createdAt", "updatedAt")
   VALUES ('rls-archive-a', 'rls-co-a', 'rls-invoice-a', 'invoice-issued-pdf-only-b2c', 'pending', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
 \else
+  WITH snapshot AS (
+    SELECT pg_catalog.jsonb_build_object(
+      'schemaVersion', 1,
+      'rendererVersion', 1,
+      'companyId', 'rls-co-a',
+      'pieceId', 'rls-invoice-a',
+      'reason', 'invoice-issued-pdf-only-b2c',
+      'metadataCreatedAt', '2026-01-01T00:00:00.000Z',
+      'artifacts', pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object(
+        'kind', 'invoice_pdf',
+        'expectedContentProfile', 'plain_pdf',
+        'documentId', 'rls-archive-document-a',
+        'versionId', 'rls-archive-version-a',
+        'filename', 'facture-rls-a.pdf',
+        'mimeType', 'application/pdf',
+        'linkedEntityType', 'invoice',
+        'documentDate', '2026-01-01',
+        'issuedAt', '2026-01-01'
+      )),
+      'payload', pg_catalog.jsonb_build_object(
+        'kind', 'invoice',
+        'data', pg_catalog.jsonb_build_object(
+          'documentCreatedAt', '2026-01-01T00:00:00.000Z'
+        ),
+        'facturXXml', NULL
+      )
+    )::text AS payload
+  )
   SELECT pg_temp.assert_eq(
-    CASE WHEN public.document_archive_job_enqueue_v2(
-      'rls-archive-a', 'rls-co-a', 'rls-invoice-a', 'invoice-issued-pdf-only-b2c'
+    CASE WHEN public.document_archive_job_enqueue_v3(
+      'rls-archive-a', 'rls-co-a', 'rls-invoice-a', 'invoice-issued-pdf-only-b2c',
+      1::smallint, 1::smallint, snapshot.payload,
+      pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(snapshot.payload, 'UTF8')), 'hex')
     ) THEN 1 ELSE 0 END,
     1,
-    'tenant A archive job enqueued through V2 capability'
-  );
+    'tenant A archive job enqueued through V3 sealed-snapshot capability'
+  ) FROM snapshot;
 \endif
 INSERT INTO notification_jobs (
   id, "companyId", kind, "dedupeKey", channel, recipient, subject, payload, "payloadFingerprint",
@@ -778,13 +808,43 @@ VALUES ('rls-co-b', 'quote', 2026, 2);
   INSERT INTO document_archive_jobs (id, "companyId", "invoiceId", reason, status, attempts, "nextAttemptAt", "createdAt", "updatedAt")
   VALUES ('rls-archive-b', 'rls-co-b', 'rls-invoice-b', 'invoice-issued-pdf-only-b2c', 'pending', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
 \else
+  WITH snapshot AS (
+    SELECT pg_catalog.jsonb_build_object(
+      'schemaVersion', 1,
+      'rendererVersion', 1,
+      'companyId', 'rls-co-b',
+      'pieceId', 'rls-invoice-b',
+      'reason', 'invoice-issued-pdf-only-b2c',
+      'metadataCreatedAt', '2026-01-01T00:00:00.000Z',
+      'artifacts', pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object(
+        'kind', 'invoice_pdf',
+        'expectedContentProfile', 'plain_pdf',
+        'documentId', 'rls-archive-document-b',
+        'versionId', 'rls-archive-version-b',
+        'filename', 'facture-rls-b.pdf',
+        'mimeType', 'application/pdf',
+        'linkedEntityType', 'invoice',
+        'documentDate', '2026-01-01',
+        'issuedAt', '2026-01-01'
+      )),
+      'payload', pg_catalog.jsonb_build_object(
+        'kind', 'invoice',
+        'data', pg_catalog.jsonb_build_object(
+          'documentCreatedAt', '2026-01-01T00:00:00.000Z'
+        ),
+        'facturXXml', NULL
+      )
+    )::text AS payload
+  )
   SELECT pg_temp.assert_eq(
-    CASE WHEN public.document_archive_job_enqueue_v2(
-      'rls-archive-b', 'rls-co-b', 'rls-invoice-b', 'invoice-issued-pdf-only-b2c'
+    CASE WHEN public.document_archive_job_enqueue_v3(
+      'rls-archive-b', 'rls-co-b', 'rls-invoice-b', 'invoice-issued-pdf-only-b2c',
+      1::smallint, 1::smallint, snapshot.payload,
+      pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(snapshot.payload, 'UTF8')), 'hex')
     ) THEN 1 ELSE 0 END,
     1,
-    'tenant B archive job enqueued through V2 capability'
-  );
+    'tenant B archive job enqueued through V3 sealed-snapshot capability'
+  ) FROM snapshot;
 \endif
 INSERT INTO notification_jobs (
   id, "companyId", kind, "dedupeKey", channel, recipient, subject, payload, "payloadFingerprint",

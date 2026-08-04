@@ -2,6 +2,7 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  Optional,
   SetMetadata,
   type CallHandler,
   type ExecutionContext,
@@ -9,9 +10,10 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { from, lastValueFrom, type Observable } from 'rxjs';
-import { getPrincipal } from '../observability/logger';
+import { AppLogger, getPrincipal } from '../observability/logger';
 import type { Persistence } from './persistence';
 import { PERSISTENCE } from './persistence-token';
+import { runWithTenantPostCommitBoundary } from './post-commit';
 
 const TENANT_TRANSACTION_DISABLED = Symbol('tenant-transaction-disabled');
 const TENANT_COMPANY_ROW_OPTIONAL = Symbol('tenant-company-row-optional');
@@ -50,6 +52,7 @@ export class TenantPersistenceInterceptor implements NestInterceptor {
   constructor(
     @Inject(PERSISTENCE) private readonly persistence: Persistence,
     private readonly reflector: Reflector,
+    @Optional() private readonly logger?: AppLogger,
   ) {}
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
@@ -118,16 +121,23 @@ export class TenantPersistenceInterceptor implements NestInterceptor {
     }
 
     return from(
-      this.persistence.runWithTenant(companyId, async () => {
-        // Clôture de compte (CloseAccount, Apple 5.1.1(v)) : DANS la transaction tenant (donc
-        // après pose du GUC RLS) pour que ce lookup voie le même row que la politique appliquera
-        // — un findById hors transaction serait fail-closed sous FORCE RLS en prod (rôle
-        // non-superuser) et laisserait ce garde silencieusement inopérant. La route DELETE
-        // /account elle-même désactive cette transaction automatique (@WithoutTenantPersistenceTransaction)
-        // et gère son propre runWithTenant : elle n'est donc jamais bloquée par son propre effet.
-        await assertCompanyAdmission(false);
-        return lastValueFrom(next.handle());
-      }),
+      runWithTenantPostCommitBoundary(
+        () => this.persistence.runWithTenant(companyId, async () => {
+          // Clôture de compte (CloseAccount, Apple 5.1.1(v)) : DANS la transaction tenant (donc
+          // après pose du GUC RLS) pour que ce lookup voie le même row que la politique appliquera
+          // — un findById hors transaction serait fail-closed sous FORCE RLS en prod (rôle
+          // non-superuser) et laisserait ce garde silencieusement inopérant. La route DELETE
+          // /account elle-même désactive cette transaction automatique
+          // (@WithoutTenantPersistenceTransaction) et gère son propre runWithTenant : elle n'est
+          // donc jamais bloquée par son propre effet.
+          await assertCompanyAdmission(false);
+          return lastValueFrom(next.handle());
+        }),
+        (cause) => this.logger?.warn(
+          `Projection post-commit impossible: ${cause instanceof Error ? cause.message : String(cause)}`,
+          'persistence',
+        ),
+      ),
     );
   }
 }

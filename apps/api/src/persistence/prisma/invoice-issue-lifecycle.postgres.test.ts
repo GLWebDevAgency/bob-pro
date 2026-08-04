@@ -339,6 +339,18 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           where: { companyId: { in: ids } },
         });
         await tx.accountingEntry.deleteMany({ where: { companyId: { in: ids } } });
+        // Les snapshots et intentions V3 sont append-only et référencent le job. La purge
+        // technique de cette seule fixture doit donc neutraliser leurs triggers, supprimer les
+        // enfants dans l'ordre FK, puis réactiver immédiatement toutes les contraintes avant de
+        // toucher au job parent.
+        await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'replica'");
+        await tx.documentArchiveArtifactIntent.deleteMany({
+          where: { companyId: { in: ids } },
+        });
+        await tx.documentArchiveRenderSnapshot.deleteMany({
+          where: { companyId: { in: ids } },
+        });
+        await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'origin'");
         await tx.documentArchiveJob.deleteMany({ where: { companyId: { in: ids } } });
         await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'replica'");
         await tx.lineItem.deleteMany({

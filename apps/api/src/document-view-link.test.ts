@@ -5,6 +5,7 @@ import { BackendService } from './backend.service';
 import { InMemoryPersistence } from './persistence/persistence.testing';
 import { InMemoryDocumentStorage } from './documents/storage.testing';
 import { renderPdfFixture } from './documents/pdf-fixtures.testing';
+import { waitForDocumentArchive } from './documents/archive-test-wait.testing';
 import { requestContext, type AppLogger, type Principal } from './observability/logger';
 import type { NotificationDeliveryService } from './jobs/notification-delivery.service';
 import type { Metrics } from './observability/metrics';
@@ -95,6 +96,11 @@ async function createIssuedInvoice(service: BackendService): Promise<string> {
   if (!generated.ok) throw new Error('fixture: generateInvoice KO');
   const issued = await service.issueInvoice({ invoiceId: generated.value.invoiceId });
   if (!issued.ok) throw new Error('fixture: issueInvoice KO');
+  await waitForDocumentArchive({
+    label: `invoice ${generated.value.invoiceId}`,
+    drain: () => service.runDocumentArchiveJobs({ limit: 50 }),
+    ready: async () => (await service.invoicePdf(generated.value.invoiceId)).ok,
+  });
   return generated.value.invoiceId;
 }
 

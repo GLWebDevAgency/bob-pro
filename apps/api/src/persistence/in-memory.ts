@@ -60,9 +60,11 @@ import type { ServerCompanyRepository } from './persistence';
 import {
   documentArchiveIntegrityProofSha256,
   isValidDocumentArchiveIntegrityProof,
+  type DocumentArchiveArtifactIntent,
   type DocumentArchiveJob,
   type DocumentArchiveJobRepository,
   type EnqueueDocumentArchiveJobInput,
+  type PreparedDocumentArchiveArtifactIntent,
 } from './document-archive-jobs';
 import {
   NotificationDedupeConflictError,
@@ -91,6 +93,7 @@ import type {
 } from './devices';
 import { DuplicateExpenseInvoiceError } from './expense-duplicate-error';
 import { SituationOrderConflictError } from './situation-order-conflict-error';
+import { openDocumentArchiveRenderSnapshot } from '../documents/document-archive-render-snapshot';
 
 /**
  * Adapters in-memory (stockent les objets de domaine directement — aucune réhydratation requise).
@@ -729,6 +732,7 @@ export class InMemoryDocumentFolderRepository implements DocumentFolderRepositor
 
 export class InMemoryDocumentArchiveJobRepository implements DocumentArchiveJobRepository {
   private readonly map = new Map<string, DocumentArchiveJob>();
+  private readonly artifactIntents = new Map<string, DocumentArchiveArtifactIntent[]>();
 
   private clone(job: DocumentArchiveJob): DocumentArchiveJob {
     return {
@@ -737,6 +741,10 @@ export class InMemoryDocumentArchiveJobRepository implements DocumentArchiveJobR
         ? null
         : { ...job.integrityProof, artifacts: job.integrityProof.artifacts.map((artifact) => ({ ...artifact })) },
     };
+  }
+
+  private cloneIntents(intents: readonly DocumentArchiveArtifactIntent[]): DocumentArchiveArtifactIntent[] {
+    return intents.map((intent) => ({ ...intent }));
   }
 
   snapshot(): DocumentArchiveJob[] {
@@ -748,16 +756,57 @@ export class InMemoryDocumentArchiveJobRepository implements DocumentArchiveJobR
     for (const job of snapshot) this.map.set(job.id, this.clone(job));
   }
 
+  snapshotState(): {
+    jobs: DocumentArchiveJob[];
+    intents: Array<[string, DocumentArchiveArtifactIntent[]]>;
+  } {
+    return {
+      jobs: this.snapshot(),
+      intents: [...this.artifactIntents.entries()]
+        .map(([jobId, intents]) => [jobId, this.cloneIntents(intents)]),
+    };
+  }
+
+  restoreState(snapshot: {
+    jobs: readonly DocumentArchiveJob[];
+    intents: ReadonlyArray<readonly [string, readonly DocumentArchiveArtifactIntent[]]>;
+  }): void {
+    this.restore(snapshot.jobs);
+    this.artifactIntents.clear();
+    for (const [jobId, intents] of snapshot.intents) {
+      this.artifactIntents.set(jobId, this.cloneIntents(intents));
+    }
+  }
+
   async enqueue(input: EnqueueDocumentArchiveJobInput): Promise<void> {
+    if (input.renderSnapshot !== undefined) {
+      const snapshot = openDocumentArchiveRenderSnapshot(input.renderSnapshot);
+      if (
+        snapshot.companyId !== input.companyId
+        || snapshot.pieceId !== input.pieceId
+        || snapshot.reason !== input.reason
+      ) throw new Error('Document archive enqueue snapshot identity mismatch.');
+    }
     const existing = [...this.map.values()].find(
       (job) =>
         job.companyId === input.companyId &&
         job.pieceId === input.pieceId &&
         job.reason === input.reason,
     );
-    // Parité Prisma : le premier ordre et son calendrier gagnent. Un retry d'enqueue ne doit
-    // réarmer ni un échec programmé, ni un lease, ni une terminaison prouvée.
-    if (existing) return;
+    // Parité Prisma : le premier ordre et son calendrier gagnent. Le writer V3 exige toutefois
+    // que le snapshot préexistant soit strictement identique ; un job N-1 incomplet n'est jamais
+    // enrichi a posteriori depuis des fiches potentiellement mutées.
+    if (existing) {
+      if (input.renderSnapshot === undefined) return;
+      if (
+        existing.renderSnapshot === null
+        || existing.renderSnapshot.snapshotSchemaVersion !== input.renderSnapshot.snapshotSchemaVersion
+        || existing.renderSnapshot.rendererVersion !== input.renderSnapshot.rendererVersion
+        || existing.renderSnapshot.sha256 !== input.renderSnapshot.sha256
+        || existing.renderSnapshot.json !== input.renderSnapshot.json
+      ) throw new Error('Document archive enqueue snapshot conflict.');
+      return;
+    }
     const invoiceReasons = new Set<DocumentArchiveJob['reason']>([
       'invoice-issued',
       'invoice-issued-pdf-only-b2c',
@@ -777,6 +826,7 @@ export class InMemoryDocumentArchiveJobRepository implements DocumentArchiveJobR
       companyId: input.companyId,
       pieceId: input.pieceId,
       reason: input.reason,
+      renderSnapshot: input.renderSnapshot ?? null,
       status: 'pending',
       attempts: 0,
       nextAttemptAt: input.now,
@@ -862,6 +912,92 @@ export class InMemoryDocumentArchiveJobRepository implements DocumentArchiveJobR
     return { outcome: 'claimed', job: this.clone(claimed) };
   }
 
+  async prepareArtifactIntents(input: {
+    jobId: string;
+    companyId: string;
+    leaseToken: string;
+    snapshotSha256: string;
+    intents: PreparedDocumentArchiveArtifactIntent[];
+    now: string;
+  }): Promise<boolean> {
+    const job = this.map.get(input.jobId);
+    if (
+      !job
+      || job.companyId !== input.companyId
+      || job.leaseToken !== input.leaseToken
+      || job.nextAttemptAt <= input.now
+      || (job.status !== 'pending' && job.status !== 'failed')
+      || job.renderSnapshot === null
+      || job.renderSnapshot.sha256 !== input.snapshotSha256
+    ) return false;
+    const snapshot = openDocumentArchiveRenderSnapshot(job.renderSnapshot);
+    const expectedKinds = job.reason === 'invoice-issued'
+      ? ['facturx_xml', 'invoice_pdf']
+      : job.reason === 'invoice-issued-pdf-only-b2c'
+        ? ['invoice_pdf']
+        : ['signed_quote'];
+    const kinds = input.intents.map((intent) => intent.kind).sort();
+    const exactIntentKeys = [
+      'byteSize', 'contentProfile', 'documentId', 'filename', 'kind',
+      'mimeType', 'sha256', 'storageKey', 'version', 'versionId',
+    ].join(',');
+    if (
+      kinds.length !== expectedKinds.length
+      || snapshot.artifacts.length !== expectedKinds.length
+      || !kinds.every((kind, index) => kind === expectedKinds[index])
+      || new Set(input.intents.map((intent) => intent.documentId)).size !== input.intents.length
+      || new Set(input.intents.map((intent) => intent.versionId)).size !== input.intents.length
+      || new Set(input.intents.map((intent) => intent.storageKey)).size !== input.intents.length
+      || input.intents.some((intent) => (
+        Object.keys(intent).sort().join(',') !== exactIntentKeys
+        || (() => {
+          const plan = snapshot.artifacts.find(({ kind }) => kind === intent.kind);
+          return plan === undefined
+            || plan.documentId !== intent.documentId
+            || plan.versionId !== intent.versionId
+            || plan.filename !== intent.filename
+            || plan.mimeType !== intent.mimeType
+            || plan.expectedContentProfile !== intent.contentProfile;
+        })()
+        || intent.version !== 1
+        || intent.byteSize <= 0
+        || !Number.isSafeInteger(intent.byteSize)
+        || intent.byteSize > 2_147_483_647
+        || !/^[a-f0-9]{64}$/u.test(intent.sha256)
+        || intent.storageKey !== (
+          `companies/${input.companyId}/documents/${intent.documentId}/v1/${intent.sha256}.${
+            intent.mimeType === 'application/pdf' ? 'pdf' : 'xml'
+          }`
+        )
+      ))
+    ) return false;
+    const prepared = [...input.intents]
+      .sort((left, right) => left.kind.localeCompare(right.kind))
+      .map((intent): DocumentArchiveArtifactIntent => ({
+        ...intent,
+        jobId: input.jobId,
+        companyId: input.companyId,
+        snapshotSha256: input.snapshotSha256,
+        preparedAt: input.now,
+      }));
+    const existing = this.artifactIntents.get(input.jobId);
+    if (existing !== undefined) {
+      return JSON.stringify(this.cloneIntents(existing).map(({ preparedAt: _preparedAt, ...intent }) => intent))
+        === JSON.stringify(prepared.map(({ preparedAt: _preparedAt, ...intent }) => intent));
+    }
+    this.artifactIntents.set(input.jobId, prepared);
+    return true;
+  }
+
+  async listArtifactIntents(
+    jobId: string,
+    companyId: string,
+  ): Promise<DocumentArchiveArtifactIntent[]> {
+    const job = this.map.get(jobId);
+    if (!job || job.companyId !== companyId) return [];
+    return this.cloneIntents(this.artifactIntents.get(jobId) ?? []);
+  }
+
   async markDone(
     id: string,
     companyId: string,
@@ -871,6 +1007,25 @@ export class InMemoryDocumentArchiveJobRepository implements DocumentArchiveJobR
     at: string,
   ): Promise<boolean> {
     const job = this.map.get(id);
+    const intents = this.artifactIntents.get(id) ?? [];
+    const proofMatchesIntents = job?.renderSnapshot === null || (
+      proof.artifacts.length === intents.length
+      && [...proof.artifacts]
+        .sort((left, right) => left.kind.localeCompare(right.kind))
+        .every((artifact, index) => {
+          const intent = intents[index];
+          return intent !== undefined
+            && artifact.kind === intent.kind
+            && artifact.contentProfile === intent.contentProfile
+            && artifact.documentId === intent.documentId
+            && artifact.versionId === intent.versionId
+            && artifact.version === intent.version
+            && artifact.storageKey === intent.storageKey
+            && artifact.mimeType === intent.mimeType
+            && artifact.byteSize === intent.byteSize
+            && artifact.sha256 === intent.sha256;
+        })
+    );
     if (
       !job
       || job.companyId !== companyId
@@ -880,6 +1035,7 @@ export class InMemoryDocumentArchiveJobRepository implements DocumentArchiveJobR
       || proof.companyId !== companyId
       || proof.pieceId !== job.pieceId
       || proof.reason !== job.reason
+      || !proofMatchesIntents
       || !isValidDocumentArchiveIntegrityProof(proof)
       || documentArchiveIntegrityProofSha256(proof) !== proofSha256
     ) {
