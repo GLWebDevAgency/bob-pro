@@ -255,12 +255,18 @@ test('l’expand du fence ferme et draine réellement les pods N-1 avant migrate
 });
 
 test('le pipeline garde la capacité fermée jusqu’aux activations puis finalise une seule fois', () => {
+  const targetGate = railway.indexOf('Gate process-local throttling to one Railway replica');
   const predecessor = railway.indexOf(
     'Certify predecessor B2C HTTP fence before archive expansion',
   );
   const predecessorCapability = railway.indexOf('realtimeAdmissionCancellationFence', predecessor);
-  const predeploy = railway.indexOf('env BOB_RELEASE_PHASE=predeploy', predecessorCapability);
-  const deploy = railway.indexOf('railway up --service', predeploy);
+  const expandSchema = railway.indexOf(
+    'Expand schema, spool notification delivery, and certify RLS',
+    predecessorCapability,
+  );
+  const predeployTargetProbe = railway.indexOf('timeout 20s railway status', expandSchema);
+  const predeploy = railway.indexOf('env BOB_RELEASE_PHASE=predeploy', predeployTargetProbe);
+  const deploy = railway.indexOf('railway up --project', predeploy);
   const topology = railway.indexOf('Re-certify the deployed replica topology', deploy);
   const readiness = railway.indexOf('Smoke API readiness', topology);
   const exactSha = railway.indexOf(
@@ -293,9 +299,12 @@ test('le pipeline garde la capacité fermée jusqu’aux activations puis finali
   );
   const finalPostdeploy = railway.indexOf('env BOB_RELEASE_PHASE=postdeploy', activation);
   assert.ok(
-    predecessor >= 0 &&
+    targetGate >= 0 &&
+      predecessor > targetGate &&
       predecessorCapability > predecessor &&
-      predeploy > predecessorCapability &&
+      expandSchema > predecessorCapability &&
+      predeployTargetProbe > expandSchema &&
+      predeploy > predeployTargetProbe &&
       deploy > predeploy &&
       topology > deploy &&
       readiness > topology &&
@@ -332,8 +341,61 @@ test('le pipeline garde la capacité fermée jusqu’aux activations puis finali
     /BOB_RELEASE_EXPECTED_ENV="\$RELEASE_ENVIRONMENT"/u,
   );
   assert.match(
+    railway.slice(targetGate, predecessor),
+    /railway status --project "\$RAILWAY_PROJECT_ID"[\s\S]*?--environment "\$RAILWAY_ENVIRONMENT_ID" --json[\s\S]*?identity_command=target-identity[\s\S]*?target-identity-recovery[\s\S]*?certify-railway-single-replica\.mjs[\s\S]*?"\$TARGET_ENVIRONMENT_NAME" "\$RAILWAY_API_SERVICE_ID"/u,
+    'Projet, environnement, ID et nom du service doivent être rapprochés avant prédeploy.',
+  );
+  assert.match(
+    railway.slice(expandSchema, deploy),
+    /timeout 20s railway status --project "\$RAILWAY_PROJECT_ID"[\s\S]*?--environment "\$RAILWAY_ENVIRONMENT_ID" --json[\s\S]*?"\$identity_command"[\s\S]*?certify-railway-single-replica\.mjs[\s\S]*?railway run --project "\$RAILWAY_PROJECT_ID" --service "\$RAILWAY_API_SERVICE_ID"[\s\S]*?--environment "\$RAILWAY_ENVIRONMENT_ID" --no-local --[\s\S]*?check-release-env\.sh[\s\S]*?railway run --project "\$RAILWAY_PROJECT_ID" --service "\$RAILWAY_API_SERVICE_ID"[\s\S]*?--environment "\$RAILWAY_ENVIRONMENT_ID" --no-local --[\s\S]*?BOB_RELEASE_PHASE=predeploy/u,
+    'La cible doit être re-prouvée par IDs immédiatement avant les migrations irréversibles.',
+  );
+  assert.match(railway, /- release-recovery/u);
+  assert.match(railway, /release\|release-recovery/u);
+  assert.match(railway, /EXPECTED_DIRECT_RECOVERY_REF:.*railway-api\.yml@refs\/heads\/main/u);
+  assert.match(railway, /"\$GITHUB_EVENT_NAME" = workflow_dispatch/u);
+  assert.match(railway, /"\$CONTROL_WORKFLOW_REF" = "\$EXPECTED_DIRECT_RECOVERY_REF"/u);
+  assert.match(railway, /"\$CONTROL_REF" = refs\/heads\/main/u);
+  assert.match(railway, /railway-release-deployment\.mjs validate-recovery-route/u);
+  assert.match(
+    railway,
+    /release-recovery is staging-only until the production promotion gate is certified/u,
+    'Le repli sur un latest terminal doit rester un chemin recovery explicitement sélectionné.',
+  );
+  assert.equal(
+    (railway.match(/railway up/gu) ?? []).length,
+    1,
+    'La release ne doit créer qu’un seul déploiement Railway.',
+  );
+  assert.match(
+    railway.slice(deploy, topology),
+    /railway up --project "\$RAILWAY_PROJECT_ID" --service "\$RAILWAY_API_SERVICE_ID"[\s\S]*?--environment "\$RAILWAY_ENVIRONMENT_ID" --detach --json[\s\S]*?railway-release-deployment\.mjs deployment-id[\s\S]*?deployment_id=\$deployment_id[\s\S]*?railway-release-deployment\.mjs[\s\S]*?wait-deployment "\$deployment_id"/u,
+    'Le transport doit être détaché puis attendu par son UUID autoritaire.',
+  );
+  assert.match(
+    railway.slice(topology, readiness),
+    /EXPECTED_DEPLOYMENT_ID: \$\{\{ steps\.deploy_api\.outputs\.deployment_id \}\}[\s\S]*?serving-deployment-id[\s\S]*?test "\$serving_deployment_id" = "\$EXPECTED_DEPLOYMENT_ID"/u,
+    'La topologie doit rapprocher le déploiement servant de celui créé par la release.',
+  );
+  assert.match(
     railway.slice(activation, finalPostdeploy),
     /certify_exact_revision\(\)[\s\S]*?timeout 20s railway status[\s\S]*?payload\?\.release\?\.sha !== process\.env\.EXPECTED_RELEASE_SHA[\s\S]*?payload\?\.release\?\.environment !== process\.env\.EXPECTED_RELEASE_ENVIRONMENT[\s\S]*?certify_exact_revision before-activation[\s\S]*?activate-release-protocols-v2\.sh[\s\S]*?certify_exact_revision before-postdeploy/u,
+  );
+  assert.match(
+    railway.slice(activation, finalPostdeploy),
+    /EXPECTED_DEPLOYMENT_ID: \$\{\{ steps\.deploy_api\.outputs\.deployment_id \}\}[\s\S]*?certify_exact_revision\(\)[\s\S]*?target-identity[\s\S]*?serving-deployment-id[\s\S]*?test "\$serving_deployment_id" = "\$EXPECTED_DEPLOYMENT_ID"[\s\S]*?certify_exact_revision before-activation[\s\S]*?certify_exact_revision before-postdeploy/u,
+    'Chaque re-probe irréversible doit rester lié au déploiement exact créé par la release.',
+  );
+  assert.equal(
+    (
+      railway
+        .slice(activation, finalPostdeploy)
+        .match(
+          /railway run --project "\$RAILWAY_PROJECT_ID" --service "\$RAILWAY_API_SERVICE_ID"[\s\S]*?--environment "\$RAILWAY_ENVIRONMENT_ID" --no-local --/gu,
+        ) ?? []
+    ).length,
+    2,
+    'Activation et postdeploy doivent ignorer tout override local comme le prédeploy.',
   );
   assert.match(
     releaseProtocolActivation,
@@ -364,8 +426,8 @@ test('le pipeline garde la capacité fermée jusqu’aux activations puis finali
   );
   assert.equal(
     (railway.match(/timeout 20s railway status/gu) ?? []).length,
-    3,
-    'Les trois lectures de topologie Railway doivent avoir une deadline.',
+    4,
+    'Les quatre lectures de topologie Railway doivent avoir une deadline.',
   );
   assert.equal(
     (ci.match(/BOB_RELEASE_EXPECTED_ENV: development/gu) ?? []).length,
