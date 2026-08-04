@@ -17,6 +17,7 @@ const [
   worker,
   audit,
   rlsCleanup,
+  facturXSample,
 ] = await Promise.all([
   readFile(
     new URL(
@@ -41,6 +42,7 @@ const [
   readFile(new URL('src/backend.service.ts', root), 'utf8'),
   readFile(new URL('src/document-archive-audit.main.ts', root), 'utf8'),
   readFile(new URL('prisma/rls-cert-cleanup.sql', root), 'utf8'),
+  readFile(new URL('scripts/generate-facturx-sample.mjs', root), 'utf8'),
 ]);
 
 test('expand/validate respectent le protocole de migration additif', () => {
@@ -73,6 +75,18 @@ test('les inventaires SQL sont régénérés depuis les unions TypeScript', () =
   });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /migration values verified/u);
+});
+
+test('l’échantillon Factur-X fournit la même date déterministe au PDF et à sa pièce jointe', () => {
+  assert.match(
+    facturXSample,
+    /const DOCUMENT_CREATED_AT = '2026-06-29T10:00:00\.000Z'/u,
+  );
+  assert.match(facturXSample, /documentCreatedAt: DOCUMENT_CREATED_AT/u);
+  assert.match(
+    facturXSample,
+    /renderInvoice\(pdfData, \{[\s\S]*xml,[\s\S]*createdAt: DOCUMENT_CREATED_AT,[\s\S]*\}\)/u,
+  );
 });
 
 test('la migration ferme immédiatement tables et fonctions à la Data API Supabase', () => {

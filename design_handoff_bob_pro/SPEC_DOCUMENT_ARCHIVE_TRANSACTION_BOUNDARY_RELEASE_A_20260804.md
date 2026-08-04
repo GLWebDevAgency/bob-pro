@@ -42,6 +42,9 @@ ni les pièces jointes de notification, ni la suppression de compte.
 10. Le rituel de release rejoue le certificat mutable Archive V2 après le cutover terminal V3 et son
     cleanup laisse des fixtures RLS immuables. Un deuxième passage peut donc échouer ou demander de
     rouvrir des droits N-1 que le cutover vient précisément de fermer.
+11. Le générateur de certification Factur-X est un consommateur réel du renderer. Sans date de
+    métadonnées explicite pour le PDF et son XML embarqué, le gate indépendant échoue avant même
+    Mustang/veraPDF ; ce harnais fait donc partie du contrat de déterminisme, pas d'un exemple annexe.
 
 ## 3. Périmètre Release A
 
@@ -162,6 +165,8 @@ un orphelin : il est une projection due que le reaper doit terminer.
     triggers immuables dans une seule transaction sous leur owner, et converge au second passage.
 22. Une release en état snapshot V2 terminal ne rejoue ni ne réaccorde le certificat mutable Archive
     V2 ; le certificat snapshot V3 est l'unique preuve runtime de ce rail.
+23. L'échantillon Factur-X de CI fournit une date canonique unique au document et à la pièce jointe ;
+    aucune horloge implicite ni fallback de renderer ne peut rendre le certificat vert.
 
 ## 6. Critères d'acceptation binaires
 
@@ -197,6 +202,8 @@ un orphelin : il est une projection due que le reaper doit terminer.
   trigger immuable désactivé.
 - [x] Le rituel prédeploy/postdeploy rejoué depuis l'état snapshot terminal ne réouvre aucun droit V2
   et passe sous le déployeur non-superuser.
+- [x] Le générateur Factur-X produit localement un PDF et un XML non vides avec la même date de
+  métadonnées explicite ; un test de contrat empêche de retirer ce câblage.
 - [x] Typecheck core/API, suites ciblées, build API et audit d'artefact passent depuis un checkout
   propre.
 - [x] Revue adversariale indépendante : aucun P0/P1 ouvert.
