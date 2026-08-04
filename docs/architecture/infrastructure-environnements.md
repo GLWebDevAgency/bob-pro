@@ -176,3 +176,19 @@ neuf sur schéma ancien = prod cassée (vécu le 25/07, ~40 min).
 | Environnements GitHub | `production` (jeton deploy prod), `staging` (jeton deploy staging), `railway-topology-staging` + `railway-topology-production` (jetons scoped LECTURE topologie, créés 25/07 — le moniteur ne monte jamais un jeton de déploiement) |
 | Moniteur topologie    | `.github/workflows/railway-topology-drift.yml`, cron 6 h, incidents auto label `railway-topology-monitor`                                                                                                                           |
 | Supabase              | org `glwebdevagency's projects` ; `swani-production` EN PAUSE (slot gratuit) ; MCP Supabase = canal d'administration autorisé                                                                                                       |
+
+Le workflow `railway-api.yml` exige, dans chaque environnement GitHub, les quatre identifiants
+Railway non secrets `RAILWAY_PROJECT_ID`, `RAILWAY_ENVIRONMENT_ID`, `RAILWAY_API_SERVICE_ID` et
+`RAILWAY_ARCHIVE_AUDIT_SERVICE_ID`. Il rapproche avant toute mutation les IDs avec les noms attendus,
+puis lie les probes post-audit au `deploymentId` créé par la release. Staging porte ce bloc complet.
+
+Une release normale exige `latestDeployment == activeDeployment` avant le prédeploy. Si Railway a
+laissé un déploiement terminal en échec devant l'ancienne réplique saine, la seule sortie est le
+purpose `release-recovery` : dispatch manuel direct de `railway-api.yml` sur `main`, staging
+uniquement. Il accepte ce latest seulement s'il ne sert aucune instance, revalide immédiatement la
+cible et la paire de bases, puis rétablit `latest == active == deploymentId` dès le nouvel upload.
+Un appel via un workflow réutilisable, une autre branche ou une cible production est refusé.
+
+`[BLOQUÉ FONDATEUR : GO de promotion production]` — au 4 août 2026, le bloc UUID de l'environnement
+GitHub `production` n'est pas installé. Il sera provisionné et certifié seulement après une release
+staging verte, avant la promotion production ; aucun UUID n'est inventé ni copié sans ce rituel.

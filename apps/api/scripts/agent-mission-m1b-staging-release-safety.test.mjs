@@ -74,7 +74,8 @@ test('workflow M1-B est uniquement manuel ou réutilisable, staging et sérialis
   assert.match(workflow, /cancel-in-progress: false/u);
 });
 
-test('le workflow Railway déjà présent sur main sert seulement de trampoline pré-merge', () => {
+test('le workflow Railway route chaque purpose vers son unique lane gouverné', () => {
+  assert.match(railwayReleaseWorkflow, /- release-recovery/u);
   assert.match(railwayReleaseWorkflow, /- m1b-staging-certification/u);
   assert.match(railwayReleaseWorkflow, /- m1b-staging-recovery/u);
   assert.match(railwayReleaseWorkflow, /- m2a3-semantic-certification/u);
@@ -91,11 +92,11 @@ test('le workflow Railway déjà présent sur main sert seulement de trampoline 
   assert.match(railwayReleaseWorkflow, /test "\$RELEASE_SERVICE" = "\$EXPECTED_SERVICE"/u);
   assert.match(
     railwayReleaseWorkflow,
-    /release-api:[\s\S]*?needs: validate-purpose[\s\S]*?if: \$\{\{ always\(\) && needs\.validate-purpose\.result == 'success' && inputs\.purpose == 'release' \}\}/u,
+    /release-api:[\s\S]*?needs: validate-purpose[\s\S]*?if: \$\{\{ always\(\) && needs\.validate-purpose\.result == 'success' && \(inputs\.purpose == 'release' \|\| inputs\.purpose == 'release-recovery'\) \}\}/u,
   );
   assert.match(
     railwayReleaseWorkflow,
-    /validate-purpose:[\s\S]*?release\|m1b-staging-certification\|m1b-staging-recovery\|m2a3-semantic-certification\|m2a3-staging-schema\|m2a3-staging-preview-activate\|m2a3-staging-preview-deactivate\|realtime-voice-trace-v2-staging\|k2-staging-schema\)[\s\S]*?Unsupported Railway release purpose/u,
+    /validate-purpose:[\s\S]*?release\|release-recovery\|m1b-staging-certification\|m1b-staging-recovery\|m2a3-semantic-certification\|m2a3-staging-schema\|m2a3-staging-preview-activate\|m2a3-staging-preview-deactivate\|realtime-voice-trace-v2-staging\|k2-staging-schema\)[\s\S]*?Unsupported Railway release purpose/u,
   );
   assert.match(
     railwayReleaseWorkflow,

@@ -1824,7 +1824,7 @@ test('le contrat image/config impose Node épinglé, rôle non-root et sandbox l
   );
   assert.match(
     workflow,
-    /release-api:\n\s+# [^\n]+\n(?:\s+# [^\n]+\n){2}\s+needs: validate-purpose\n\s+if: \$\{\{ always\(\) && needs\.validate-purpose\.result == 'success' && inputs\.purpose == 'release' \}\}/u,
+    /release-api:\n\s+# [^\n]+\n(?:\s+# [^\n]+\n){2}\s+needs: validate-purpose\n\s+if: \$\{\{ always\(\) && needs\.validate-purpose\.result == 'success' && \(inputs\.purpose == 'release' \|\| inputs\.purpose == 'release-recovery'\) \}\}/u,
   );
   assert.match(workflow, /release-api:[\s\S]*?timeout-minutes: 360/u);
   assert.match(
@@ -1837,7 +1837,7 @@ test('le contrat image/config impose Node épinglé, rôle non-root et sandbox l
   );
   assert.match(
     workflow,
-    /Preserve the non-PII archive audit envelope\n\s+if: always\(\)\n\s+timeout-minutes: 10/u,
+    /Preserve the non-PII archive audit envelope\n\s+if: \$\{\{ always\(\) && steps\.archive_audit\.outcome != 'skipped' \}\}\n\s+timeout-minutes: 10/u,
   );
   assert.ok(
     workflow.indexOf('--cleanup-only') < workflow.indexOf('activate-release-protocols-v2.sh'),

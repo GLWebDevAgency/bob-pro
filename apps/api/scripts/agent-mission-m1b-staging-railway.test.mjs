@@ -39,6 +39,7 @@ test('exécute le control plane Railway avant toute installation de dépendances
   for (const filename of [
     'agent-mission-m1b-staging-railway.mjs',
     'manage-agent-mission-fingerprint-key-versions.mjs',
+    'railway-release-deployment.mjs',
   ]) {
     await copyFile(join(SCRIPT_DIRECTORY, filename), join(isolatedDirectory, filename));
   }
@@ -744,6 +745,7 @@ function railwayStatus(deploymentOverrides = {}, latestOverrides = {}) {
     ...deploymentOverrides,
   };
   return {
+    id: PROJECT_ID,
     environments: {
       edges: [
         {
@@ -771,6 +773,14 @@ function railwayStatus(deploymentOverrides = {}, latestOverrides = {}) {
 test('identifie un unique déploiement réellement servant depuis railway status', () => {
   const config = parseRailwayM1BEnvironment(previewEnvironment());
   assert.equal(parseRailwayServingDeploymentId(railwayStatus(), config), DEPLOYMENT_ID);
+  assert.throws(
+    () =>
+      parseRailwayServingDeploymentId(
+        { ...railwayStatus(), id: '77777777-7777-4777-8777-777777777777' },
+        config,
+      ),
+    /expected project/u,
+  );
   assert.equal(
     parseRailwayServingDeploymentId(
       railwayStatus(
@@ -838,6 +848,7 @@ test('attend le deployment ID exact et échoue fermé sur identité ou état ter
       graphql,
       sleep: async () => undefined,
       attempts: 2,
+      discoverDeployment: async () => true,
     }),
   );
 
@@ -853,6 +864,7 @@ test('attend le deployment ID exact et échoue fermé sur identité ou état ter
         },
       }),
       attempts: 1,
+      discoverDeployment: async () => true,
     }),
     /identity/u,
   );
@@ -868,6 +880,7 @@ test('attend le deployment ID exact et échoue fermé sur identité ou état ter
         },
       }),
       attempts: 1,
+      discoverDeployment: async () => true,
     }),
     /terminal status FAILED/u,
   );

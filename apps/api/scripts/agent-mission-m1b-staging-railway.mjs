@@ -2,6 +2,11 @@
 import { timingSafeEqual } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { parseAgentMissionFingerprintKeyOperation } from './manage-agent-mission-fingerprint-key-versions.mjs';
+import {
+  parseRailwayServingDeploymentId as parseSharedRailwayServingDeploymentId,
+  parseRailwayUpDeploymentId as parseSharedRailwayUpDeploymentId,
+  waitForRailwayDeployment,
+} from './railway-release-deployment.mjs';
 
 const RAILWAY_GRAPHQL_URL = 'https://backboard.railway.com/graphql/v2';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -12,27 +17,6 @@ const SHA = /^[a-f0-9]{40}$/u;
 const PROFILE_CERTIFICATION = 'certification';
 const PROFILE_M2A3_PREVIEW = 'm2a3-preview';
 const MAX_RESPONSE_BYTES = 1_048_576;
-const TERMINAL_DEPLOYMENT_FAILURES = new Set([
-  'CRASHED',
-  'FAILED',
-  'REMOVED',
-  'REMOVING',
-  'SKIPPED',
-  'SLEEPING',
-]);
-const TRANSIENT_DEPLOYMENT_STATES = new Set([
-  'BUILDING',
-  'DEPLOYING',
-  'INITIALIZING',
-  'QUEUED',
-  'WAITING',
-]);
-const SAFE_NON_SERVING_LATEST_DEPLOYMENT_STATUSES = new Set([
-  'CRASHED',
-  'FAILED',
-  'REMOVED',
-  'SKIPPED',
-]);
 
 export const M1B_RAILWAY_RUNTIME_VARIABLES = Object.freeze([
   'BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED',
@@ -96,23 +80,6 @@ query AgentMissionM1BState(
 const RAILWAY_VARIABLE_COLLECTION_UPSERT = `
 mutation AgentMissionM1BVariables($input: VariableCollectionUpsertInput!) {
   variableCollectionUpsert(input: $input)
-}
-`;
-
-const RAILWAY_DEPLOYMENT_QUERY = `
-query AgentMissionM1BDeployment($id: String!) {
-  deployment(id: $id) {
-    id
-    projectId
-    environmentId
-    serviceId
-    status
-    deploymentStopped
-    instances {
-      id
-      status
-    }
-  }
 }
 `;
 
@@ -838,85 +805,21 @@ export async function runRailwayM1BCommand(command, environment = process.env, d
   );
 }
 
-export function parseRailwayUpDeploymentId(value) {
-  let payload;
-  try {
-    payload = typeof value === 'string' ? JSON.parse(value) : value;
-  } catch {
-    fail('railway up returned invalid JSON');
-  }
-  if (!plainObject(payload) || !UUID.test(payload.deploymentId ?? '')) {
-    fail('railway up did not return a canonical deploymentId');
-  }
-  return payload.deploymentId;
-}
+export const parseRailwayUpDeploymentId = parseSharedRailwayUpDeploymentId;
 
 export function parseRailwayServingDeploymentId(value, config) {
-  let project;
-  try {
-    project = typeof value === 'string' ? JSON.parse(value) : value;
-  } catch {
-    fail('railway status returned invalid JSON');
-  }
-  const environments = project?.environments?.edges;
-  if (!Array.isArray(environments)) fail('railway status omitted environments');
-  const matchingEnvironments = environments
-    .map((edge) => edge?.node)
-    .filter((environment) => environment?.id === config.environmentId);
-  if (matchingEnvironments.length !== 1 || matchingEnvironments[0]?.name !== 'staging') {
-    fail('railway status did not select exactly one staging environment');
-  }
-  const instances = matchingEnvironments[0]?.serviceInstances?.edges;
-  if (!Array.isArray(instances)) fail('railway status omitted service instances');
-  const matchingServices = instances
-    .map((edge) => edge?.node)
-    .filter((instance) => instance?.serviceId === config.serviceId);
-  if (matchingServices.length !== 1) {
-    fail('railway status did not select exactly one API service instance');
-  }
-  const service = matchingServices[0];
-  const active = service.activeDeployments;
-  const latest = service.latestDeployment;
-  if (
-    !Array.isArray(active) ||
-    active.length !== 1 ||
-    !plainObject(active[0]) ||
-    !plainObject(latest) ||
-    !UUID.test(active[0].id ?? '') ||
-    !UUID.test(latest.id ?? '') ||
-    typeof latest.status !== 'string' ||
-    typeof latest.deploymentStopped !== 'boolean' ||
-    !Array.isArray(latest.instances) ||
-    active[0].status !== 'SUCCESS' ||
-    active[0].deploymentStopped !== false ||
-    !Array.isArray(active[0].instances) ||
-    active[0].instances.length !== 1 ||
-    active[0].instances[0]?.status !== 'RUNNING'
-  ) {
-    fail('railway status did not prove one exact serving deployment');
-  }
-  if (latest.id === active[0].id) {
-    if (
-      latest.status !== 'SUCCESS' ||
-      latest.deploymentStopped !== false ||
-      latest.instances.length !== 1 ||
-      latest.instances[0]?.status !== 'RUNNING'
-    ) {
-      fail('railway latest deployment disagrees with the serving deployment');
-    }
-  } else if (
-    !SAFE_NON_SERVING_LATEST_DEPLOYMENT_STATUSES.has(latest.status) ||
-    latest.instances.some(
-      (instance) =>
-        !plainObject(instance) ||
-        !UUID.test(instance.id ?? '') ||
-        typeof instance.status !== 'string' ||
-        instance.status === 'RUNNING',
-    )
-  ) {
-    fail('railway latest deployment is not a stable terminal failure');
-  }
-  return active[0].id;
+  return parseSharedRailwayServingDeploymentId(
+    value,
+    {
+      projectId: config.projectId,
+      environmentId: config.environmentId,
+      serviceId: config.serviceId,
+      environmentName: 'staging',
+    },
+    // M1-B est l'outil de reprise explicite : lui seul peut examiner l'ancienne
+    // réplique saine lorsqu'un déploiement Railway plus récent a échoué.
+    { allowStableTerminalLatest: true },
+  );
 }
 
 export async function waitForRailwayM1BDeployment(
@@ -924,40 +827,21 @@ export async function waitForRailwayM1BDeployment(
   environment = process.env,
   dependencies = {},
 ) {
-  if (!UUID.test(deploymentId ?? '')) fail('deploymentId must be a UUID');
   const config = parseRailwayM1BEnvironment(environment);
-  const graphql = dependencies.graphql ?? railwayGraphql;
-  const sleep =
-    dependencies.sleep ??
-    ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
-  const attempts = dependencies.attempts ?? 90;
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const data = await graphql(
-      config,
-      RAILWAY_DEPLOYMENT_QUERY,
-      { id: deploymentId },
-      dependencies,
-    );
-    const deployment = plainObject(data.deployment) ? data.deployment : null;
-    if (
-      deployment?.id !== deploymentId ||
-      deployment.projectId !== config.projectId ||
-      deployment.environmentId !== config.environmentId ||
-      deployment.serviceId !== config.serviceId ||
-      typeof deployment.status !== 'string'
-    ) {
-      fail('Railway deployment identity is unavailable or mismatched');
-    }
-    if (deployment.status === 'SUCCESS') return { deploymentId, status: 'SUCCESS' };
-    if (TERMINAL_DEPLOYMENT_FAILURES.has(deployment.status)) {
-      fail(`Railway deployment reached terminal status ${deployment.status}`);
-    }
-    if (!TRANSIENT_DEPLOYMENT_STATES.has(deployment.status)) {
-      fail('Railway deployment returned an unknown status');
-    }
-    if (attempt < attempts) await sleep(10_000);
-  }
-  fail('Railway deployment did not reach SUCCESS within the bounded window');
+  return waitForRailwayDeployment(
+    deploymentId,
+    {
+      token: config.token,
+      projectId: config.projectId,
+      environmentId: config.environmentId,
+      serviceId: config.serviceId,
+      environmentName: 'staging',
+    },
+    {
+      ...dependencies,
+      attempts: dependencies.attempts ?? 90,
+    },
+  );
 }
 
 async function readStdin() {
