@@ -197,7 +197,7 @@ un orphelin : il est une projection due que le reaper doit terminer.
   trigger immuable désactivé.
 - [x] Le rituel prédeploy/postdeploy rejoué depuis l'état snapshot terminal ne réouvre aucun droit V2
   et passe sous le déployeur non-superuser.
-- [ ] Typecheck core/API, suites ciblées, build API et audit d'artefact passent depuis un checkout
+- [x] Typecheck core/API, suites ciblées, build API et audit d'artefact passent depuis un checkout
   propre.
 - [x] Revue adversariale indépendante : aucun P0/P1 ouvert.
 - [ ] Replay des migrations et du script de release sur Supabase staging au SHA mergé ; aucun
@@ -214,6 +214,7 @@ non-superuser distinct :
 - cinq exécutions concurrentes répétées des suites sensibles archive : vertes ;
 - `pnpm --filter @bob/core typecheck` et `pnpm --filter @bob/api typecheck` : verts ;
 - `pnpm --filter @bob/core lint` et `pnpm --filter @bob/api lint` : verts ;
+- `pnpm typecheck` et `pnpm lint` depuis le HEAD propre : tous les packages applicables verts ;
 - `pnpm --filter @bob/api build` : 458 fichiers certifiés, aucun double métier/fixture ;
 - `release.sh` en `predeploy`, activation terminale, puis `postdeploy` sur les 168 migrations : vert ;
 - cleanup RLS exécuté deux fois consécutivement : vert et sans fixture résiduelle ;
