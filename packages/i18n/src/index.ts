@@ -892,6 +892,29 @@ const legacyFr = {
     pro: 'Aucun encours client — poste clients à jour.',
     direct: 'Aucun encours.',
   },
+  // ── Acomptes signés pas encore facturés (audit QA A1) — l'argent GAGNÉ à la signature
+  // était invisible partout tant que rien n'était émis : l'artisan qui vient de faire signer
+  // doit voir SON acompte et le chemin pour l'encaisser.
+  'argent.signedDepositsTitle': {
+    pote: 'Signé, pas encore facturé',
+    pro: 'Acomptes signés à facturer',
+    direct: 'Acomptes à facturer',
+  },
+  'argent.signedDepositRow': {
+    pote: 'Acompte · {name}',
+    pro: 'Acompte · {name}',
+    direct: 'Acompte · {name}',
+  },
+  'argent.signedDepositNoteGenerate': {
+    pote: 'Devis {number} signé — génère la facture d’acompte pour encaisser.',
+    pro: 'Devis {number} signé — générez la facture d’acompte pour encaisser.',
+    direct: 'Devis {number} signé — facture à générer.',
+  },
+  'argent.signedDepositNoteDraft': {
+    pote: 'Devis {number} — brouillon d’acompte prêt, il reste à l’émettre.',
+    pro: 'Devis {number} — brouillon d’acompte prêt à émettre.',
+    direct: 'Devis {number} — brouillon à émettre.',
+  },
   // Astuce « première fois » (coach-mark, dismiss persisté).
   'argent.tipEyebrow': {
     pote: 'Astuce · première fois',
