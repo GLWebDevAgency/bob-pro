@@ -22,8 +22,13 @@
 import { t, type I18nKey, type Personality } from '@bob/i18n';
 import type { CompanyIssueBlocker } from '../data/company-completeness';
 
-/** Écrans de réglages atteignables depuis un gate. */
-export type SettingsRoute = '/compte' | '/reglages-facturation';
+/** Écrans de réglages atteignables depuis un gate. La variante ancrée fait défiler
+ *  Réglages jusqu'à la section visée : la page fait plusieurs écrans de haut, atterrir
+ *  en tête laissait l'artisan chercher où est le réglage exigé. */
+export type SettingsRoute =
+  | '/compte'
+  | '/reglages-facturation'
+  | '/reglages-facturation?section=paymentTerms';
 
 /** Champs dont l'absence peut BLOQUER une émission : les quatre exigences d'identité de
  *  `Company.assertCanIssue()` (via `CompanyIssueBlocker`) + les conditions de paiement
@@ -42,7 +47,7 @@ export const FIELD_EDITOR_ROUTE: Readonly<Record<BlockingField, SettingsRoute>> 
   address: '/reglages-facturation',
   capitalSocial: '/reglages-facturation',
   tvaIntracom: '/reglages-facturation',
-  paymentTerms: '/reglages-facturation',
+  paymentTerms: '/reglages-facturation?section=paymentTerms',
 };
 
 /**

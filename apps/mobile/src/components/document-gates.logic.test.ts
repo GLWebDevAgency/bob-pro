@@ -129,8 +129,10 @@ describe('VERROU anti-récidive — chaque refus d’assertCanIssue a un éditeu
     expect(companyCanIssue(props)).toBe(false);
     expect(blocker).toBe(attendu);
     if (blocker === null) throw new Error('inatteignable — garde de type');
-    // (b) un écran édite réellement ce champ.
+    // (b) un écran édite réellement ce champ (identité = §Identité, en tête : route nue).
     expect(FIELD_EDITOR_ROUTE[blocker]).toBe('/reglages-facturation');
+    // (b') les conditions de paiement vivent tout en bas de la page : route ANCRÉE (audit QA A4).
+    expect(FIELD_EDITOR_ROUTE.paymentTerms).toBe('/reglages-facturation?section=paymentTerms');
     // (c) le corps du gate existe sur les 3 tons et NOMME (≠ du repli générique).
     for (const personality of ['pote', 'pro', 'direct'] as const) {
       const named = companyIncompleteGateSpec(blocker, personality);
