@@ -134,7 +134,7 @@ function useFolderTints(): Record<VaultFolderKey, { tint: string; bg: string }> 
     chantiers: { tint: semantic.b2b, bg: semantic.b2bBg },
     achats: { tint: semantic.success, bg: semantic.successBg },
     assurances: { tint: semantic.particulier, bg: semantic.particulierBg },
-    fiscal: { tint: vault.aiDeep, bg: semantic.aiBg },
+    fiscal: { tint: vault.aiDeep, bg: vault.aiDeepBg },
     banque: { tint: semantic.b2b, bg: semantic.b2bBg },
     comptable: { tint: semantic.success, bg: semantic.successBg },
   };

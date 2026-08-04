@@ -236,7 +236,7 @@ export const vaultFolderTints = [
   { tint: semantic.b2b, bg: semantic.b2bBg },                 // 0 — marine (Chantiers)
   { tint: semantic.success, bg: semantic.successBg },         // 1 — vert (Achats)
   { tint: semantic.particulier, bg: semantic.particulierBg }, // 2 — ambre (Assurances)
-  { tint: vault.aiDeep, bg: semantic.aiBg },                  // 3 — violet (Fiscal)
+  { tint: vault.aiDeep, bg: vault.aiDeepBg },                // 3 — violet (Fiscal) — aiBg reste au canal Bob
   { tint: vault.folderSteel, bg: vault.folderSteelBg },       // 4 — acier (Banque)
   { tint: vault.folderTeal, bg: vault.folderTealBg },         // 5 — sarcelle (Comptable)
 ] as const;
