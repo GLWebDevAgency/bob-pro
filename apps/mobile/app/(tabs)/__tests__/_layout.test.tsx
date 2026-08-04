@@ -390,7 +390,7 @@ describe.each([
       'assistant',
     ]);
     expect(items.map((item) => item.label)).toEqual([
-      "Aujourd'hui",
+      'Aujourd’hui',
       'Clients',
       'Argent',
       'Documents',
@@ -416,7 +416,7 @@ describe('les routes ne changent pas d’un bras à l’autre', () => {
         title: (props['options'] as { title: string }).title,
       }));
       expect(screens).toEqual([
-        { name: 'index', title: "Aujourd'hui" },
+        { name: 'index', title: 'Aujourd’hui' },
         { name: 'clients', title: 'Clients' },
         { name: 'argent', title: 'Argent' },
         { name: 'documents', title: 'Documents' },
