@@ -44,7 +44,7 @@ const legacyFr = {
   // ── Lot 1 — chrome : libellés des 5 onglets (source unique ITEMS, (tabs)/_layout.tsx).
   // Chaînes IDENTIQUES dans les 3 tons au premier jour (plan DA 01/08 : « zéro changement
   // visible ») — la voix de Bob POURRA les différencier plus tard sans toucher au layout.
-  'tabs.index': { pote: "Aujourd'hui", pro: "Aujourd'hui", direct: "Aujourd'hui" },
+  'tabs.index': { pote: "Aujourd’hui", pro: "Aujourd’hui", direct: "Aujourd’hui" },
   'tabs.clients': { pote: 'Clients', pro: 'Clients', direct: 'Clients' },
   'tabs.argent': { pote: 'Argent', pro: 'Argent', direct: 'Argent' },
   'tabs.documents': { pote: 'Documents', pro: 'Documents', direct: 'Documents' },

@@ -923,7 +923,7 @@ export const QuoteActions = forwardRef<
     const choiceOptions = [
       { value: 'final', label: 'Facture de 100 %' },
       ...(depositPathAvailable && quote.depositPct !== null
-        ? [{ value: 'deposit', label: `Facture d'acompte (${quote.depositPct} %)` }]
+        ? [{ value: 'deposit', label: `Facture d’acompte (${quote.depositPct} %)` }]
         : []),
       // Le repli occupe la PLACE de l'acompte fermé : sélectionner ouvre d'abord l'explication
       // légale (LegalHint) — jamais une écriture directe.
@@ -1190,7 +1190,7 @@ export function InvoiceActions({
         label={t('legal.poGuard.inline', { personality })}
         lawKey="legal.poGuard.law"
         whyKey="legal.poGuard.why"
-        source="EN 16931 (BT-13) · exigence des acheteurs publics et grands comptes (Chorus Pro : n° d'engagement)"
+        source="EN 16931 (BT-13) · exigence des acheteurs publics et grands comptes (Chorus Pro : n° d’engagement)"
       />
       <View style={{ gap: 8, marginTop: 14, marginBottom: 8 }}>
         <Button
@@ -1302,7 +1302,7 @@ export function InvoiceActions({
         void (async () => {
           const ok = await confirm({
             title: 'Créer un avoir',
-            message: `Avoir total sur ${invoice.number ?? 'cette facture'} : il s'émettra avec son propre numéro (A-) et passera l'écriture comptable inverse.`,
+            message: `Avoir total sur ${invoice.number ?? 'cette facture'} : il s’émettra avec son propre numéro (A-) et passera l’écriture comptable inverse.`,
             challenge: challengeFor(FISCAL, 'confirm_all'),
           });
           if (!ok) return;

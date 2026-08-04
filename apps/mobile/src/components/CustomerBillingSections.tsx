@@ -282,7 +282,7 @@ export function CustomerBillingSections({ customer }: { customer: CustomerListIt
             label={t('legal.poGuard.inline', { personality })}
             lawKey="legal.poGuard.law"
             whyKey="legal.poGuard.why"
-            source="EN 16931 (BT-13) · exigence des acheteurs publics et grands comptes (Chorus Pro : n° d'engagement)"
+            source="EN 16931 (BT-13) · exigence des acheteurs publics et grands comptes (Chorus Pro : n° d’engagement)"
           />
         </View>
         {poError ? (
