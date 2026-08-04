@@ -20,7 +20,7 @@
  *  · états : chargement (skeletons), erreur (ErrorRetry), vide (invitation), nominal.
  * Préférences motion/transparence NON RÉSOLUES pendant tout le fichier (fail-closed kit).
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { createElement } from 'react';
 import { ThemeProvider } from '@bob/ui';
@@ -166,6 +166,12 @@ vi.mock('../../src/data/hooks', () => ({
 
 const { default: Ventes } = await import('../ventes');
 
+// Chaque Ventes publie sa surface agent à chaque rendu et porte des effets différés (dont le
+// debounce de recherche). Un renderer laissé monté peut donc republier une ancienne surface sous
+// contention CI et faire exécuter une commande vocale sur un autre écran que celui asserté.
+// Le registre rend l'isolation exhaustive, y compris pour les tests qui appellent render() deux fois.
+const mountedRenderers = new Set<ReactTestRenderer>();
+
 interface QueryDouble {
   data: unknown;
   isLoading: boolean;
@@ -230,6 +236,7 @@ async function render(): Promise<ReactTestRenderer> {
   await act(async () => {
     renderer = create(createElement(ThemeProvider, null, createElement(Ventes)));
   });
+  mountedRenderers.add(renderer);
   return renderer;
 }
 
@@ -283,6 +290,14 @@ function segmentTabs(renderer: ReactTestRenderer): Map<string, NodeLike> {
 
 beforeEach(() => {
   configure();
+});
+
+afterEach(async () => {
+  await act(async () => {
+    for (const renderer of mountedRenderers) renderer.unmount();
+  });
+  mountedRenderers.clear();
+  agent.surface = null;
 });
 
 describe('Nominal — extinction legacy : la table figée et le ton neutre des chips liées', () => {
