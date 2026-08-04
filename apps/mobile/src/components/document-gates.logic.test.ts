@@ -9,6 +9,8 @@ import {
   companyIncompleteGateSpec,
   paymentTermsMissingGateSpec,
   FIELD_EDITOR_ROUTE,
+  issuePreflightGateSpec,
+  customerBillingAddressComplete,
 } from './document-gates.logic';
 
 /**
@@ -152,5 +154,58 @@ describe('VERROU anti-récidive — chaque refus d’assertCanIssue a un éditeu
       .filter((field) => field !== 'paymentTerms')
       .sort();
     expect(provoques).toEqual(vocabulaire);
+  });
+});
+
+describe('pré-vol d’émission — TOUT nommé d’un coup, avant la confirmation (audit QA A6)', () => {
+  it('énumère identité + délai + adresse client en puces, route vers le premier éditeur', () => {
+    const spec = issuePreflightGateSpec(
+      {
+        companyBlockers: ['rcsOrRm', 'capitalSocial'],
+        paymentTermsMissing: true,
+        customerAddressMissing: { customerId: 'cust-42' },
+      },
+      'pote',
+    );
+    expect(spec).not.toBeNull();
+    expect(spec!.title).toContain('4');
+    expect(spec!.body.split('\n')).toHaveLength(4);
+    expect(spec!.body).toContain('immatriculation');
+    expect(spec!.body).toContain('capital social');
+    expect(spec!.body).toContain('délai de paiement');
+    expect(spec!.body).toContain('adresse de facturation du client');
+    expect(spec!.route).toBe('/reglages-facturation');
+  });
+
+  it('adresse client seule ⇒ route directe vers la fiche du client, titre singulier', () => {
+    const spec = issuePreflightGateSpec(
+      { companyBlockers: [], paymentTermsMissing: false, customerAddressMissing: { customerId: 'cust-42' } },
+      'pote',
+    );
+    expect(spec!.route).toBe('/client/cust-42?edit=1');
+    expect(spec!.title).not.toContain('{');
+  });
+
+  it('délai seul ⇒ la route ancrée des Valeurs par défaut', () => {
+    const spec = issuePreflightGateSpec(
+      { companyBlockers: [], paymentTermsMissing: true, customerAddressMissing: null },
+      'direct',
+    );
+    expect(spec!.route).toBe('/reglages-facturation?section=paymentTerms');
+  });
+
+  it('rien ne manque ⇒ null : l’émission suit son cours', () => {
+    expect(
+      issuePreflightGateSpec(
+        { companyBlockers: [], paymentTermsMissing: false, customerAddressMissing: null },
+        'pro',
+      ),
+    ).toBeNull();
+  });
+
+  it('customerBillingAddressComplete : la règle des trois champs non vides (miroir customer.ts)', () => {
+    expect(customerBillingAddressComplete({ line1: '4 rue Basse', zip: '92310', city: 'Sèvres' })).toBe(true);
+    expect(customerBillingAddressComplete({ line1: '', zip: '92310', city: 'Sèvres' })).toBe(false);
+    expect(customerBillingAddressComplete({ line1: '4 rue Basse', zip: '   ', city: 'Sèvres' })).toBe(false);
   });
 });

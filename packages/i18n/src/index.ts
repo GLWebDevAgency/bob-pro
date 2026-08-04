@@ -9535,6 +9535,54 @@ const legacyFr = {
   'gate.companyIncompleteCta': { pote: 'Compléter', pro: 'Compléter', direct: 'Compléter' },
   'gate.companyIncompleteCancel': { pote: 'Plus tard', pro: 'Plus tard', direct: 'Plus tard' },
 
+  // ── Pré-vol d'émission (audit QA A6) — TOUT ce qui manque, nommé d'un coup, AVANT la
+  // confirmation définitive : fini la découverte des exigences une par une à chaque tentative.
+  'gate.preflightTitle': {
+    pote: 'Avant d’émettre, il manque {count} :',
+    pro: 'Avant d’émettre, {count} éléments manquent :',
+    direct: '{count} manquants pour émettre :',
+  },
+  'gate.preflightTitleOne': {
+    pote: 'Avant d’émettre, il manque une chose :',
+    pro: 'Avant d’émettre, un élément manque :',
+    direct: 'Un manquant pour émettre :',
+  },
+  'gate.preflightItemRcsOrRm': {
+    pote: 'ton n° d’immatriculation (RCS ou RM)',
+    pro: 'le n° d’immatriculation (RCS ou RM)',
+    direct: 'n° RCS/RM',
+  },
+  'gate.preflightItemAddress': {
+    pote: 'l’adresse de ton entreprise',
+    pro: 'l’adresse de l’entreprise',
+    direct: 'adresse entreprise',
+  },
+  'gate.preflightItemCapitalSocial': {
+    pote: 'ton capital social',
+    pro: 'le capital social',
+    direct: 'capital social',
+  },
+  'gate.preflightItemTvaIntracom': {
+    pote: 'ton n° de TVA intracommunautaire',
+    pro: 'le n° de TVA intracommunautaire',
+    direct: 'n° TVA intracom',
+  },
+  'gate.preflightItemPaymentTerms': {
+    pote: 'ton délai de paiement par défaut',
+    pro: 'le délai de paiement par défaut',
+    direct: 'délai de paiement',
+  },
+  'gate.preflightItemCustomerAddress': {
+    pote: 'l’adresse de facturation du client',
+    pro: 'l’adresse de facturation du client',
+    direct: 'adresse du client',
+  },
+  'gate.preflightCta': {
+    pote: 'Compléter maintenant',
+    pro: 'Compléter maintenant',
+    direct: 'Compléter',
+  },
+
   // ── C26 — Compte & abonnement ───────────────────────────────────────────────
   // « Fermer » (pas « Retour ») : Compte est désormais atteint depuis la modale menu profil
   // (bottom sheet) — on ferme un écran ouvert depuis une modale, on n'y « retourne » pas.

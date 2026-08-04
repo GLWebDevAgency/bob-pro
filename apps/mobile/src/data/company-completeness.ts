@@ -58,3 +58,20 @@ export function companyIssueBlocker(
     ? (DOMAIN_FIELD_BLOCKER[refusal.error.field] ?? null)
     : null;
 }
+
+/**
+ * TOUS les champs d'identité manquants, nommables, dans l'ordre du domaine — le pré-vol
+ * d'émission les énumère d'un coup (audit QA A6). Même sémantique fail-closed que le
+ * singulier : une liste vide ne signifie « émissible » que si `companyCanIssue` le dit.
+ */
+export function companyIssueBlockers(
+  company: CompanyProps | null | undefined,
+): readonly CompanyIssueBlocker[] {
+  if (!company) return [];
+  const built = Company.of(company);
+  if (!built.ok) return [];
+  return built.value
+    .issueBlockers()
+    .map((field) => DOMAIN_FIELD_BLOCKER[field] ?? null)
+    .filter((blocker): blocker is CompanyIssueBlocker => blocker !== null);
+}
