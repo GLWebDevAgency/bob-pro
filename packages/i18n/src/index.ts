@@ -10070,6 +10070,23 @@ const legacyFr = {
     pro: 'Références des derniers incidents, partageables au support',
     direct: 'Références incidents',
   },
+
+  // ── Route inconnue (+not-found) — jamais l'écran anglais brut du routeur ───
+  'notFound.title': {
+    pote: 'Cette page n’existe pas',
+    pro: 'Cette page n’existe pas',
+    direct: 'Page inexistante',
+  },
+  'notFound.body': {
+    pote: 'Le lien que tu as suivi ne mène nulle part — un vieux lien ou une page déplacée, ça arrive. Tout le reste est à sa place.',
+    pro: 'Le lien suivi ne correspond à aucune page — lien obsolète ou page déplacée. Le reste de l’application est accessible normalement.',
+    direct: 'Lien mort. Le reste est en place.',
+  },
+  'notFound.cta': {
+    pote: 'Retour à l’accueil',
+    pro: 'Retour à l’accueil',
+    direct: 'Accueil',
+  },
 } as const satisfies Record<string, Copy>;
 
 const fr = {
