@@ -1720,6 +1720,43 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
     if (r.ok) expect(r.value).toEqual({ id: 'cust-42' });
   });
 
+  it('updateCustomer strippe le label BAN de l’adresse et forwarde requiresPurchaseOrder (audit QA B2)', async () => {
+    // L'AddressSuggestion de l'autocomplete BAN étend Address d'un `label` d'affichage : envoyé
+    // tel quel, le serveur répond 422 « Champ non autorisé » (allowlist line1/zip/city) et
+    // l'artisan ne peut plus jamais compléter l'adresse — donc plus émettre. Le body-builder
+    // doit tenir sa promesse d'allowlist explicite.
+    const input = {
+      name: 'Marie Lefebvre',
+      type: 'b2c' as const,
+      address: {
+        line1: '12 Rue Marcadet',
+        zip: '75018',
+        city: 'Paris',
+        label: '12 Rue Marcadet 75018 Paris',
+      } as { line1: string; zip: string; city: string },
+      requiresPurchaseOrder: true,
+    };
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      if (String(url) === 'https://api.bob.test/customers/cust-42' && init?.method === 'PATCH') {
+        expect(JSON.parse(String(init?.body))).toEqual({
+          name: 'Marie Lefebvre',
+          type: 'b2c',
+          address: { line1: '12 Rue Marcadet', zip: '75018', city: 'Paris' },
+          requiresPurchaseOrder: true,
+        });
+        return new Response(JSON.stringify({ id: 'cust-42' }), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ error: { kind: 'not_found', resource: 'route' } }), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
+    const r = await client.updateCustomer('cust-42', input);
+
+    expect(r.ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('listCustomers accepte uniquement des métriques dérivées cohérentes et un score absent', async () => {
     const item = {
       id: 'cust-42',

@@ -1066,7 +1066,8 @@ export function useUpdateCustomer() {
       return r.value;
     },
     onSuccess: () => void qc.invalidateQueries({ queryKey: keys.customers }),
-    onError: alertError,
+    // Pas d'alerte hook-level : chaque appelant porte son erreur inline (sinon le popup
+    // système doublait le message de la sheet et masquait le champ fautif).
   });
 }
 

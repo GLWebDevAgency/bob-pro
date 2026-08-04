@@ -444,6 +444,11 @@ export const billingTerrainFr = {
     pro: 'Une fois activée, l’émission d’une facture sans n° de bon de commande est bloquée pour ce client.',
     direct: 'Activé = pas d’émission sans n° de BC.',
   },
+  'poGuard.saveError': {
+    pote: 'J’ai pas réussi à enregistrer le réglage. Réessaie.',
+    pro: 'L’enregistrement du réglage a échoué. Veuillez réessayer.',
+    direct: 'Échec enregistrement. Réessaie.',
+  },
   'poGuard.enable': {
     pote: 'Activer',
     pro: 'Activer',

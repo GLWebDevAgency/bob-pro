@@ -965,7 +965,9 @@ function customerClientBody(
   return {
     type: input.type,
     name: input.name,
-    address: { ...input.address },
+    // L'AddressSuggestion BAN transporte un `label` d'affichage : le spread le faisait fuiter
+    // vers l'API qui n'autorise que ces trois champs (422 « Champ non autorisé »).
+    address: { line1: input.address.line1, zip: input.address.zip, city: input.address.city },
     ...(input.siren !== undefined ? { siren: input.siren } : {}),
     ...(input.siret !== undefined ? { siret: input.siret } : {}),
     ...(input.tvaIntracom !== undefined ? { tvaIntracom: input.tvaIntracom } : {}),
@@ -987,6 +989,9 @@ function customerClientBody(
     ...(input.isInternational !== undefined ? { isInternational: input.isInternational } : {}),
     ...(input.isSubcontractingBtp !== undefined
       ? { isSubcontractingBtp: input.isSubcontractingBtp }
+      : {}),
+    ...(input.requiresPurchaseOrder !== undefined
+      ? { requiresPurchaseOrder: input.requiresPurchaseOrder }
       : {}),
   };
 }
