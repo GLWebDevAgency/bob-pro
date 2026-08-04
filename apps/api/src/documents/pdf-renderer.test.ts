@@ -1,5 +1,5 @@
 import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName } from 'pdf-lib';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { InterventionReportData, InvoicePdfData, QuotePdfData } from '@bob/core';
 import {
   PDF_ACCENT_HEX,
@@ -467,22 +467,30 @@ describe('Déterminisme binaire — retry d’archive adressé par hash', () => 
   };
 
   it('produit exactement les mêmes octets pour B2B, B2C, devis signé et fiche de passage', async () => {
-    const renderer = new PdfRenderer();
-    const first = await Promise.all([
-      renderer.renderInvoice(baseInvoice, facturX),
-      renderer.renderInvoice(baseInvoice),
-      renderer.renderQuote({ ...baseQuote, signedBy: 'Mme Durand' }),
-      renderer.renderInterventionReport(report),
-    ]);
-    // Une horloge implicite en secondes changeait réellement taille et SHA chez pdf-lib.
-    await new Promise((resolve) => setTimeout(resolve, 1_100));
-    const second = await Promise.all([
-      renderer.renderInvoice(baseInvoice, facturX),
-      renderer.renderInvoice(baseInvoice),
-      renderer.renderQuote({ ...baseQuote, signedBy: 'Mme Durand' }),
-      renderer.renderInterventionReport(report),
-    ]);
+    // Seule Date est simulée : les promesses et l'I/O PDF restent réelles. Le test traverse deux
+    // secondes distinctes sans attente murale et conserve un budget explicite pour les huit rendus
+    // sous charge CI — un blocage réel reste donc borné et rouge.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2031-01-01T00:00:00.000Z'));
+      const renderer = new PdfRenderer();
+      const first = await Promise.all([
+        renderer.renderInvoice(baseInvoice, facturX),
+        renderer.renderInvoice(baseInvoice),
+        renderer.renderQuote({ ...baseQuote, signedBy: 'Mme Durand' }),
+        renderer.renderInterventionReport(report),
+      ]);
+      vi.setSystemTime(new Date('2031-01-01T00:00:02.000Z'));
+      const second = await Promise.all([
+        renderer.renderInvoice(baseInvoice, facturX),
+        renderer.renderInvoice(baseInvoice),
+        renderer.renderQuote({ ...baseQuote, signedBy: 'Mme Durand' }),
+        renderer.renderInterventionReport(report),
+      ]);
 
-    expect(second).toEqual(first);
-  });
+      expect(second).toEqual(first);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 15_000);
 });

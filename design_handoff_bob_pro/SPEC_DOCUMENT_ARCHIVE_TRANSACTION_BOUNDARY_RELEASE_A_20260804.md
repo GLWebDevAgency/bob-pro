@@ -219,6 +219,7 @@ non-superuser distinct :
 - `pnpm --filter @bob/api test` : 239 fichiers Vitest verts (2 969 tests), 648 gardes release et
   83 tests schéma/staging verts ; les skips correspondent uniquement aux certificats opt-in ;
 - cinq exécutions concurrentes répétées des suites sensibles archive : vertes ;
+- test de déterminisme PDF sans attente murale, puis quatre exécutions concurrentes : vertes ;
 - `pnpm --filter @bob/core typecheck` et `pnpm --filter @bob/api typecheck` : verts ;
 - `pnpm --filter @bob/core lint` et `pnpm --filter @bob/api lint` : verts ;
 - `pnpm typecheck` et `pnpm lint` depuis le HEAD propre : tous les packages applicables verts ;
