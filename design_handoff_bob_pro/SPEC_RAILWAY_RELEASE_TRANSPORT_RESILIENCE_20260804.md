@@ -9,6 +9,9 @@
 **Incident de certification découvert après merge :** workflow staging `30930082557`, SHA
 `87583d32aa43c7a87f97bbf485ace76a9b04f5fd`
 
+**Incident de parité ACL V2 découvert après merge :** workflow staging `30939161845`, SHA
+`042607f920e7bc1ecd4c2448f84fcbdd5b5e005e`
+
 ## 1. Objectif
 
 Une release ne doit pas échouer parce que le flux de logs attaché du CLI Railway est interrompu
@@ -35,6 +38,15 @@ volontairement l'ordre durable et le snapshot append-only du devis signé. La ga
 tort comme des archives étrangères. Le certificat doit conserver ce chemin de bout en bout, puis
 reconnaître et retirer uniquement son graphe synthétique exact ; il ne doit ni désactiver le scénario
 d'archive ni élargir la purge à une archive utilisateur.
+
+Le rejeu réel suivant (`30939161845`) a ensuite prouvé que le parking ajouté au certificat
+contredisait l'ACL terminale de l'archive V2 : après le vrai enqueue V3, l'adapter de test exécutait
+un `UPDATE document_archive_jobs` direct avec le rôle runtime. C'est précisément une capacité que
+le cutover V2 révoque. La base Supabase a donc refusé l'opération avec `42501`, alors que la CI
+éphémère l'avait exercée sous l'état expand V1. Le correctif ne doit surtout pas rendre `UPDATE` au
+runtime. Il doit garder l'enqueue métier réel, neutraliser uniquement l'accélération post-commit du
+worker dans l'instance de certificat — comme le fait déjà le certificat d'émission de facture — et
+laisser la purge administrateur vérifier puis retirer le graphe synthétique exact.
 
 ## 2. Périmètre
 
@@ -107,10 +119,16 @@ d'archive ni élargir la purge à une archive utilisateur.
 14. Ce certificat mutatif refuse tout environnement autre que `development` ou `staging`, y compris
     `production`, même si son flag Vitest est activé manuellement.
 15. Le scénario « signature gagnante » crée légitimement un graphe d'archive synthétique
-    `quote-signed`. Son adapter de certificat appelle d'abord le vrai enqueue V3, puis parque ce job
-    précis hors horizon dans la MÊME transaction de signature : ni le scheduler local, ni un ancien
-    serveur staging partageant la base ne peut matérialiser la fixture après le commit. Avant sa
-    purge, la transaction verrouille les jobs puis exige, pour chaque job, le tenant de
+    `quote-signed` au moyen du vrai enqueue V3 et des ACL runtime terminales. Le certificat ne fait
+    aucun `INSERT`/`UPDATE` direct sur `document_archive_jobs` et ne réaccorde aucun droit retiré par
+    le cutover V2. Seule l'accélération locale post-commit `runDocumentArchiveJobs` de l'instance
+    `BackendService` construite par la suite est neutralisée ; l'outbox durable et son snapshot
+    restent réellement écrits dans la transaction de signature. En staging, le certificat refuse
+    de créer une fixture si `JOB_COMPANY_IDS` est vide ; après le gate live qui exige déjà cette
+    variable, le scheduler canonique rend immédiatement cette allowlist sans utiliser son fallback
+    de découverte. L'identifiant UUID réservé et alloué dynamiquement par ce certificat ne peut donc
+    pas appartenir à cette configuration préexistante. Avant sa purge, la transaction
+    administrateur verrouille les jobs puis exige, pour chaque job, le tenant de
     certification, l'identifiant de devis déterministe de la fixture, le motif `quote-signed`, un
     état non terminal sans preuve, un snapshot bijectif de même identité et, pour récupérer un run
     antérieur déjà interrompu, au plus l'intention `signed_quote` déterministe associée au même
@@ -156,6 +174,10 @@ d'archive ni élargir la purge à une archive utilisateur.
 - [ ] La preuve distante confirme que le seul graphe archive éventuellement rencontré est le
       `quote-signed` synthétique non matérialisé attendu, qu'il est intégralement nettoyé et
       qu'aucune archive utilisateur ni objet Storage n'est supprimé.
+- [ ] Le certificat passe sous l'ACL terminale V2 sans `UPDATE document_archive_jobs` direct et
+      sans réaccorder ce privilège au rôle runtime.
+- [ ] Le scénario gagnant prouve exactement un job `quote-signed` pending sans lease/preuve et son
+      snapshot V3 scellé avant la purge ; staging refuse le seed si `JOB_COMPANY_IDS` est vide.
 - [ ] Un nouveau workflow staging au SHA mergé termine audit, activation et postdeploy.
 
 ## 5. Blocage explicite de promotion production

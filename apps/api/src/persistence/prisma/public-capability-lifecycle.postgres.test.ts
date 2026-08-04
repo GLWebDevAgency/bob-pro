@@ -12,9 +12,10 @@ import {
   type PdfRendererPort,
   type UnitOfWorkPort,
 } from '@bob/core';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, type MockInstance, vi } from 'vitest';
 import { BackendService } from '../../backend.service';
 import type { SupabaseAdminPort } from '../../auth/supabase-admin';
+import { jobCompanyIds } from '../../config/env';
 import type { NotificationDeliveryService } from '../../jobs/notification-delivery.service';
 import type { AppLogger } from '../../observability/logger';
 import type { Metrics } from '../../observability/metrics';
@@ -44,7 +45,6 @@ const CERT_STALE_RECOVERY_HOOK_TIMEOUT_MS = 180_000;
 const CERT_CURRENT_RUN_CLEANUP_HOOK_TIMEOUT_MS = 60_000;
 const CERT_ARCHIVE_QUIESCENCE_TIMEOUT_MS = 5_000;
 const CERT_ARCHIVE_QUIESCENCE_POLL_MS = 25;
-const CERT_ARCHIVE_PARKED_UNTIL = new Date('9999-12-31T23:59:59.999Z');
 const CERT_ALLOWED_RELEASE_ENVIRONMENTS = new Set(['development', 'staging']);
 const CERT_UUID_SUFFIX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const CERT_NOW = new Date().toISOString();
@@ -270,7 +270,7 @@ function gateFirstLocator(input: {
 
 function persistenceWith(
   base: PrismaPersistence,
-  overrides: Partial<Pick<Persistence, 'companies' | 'publicAccessTokens' | 'documentArchiveJobs'>>,
+  overrides: Partial<Pick<Persistence, 'companies' | 'publicAccessTokens'>>,
 ): Persistence {
   return new Proxy(base as Persistence, {
     get(target, property, receiver) {
@@ -283,54 +283,10 @@ function persistenceWith(
   });
 }
 
-function parkCertificationArchiveJobs(
-  repository: Persistence['documentArchiveJobs'],
-  worker: PrismaService,
-): Persistence['documentArchiveJobs'] {
-  return new Proxy(repository, {
-    get(target, property, receiver) {
-      if (property === 'enqueue') {
-        return async (input: Parameters<Persistence['documentArchiveJobs']['enqueue']>[0]) => {
-          const identity = certificationFixtureIdentity(input.companyId);
-          if (input.pieceId !== identity.quoteId || input.reason !== 'quote-signed') {
-            throw new Error('Public lifecycle certification archive enqueue identity is unsafe.');
-          }
-          if (!worker.inTransaction()) {
-            throw new Error(
-              'Public lifecycle certification archive enqueue is outside transaction.',
-            );
-          }
-          // Appelle le vrai writer V3 (job + snapshot scellé), puis parque CE job dans la même
-          // transaction métier. Un scheduler staging partageant la base ne peut donc jamais voir
-          // une fixture due entre le commit de signature et le cleanup du certificat.
-          await target.enqueue(input);
-          const parked = await worker.client().documentArchiveJob.updateMany({
-            where: {
-              id: input.id,
-              companyId: input.companyId,
-              invoiceId: input.pieceId,
-              reason: 'quote-signed',
-              status: { in: ['pending', 'failed'] },
-              integrityProof: { equals: Prisma.DbNull },
-              integrityProofSha256: null,
-              completedAt: null,
-            },
-            data: { nextAttemptAt: CERT_ARCHIVE_PARKED_UNTIL },
-          });
-          if (parked.count !== 1) {
-            throw new Error('Public lifecycle certification archive job could not be parked.');
-          }
-        };
-      }
-      const value = Reflect.get(target, property, receiver) as unknown;
-      return typeof value === 'function' ? value.bind(target) : value;
-    },
-  });
-}
-
 function makeBackend(persistence: Persistence): {
   service: BackendService;
   effects: { pdf: number; storage: number };
+  archiveKick: MockInstance<BackendService['runDocumentArchiveJobs']>;
 } {
   const effects = { pdf: 0, storage: 0 };
   const pdf: PdfRendererPort = {
@@ -387,7 +343,15 @@ function makeBackend(persistence: Persistence): {
     undefined,
     storage,
   );
-  return { service, effects };
+  // Le certificat porte sur la transaction légale et son vrai enqueue V3. Le worker d'archive a
+  // ses propres certificats ; neutraliser uniquement son kick local post-commit empêche cette
+  // instance de matérialiser la fixture sans demander l'UPDATE direct révoqué en archive V2.
+  // Le scheduler Railway ne parcourt que JOB_COMPANY_IDS, jamais l'UUID dynamique de cette suite.
+  const archiveKick = vi.spyOn(service, 'runDocumentArchiveJobs').mockResolvedValue({
+    ok: true,
+    value: { scanned: 0, archived: 0, failed: 0 },
+  });
+  return { service, effects, archiveKick };
 }
 
 async function issueCapability(input: {
@@ -456,6 +420,107 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
     let firstPersistence!: PrismaPersistence;
     let secondPersistence!: PrismaPersistence;
     let sentinelGrantId!: string;
+
+    async function assertPendingSignedQuoteArchive(fixture: Fixture): Promise<void> {
+      const jobs = await admin.documentArchiveJob.findMany({
+        where: { companyId: fixture.companyId },
+        select: {
+          id: true,
+          companyId: true,
+          invoiceId: true,
+          reason: true,
+          status: true,
+          attempts: true,
+          nextAttemptAt: true,
+          leaseToken: true,
+          lastError: true,
+          integrityProof: true,
+          integrityProofSha256: true,
+          completedAt: true,
+          artifacts: { select: { jobId: true } },
+          renderSnapshot: {
+            select: {
+              jobId: true,
+              companyId: true,
+              pieceId: true,
+              reason: true,
+              schemaVersion: true,
+              rendererVersion: true,
+              payload: true,
+              payloadSha256: true,
+              artifactIntents: { select: { jobId: true } },
+            },
+          },
+        },
+      });
+      expect(jobs).toHaveLength(1);
+      const job = jobs[0]!;
+      expect(job).toMatchObject({
+        companyId: fixture.companyId,
+        invoiceId: fixture.quoteId,
+        reason: 'quote-signed',
+        status: 'pending',
+        attempts: 0,
+        leaseToken: null,
+        lastError: null,
+        integrityProof: null,
+        integrityProofSha256: null,
+        completedAt: null,
+        artifacts: [],
+      });
+      const scheduleRows = await admin.$queryRaw<
+        Array<{ archiveV2Active: boolean; due: boolean; preCutoverSentinel: boolean }>
+      >(Prisma.sql`
+        SELECT public.document_archive_protocol_v2_is_active() AS "archiveV2Active",
+               "nextAttemptAt" <= statement_timestamp() AS due,
+               extract(year FROM "nextAttemptAt") = 9999 AS "preCutoverSentinel"
+        FROM public.document_archive_jobs
+        WHERE id = ${job.id}
+      `);
+      expect(scheduleRows).toHaveLength(1);
+      expect(scheduleRows[0]).toEqual(
+        scheduleRows[0]?.archiveV2Active
+          ? { archiveV2Active: true, due: true, preCutoverSentinel: false }
+          : { archiveV2Active: false, due: false, preCutoverSentinel: true },
+      );
+      const snapshot = job.renderSnapshot;
+      expect(snapshot).not.toBeNull();
+      if (snapshot === null) throw new Error('Signed quote archive snapshot is missing.');
+      expect(snapshot).toMatchObject({
+        jobId: job.id,
+        companyId: fixture.companyId,
+        pieceId: fixture.quoteId,
+        reason: 'quote-signed',
+        schemaVersion: 1,
+        rendererVersion: 1,
+        artifactIntents: [],
+      });
+      const opened = openDocumentArchiveRenderSnapshot({
+        snapshotSchemaVersion: snapshot.schemaVersion as 1,
+        rendererVersion: snapshot.rendererVersion as 1,
+        json: snapshot.payload,
+        sha256: snapshot.payloadSha256,
+      });
+      expect(opened).toMatchObject({
+        companyId: fixture.companyId,
+        pieceId: fixture.quoteId,
+        reason: 'quote-signed',
+      });
+      expect(opened.artifacts).toHaveLength(1);
+      expect(opened.artifacts[0]).toMatchObject({
+        kind: 'signed_quote',
+        documentId: generatedQuoteDocumentId(
+          fixture.companyId,
+          fixture.quoteId,
+          'signed_quote',
+        ),
+        versionId: generatedQuoteDocumentVersionId(
+          fixture.companyId,
+          fixture.quoteId,
+          'signed_quote',
+        ),
+      });
+    }
 
     async function seedFixture(label: string): Promise<Fixture> {
       const id = randomUUID();
@@ -668,10 +733,11 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
             throw new Error('Public lifecycle certification fixture dependency graph is unsafe.');
           }
           // `publicSignQuote` doit rester exercé de bout en bout : la signature gagnante écrit son
-          // job + snapshot append-only dans la transaction métier, puis son kick peut préparer une
-          // intention avant que le faux Storage refuse l'upload. Verrouille les jobs afin qu'un kick
-          // concurrent termine avant l'inspection, puis accepte UNIQUEMENT ce graphe synthétique
-          // non matérialisé et déterministe. Une autre archive reste un blocage, jamais une purge.
+          // job + snapshot append-only dans la transaction métier. Une reprise d'un run interrompu
+          // ou un worker externe a pu préparer une intention avant que le faux Storage refuse
+          // l'upload. Verrouille les jobs afin qu'un tel worker termine avant l'inspection, puis
+          // accepte UNIQUEMENT ce graphe synthétique non matérialisé et déterministe. Une autre
+          // archive reste un blocage, jamais une purge.
           const lockedArchiveJobs = await tx.$queryRaw<
             Array<{
               id: string;
@@ -983,6 +1049,11 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       if (!CERT_ALLOWED_RELEASE_ENVIRONMENTS.has(process.env.CABINET_RELEASE_ENV ?? '')) {
         throw new Error(
           'Public lifecycle PostgreSQL certification is restricted to development and staging.',
+        );
+      }
+      if (process.env.CABINET_RELEASE_ENV === 'staging' && jobCompanyIds().length === 0) {
+        throw new Error(
+          'Public lifecycle staging certification requires a non-empty JOB_COMPANY_IDS allowlist.',
         );
       }
       // Le cleanup admin utilise lui aussi une transaction interactive. PrismaService applique le
@@ -1344,12 +1415,8 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       });
       const publicPersistence = persistenceWith(firstPersistence, {
         companies: gatedCompanies,
-        documentArchiveJobs: parkCertificationArchiveJobs(
-          firstPersistence.documentArchiveJobs,
-          firstWorker,
-        ),
       });
-      const { service } = makeBackend(publicPersistence);
+      const { service, archiveKick } = makeBackend(publicPersistence);
       const signPromise = service.publicSignQuote(issued.value.token, 'Client certification');
       const signerPid = await waitForGateOrFailure(
         gate.acquired.promise,
@@ -1381,6 +1448,10 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         ok: true,
         value: { status: 'signed', retractation: null },
       });
+      await vi.waitFor(() => {
+        expect(archiveKick).toHaveBeenCalledWith({ companyId: fixture.companyId, limit: 5 });
+      });
+      await assertPendingSignedQuoteArchive(fixture);
       expect(closed.ok).toBe(true);
       const quote = await admin.quote.findUniqueOrThrow({
         where: { id: fixture.quoteId },
