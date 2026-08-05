@@ -192,7 +192,11 @@ const workflowJob = (name, nextName) => {
 
 test('les jobs release CI reproduisent Supabase avant toute certification', () => {
   const jobs = [
-    workflowJob('rls-certification', 'realtime-global-capacity-certification'),
+    workflowJob('rls-certification', 'document-archive-quarantine-certification'),
+    workflowJob(
+      'document-archive-quarantine-certification',
+      'realtime-global-capacity-certification',
+    ),
     workflowJob('realtime-global-capacity-certification', 'mistral-key-rotation-certification'),
     workflowJob('mistral-key-rotation-certification', 'facturx-conformance'),
   ];

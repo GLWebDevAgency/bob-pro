@@ -4,7 +4,7 @@
 **Objectifs canoniques :** O2 — facturation conforme et complète ; O7 — release reproductible
 **Date :** 4 août 2026
 **Décision produit source :** résoudre la cause réelle du blocage staging sans supprimer, masquer ni
-réinventer un original. Les trois objets Storage historiques restent intacts tant qu'une opération de
+réinventer un original. Les cinq objets Storage historiques restent intacts tant qu'une opération de
 quarantaine n'a pas été explicitement autorisée par le fondateur.
 
 ## 1. Objectif
@@ -70,7 +70,7 @@ ni les pièces jointes de notification, ni la suppression de compte.
 
 - **Release B :** projection API/mobile `preparing|retry_scheduled|ready`, polling et UX ;
 - **Release C :** pièce jointe e-mail matérialisée hors transaction provider ;
-- **Opération séparée :** copie vérifiée des trois orphelins staging vers une quarantaine privée,
+- **Opération séparée :** copie vérifiée des cinq orphelins staging vers une quarantaine privée,
   puis retrait des sources. L'exécution exige une autorisation fondateur explicite et un receipt ;
 - aucun changement au chantier suppression de compte ;
 - aucune modification des données de production.
@@ -238,6 +238,6 @@ Le statut passe :
 - à `released` uniquement quand `/health/ready` sert ce SHA, que l'audit Archive V2 est vert et que
   le receipt de release est attaché.
 
-La réconciliation des trois objets staging est une opération distincte. Tant qu'elle n'est pas
+La réconciliation des cinq objets staging est une opération distincte. Tant qu'elle n'est pas
 explicitement autorisée et exécutée avec copie+hash+receipt, elle reste un blocage opérationnel
 honnête ; elle ne justifie ni suppression silencieuse ni abaissement de l'audit.

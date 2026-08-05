@@ -1,0 +1,574 @@
+name: Document Archive Quarantine Staging
+
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Monotone quarantine phase
+        required: true
+        type: choice
+        options:
+          - plan
+          - apply
+      expected_sha:
+        description: Exact main SHA already served by staging
+        required: true
+        type: string
+      manifest_digest:
+        description: Sealed private manifest digest (apply only)
+        required: false
+        default: ''
+        type: string
+      confirmation:
+        description: Type QUARANTINE-STAGING:<manifestDigest> exactly (apply only)
+        required: false
+        default: ''
+        type: string
+      ssh_key_fingerprint:
+        description: Exact SHA256 fingerprint of the dedicated Railway SSH key
+        required: true
+        type: string
+      ssh_authorization_started_at_epoch:
+        description: UTC epoch that starts this bounded SSH authorization window
+        required: true
+        type: string
+      ssh_authorization_expires_at_epoch:
+        description: UTC epoch after which this workflow must refuse the SSH key
+        required: true
+        type: string
+
+concurrency:
+  group: railway-api-staging
+  cancel-in-progress: false
+
+jobs:
+  quarantine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    environment: staging
+    env:
+      API_BASE_URL: ${{ vars.API_BASE_URL }}
+      RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+      RAILWAY_ENVIRONMENT_ID: ${{ vars.RAILWAY_ENVIRONMENT_ID }}
+      RAILWAY_API_SERVICE_ID: ${{ vars.RAILWAY_API_SERVICE_ID }}
+      RAILWAY_ARCHIVE_AUDIT_SERVICE_ID: ${{ vars.RAILWAY_ARCHIVE_AUDIT_SERVICE_ID }}
+      DOCUMENT_ARCHIVE_SUPABASE_PROJECT_REF: ${{ vars.BOB_M1B_STAGING_SUPABASE_PROJECT_REF }}
+      RELEASE_SHA: ${{ inputs.expected_sha }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.18.0
+      - name: Initialize bounded runner workspace
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/bob-document-archive-quarantine-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -p "$root"
+          chmod 700 "$root"
+          echo "QUARANTINE_TEMP_ROOT=$root" >> "$GITHUB_ENV"
+      - name: Validate immutable staging scope and typed confirmation
+        env:
+          MODE: ${{ inputs.mode }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          MANIFEST_DIGEST: ${{ inputs.manifest_digest }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          SSH_KEY_FINGERPRINT: ${{ inputs.ssh_key_fingerprint }}
+          SSH_AUTHORIZATION_STARTED_AT_EPOCH: ${{ inputs.ssh_authorization_started_at_epoch }}
+          SSH_AUTHORIZATION_EXPIRES_AT_EPOCH: ${{ inputs.ssh_authorization_expires_at_epoch }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REF" = refs/heads/main
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$EXPECTED_SHA" = "$GITHUB_SHA"
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test -n "$API_BASE_URL"
+          [[ "$RAILWAY_PROJECT_ID" =~ ^[0-9a-f-]{36}$ ]]
+          [[ "$RAILWAY_ENVIRONMENT_ID" =~ ^[0-9a-f-]{36}$ ]]
+          [[ "$RAILWAY_API_SERVICE_ID" =~ ^[0-9a-f-]{36}$ ]]
+          [[ "$RAILWAY_ARCHIVE_AUDIT_SERVICE_ID" =~ ^[0-9a-f-]{36}$ ]]
+          [[ "$DOCUMENT_ARCHIVE_SUPABASE_PROJECT_REF" =~ ^[a-z0-9]{20}$ ]]
+          [[ "$SSH_KEY_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]]
+          [[ "$SSH_AUTHORIZATION_STARTED_AT_EPOCH" =~ ^[0-9]{10}$ ]]
+          [[ "$SSH_AUTHORIZATION_EXPIRES_AT_EPOCH" =~ ^[0-9]{10}$ ]]
+          now="$(date -u +%s)"
+          test "$SSH_AUTHORIZATION_STARTED_AT_EPOCH" -le "$now"
+          test "$((now - SSH_AUTHORIZATION_STARTED_AT_EPOCH))" -le 1800
+          test "$SSH_AUTHORIZATION_EXPIRES_AT_EPOCH" -gt "$now"
+          test "$((SSH_AUTHORIZATION_EXPIRES_AT_EPOCH - now))" -ge 9300
+          test "$((SSH_AUTHORIZATION_EXPIRES_AT_EPOCH - SSH_AUTHORIZATION_STARTED_AT_EPOCH))" -le 14400
+          case "$MODE" in
+            plan)
+              test -z "$MANIFEST_DIGEST"
+              test -z "$CONFIRMATION"
+              ;;
+            apply)
+              [[ "$MANIFEST_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+              test "$CONFIRMATION" = "QUARANTINE-STAGING:$MANIFEST_DIGEST"
+              ;;
+            *) exit 1 ;;
+          esac
+      - name: Install pinned Railway control plane client
+        run: sh apps/api/scripts/install-railway-cli.sh
+      - name: Prove exact served artifact and capture its sole running instance
+        id: topology
+        env:
+          BOB_M1B_RELEASE_SHA: ${{ inputs.expected_sha }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          set -euo pipefail
+          node apps/api/scripts/agent-mission-m1b-staging-readiness.mjs
+          mkdir -p "$QUARANTINE_TEMP_ROOT"
+          chmod 700 "$QUARANTINE_TEMP_ROOT"
+          status_file="$(mktemp "$QUARANTINE_TEMP_ROOT/status.XXXXXX")"
+          chmod 600 "$status_file"
+          timeout 20s railway status \
+            --project "$RAILWAY_PROJECT_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" \
+            --json > "$status_file"
+          node apps/api/scripts/certify-railway-single-replica.mjs \
+            staging "$RAILWAY_API_SERVICE_ID" "$status_file"
+          STATUS_FILE="$status_file" SERVICE_ID="$RAILWAY_API_SERVICE_ID" node <<'NODE'
+          const fs = require('node:fs');
+          const status = JSON.parse(fs.readFileSync(process.env.STATUS_FILE, 'utf8'));
+          const environments = status?.environments?.edges ?? [];
+          const staging = environments.map((edge) => edge?.node).find((node) => node?.name === 'staging');
+          const services = staging?.serviceInstances?.edges ?? [];
+          const service = services.map((edge) => edge?.node)
+            .filter((node) => node?.serviceId === process.env.SERVICE_ID);
+          const deployment = service[0]?.activeDeployments?.[0];
+          const instance = deployment?.instances?.[0];
+          const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+          if (
+            service.length !== 1 || service[0]?.activeDeployments?.length !== 1 ||
+            deployment?.status !== 'SUCCESS' || deployment?.deploymentStopped !== false ||
+            deployment?.instances?.length !== 1 || instance?.status !== 'RUNNING' ||
+            !uuid.test(deployment?.id ?? '') || !uuid.test(instance?.id ?? '')
+          ) process.exit(1);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT,
+            `deployment_id=${deployment.id}\ndeployment_instance_id=${instance.id}\n`);
+          NODE
+      - name: Install dedicated Railway SSH identity
+        id: ssh_identity
+        env:
+          RAILWAY_SSH_PRIVATE_KEY: ${{ secrets.DOCUMENT_ARCHIVE_RAILWAY_SSH_PRIVATE_KEY }}
+          EXPECTED_SSH_KEY_FINGERPRINT: ${{ inputs.ssh_key_fingerprint }}
+        run: |
+          set -euo pipefail
+          test -n "$RAILWAY_SSH_PRIVATE_KEY"
+          umask 077
+          mkdir -p "$QUARANTINE_TEMP_ROOT" "$HOME/.ssh"
+          chmod 700 "$QUARANTINE_TEMP_ROOT" "$HOME/.ssh"
+          identity="$QUARANTINE_TEMP_ROOT/id_ed25519"
+          printf '%s\n' "$RAILWAY_SSH_PRIVATE_KEY" > "$identity"
+          chmod 600 "$identity"
+          ssh-keygen -y -f "$identity" >/dev/null
+          actual_fingerprint="$(ssh-keygen -lf "$identity" -E sha256 | awk '{print $2}')"
+          test "$actual_fingerprint" = "$EXPECTED_SSH_KEY_FINGERPRINT"
+          printf '%s\n' \
+            'Host ssh.railway.com' \
+            '  BatchMode yes' \
+            '  IdentitiesOnly yes' \
+            '  StrictHostKeyChecking accept-new' \
+            "  UserKnownHostsFile $QUARANTINE_TEMP_ROOT/known_hosts" \
+            '  ConnectTimeout 10' \
+            '  ConnectionAttempts 2' > "$HOME/.ssh/config"
+          chmod 600 "$HOME/.ssh/config"
+          effective_config="$(ssh -G -F "$HOME/.ssh/config" -i "$identity" ssh.railway.com)"
+          grep -qx 'batchmode yes' <<<"$effective_config"
+          grep -qx 'identitiesonly yes' <<<"$effective_config"
+          grep -qx 'stricthostkeychecking accept-new' <<<"$effective_config"
+          grep -qx 'connecttimeout 10' <<<"$effective_config"
+          grep -qx 'connectionattempts 2' <<<"$effective_config"
+          grep -Fqx "identityfile $identity" <<<"$effective_config"
+          echo "path=$identity" >> "$GITHUB_OUTPUT"
+      - name: Trust once and prove the Railway SSH relay on the exact instance
+        env:
+          DEPLOYMENT_INSTANCE_ID: ${{ steps.topology.outputs.deployment_instance_id }}
+          SSH_IDENTITY: ${{ steps.ssh_identity.outputs.path }}
+        run: |
+          set -euo pipefail
+          # Railway's native SSH transport is TOFU: accept a previously unseen relay key,
+          # but continue to reject a changed key. The runner is ephemeral and this command
+          # also proves the dedicated identity before any archive plan is created.
+          timeout 20s ssh \
+            -F "$HOME/.ssh/config" \
+            -T \
+            -i "$SSH_IDENTITY" \
+            "$DEPLOYMENT_INSTANCE_ID@ssh.railway.com" \
+            env true
+      - name: Run fresh global pre-delete audit and accept only the exact five-object refusal
+        id: initial_audit
+        if: ${{ inputs.mode == 'plan' }}
+        timeout-minutes: 100
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          DOCUMENT_ARCHIVE_AUDIT_CI_EVIDENCE: ${{ github.workspace }}/.quarantine-evidence/initial-audit.json
+          DOCUMENT_ARCHIVE_AUDIT_TIMEOUT_SECONDS: '5400'
+          DOCUMENT_ARCHIVE_AUDIT_POLL_SECONDS: '10'
+        run: |
+          set -euo pipefail
+          set +e
+          node apps/api/scripts/run-railway-document-archive-audit.mjs
+          audit_exit="$?"
+          set -e
+          test "$audit_exit" -eq 1
+          EVIDENCE="$DOCUMENT_ARCHIVE_AUDIT_CI_EVIDENCE" EXPECTED_SHA="$GITHUB_SHA" node <<'NODE'
+          const fs = require('node:fs');
+          const value = JSON.parse(fs.readFileSync(process.env.EVIDENCE, 'utf8'));
+          const codes = ['ARCHIVE_PROTOCOL_V2_STORAGE_ORPHAN_PRESENT', 'STORAGE_OBJECT_WITHOUT_SQL_REFERENCE'];
+          const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+          const sha256 = /^[0-9a-f]{64}$/u;
+          if (
+            value?.schemaVersion !== 1 || value?.releaseSha !== process.env.EXPECTED_SHA ||
+            value?.protocolVersion !== 2 || value?.mode !== 'protocol-v2-verified' ||
+            value?.readyForActivation !== false || value?.counts?.storageOrphans !== 5 ||
+            value?.counts?.missingStoredObjects !== 0 || value?.counts?.p0Issues !== 6 ||
+            JSON.stringify(value?.issueCodes) !== JSON.stringify(codes) ||
+            !uuid.test(value?.deploymentId ?? '') || !sha256.test(value?.inventoryDigest ?? '') ||
+            !sha256.test(value?.reportSha256 ?? '')
+          ) process.exit(1);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT,
+            `deployment_id=${value.deploymentId}\ninventory_digest=${value.inventoryDigest}\nreport_sha256=${value.reportSha256}\n`);
+          NODE
+      - name: Reconcile initial audit one-shot deployment
+        if: ${{ always() && inputs.mode == 'plan' && steps.initial_audit.outcome != 'skipped' }}
+        timeout-minutes: 4
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          DOCUMENT_ARCHIVE_AUDIT_CI_EVIDENCE: ${{ github.workspace }}/.quarantine-evidence/initial-audit.json
+          DOCUMENT_ARCHIVE_AUDIT_TIMEOUT_SECONDS: '5400'
+          DOCUMENT_ARCHIVE_AUDIT_POLL_SECONDS: '10'
+        run: node apps/api/scripts/run-railway-document-archive-audit.mjs --cleanup-only
+      - name: Seal exact five-object private plan in the served artifact
+        if: ${{ inputs.mode == 'plan' && success() }}
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          AUDIT_DEPLOYMENT_ID: ${{ steps.initial_audit.outputs.deployment_id }}
+          AUDIT_INVENTORY_DIGEST: ${{ steps.initial_audit.outputs.inventory_digest }}
+          AUDIT_REPORT_SHA256: ${{ steps.initial_audit.outputs.report_sha256 }}
+          DEPLOYMENT_INSTANCE_ID: ${{ steps.topology.outputs.deployment_instance_id }}
+          SSH_IDENTITY: ${{ steps.ssh_identity.outputs.path }}
+        run: |
+          set -euo pipefail
+          oidc_response="$(mktemp "$QUARANTINE_TEMP_ROOT/oidc.XXXXXX")"
+          plan_input="$(mktemp "$QUARANTINE_TEMP_ROOT/plan.XXXXXX")"
+          receipt="$(mktemp "$QUARANTINE_TEMP_ROOT/receipt.XXXXXX")"
+          chmod 600 "$oidc_response" "$plan_input" "$receipt"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --max-time 15 \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=bob-document-archive-quarantine-staging" \
+            > "$oidc_response"
+          OIDC_RESPONSE="$oidc_response" PLAN_INPUT="$plan_input" node <<'NODE'
+          const fs = require('node:fs');
+          const response = JSON.parse(fs.readFileSync(process.env.OIDC_RESPONSE, 'utf8'));
+          if (typeof response?.value !== 'string' || response.value.length < 100) process.exit(1);
+          fs.writeFileSync(process.env.PLAN_INPUT, JSON.stringify({
+            schemaVersion: 1,
+            oidcToken: response.value,
+          }), { mode: 0o600 });
+          NODE
+          railway ssh \
+            --project "$RAILWAY_PROJECT_ID" \
+            --service "$RAILWAY_API_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" \
+            --deployment-instance "$DEPLOYMENT_INSTANCE_ID" \
+            --identity-file "$SSH_IDENTITY" \
+            env \
+              DOCUMENT_ARCHIVE_QUARANTINE_MODE=plan \
+              DOCUMENT_ARCHIVE_SUPABASE_PROJECT_REF="$DOCUMENT_ARCHIVE_SUPABASE_PROJECT_REF" \
+              DOCUMENT_ARCHIVE_QUARANTINE_AUDIT_DEPLOYMENT_ID="$AUDIT_DEPLOYMENT_ID" \
+              DOCUMENT_ARCHIVE_QUARANTINE_AUDIT_INVENTORY_DIGEST="$AUDIT_INVENTORY_DIGEST" \
+              DOCUMENT_ARCHIVE_QUARANTINE_AUDIT_REPORT_SHA256="$AUDIT_REPORT_SHA256" \
+              node dist/document-archive-quarantine.main.js \
+            < "$plan_input" > "$receipt"
+          PLAN_RECEIPT="$receipt" EXPECTED_SHA="$GITHUB_SHA" node <<'NODE'
+          const fs = require('node:fs');
+          const prefix = 'BOB_DOCUMENT_ARCHIVE_QUARANTINE_PLAN=';
+          const lines = fs.readFileSync(process.env.PLAN_RECEIPT, 'utf8').trim().split(/\r?\n/u);
+          if (lines.length !== 1 || !lines[0].startsWith(prefix)) process.exit(1);
+          const value = JSON.parse(Buffer.from(lines[0].slice(prefix.length), 'base64url').toString('utf8'));
+          if (
+            value?.schemaVersion !== 2 || value?.environment !== 'staging' ||
+            value?.releaseSha !== process.env.EXPECTED_SHA || value?.entryCount !== 5 ||
+            !/^[0-9a-f]{64}$/u.test(value?.manifestDigest ?? '') ||
+            !/^[0-9a-f]{64}$/u.test(value?.companyIdSha256 ?? '')
+          ) process.exit(1);
+          fs.writeFileSync('document-archive-quarantine-plan-receipt.json', `${JSON.stringify(value)}\n`, {
+            mode: 0o600, flag: 'wx',
+          });
+          process.stdout.write(`sealed-manifest=${value.manifestDigest}\n`);
+          NODE
+      - name: Apply sealed plan under exact workflow OIDC and long mutation lease
+        id: apply
+        if: ${{ inputs.mode == 'apply' }}
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          MANIFEST_DIGEST: ${{ inputs.manifest_digest }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          DEPLOYMENT_INSTANCE_ID: ${{ steps.topology.outputs.deployment_instance_id }}
+          SSH_IDENTITY: ${{ steps.ssh_identity.outputs.path }}
+        run: |
+          set -euo pipefail
+          oidc_response="$(mktemp "$QUARANTINE_TEMP_ROOT/oidc.XXXXXX")"
+          apply_input="$(mktemp "$QUARANTINE_TEMP_ROOT/apply.XXXXXX")"
+          receipt="$(mktemp "$QUARANTINE_TEMP_ROOT/receipt.XXXXXX")"
+          chmod 600 "$oidc_response" "$apply_input" "$receipt"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --max-time 15 \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=bob-document-archive-quarantine-staging" \
+            > "$oidc_response"
+          OIDC_RESPONSE="$oidc_response" APPLY_INPUT="$apply_input" node <<'NODE'
+          const fs = require('node:fs');
+          const response = JSON.parse(fs.readFileSync(process.env.OIDC_RESPONSE, 'utf8'));
+          if (typeof response?.value !== 'string' || response.value.length < 100) process.exit(1);
+          fs.writeFileSync(process.env.APPLY_INPUT, JSON.stringify({
+            schemaVersion: 1,
+            manifestDigest: process.env.MANIFEST_DIGEST,
+            confirmation: process.env.CONFIRMATION,
+            oidcToken: response.value,
+          }), { mode: 0o600 });
+          NODE
+          railway ssh \
+            --project "$RAILWAY_PROJECT_ID" \
+            --service "$RAILWAY_API_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" \
+            --deployment-instance "$DEPLOYMENT_INSTANCE_ID" \
+            --identity-file "$SSH_IDENTITY" \
+            env DOCUMENT_ARCHIVE_QUARANTINE_MODE=apply \
+              DOCUMENT_ARCHIVE_SUPABASE_PROJECT_REF="$DOCUMENT_ARCHIVE_SUPABASE_PROJECT_REF" \
+              node dist/document-archive-quarantine-apply.main.js \
+            < "$apply_input" > "$receipt"
+          APPLY_RECEIPT="$receipt" EXPECTED_SHA="$GITHUB_SHA" node <<'NODE'
+          const fs = require('node:fs');
+          const prefix = 'BOB_DOCUMENT_ARCHIVE_QUARANTINE_APPLY=';
+          const lines = fs.readFileSync(process.env.APPLY_RECEIPT, 'utf8').trim().split(/\r?\n/u);
+          if (lines.length !== 1 || !lines[0].startsWith(prefix)) process.exit(1);
+          const value = JSON.parse(Buffer.from(lines[0].slice(prefix.length), 'base64url').toString('utf8'));
+          if (
+            value?.schemaVersion !== 2 || value?.environment !== 'staging' ||
+            value?.releaseSha !== process.env.EXPECTED_SHA || value?.phase !== 'deleted_verified' ||
+            value?.sourceCount !== 5 || !/^[0-9a-f]{64}$/u.test(value?.manifestDigest ?? '') ||
+            !/^[0-9a-f]{64}$/u.test(value?.receiptSha256 ?? '')
+          ) process.exit(1);
+          fs.writeFileSync('document-archive-quarantine-deleted-receipt.json', `${JSON.stringify(value)}\n`, {
+            mode: 0o600, flag: 'wx',
+          });
+          NODE
+      - name: Resume a durable final audit before requesting a new one
+        id: resume
+        if: ${{ inputs.mode == 'apply' && success() }}
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          MANIFEST_DIGEST: ${{ inputs.manifest_digest }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          DEPLOYMENT_INSTANCE_ID: ${{ steps.topology.outputs.deployment_instance_id }}
+          SSH_IDENTITY: ${{ steps.ssh_identity.outputs.path }}
+        run: |
+          set -euo pipefail
+          oidc_response="$(mktemp "$QUARANTINE_TEMP_ROOT/oidc.XXXXXX")"
+          finalize_input="$(mktemp "$QUARANTINE_TEMP_ROOT/finalize.XXXXXX")"
+          receipt="$(mktemp "$QUARANTINE_TEMP_ROOT/receipt.XXXXXX")"
+          failure="$(mktemp "$QUARANTINE_TEMP_ROOT/finalize-error.XXXXXX")"
+          chmod 600 "$oidc_response" "$finalize_input" "$receipt" "$failure"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --max-time 15 \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=bob-document-archive-quarantine-staging" \
+            > "$oidc_response"
+          OIDC_RESPONSE="$oidc_response" FINALIZE_INPUT="$finalize_input" node <<'NODE'
+          const fs = require('node:fs');
+          const response = JSON.parse(fs.readFileSync(process.env.OIDC_RESPONSE, 'utf8'));
+          if (typeof response?.value !== 'string' || response.value.length < 100) process.exit(1);
+          fs.writeFileSync(process.env.FINALIZE_INPUT, JSON.stringify({
+            schemaVersion: 1,
+            manifestDigest: process.env.MANIFEST_DIGEST,
+            confirmation: process.env.CONFIRMATION,
+            oidcToken: response.value,
+          }), { mode: 0o600 });
+          NODE
+          set +e
+          railway ssh \
+            --project "$RAILWAY_PROJECT_ID" \
+            --service "$RAILWAY_API_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" \
+            --deployment-instance "$DEPLOYMENT_INSTANCE_ID" \
+            --identity-file "$SSH_IDENTITY" \
+            env -u DOCUMENT_ARCHIVE_QUARANTINE_AUDIT_DEPLOYMENT_ID \
+              -u DOCUMENT_ARCHIVE_QUARANTINE_AUDIT_INVENTORY_DIGEST \
+              -u DOCUMENT_ARCHIVE_QUARANTINE_AUDIT_REPORT_SHA256 \
+              DOCUMENT_ARCHIVE_QUARANTINE_MODE=finalize \
+              DOCUMENT_ARCHIVE_SUPABASE_PROJECT_REF="$DOCUMENT_ARCHIVE_SUPABASE_PROJECT_REF" \
+              node dist/document-archive-quarantine-finalize.main.js \
+            < "$finalize_input" > "$receipt" 2> "$failure"
+          finalize_status="$?"
+          set -e
+          if [ "$finalize_status" -ne 0 ]; then
+            if grep -Fqx 'ARCHIVE_QUARANTINE_FINAL_AUDIT_NOT_RECORDED' "$failure"; then
+              echo 'resumed=false' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo 'Durable final-audit recovery failed closed.' >&2
+            exit 1
+          fi
+          FINAL_RECEIPT="$receipt" EXPECTED_SHA="$GITHUB_SHA" node <<'NODE'
+          const fs = require('node:fs');
+          const prefix = 'BOB_DOCUMENT_ARCHIVE_QUARANTINE_FINALIZE=';
+          const lines = fs.readFileSync(process.env.FINAL_RECEIPT, 'utf8').trim().split(/\r?\n/u);
+          if (lines.length !== 1 || !lines[0].startsWith(prefix)) process.exit(1);
+          const value = JSON.parse(Buffer.from(lines[0].slice(prefix.length), 'base64url').toString('utf8'));
+          if (
+            value?.schemaVersion !== 2 || value?.environment !== 'staging' ||
+            value?.releaseSha !== process.env.EXPECTED_SHA || value?.phase !== 'completed' ||
+            value?.sourceCount !== 5 || !/^[0-9a-f]{64}$/u.test(value?.manifestDigest ?? '') ||
+            !/^[0-9a-f]{64}$/u.test(value?.receiptSha256 ?? '') ||
+            !/^[0-9a-f-]{36}$/u.test(value?.finalAuditDeploymentId ?? '') ||
+            !/^[0-9a-f]{64}$/u.test(value?.finalAuditInventoryDigest ?? '') ||
+            !/^[0-9a-f]{64}$/u.test(value?.finalAuditReportSha256 ?? '')
+          ) process.exit(1);
+          fs.writeFileSync('document-archive-quarantine-completed-receipt.json', `${JSON.stringify(value)}\n`, {
+            mode: 0o600, flag: 'wx',
+          });
+          NODE
+          echo 'resumed=true' >> "$GITHUB_OUTPUT"
+      - name: Run fresh global post-delete audit and require exact 0/0/0
+        id: final_audit
+        if: ${{ inputs.mode == 'apply' && success() && steps.resume.outputs.resumed != 'true' }}
+        timeout-minutes: 100
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          DOCUMENT_ARCHIVE_AUDIT_CI_EVIDENCE: ${{ github.workspace }}/.quarantine-evidence/final-audit.json
+          DOCUMENT_ARCHIVE_AUDIT_TIMEOUT_SECONDS: '5400'
+          DOCUMENT_ARCHIVE_AUDIT_POLL_SECONDS: '10'
+        run: |
+          set -euo pipefail
+          node apps/api/scripts/run-railway-document-archive-audit.mjs
+          EVIDENCE="$DOCUMENT_ARCHIVE_AUDIT_CI_EVIDENCE" EXPECTED_SHA="$GITHUB_SHA" node <<'NODE'
+          const fs = require('node:fs');
+          const value = JSON.parse(fs.readFileSync(process.env.EVIDENCE, 'utf8'));
+          const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+          const sha256 = /^[0-9a-f]{64}$/u;
+          if (
+            value?.schemaVersion !== 1 || value?.releaseSha !== process.env.EXPECTED_SHA ||
+            value?.protocolVersion !== 2 || value?.mode !== 'protocol-v2-verified' ||
+            value?.readyForActivation !== true || value?.counts?.storageOrphans !== 0 ||
+            value?.counts?.missingStoredObjects !== 0 || value?.counts?.p0Issues !== 0 ||
+            !Array.isArray(value?.issueCodes) || value.issueCodes.length !== 0 ||
+            !uuid.test(value?.deploymentId ?? '') || !sha256.test(value?.inventoryDigest ?? '') ||
+            !sha256.test(value?.reportSha256 ?? '')
+          ) process.exit(1);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT,
+            `deployment_id=${value.deploymentId}\ninventory_digest=${value.inventoryDigest}\nreport_sha256=${value.reportSha256}\n`);
+          NODE
+      - name: Reconcile final audit one-shot deployment
+        if: ${{ always() && inputs.mode == 'apply' && steps.final_audit.outcome != 'skipped' }}
+        timeout-minutes: 4
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          DOCUMENT_ARCHIVE_AUDIT_CI_EVIDENCE: ${{ github.workspace }}/.quarantine-evidence/final-audit.json
+          DOCUMENT_ARCHIVE_AUDIT_TIMEOUT_SECONDS: '5400'
+          DOCUMENT_ARCHIVE_AUDIT_POLL_SECONDS: '10'
+        run: node apps/api/scripts/run-railway-document-archive-audit.mjs --cleanup-only
+      - name: Finalize only against the exact posterior global audit
+        if: ${{ inputs.mode == 'apply' && success() && steps.resume.outputs.resumed != 'true' }}
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          MANIFEST_DIGEST: ${{ inputs.manifest_digest }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          AUDIT_DEPLOYMENT_ID: ${{ steps.final_audit.outputs.deployment_id }}
+          AUDIT_INVENTORY_DIGEST: ${{ steps.final_audit.outputs.inventory_digest }}
+          AUDIT_REPORT_SHA256: ${{ steps.final_audit.outputs.report_sha256 }}
+          DEPLOYMENT_INSTANCE_ID: ${{ steps.topology.outputs.deployment_instance_id }}
+          SSH_IDENTITY: ${{ steps.ssh_identity.outputs.path }}
+        run: |
+          set -euo pipefail
+          oidc_response="$(mktemp "$QUARANTINE_TEMP_ROOT/oidc.XXXXXX")"
+          finalize_input="$(mktemp "$QUARANTINE_TEMP_ROOT/finalize.XXXXXX")"
+          receipt="$(mktemp "$QUARANTINE_TEMP_ROOT/receipt.XXXXXX")"
+          chmod 600 "$oidc_response" "$finalize_input" "$receipt"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --max-time 15 \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=bob-document-archive-quarantine-staging" \
+            > "$oidc_response"
+          OIDC_RESPONSE="$oidc_response" FINALIZE_INPUT="$finalize_input" node <<'NODE'
+          const fs = require('node:fs');
+          const response = JSON.parse(fs.readFileSync(process.env.OIDC_RESPONSE, 'utf8'));
+          if (typeof response?.value !== 'string' || response.value.length < 100) process.exit(1);
+          fs.writeFileSync(process.env.FINALIZE_INPUT, JSON.stringify({
+            schemaVersion: 1,
+            manifestDigest: process.env.MANIFEST_DIGEST,
+            confirmation: process.env.CONFIRMATION,
+            oidcToken: response.value,
+          }), { mode: 0o600 });
+          NODE
+          railway ssh \
+            --project "$RAILWAY_PROJECT_ID" \
+            --service "$RAILWAY_API_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" \
+            --deployment-instance "$DEPLOYMENT_INSTANCE_ID" \
+            --identity-file "$SSH_IDENTITY" \
+            env DOCUMENT_ARCHIVE_QUARANTINE_MODE=finalize \
+              DOCUMENT_ARCHIVE_SUPABASE_PROJECT_REF="$DOCUMENT_ARCHIVE_SUPABASE_PROJECT_REF" \
+              DOCUMENT_ARCHIVE_QUARANTINE_AUDIT_DEPLOYMENT_ID="$AUDIT_DEPLOYMENT_ID" \
+              DOCUMENT_ARCHIVE_QUARANTINE_AUDIT_INVENTORY_DIGEST="$AUDIT_INVENTORY_DIGEST" \
+              DOCUMENT_ARCHIVE_QUARANTINE_AUDIT_REPORT_SHA256="$AUDIT_REPORT_SHA256" \
+              node dist/document-archive-quarantine-finalize.main.js \
+            < "$finalize_input" > "$receipt"
+          FINAL_RECEIPT="$receipt" EXPECTED_SHA="$GITHUB_SHA" node <<'NODE'
+          const fs = require('node:fs');
+          const prefix = 'BOB_DOCUMENT_ARCHIVE_QUARANTINE_FINALIZE=';
+          const lines = fs.readFileSync(process.env.FINAL_RECEIPT, 'utf8').trim().split(/\r?\n/u);
+          if (lines.length !== 1 || !lines[0].startsWith(prefix)) process.exit(1);
+          const value = JSON.parse(Buffer.from(lines[0].slice(prefix.length), 'base64url').toString('utf8'));
+          if (
+            value?.schemaVersion !== 2 || value?.environment !== 'staging' ||
+            value?.releaseSha !== process.env.EXPECTED_SHA || value?.phase !== 'completed' ||
+            value?.sourceCount !== 5 || !/^[0-9a-f]{64}$/u.test(value?.manifestDigest ?? '') ||
+            !/^[0-9a-f]{64}$/u.test(value?.receiptSha256 ?? '') ||
+            !/^[0-9a-f-]{36}$/u.test(value?.finalAuditDeploymentId ?? '') ||
+            !/^[0-9a-f]{64}$/u.test(value?.finalAuditInventoryDigest ?? '') ||
+            !/^[0-9a-f]{64}$/u.test(value?.finalAuditReportSha256 ?? '')
+          ) process.exit(1);
+          fs.writeFileSync('document-archive-quarantine-completed-receipt.json', `${JSON.stringify(value)}\n`, {
+            mode: 0o600, flag: 'wx',
+          });
+          NODE
+      - name: Prove same release remains ready after the operation
+        if: ${{ inputs.mode == 'apply' && success() }}
+        env:
+          BOB_M1B_RELEASE_SHA: ${{ inputs.expected_sha }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          set -euo pipefail
+          node apps/api/scripts/agent-mission-m1b-staging-readiness.mjs
+          status_file="$(mktemp "$QUARANTINE_TEMP_ROOT/status.XXXXXX")"
+          chmod 600 "$status_file"
+          timeout 20s railway status \
+            --project "$RAILWAY_PROJECT_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" \
+            --json > "$status_file"
+          node apps/api/scripts/certify-railway-single-replica.mjs \
+            staging "$RAILWAY_API_SERVICE_ID" "$status_file"
+      - name: Upload bounded non-PII evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: document-archive-quarantine-${{ inputs.mode }}-${{ github.sha }}
+          path: |
+            .quarantine-evidence/
+            document-archive-quarantine-*-receipt.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Destroy runner-local SSH and OIDC material
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          rm -rf -- "$QUARANTINE_TEMP_ROOT"
+          rm -f -- "$HOME/.ssh/config"

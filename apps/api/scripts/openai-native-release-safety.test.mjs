@@ -123,51 +123,43 @@ function workflowJob(name, nextName) {
   return ci.slice(start, end);
 }
 
-test('chaque certificat PostgreSQL de release provisionne Storage avant la migration', () => {
+test('chaque certificat PostgreSQL consomme le Storage vendor du bootstrap avant la migration', () => {
   const jobs = [
-    workflowJob('rls-certification', 'realtime-global-capacity-certification'),
+    workflowJob('rls-certification', 'document-archive-quarantine-certification'),
+    workflowJob(
+      'document-archive-quarantine-certification',
+      'realtime-global-capacity-certification',
+    ),
     workflowJob('realtime-global-capacity-certification', 'mistral-key-rotation-certification'),
     workflowJob('mistral-key-rotation-certification', 'facturx-conformance'),
   ];
   for (const job of jobs) {
-    const buckets = job.indexOf('CREATE TABLE IF NOT EXISTS storage.buckets');
-    const objects = job.indexOf('CREATE TABLE IF NOT EXISTS storage.objects');
-    const foreignKey = job.indexOf(
-      'FOREIGN KEY (bucket_id) REFERENCES storage.buckets(id)',
-      objects,
-    );
+    const bootstrap = job.indexOf('bootstrap-supabase-ci-postgres.sh');
+    const vendorOwner = job.indexOf('CI_STORAGE_VENDOR_OWNER_CONTRACT_INVALID');
     const releaseCall = job.indexOf('sh apps/api/scripts/release.sh');
-    assert.ok(buckets >= 0, 'ephemeral Storage buckets surface must be provisioned');
-    assert.ok(objects > buckets, 'Storage objects must follow their bucket metadata surface');
-    assert.ok(foreignKey > objects, 'Storage objects must retain the Supabase bucket foreign key');
-    assert.ok(releaseCall > foreignKey, 'Storage vendor surface must exist before release.sh');
+    assert.ok(bootstrap >= 0, 'ephemeral vendor Storage must be provisioned by the bootstrap');
+    assert.ok(vendorOwner > bootstrap, 'the non-SETtable vendor owner must be certified');
+    assert.ok(releaseCall > vendorOwner, 'Storage vendor authority must be certified before release.sh');
+    assert.doesNotMatch(job, /CREATE TABLE IF NOT EXISTS storage\.(?:buckets|objects)/u);
   }
 });
 
 test('le certificat archive local reproduit le contrat relationnel Supabase Storage', () => {
-  const schema = documentArchiveRolloutCert.indexOf(
-    "admin.$executeRawUnsafe('CREATE SCHEMA IF NOT EXISTS storage')",
-  );
-  const buckets = documentArchiveRolloutCert.indexOf(
-    'CREATE TABLE IF NOT EXISTS storage.buckets',
-    schema,
-  );
-  const objects = documentArchiveRolloutCert.indexOf(
-    'CREATE TABLE IF NOT EXISTS storage.objects',
-    buckets,
-  );
+  const owner = documentArchiveRolloutCert.indexOf("owner.rolname = 'supabase_storage_admin'");
+  const setFence = documentArchiveRolloutCert.indexOf("'supabase_storage_admin',\n              'SET'", owner);
   const foreignKey = documentArchiveRolloutCert.indexOf(
-    'FOREIGN KEY (bucket_id) REFERENCES storage.buckets(id)',
-    objects,
+    "constraint_row.conname = 'objects_bucketId_fkey'",
+    setFence,
   );
   const seed = documentArchiveRolloutCert.indexOf(
     'INSERT INTO storage.buckets (id, name, public)',
     foreignKey,
   );
   assert.ok(
-    schema >= 0 && buckets > schema && objects > buckets && foreignKey > objects && seed > foreignKey,
-    'the opt-in local certificate must provision buckets, objects, their FK, then the bucket row',
+    owner >= 0 && setFence > owner && foreignKey > setFence && seed > foreignKey,
+    'the opt-in certificate must prove vendor ownership, SET isolation and the FK before seeding',
   );
+  assert.doesNotMatch(documentArchiveRolloutCert, /CREATE (?:SCHEMA|TABLE).*storage\./u);
 });
 
 test('la release live exécute une certification metadata-only après migration, ACL et RLS', () => {
@@ -270,7 +262,7 @@ test('le successeur natif rend le rolling N-1 réel et clôt les courses writer/
 test('la certification mutationnelle native reste confinée au PostgreSQL éphémère de CI', () => {
   const sharedAuthorityJob = workflowJob(
     'rls-certification',
-    'realtime-global-capacity-certification',
+    'document-archive-quarantine-certification',
   );
   const isolatedRotationJob = workflowJob(
     'mistral-key-rotation-certification',

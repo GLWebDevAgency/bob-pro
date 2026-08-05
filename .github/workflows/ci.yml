@@ -43,6 +43,24 @@ jobs:
           node-version: 22.18.0
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Validate GitHub Actions workflow semantics
+        run: |
+          set -euo pipefail
+          actionlint_version='1.7.12'
+          actionlint_sha256='8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8'
+          temp_dir="$(mktemp -d)"
+          trap 'rm -rf "$temp_dir"' EXIT
+          archive="$temp_dir/actionlint.tar.gz"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+            --retry 3 --retry-delay 2 --retry-all-errors \
+            --output "$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${actionlint_version}/actionlint_${actionlint_version}_linux_amd64.tar.gz"
+          printf '%s  %s\n' "$actionlint_sha256" "$archive" | sha256sum --check --status
+          tar --extract --gzip --file "$archive" --directory "$temp_dir" actionlint
+          # Les scripts shell historiques ont leur propre lint ; ce garde vise le schéma Actions,
+          # les expressions et la disponibilité des contextes sans transformer leur dette SC2034
+          # préexistante en élargissement de ce lot.
+          "$temp_dir/actionlint" -shellcheck='' -pyflakes='' .github/workflows/*.yml
       - name: Certifier la lignée append-only des migrations
         env:
           MIGRATION_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
@@ -187,6 +205,8 @@ jobs:
           cache: pnpm
       - run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - run: pnpm install --frozen-lockfile
+      - name: Certify the exact-key quarantine release contract
+        run: pnpm --filter @bob/api run test:archive-quarantine-release
       - name: Reproduce the non-superuser Supabase deployer and Data API defaults
         run: sh apps/api/scripts/bootstrap-supabase-ci-postgres.sh
       # `release.sh` exécute les certifications sur le vrai code API. Un checkout CI neuf
@@ -210,29 +230,23 @@ jobs:
         env:
           RUN_CUSTOMER_SIRET_POSTGRES_CERT: 'true'
         run: node --test apps/api/scripts/customer-siret.postgres.test.mjs
-      - name: Provision the ephemeral Supabase Storage metadata contract
+      - name: Certify the ephemeral Supabase Storage vendor-owner contract
         run: |
-          # Test-only vendor surface: production already owns this schema. Creating it before
-          # migrate proves that the legal-object immutability trigger is attached by the migration.
           psql "$DIRECT_URL" -v ON_ERROR_STOP=1 <<'SQL'
-          CREATE SCHEMA IF NOT EXISTS storage;
-          CREATE TABLE IF NOT EXISTS storage.buckets (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL UNIQUE,
-            public BOOLEAN NOT NULL DEFAULT false,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp()
-          );
-          CREATE TABLE IF NOT EXISTS storage.objects (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            bucket_id TEXT NOT NULL,
-            name TEXT NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
-            CONSTRAINT "objects_bucketId_fkey"
-              FOREIGN KEY (bucket_id) REFERENCES storage.buckets(id),
-            UNIQUE (bucket_id, name)
-          );
+          DO $$
+          DECLARE vendor_oid OID := 'supabase_storage_admin'::regrole;
+          BEGIN
+            IF pg_has_role(current_user, vendor_oid, 'SET')
+               OR NOT has_table_privilege(current_user, 'storage.objects', 'TRIGGER')
+               OR NOT has_table_privilege(current_user, 'storage.buckets', 'TRIGGER')
+               OR (SELECT relowner <> vendor_oid FROM pg_class
+                    WHERE oid = 'storage.objects'::regclass)
+               OR (SELECT relowner <> vendor_oid FROM pg_class
+                    WHERE oid = 'storage.buckets'::regclass) THEN
+              RAISE EXCEPTION 'CI_STORAGE_VENDOR_OWNER_CONTRACT_INVALID';
+            END IF;
+          END;
+          $$;
           SQL
       - name: Expand schema, spool outbox and certify the mixed-version phase
         id: release_schema
@@ -352,18 +366,181 @@ jobs:
           SQL
       # Le owner-split retire volontairement au déployeur l'ownership des tables et fonctions.
       # Il reste la dernière transformation de topologie SQL, après la fermeture exacte de la
-      # capacité partagée. Seule une re-certification read/write explicitement compatible avec ce
+      # capacité partagée. Seule la re-certification du cleanup explicitement compatible avec ce
       # modèle Supabase est autorisée ensuite : elle prouve précisément le cleanup qui s'exécutera
-      # sur staging, sans réaccorder de privilège au déployeur.
+      # sur staging, sans réaccorder de privilège au déployeur. La quarantaine globale dispose de
+      # sa propre base fraîche dans le job suivant afin de ne jamais dépendre des fixtures métier.
       - name: Certify the full RLS replay after an exact schema-owner split
         run: sh apps/api/scripts/certify-rls-owner-split.sh
       - name: Re-certify archive snapshot cleanup after the schema-owner split
         env:
+          # L'activation CI sème volontairement les deux versions orphelines exactes observées
+          # sur staging. Le certificat de cleanup doit donc consommer le manifeste staging scellé
+          # avant que la quarantaine globale exige zéro référence sans objet Storage.
+          CABINET_RELEASE_ENV: 'staging'
           RUN_POSTGRES_DOCUMENT_ARCHIVE_SNAPSHOT_CERT: 'true'
         run: >-
           pnpm --filter @bob/api exec vitest run
           --testTimeout=120000
           src/persistence/prisma/document-archive-snapshot.postgres.test.ts
+
+  document-archive-quarantine-certification:
+    # La clôture globale 0/0/0 ne peut pas être certifiée après des dizaines de suites qui créent
+    # volontairement des références Storage partielles. Cette base fraîche rejoue néanmoins le
+    # train de release complet, les quatre activations V2 et le vrai split d'ownership Supabase.
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: bob_ephemeral_ci
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d bob_ephemeral_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://bob_app:bob_app@localhost:5432/bob_ephemeral_ci
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bob_ephemeral_ci
+      CI_POSTGRES_SUPER_URL: postgresql://postgres:postgres@localhost:5432/bob_ephemeral_ci
+      CI_POSTGRES_ADMIN_URL: postgresql://bob_ci_supabase_admin:bob_ci_supabase_admin@localhost:5432/bob_ephemeral_ci
+      APP_DATABASE_ROLE: bob_app
+      CABINET_RELEASE_ENV: development
+      BOB_RELEASE_EXPECTED_ENV: development
+      CABINET_INVITATION_WORKER_ENABLED: 'false'
+      RUN_RLS_CERT: 'true'
+      RLS_CERT_CLEANUP: 'true'
+      DOCUMENT_ARCHIVE_TEST_SEED_ACTIVATION_EVIDENCE: 'true'
+      SUPABASE_STORAGE_BUCKET: documents
+      BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED: 'true'
+      BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION: '1'
+      BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING: '{"1":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE","2":"AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI"}'
+      BOB_LIVE_SUBJECT_KEY_VERSION: '1'
+      BOB_LIVE_SUBJECT_HMAC_SECRET: 'AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM'
+      BOB_LIVE_SUBJECT_HMAC_KEYRING: '{"1":"AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM","2":"BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ"}'
+      BOB_LIVE_PROOF_KEY_VERSION: '1'
+      BOB_LIVE_PROOF_SECRET: 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc'
+      BOB_LIVE_PROOF_KEYRING: '{"1":"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"}'
+      BOB_LIVE_ENABLED: 'true'
+      BOB_LIVE_PROVIDER: openai
+      OPENAI_REALTIME_MODEL: gpt-realtime-2.1
+      BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS: '1000'
+      BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS: '1000'
+      BOB_LIVE_CAPACITY_CONFIG_VERSION: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - run: pnpm install --frozen-lockfile
+      - name: Certify the exact-key quarantine release contract
+        run: pnpm --filter @bob/api run test:archive-quarantine-release
+      - name: Reproduce the non-superuser Supabase deployer and Data API defaults
+        run: sh apps/api/scripts/bootstrap-supabase-ci-postgres.sh
+      - run: pnpm --filter "@bob/api..." run build
+      - name: Create non-superuser app role
+        run: |
+          psql "$DIRECT_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'bob_app') THEN
+              CREATE ROLE bob_app LOGIN PASSWORD 'bob_app' NOSUPERUSER NOBYPASSRLS;
+            ELSE
+              ALTER ROLE bob_app WITH LOGIN PASSWORD 'bob_app' NOSUPERUSER NOBYPASSRLS;
+            END IF;
+          END $$;
+          SQL
+      - name: Certify the ephemeral Supabase Storage vendor-owner contract
+        run: |
+          psql "$DIRECT_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          DECLARE vendor_oid OID := 'supabase_storage_admin'::regrole;
+          BEGIN
+            IF pg_has_role(current_user, vendor_oid, 'SET')
+               OR NOT has_table_privilege(current_user, 'storage.objects', 'TRIGGER')
+               OR NOT has_table_privilege(current_user, 'storage.buckets', 'TRIGGER')
+               OR (SELECT relowner <> vendor_oid FROM pg_class
+                    WHERE oid = 'storage.objects'::regclass)
+               OR (SELECT relowner <> vendor_oid FROM pg_class
+                    WHERE oid = 'storage.buckets'::regclass) THEN
+              RAISE EXCEPTION 'CI_STORAGE_VENDOR_OWNER_CONTRACT_INVALID';
+            END IF;
+          END;
+          $$;
+          SQL
+      - name: Expand schema under the normal release contract
+        id: release_schema
+        run: BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED=false BOB_RELEASE_PHASE=predeploy sh apps/api/scripts/release.sh
+      - name: Activate archive, snapshot, settlement and outbox V2
+        run: |
+          DOCUMENT_ARCHIVE_V2_ACTIVATION_RELEASE_SHA="$GITHUB_SHA" \
+            sh apps/api/scripts/activate-document-archive-v2.sh
+          RUN_POSTGRES_DOCUMENT_ARCHIVE_SNAPSHOT_ACTIVATION_CERT=true \
+          DOCUMENT_ARCHIVE_SNAPSHOT_V2_ACTIVATION_RELEASE_SHA="$GITHUB_SHA" \
+            pnpm --filter @bob/api exec vitest run --testTimeout=60000 \
+              src/persistence/prisma/document-archive-snapshot-activation.postgres.test.ts
+          DOCUMENT_ARCHIVE_SNAPSHOT_V2_ACTIVATION_RELEASE_SHA="$GITHUB_SHA" \
+            sh apps/api/scripts/activate-document-archive-snapshot-v2.sh
+          INVOICE_SETTLEMENT_V2_ACTIVATION_RELEASE_SHA="$GITHUB_SHA" \
+            sh apps/api/scripts/activate-invoice-settlement-v2.sh
+          sh apps/api/scripts/activate-notification-outbox-v2.sh
+          BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED=false BOB_RELEASE_PHASE=postdeploy \
+            sh apps/api/scripts/release.sh
+      - name: Close Bob Live capacity before the schema-owner split
+        if: ${{ always() && steps.release_schema.outcome == 'success' }}
+        run: |
+          BOB_LIVE_ENABLED=false \
+            sh apps/api/scripts/realtime-capacity-release.sh configure
+          psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 <<'SQL'
+          SELECT set_config(
+            'bob.ci_realtime_capacity_actual_count',
+            (SELECT count(*)::TEXT FROM realtime_session_leases),
+            TRUE
+          );
+          SET LOCAL ROLE bob_realtime_capacity;
+          DO $$
+          DECLARE actual_count INTEGER :=
+            current_setting('bob.ci_realtime_capacity_actual_count')::INTEGER;
+          BEGIN
+            IF NOT EXISTS (
+              SELECT 1 FROM realtime_global_capacity AS capacity
+               WHERE capacity.id = 1
+                 AND capacity.mode = 'closed'
+                 AND capacity."usedSessions" = actual_count
+            ) THEN
+              RAISE EXCEPTION 'Bob Live capacity teardown is not closed or exact';
+            END IF;
+          END;
+          $$;
+          SQL
+      - name: Certify the exact schema-owner split on the fresh database
+        run: sh apps/api/scripts/certify-rls-owner-split.sh
+      - name: Re-certify archive snapshot cleanup after the schema-owner split
+        env:
+          CABINET_RELEASE_ENV: 'staging'
+          RUN_POSTGRES_DOCUMENT_ARCHIVE_SNAPSHOT_CERT: 'true'
+        run: >-
+          pnpm --filter @bob/api exec vitest run
+          --testTimeout=120000
+          src/persistence/prisma/document-archive-snapshot.postgres.test.ts
+      - name: Certify exact-key archive quarantine in isolation
+        env:
+          RUN_POSTGRES_DOCUMENT_ARCHIVE_QUARANTINE_CERT: 'true'
+          DOCUMENT_ARCHIVE_QUARANTINE_CERT_DATABASE_KIND: ephemeral
+        run: >-
+          pnpm --filter @bob/api exec vitest run
+          --testTimeout=120000
+          src/persistence/prisma/document-archive-quarantine.postgres.test.ts
 
   realtime-global-capacity-certification:
     # Les certificats d'autorité partagés laissent volontairement des sessions observables.
@@ -434,27 +611,23 @@ jobs:
           psql "$DIRECT_URL" -v ON_ERROR_STOP=1 <<'SQL'
           CREATE ROLE bob_app LOGIN PASSWORD 'bob_app' NOSUPERUSER NOBYPASSRLS;
           SQL
-      - name: Provision the isolated Supabase Storage metadata contract
+      - name: Certify the isolated Supabase Storage vendor-owner contract
         run: |
           psql "$DIRECT_URL" -v ON_ERROR_STOP=1 <<'SQL'
-          CREATE SCHEMA IF NOT EXISTS storage;
-          CREATE TABLE IF NOT EXISTS storage.buckets (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL UNIQUE,
-            public BOOLEAN NOT NULL DEFAULT false,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp()
-          );
-          CREATE TABLE IF NOT EXISTS storage.objects (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            bucket_id TEXT NOT NULL,
-            name TEXT NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
-            CONSTRAINT "objects_bucketId_fkey"
-              FOREIGN KEY (bucket_id) REFERENCES storage.buckets(id),
-            UNIQUE (bucket_id, name)
-          );
+          DO $$
+          DECLARE vendor_oid OID := 'supabase_storage_admin'::regrole;
+          BEGIN
+            IF pg_has_role(current_user, vendor_oid, 'SET')
+               OR NOT has_table_privilege(current_user, 'storage.objects', 'TRIGGER')
+               OR NOT has_table_privilege(current_user, 'storage.buckets', 'TRIGGER')
+               OR (SELECT relowner <> vendor_oid FROM pg_class
+                    WHERE oid = 'storage.objects'::regclass)
+               OR (SELECT relowner <> vendor_oid FROM pg_class
+                    WHERE oid = 'storage.buckets'::regclass) THEN
+              RAISE EXCEPTION 'CI_STORAGE_VENDOR_OWNER_CONTRACT_INVALID';
+            END IF;
+          END;
+          $$;
           SQL
       - name: Install and certify the isolated capacity schema
         id: release_schema
@@ -578,29 +751,23 @@ jobs:
           ALTER DEFAULT PRIVILEGES IN SCHEMA public
             GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO bob_app;
           SQL
-      - name: Provision the isolated Supabase Storage metadata contract
+      - name: Certify the isolated Supabase Storage vendor-owner contract
         run: |
-          # Test-only vendor surface: release.sh must prove that the legal-object immutability
-          # trigger is physically attached, even in this key-rotation-specific database.
           psql "$DIRECT_URL" -v ON_ERROR_STOP=1 <<'SQL'
-          CREATE SCHEMA IF NOT EXISTS storage;
-          CREATE TABLE IF NOT EXISTS storage.buckets (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL UNIQUE,
-            public BOOLEAN NOT NULL DEFAULT false,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp()
-          );
-          CREATE TABLE IF NOT EXISTS storage.objects (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            bucket_id TEXT NOT NULL,
-            name TEXT NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
-            CONSTRAINT "objects_bucketId_fkey"
-              FOREIGN KEY (bucket_id) REFERENCES storage.buckets(id),
-            UNIQUE (bucket_id, name)
-          );
+          DO $$
+          DECLARE vendor_oid OID := 'supabase_storage_admin'::regrole;
+          BEGIN
+            IF pg_has_role(current_user, vendor_oid, 'SET')
+               OR NOT has_table_privilege(current_user, 'storage.objects', 'TRIGGER')
+               OR NOT has_table_privilege(current_user, 'storage.buckets', 'TRIGGER')
+               OR (SELECT relowner <> vendor_oid FROM pg_class
+                    WHERE oid = 'storage.objects'::regclass)
+               OR (SELECT relowner <> vendor_oid FROM pg_class
+                    WHERE oid = 'storage.buckets'::regclass) THEN
+              RAISE EXCEPTION 'CI_STORAGE_VENDOR_OWNER_CONTRACT_INVALID';
+            END IF;
+          END;
+          $$;
           SQL
       - name: Install and certify the isolated schema
         id: release_schema

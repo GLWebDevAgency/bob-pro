@@ -180,30 +180,47 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
 
       if (SEED_EPHEMERAL_ACTIVATION_EVIDENCE) {
         // `storage.buckets` et `storage.objects` appartiennent à Supabase et ne doivent jamais
-        // entrer dans les migrations Bob. Le PostgreSQL éphémère GitHub n'embarque pas Supabase :
-        // ce double minimal existe uniquement sous opt-in + loopback et reproduit la FK fournisseur.
-        await admin.$executeRawUnsafe('CREATE SCHEMA IF NOT EXISTS storage');
-        await admin.$executeRawUnsafe(`
-          CREATE TABLE IF NOT EXISTS storage.buckets (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL UNIQUE,
-            public BOOLEAN NOT NULL DEFAULT false,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp()
-          )
-        `);
-        await admin.$executeRawUnsafe(`
-          CREATE TABLE IF NOT EXISTS storage.objects (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            bucket_id TEXT NOT NULL,
-            name TEXT NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
-            CONSTRAINT "objects_bucketId_fkey"
-              FOREIGN KEY (bucket_id) REFERENCES storage.buckets(id),
-            UNIQUE (bucket_id, name)
-          )
-        `);
+        // entrer dans les migrations Bob. Le bootstrap CI les crée sous le propriétaire vendor
+        // non-SETtable ; ce certificat doit consommer cette surface telle quelle, jamais la
+        // recréer avec l'autorité de migration.
+        const [storageContract] = await admin.$queryRaw<Array<{ valid: boolean }>>`
+          SELECT (
+            (SELECT owner.rolname = 'supabase_storage_admin'
+               FROM pg_catalog.pg_class AS relation
+               JOIN pg_catalog.pg_roles AS owner ON owner.oid = relation.relowner
+              WHERE relation.oid = 'storage.objects'::regclass)
+            AND (SELECT owner.rolname = 'supabase_storage_admin'
+                   FROM pg_catalog.pg_class AS relation
+                   JOIN pg_catalog.pg_roles AS owner ON owner.oid = relation.relowner
+                  WHERE relation.oid = 'storage.buckets'::regclass)
+            AND NOT pg_catalog.pg_has_role(
+              current_user,
+              'supabase_storage_admin',
+              'SET'
+            )
+            AND pg_catalog.has_table_privilege(
+              current_user,
+              'storage.objects',
+              'TRIGGER'
+            )
+            AND pg_catalog.has_table_privilege(
+              current_user,
+              'storage.buckets',
+              'TRIGGER'
+            )
+            AND EXISTS (
+              SELECT 1
+                FROM pg_catalog.pg_constraint AS constraint_row
+               WHERE constraint_row.conname = 'objects_bucketId_fkey'
+                 AND constraint_row.conrelid = 'storage.objects'::regclass
+                 AND constraint_row.confrelid = 'storage.buckets'::regclass
+                 AND constraint_row.contype = 'f'
+            )
+          ) AS valid
+        `;
+        if (storageContract?.valid !== true) {
+          throw new Error('Le contrat vendor Supabase Storage éphémère est divergent.');
+        }
         await admin.$executeRaw`
           INSERT INTO storage.buckets (id, name, public)
           VALUES (${activationStorageBucket}, ${activationStorageBucket}, false)

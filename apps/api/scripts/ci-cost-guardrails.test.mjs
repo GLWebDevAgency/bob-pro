@@ -230,6 +230,7 @@ test('aucun job n’a disparu d’aucun des deux workflows', () => {
     'verify',
     'agent-missions-postgres-certification',
     'rls-certification',
+    'document-archive-quarantine-certification',
     'realtime-global-capacity-certification',
     'mistral-key-rotation-certification',
     'facturx-conformance',
