@@ -125,6 +125,8 @@ JIT_DIR=''
 KEY=''
 SSH_FINGERPRINT=''
 SSH_KEY_NAME=''
+JIT_AGENT_PID=''
+JIT_AGENT_SOCKET=''
 PHASE=''
 ORIGINAL_SSH_AUTH_SOCK="${SSH_AUTH_SOCK-}"
 ORIGINAL_SSH_AGENT_PID="${SSH_AGENT_PID-}"
@@ -135,6 +137,37 @@ extract_registered_railway_keys() {
     registered && /^[^[:space:]]/ { exit }
     registered { print }
   ' "$1"
+}
+
+stop_jit_agent() {
+  local attempt
+  [ "$JIT_AGENT_STARTED" = true ] || return 0
+
+  SSH_AUTH_SOCK="$JIT_AGENT_SOCKET" SSH_AGENT_PID="$JIT_AGENT_PID" \
+    ssh-agent -k > "$EVIDENCE_DIR/$PHASE-ssh-agent-stop.txt" 2>&1 || true
+  for attempt in $(seq 1 5); do
+    ! kill -0 "$JIT_AGENT_PID" 2>/dev/null && break
+    sleep 1
+  done
+  if kill -0 "$JIT_AGENT_PID" 2>/dev/null; then
+    kill -TERM "$JIT_AGENT_PID" 2>/dev/null || true
+    for attempt in $(seq 1 5); do
+      ! kill -0 "$JIT_AGENT_PID" 2>/dev/null && break
+      sleep 1
+    done
+  fi
+  if kill -0 "$JIT_AGENT_PID" 2>/dev/null; then
+    kill -KILL "$JIT_AGENT_PID" 2>/dev/null || true
+    for attempt in $(seq 1 5); do
+      ! kill -0 "$JIT_AGENT_PID" 2>/dev/null && break
+      sleep 1
+    done
+  fi
+  wait "$JIT_AGENT_PID" 2>/dev/null || true
+  ! kill -0 "$JIT_AGENT_PID" 2>/dev/null || return 1
+  find "$JIT_DIR" -maxdepth 1 -type s -name agent.sock -delete || return 1
+  ! test -S "$JIT_AGENT_SOCKET" || return 1
+  JIT_AGENT_STARTED=false
 }
 
 close_jit() {
@@ -149,11 +182,8 @@ close_jit() {
   # Railway CLI 5.26 lists both registered keys and keys still visible in the local agent.
   # Stop the isolated agent before proving the remote registration absent, otherwise the
   # just-revoked fingerprint is reported as an unregistered local key and creates a false alarm.
-  if [ "$JIT_AGENT_STARTED" = true ]; then
-    ssh-agent -k > "$EVIDENCE_DIR/$PHASE-ssh-agent-stop.txt" 2>&1 || failed=1
-    JIT_AGENT_STARTED=false
-    unset SSH_AUTH_SOCK SSH_AGENT_PID
-  fi
+  stop_jit_agent || failed=1
+  unset SSH_AUTH_SOCK SSH_AGENT_PID
   if [ "$JIT_REGISTERED" = true ]; then
     "$RAILWAY_BIN" ssh keys list \
       > "$EVIDENCE_DIR/$PHASE-railway-list-after-remove.txt" 2>&1 || {
@@ -196,8 +226,10 @@ close_jit() {
     fi
   fi
   rm -rf -- "$JIT_DIR" || failed=1
-  printf '{"phase":"%s","closedAt":"%s","fingerprint":"%s","success":%s}\n' \
+  printf '{"phase":"%s","closedAt":"%s","fingerprint":"%s","jitAgentStopped":%s,"jitAgentSocketAbsent":%s,"success":%s}\n' \
     "$PHASE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SSH_FINGERPRINT" \
+    "$([ "$JIT_AGENT_STARTED" = false ] && printf true || printf false)" \
+    "$([ ! -S "$JIT_AGENT_SOCKET" ] && printf true || printf false)" \
     "$([ "$failed" -eq 0 ] && printf true || printf false)" \
     > "$EVIDENCE_DIR/$PHASE-jit-close-receipt.json" || failed=1
   chmod 600 "$EVIDENCE_DIR/$PHASE-jit-close-receipt.json" || failed=1
@@ -217,6 +249,7 @@ open_jit() {
   JIT_REGISTERED=false
   JIT_SECRET_SET=false
   JIT_AGENT_STARTED=false
+  JIT_AGENT_PID=''
   JIT_DIR="$(mktemp -d)"
   chmod 700 "$JIT_DIR"
   KEY="$JIT_DIR/id_ed25519"
@@ -239,8 +272,15 @@ open_jit() {
   # v5.26 selects only keys discovered through ssh-agent or ~/.ssh; it does not load an
   # arbitrary public-key path. Keep this one-off key outside ~/.ssh and expose it solely
   # through an isolated agent for the duration of the phase.
-  eval "$(ssh-agent -s)" > "$EVIDENCE_DIR/$PHASE-ssh-agent-start.txt"
+  JIT_AGENT_SOCKET="$JIT_DIR/agent.sock"
+  agent_environment="$(ssh-agent -a "$JIT_AGENT_SOCKET" -s)"
+  printf '%s\n' "$agent_environment" > "$EVIDENCE_DIR/$PHASE-ssh-agent-start.txt"
+  eval "$agent_environment" >/dev/null
+  JIT_AGENT_PID="${SSH_AGENT_PID:?ssh-agent did not publish its PID}"
   JIT_AGENT_STARTED=true
+  test "$SSH_AUTH_SOCK" = "$JIT_AGENT_SOCKET"
+  kill -0 "$JIT_AGENT_PID"
+  test -S "$JIT_AGENT_SOCKET"
   ssh-add "$KEY" > "$EVIDENCE_DIR/$PHASE-ssh-add.txt" 2>&1
   ssh-add -l -E sha256 > "$EVIDENCE_DIR/$PHASE-ssh-agent-list.txt"
   grep -Fq -- "$SSH_FINGERPRINT" "$EVIDENCE_DIR/$PHASE-ssh-agent-list.txt"
@@ -423,8 +463,14 @@ La deuxième clé et le secret ont déjà été retirés par `dispatch_quarantin
 après avoir vérifié les deux reçus JIT :
 
 ```bash
-jq -e '.phase == "plan" and .success == true' "$EVIDENCE_DIR/plan-jit-close-receipt.json"
-jq -e '.phase == "apply" and .success == true' "$EVIDENCE_DIR/apply-jit-close-receipt.json"
+jq -e '
+  .phase == "plan" and .jitAgentStopped == true and
+  .jitAgentSocketAbsent == true and .success == true
+' "$EVIDENCE_DIR/plan-jit-close-receipt.json"
+jq -e '
+  .phase == "apply" and .jitAgentStopped == true and
+  .jitAgentSocketAbsent == true and .success == true
+' "$EVIDENCE_DIR/apply-jit-close-receipt.json"
 
 gh api --method PUT "repos/$REPO/environments/$ENVIRONMENT" \
   --input "$EVIDENCE_DIR/environment-restore-payload.json" \
