@@ -6,6 +6,14 @@ const certificateSource = readFileSync(
   resolve(process.cwd(), 'src/persistence/prisma/public-capability-lifecycle.postgres.test.ts'),
   'utf8',
 );
+const invoiceCertificateSource = readFileSync(
+  resolve(process.cwd(), 'src/persistence/prisma/invoice-issue-lifecycle.postgres.test.ts'),
+  'utf8',
+);
+const prismaServiceSource = readFileSync(
+  resolve(process.cwd(), 'src/persistence/prisma/prisma.service.ts'),
+  'utf8',
+);
 const releaseSource = readFileSync(resolve(process.cwd(), 'scripts/release.sh'), 'utf8');
 const releaseEnvGateSource = readFileSync(
   resolve(process.cwd(), 'scripts/check-release-env.sh'),
@@ -22,6 +30,10 @@ describe('Public capability lifecycle — contrat de nettoyage distant', () => {
       /PRISMA_TRANSACTION_TIMEOUT_MS="\$\{PRISMA_TRANSACTION_TIMEOUT_MS:-30000\}"/u,
     );
     expect(releaseSource).toMatch(/export PRISMA_TRANSACTION_TIMEOUT_MS/u);
+    expect(prismaServiceSource).toMatch(/process\.env\.PRISMA_TRANSACTION_TIMEOUT_MS \?\? 0/u);
+    expect(prismaServiceSource).toMatch(
+      /transactionOptions:\s*\{[\s\S]*timeout: timeoutMs,[\s\S]*maxWait: Math\.min\(timeoutMs, 10_000\)/u,
+    );
     expect(certificateSource).toMatch(/let admin!: PrismaService;/u);
     expect(certificateSource).toMatch(
       /admin = new PrismaService\(\{ datasourceUrl: directUrl \}\);/u,
@@ -29,6 +41,25 @@ describe('Public capability lifecycle — contrat de nettoyage distant', () => {
     expect(certificateSource).not.toMatch(
       /admin = new PrismaClient\(\{ datasourceUrl: directUrl \}\);/u,
     );
+  });
+
+  it("applique le même contrat WAN au certificat d'émission de facture", () => {
+    expect(invoiceCertificateSource).toMatch(/let admin!: PrismaService;/u);
+    expect(invoiceCertificateSource).toMatch(
+      /admin = new PrismaService\(\{ datasourceUrl: directUrl \}\);/u,
+    );
+    expect(invoiceCertificateSource).not.toMatch(
+      /admin = new PrismaClient\(\{ datasourceUrl: directUrl \}\);/u,
+    );
+    expect(invoiceCertificateSource).toMatch(
+      /const CERT_STALE_RECOVERY_HOOK_TIMEOUT_MS = 120_000;/u,
+    );
+    expect(invoiceCertificateSource).toMatch(
+      /const CERT_CURRENT_RUN_CLEANUP_HOOK_TIMEOUT_MS = 60_000;/u,
+    );
+    expect(invoiceCertificateSource).toMatch(/\}, CERT_STALE_RECOVERY_HOOK_TIMEOUT_MS\);/u);
+    expect(invoiceCertificateSource).toMatch(/\}, CERT_CURRENT_RUN_CLEANUP_HOOK_TIMEOUT_MS\);/u);
+    expect(invoiceCertificateSource).not.toMatch(/cleanupFixtures\([^)]*\)\.catch/u);
   });
 
   it('récupère seulement les fixtures réservées et réutilise la purge stricte en afterAll', () => {
@@ -99,9 +130,7 @@ describe('Public capability lifecycle — contrat de nettoyage distant', () => {
   });
 
   it('borne le scheduler staging à une allowlist explicite avant de créer les fixtures', () => {
-    expect(releaseEnvGateSource).toMatch(
-      /const required = \[[\s\S]*'JOB_COMPANY_IDS',[\s\S]*\];/u,
-    );
+    expect(releaseEnvGateSource).toMatch(/const required = \[[\s\S]*'JOB_COMPANY_IDS',[\s\S]*\];/u);
     expect(tenantDirectorySource).toMatch(
       /const configured = jobCompanyIds\(\);[\s\S]*if \(configured\.length > 0\) return configured;[\s\S]*companies\.list\(\)/u,
     );

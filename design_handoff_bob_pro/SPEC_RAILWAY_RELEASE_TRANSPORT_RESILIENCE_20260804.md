@@ -16,6 +16,9 @@
 `30956265151`, SHA `ca9b6916d7a1fa4a53e89cbf6cb6802213347c3d`, déploiement d'audit
 `403beb4b-c9b4-4a94-a954-071583dd6cd5`
 
+**Incident de timeout WAN du certificat d'émission découvert avant déploiement :** workflow
+staging `30987951860`, SHA `f88e3a5618576b63b22daa2c7d702862963a8ebd`
+
 ## 1. Objectif
 
 Une release ne doit pas échouer parce que le flux de logs attaché du CLI Railway est interrompu
@@ -69,6 +72,13 @@ Le cleanup durable a ensuite rencontré `deploymentStopped=true` alors que l'ins
 est acquitté mais pas encore quiescent. Le runner doit attendre la fin effective sans rejouer de
 mutation, et n'accepter le cleanup qu'après deux observations quiescentes.
 
+Le rejeu du 5 août a appliqué les 169 migrations staging, puis s'est arrêté avant tout déploiement :
+le certificat `invoice-issue-lifecycle` utilisait encore un `PrismaClient` administrateur brut. Sa
+purge interactive retombait donc au timeout Prisma de 5 secondes et échouait avec `P2028`, alors que
+le rituel exportait déjà un budget WAN borné de 30 secondes. Ce certificat doit consommer le même
+`PrismaService` que les autres certifications distantes et donner à ses hooks un budget explicite ;
+les erreurs de FK, triggers et dépendances restent bloquantes et ne sont jamais avalées.
+
 ## 2. Périmètre
 
 ### Inclus
@@ -83,6 +93,8 @@ mutation, et n'accepter le cleanup qu'après deux observations quiescentes.
 - absence d'erreur secondaire d'artefact quand l'audit n'a jamais démarré ;
 - parité du timeout transactionnel certifié entre clients runtime et administrateur du certificat
   de cycle de vie des capacités publiques ;
+- parité du même timeout WAN pour le client administrateur du certificat d'émission de facture,
+  avec des hooks de reprise et de nettoyage explicitement bornés ;
 - récupération bornée des seules fixtures de ce certificat laissées par une interruption ;
 - chemin de reprise staging manuel et explicite lorsqu'un déploiement Railway terminal en échec
   est plus récent que l'unique réplique saine ;
@@ -204,6 +216,11 @@ mutation, et n'accepter le cleanup qu'après deux observations quiescentes.
     corrélée, même déjà quiescente lors de sa découverte, entre dans le suivi ; sa première
     observation compte pour une des deux confirmations, si bien qu'une cible découverte au dernier
     snapshot est refusée et qu'une cible découverte à l'avant-dernier doit être revue au dernier.
+19. Le client administrateur de `invoice-issue-lifecycle` est un `PrismaService` et hérite de
+    `PRISMA_TRANSACTION_TIMEOUT_MS` comme les clients runtime. Les hooks `beforeAll` et `afterAll`
+    portent des deadlines explicites supérieures au timeout d'une transaction distante. Ce
+    changement n'élargit ni le namespace de fixtures, ni les suppressions, ni les neutralisations
+    de triggers ; toute erreur de purge continue d'échouer fermé.
 
 ## 4. Critères d'acceptation binaires
 
@@ -226,6 +243,8 @@ mutation, et n'accepter le cleanup qu'après deux observations quiescentes.
 - [x] La readiness SHA/environnement reste bloquante avant audit et activation.
 - [x] Un audit non démarré ne crée pas une seconde erreur `No files were found`.
 - [x] Les tests de contrat du workflow empêchent le retour à un `railway up` attaché.
+- [x] Un test de contrat interdit au certificat d'émission de réintroduire un `PrismaClient`
+      administrateur brut et exige les deux deadlines de hooks.
 - [x] Les suites ciblées, la suite API complète, le typecheck, le lint et le build API passent.
 - [x] La CI complète de la PR de transport passe (`30928805632`) et la CI post-merge de `main`
       passe au SHA exact (`30929418952`).
@@ -233,6 +252,8 @@ mutation, et n'accepter le cleanup qu'après deux observations quiescentes.
       contre une base distante avec `PRISMA_TRANSACTION_TIMEOUT_MS` actif.
 - [ ] Le rejeu staging récupère les fixtures du run interrompu puis prouve qu'il ne reste aucune
       société portant les trois marqueurs réservés.
+- [ ] Le rejeu staging exécute les cinq scénarios `invoice-issue-lifecycle` avec le timeout WAN,
+      nettoie son namespace réservé et atteint le déploiement sans `P2028`.
 - [ ] La preuve distante confirme que le seul graphe archive éventuellement rencontré est le
       `quote-signed` synthétique non matérialisé attendu, qu'il est intégralement nettoyé et
       qu'aucune archive utilisateur ni objet Storage n'est supprimé.
