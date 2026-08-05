@@ -213,15 +213,24 @@ l’absence de toute instance non terminale.
 Une cible encore active, disparue de la liste ou non convergée fait échouer le gate. Il refuse
 également de muter tant qu’une instance antérieure du service n’est pas explicitement marquée
 arrêtée par Railway. Le gate attend le déploiement exact et un unique marqueur final corrélé à
-`RAILWAY_DEPLOYMENT_ID` et au SHA. Un statut Railway seul ne constitue jamais une preuve.
+`RAILWAY_DEPLOYMENT_ID` et au SHA. Un statut Railway seul ne constitue jamais une preuve : pour un
+service one-shot, `deployment.status=SUCCESS` atteste le démarrage de l’image alors que son instance
+peut rester `CREATED`, `INITIALIZING`, `RESTARTING`, `RUNNING` ou `REMOVING` pendant tout le scan.
 Le polling est espacé d’au moins dix secondes, respecte `Retry-After` dans une borne de soixante
-secondes et ne double pas les mutations. Après le premier statut terminal `SUCCESS`, l’absence de
-marqueur ne peut plus consommer le timeout global : la première enveloppe doit apparaître dans une
-grâce terminale de soixante secondes. Dès `SUCCESS`, un polling terminal interne de dix secondes
-remplace la cadence nominale afin de ne pas manquer un log retardé. Si l’enveloppe apparaît, une
+secondes et ne double pas les mutations. Tant qu’au moins une instance reste non terminale — ou que
+Railway n’expose encore aucune instance permettant de prouver sa terminaison — l’audit consomme sa
+deadline globale et continue de relire les logs. Dès le premier statut `SUCCESS`, un polling interne
+de dix secondes remplace la cadence nominale afin de ne pas manquer un marqueur tardif, même si
+l’instance reste active. La grâce terminale de soixante secondes ne commence qu’après l’observation
+d’au moins une instance et d’un snapshot où toutes ses instances sont terminales. Si l’enveloppe
+apparaît, une
 phase séparée de soixante secondes au plus exige une seconde observation strictement identique.
 Disparition, dérive ou dépassement échoue techniquement. La détection d’absence reste donc bornée à
-60 secondes ; le cleanup distant
+60 secondes après la fin réelle du runtime. L’auditeur persiste d’abord l’enveloppe immuable en
+base, puis publie exactement un marqueur non-PII et attend le flush stdout **avant** les libérations
+locales susceptibles de bloquer. Ce marqueur ne déclenche jamais seul l’activation : le cleanup
+Railway séparé doit encore prouver zéro instance non terminale, ce qui libère aussi les connexions
+et le verrou du conteneur. Le cleanup distant
 best-effort dispose ensuite d’une unique deadline absolue de 30 secondes partagée entre `stop` et
 `cancel`. Toute sortie non acceptée tente ainsi une seule annulation ou un seul arrêt distant, sans
 masquer l’erreur d’origine. Un refus métier garde son enveloppe non-PII et

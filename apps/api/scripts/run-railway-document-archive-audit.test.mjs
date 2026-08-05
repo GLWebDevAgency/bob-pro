@@ -282,11 +282,21 @@ function deployStep(overrides = {}) {
 }
 
 function deploymentStep(status, deploymentOverrides = {}) {
+  const instances =
+    status === 'SUCCESS'
+      ? [{ id: '60000000-0000-4000-8000-000000000012', status: 'EXITED' }]
+      : [];
   return {
     operation: 'ArchiveAuditDeployment',
     assertVariables: (variables) => assert.deepEqual(variables, { id: DEPLOYMENT_ID }),
     response: dataResponse({
-      deployment: { id: DEPLOYMENT_ID, status, ...deploymentOverrides },
+      deployment: {
+        id: DEPLOYMENT_ID,
+        status,
+        deploymentStopped: false,
+        instances,
+        ...deploymentOverrides,
+      },
     }),
   };
 }
@@ -1528,7 +1538,150 @@ test('SUCCESS relit en dix secondes un marqueur retardé malgré un polling nomi
   fetchImpl.assertDone();
 });
 
-test('SUCCESS sans marqueur échoue après une grâce terminale de soixante secondes', async (t) => {
+test('SUCCESS avec runtime RUNNING conserve la deadline globale au-delà de soixante secondes', async (t) => {
+  const outputPath = await temporaryOutput(t);
+  const running = {
+    instances: [{ id: '60000000-0000-4000-8000-000000000012', status: 'RUNNING' }],
+  };
+  const fetchImpl = scriptedFetch([
+    ...beforeDeploymentSteps(),
+    ...Array.from({ length: 7 }, () => [
+      deploymentStep('SUCCESS', running),
+      logsStep([]),
+    ]).flat(),
+    deploymentStep('SUCCESS', running),
+    logsStep(),
+    deploymentStep('SUCCESS', running),
+    logsStep(),
+  ]);
+  const runtime = fakeRuntime();
+
+  await runRailwayDocumentArchiveAudit({
+    environment: baseEnvironment(outputPath, {
+      DOCUMENT_ARCHIVE_AUDIT_TIMEOUT_SECONDS: '95',
+      DOCUMENT_ARCHIVE_AUDIT_POLL_SECONDS: '60',
+    }),
+    fetchImpl,
+    ...runtime,
+  });
+
+  assert.equal(runtime.elapsed(), 80_000);
+  assert.deepEqual(runtime.sleeps, Array.from({ length: 8 }, () => 10_000));
+  assert.deepEqual(runtime.requestTimeouts.slice(-4), [25_000, 25_000, 15_000, 15_000]);
+  assert.deepEqual(JSON.parse(await readFile(outputPath, 'utf8')), evidenceFixture());
+  assert.equal(
+    fetchImpl.calls.some(({ operation }) =>
+      ['ArchiveAuditDeploymentCancel', 'ArchiveAuditDeploymentStop'].includes(operation),
+    ),
+    false,
+  );
+  fetchImpl.assertDone();
+});
+
+test('SUCCESS sans instance reste indéterminé jusqu’à la deadline globale', async (t) => {
+  const outputPath = await temporaryOutput(t);
+  const fetchImpl = scriptedFetch([
+    ...beforeDeploymentSteps(),
+    ...Array.from({ length: 6 }, () => [
+      deploymentStep('SUCCESS', { instances: [] }),
+      logsStep([]),
+    ]).flat(),
+    cleanupStep('cancel'),
+  ]);
+  const runtime = fakeRuntime();
+
+  await assert.rejects(
+    runRailwayDocumentArchiveAudit({
+      environment: baseEnvironment(outputPath),
+      fetchImpl,
+      ...runtime,
+    }),
+    (error) => {
+      assert.equal(error instanceof ArchiveAuditTerminalEvidenceError, false);
+      assert.match(error.message, /bounded timeout without valid evidence/u);
+      return true;
+    },
+  );
+
+  assert.equal(runtime.elapsed(), 60_000);
+  assert.deepEqual(runtime.sleeps, Array.from({ length: 6 }, () => 10_000));
+  fetchImpl.assertDone();
+});
+
+test('SUCCESS avec runtime RUNNING expirant pendant la lecture des logs reste un timeout global', async (t) => {
+  const outputPath = await temporaryOutput(t);
+  const runtime = fakeRuntime();
+  const slowLogs = logsStep([]);
+  slowLogs.before = () => runtime.advance(60_000);
+  const fetchImpl = scriptedFetch([
+    ...beforeDeploymentSteps(),
+    deploymentStep('SUCCESS', {
+      instances: [{ id: '60000000-0000-4000-8000-000000000012', status: 'RUNNING' }],
+    }),
+    slowLogs,
+    cleanupStep('cancel'),
+  ]);
+
+  await assert.rejects(
+    runRailwayDocumentArchiveAudit({
+      environment: baseEnvironment(outputPath),
+      fetchImpl,
+      ...runtime,
+    }),
+    (error) => {
+      assert.equal(error instanceof ArchiveAuditTerminalEvidenceError, false);
+      assert.match(error.message, /bounded timeout without valid evidence/u);
+      return true;
+    },
+  );
+
+  assert.equal(runtime.elapsed(), 60_000);
+  fetchImpl.assertDone();
+});
+
+test('refuse toute enveloppe d’instance Railway absente ou invalide', async (t) => {
+  const cases = [
+    ['instances absentes', { instances: undefined }, /deployment envelope/u],
+    ['deploymentStopped absent', { deploymentStopped: undefined }, /deployment envelope/u],
+    [
+      'identifiant instance invalide',
+      { instances: [{ id: 'not-a-uuid', status: 'RUNNING' }] },
+      /deployment instance envelope/u,
+    ],
+    [
+      'statut instance inconnu',
+      {
+        instances: [
+          { id: '60000000-0000-4000-8000-000000000012', status: 'UNRECOGNIZED' },
+        ],
+      },
+      /deployment instance envelope/u,
+    ],
+  ];
+
+  for (const [label, overrides, expected] of cases) {
+    await t.test(label, async (subtest) => {
+      const outputPath = await temporaryOutput(subtest, `${label}.json`);
+      const fetchImpl = scriptedFetch([
+        ...beforeDeploymentSteps(),
+        deploymentStep('SUCCESS', overrides),
+        cleanupStep('stop'),
+      ]);
+
+      await assert.rejects(
+        runRailwayDocumentArchiveAudit({
+          environment: baseEnvironment(outputPath),
+          fetchImpl,
+          ...fakeRuntime(),
+        }),
+        expected,
+      );
+      fetchImpl.assertDone();
+    });
+  }
+});
+
+test('SUCCESS avec runtime terminal sans marqueur échoue après soixante secondes', async (t) => {
   const outputPath = await temporaryOutput(t);
   const runtime = fakeRuntime();
   let cleanupStartedAt = -1;
@@ -1561,7 +1714,7 @@ test('SUCCESS sans marqueur échoue après une grâce terminale de soixante seco
     (error) => {
       assert.ok(error instanceof ArchiveAuditTerminalEvidenceError);
       assert.equal(error.code, 'ARCHIVE_AUDIT_TERMINAL_EVIDENCE_MISSING');
-      assert.match(error.message, /without valid evidence within 60 seconds/u);
+      assert.match(error.message, /runtime became terminal without valid evidence within 60 seconds/u);
       return true;
     },
   );

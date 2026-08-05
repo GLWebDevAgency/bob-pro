@@ -4,7 +4,8 @@
 
 **Statut : implemented**
 
-**Incidents de référence :** releases staging `30331071407` et `30339346237`, 28/07/2026
+**Incidents de référence :** releases staging `30331071407` et `30339346237`, 28/07/2026 ;
+release staging `30997199741`, 05/08/2026
 
 ## 1. Problème prouvé
 
@@ -39,6 +40,18 @@ terminal. Le `RETURN` contenu dans un bloc `DO` quittait seulement ce bloc, pas 
 instructions suivantes relisaient donc la colonne expand `cutoverResumeAt`, volontairement retirée
 à la première activation.
 
+La release `30997199741` a ensuite prouvé une hypothèse Railway erronée dans l’orchestrateur :
+`deployment.status=SUCCESS` signifie que l’image a été déployée, pas que le processus one-shot a
+terminé. Le conteneur de l’auditeur a démarré à `10:49:57Z`, sans erreur, puis son instance est
+restée `RUNNING`. La preuve immuable exacte `5/0/6` a été persistée en base à `10:49:59Z`, mais le
+marqueur non-PII n’était publié qu’après la fin de la transaction de lease et la déconnexion des
+trois clients Prisma. Cette finalisation n’a pas rendu la main. L’orchestrateur a armé immédiatement
+sa grâce terminale de 60 secondes, envoyé `SIGTERM` à `10:51:01Z` et interrompu le runtime avant la
+publication du marqueur. La readiness API et les migrations étaient vertes ; aucun objet n’a été
+supprimé et aucune enveloppe n’a atteint GitHub. Deux fragilités sont donc prouvées : un statut de
+déploiement sans état d’instance ne distingue pas « image démarrée » de « runtime terminé », et une
+preuve durable ne doit pas dépendre d’un transport log placé après toutes les libérations locales.
+
 ## 2. Résultat attendu
 
 Le one-shot Railway sait certifier un inventaire ne contenant aucune paire Factur-X professionnelle.
@@ -52,8 +65,16 @@ Si une paire professionnelle est présente alors que Railway ne peut pas exécut
 - la paire produit les écarts P0 canoniques de conformité externe ;
 - `readyForActivation` reste faux et la release échoue fermée.
 
-Un déploiement Railway terminal `SUCCESS` sans enveloppe de preuve échoue dans une fenêtre bornée,
-au lieu d’attendre le timeout complet.
+Un déploiement Railway `SUCCESS` dont une instance reste non terminale continue à consommer le
+timeout global du scan. La fenêtre terminale courte ne commence qu’après l’observation d’au moins
+une instance et la disparition de toute instance non terminale. Un état d’instance absent ou
+incohérent ne vaut jamais preuve de fin.
+
+Le marqueur allowlisté est publié et son flush attendu immédiatement après la persistance immuable
+de l’enveloppe, à l’intérieur de la lease. Cette publication ne suffit pas à activer : le cleanup
+Railway indépendant doit ensuite prouver l’arrêt de l’instance et donc la libération de ses
+connexions et verrous. L’ordre devient ainsi « preuve durable → transport corrélé → quiescence
+externe → activation », sans transformer un `$disconnect()` local en canal unique de preuve.
 
 ## 3. Portée
 
@@ -63,16 +84,22 @@ au lieu d’attendre le timeout complet.
 2. Mémoriser uniquement un smoke réussi ; un échec ne peut jamais devenir un succès mis en cache.
 3. Conserver l’environnement nettoyé, le réseau isolé, la racine en lecture seule et le seul
    workdir inscriptible pour Mustang/FNFE.
-4. Borner l’attente d’un marqueur après le premier statut Railway `SUCCESS`.
-5. Si un premier marqueur valide apparaît dans ces 60 secondes, ouvrir une phase de confirmation
+4. Distinguer le succès du déploiement de la terminaison du runtime à partir de l’inventaire typé
+   des instances Railway (`CREATED`, `INITIALIZING`, `RESTARTING`, `RUNNING`, `REMOVING` restent
+   non terminaux).
+5. Borner l’attente d’un marqueur pendant 60 secondes seulement après une terminaison runtime
+   prouvée ; une instance encore non terminale conserve le timeout global du scan.
+6. Si un premier marqueur valide apparaît, ouvrir une phase de confirmation
    séparée et bornée à 60 secondes, puis exiger exactement la même enveloppe une seconde fois.
-6. Mettre le runbook et la source de vérité environnementale en accord avec le comportement réel.
-7. Certifier le chemin staging exact-SHA sur le service one-shot Railway.
-8. Rendre le harness d’intégration Bob hermétique au réseau tiers : la suite de release ne doit
+7. Publier exactement une fois le marqueur non-PII juste après la persistance immuable en base,
+   attendre explicitement le flush stdout, puis laisser le cleanup Railway prouver la quiescence.
+8. Mettre le runbook et la source de vérité environnementale en accord avec le comportement réel.
+9. Certifier le chemin staging exact-SHA sur le service one-shot Railway.
+10. Rendre le harness d’intégration Bob hermétique au réseau tiers : la suite de release ne doit
    jamais dépendre de la latence d’un fournisseur LLM pour atteindre son repli déterministe.
-9. Rendre le certificat d’émission facture rejouable après interruption : identité explicitement
+11. Rendre le certificat d’émission facture rejouable après interruption : identité explicitement
    fictive, réconciliation préalable limitée au namespace d’id de la suite, cleanup final commun.
-10. Rendre l’opérateur d’activation outbox V2 réellement rejouable : état terminal certifié =
+12. Rendre l’opérateur d’activation outbox V2 réellement rejouable : état terminal certifié =
     succès sans mutation ; forme expand complète = transition ; toute forme mixte = refus fermé.
 
 ### Non inclus
@@ -109,6 +136,13 @@ au lieu d’attendre le timeout complet.
 12. **Idempotence au bon niveau.** Le SQL de cutover reste une transition atomique à usage unique ;
     l’opérateur détecte et certifie l’état terminal avant de l’appeler. Un `RETURN` PL/pgSQL n’est
     jamais interprété comme une sortie du fichier `psql`.
+13. **État runtime explicite.** `deployment.status=SUCCESS` avec une instance non terminale est un
+    audit en cours. La grâce terminale ne peut être armée que si au moins une instance a été
+    observée et qu’elles sont toutes terminales ; une liste vide reste ambiguë et fail-closed sous
+    la deadline globale.
+14. **Preuve puis quiescence.** Le marqueur n’est émis qu’après le commit de l’enveloppe immuable,
+    mais avant les nettoyages locaux potentiellement bloquants. Il ne permet aucune activation tant
+    que le cleanup Railway n’a pas certifié zéro instance non terminale.
 
 ## 5. Critères d’acceptation binaires
 
@@ -120,15 +154,27 @@ au lieu d’attendre le timeout complet.
       validateur.
 - [x] N paires professionnelles réutilisent uniquement un smoke précédemment réussi.
 - [x] Un smoke refusé produit les P0 de conformité externe, zéro attestation et aucun fallback.
-- [x] Un statut Railway `SUCCESS` sans marqueur fige son erreur au plus 60 secondes après sa
-      première observation, avec le code stable `ARCHIVE_AUDIT_TERMINAL_EVIDENCE_MISSING` ; le
-      cleanup best-effort qui suit ajoute au plus 30 secondes.
+- [x] Un statut Railway `SUCCESS` avec instance `RUNNING` pendant plus de 60 secondes ne déclenche
+      ni erreur terminale ni cleanup ; le marqueur tardif reste lu et validé sous la deadline
+      globale.
+- [x] Un statut Railway `SUCCESS` avec au moins une instance observée puis toutes les instances
+      terminales, sans marqueur, fige son erreur au plus 60 secondes après cette terminaison avec
+      le code stable `ARCHIVE_AUDIT_TERMINAL_EVIDENCE_MISSING` ; le cleanup best-effort qui suit
+      ajoute au plus 30 secondes.
+- [x] Une réponse Railway sans tableau d’instances, avec identifiant/statut d’instance invalide ou
+      avec statut inconnu échoue fermée et ne fabrique jamais une terminaison.
+- [x] Une preuve committée est publiée avant un nettoyage local artificiellement bloqué ; le flush
+      du marqueur est acquitté, le runner la lit deux fois, puis le cleanup externe rend l’instance
+      quiescente avant toute activation.
+- [x] Un échec de persistance n’émet aucun marqueur ; un échec de transport n’est jamais transformé
+      en succès, même si une ligne durable existe.
 - [x] Un marqueur apparu dans cette fenêtre est confirmé par une enveloppe strictement identique
       dans une seconde fenêtre de 60 secondes au plus ; dès le premier `SUCCESS`, la recherche puis
       la confirmation utilisent un polling terminal de 10 secondes indépendant de la cadence
       nominale. Disparition ou dérive échoue immédiatement avec
       `ARCHIVE_AUDIT_TERMINAL_EVIDENCE_UNSTABLE`.
-- [x] Les statuts transitoires peuvent toujours utiliser le timeout global prévu pour un vrai scan.
+- [x] Les statuts de déploiement transitoires et les instances runtime non terminales utilisent le
+      timeout global prévu pour un vrai scan.
 - [x] Les tests interdisent explicitement `/usr/bin/env`, `|| true` et la suppression de la sandbox.
 - [x] Les scénarios Bob déterministes du gate de release ne peuvent effectuer aucun appel réseau
       vers un fournisseur LLM et restent stables sous charge CI.
