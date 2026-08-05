@@ -120,10 +120,22 @@ octets locaux. Les sorties de contrôle restent dans le répertoire privé de pr
 ```bash
 JIT_REGISTERED=false
 JIT_SECRET_SET=false
+JIT_AGENT_STARTED=false
 JIT_DIR=''
 KEY=''
 SSH_FINGERPRINT=''
+SSH_KEY_NAME=''
 PHASE=''
+ORIGINAL_SSH_AUTH_SOCK="${SSH_AUTH_SOCK-}"
+ORIGINAL_SSH_AGENT_PID="${SSH_AGENT_PID-}"
+
+extract_registered_railway_keys() {
+  awk '
+    /^Registered SSH Keys:$/ { registered=1; next }
+    registered && /^[^[:space:]]/ { exit }
+    registered { print }
+  ' "$1"
+}
 
 close_jit() {
   local failed=0
@@ -133,6 +145,16 @@ close_jit() {
   if [ "$JIT_REGISTERED" = true ]; then
     "$RAILWAY_BIN" ssh keys remove "$SSH_FINGERPRINT" \
       > "$EVIDENCE_DIR/$PHASE-railway-remove.txt" 2>&1 || true
+  fi
+  # Railway CLI 5.26 lists both registered keys and keys still visible in the local agent.
+  # Stop the isolated agent before proving the remote registration absent, otherwise the
+  # just-revoked fingerprint is reported as an unregistered local key and creates a false alarm.
+  if [ "$JIT_AGENT_STARTED" = true ]; then
+    ssh-agent -k > "$EVIDENCE_DIR/$PHASE-ssh-agent-stop.txt" 2>&1 || failed=1
+    JIT_AGENT_STARTED=false
+    unset SSH_AUTH_SOCK SSH_AGENT_PID
+  fi
+  if [ "$JIT_REGISTERED" = true ]; then
     "$RAILWAY_BIN" ssh keys list \
       > "$EVIDENCE_DIR/$PHASE-railway-list-after-remove.txt" 2>&1 || {
         failed=1
@@ -145,6 +167,16 @@ close_jit() {
     else
       failed=1
     fi
+  fi
+  if [ -n "$ORIGINAL_SSH_AUTH_SOCK" ]; then
+    export SSH_AUTH_SOCK="$ORIGINAL_SSH_AUTH_SOCK"
+  else
+    unset SSH_AUTH_SOCK
+  fi
+  if [ -n "$ORIGINAL_SSH_AGENT_PID" ]; then
+    export SSH_AGENT_PID="$ORIGINAL_SSH_AGENT_PID"
+  else
+    unset SSH_AGENT_PID
   fi
   if [ "$JIT_SECRET_SET" = true ]; then
     gh secret delete DOCUMENT_ARCHIVE_RAILWAY_SSH_PRIVATE_KEY \
@@ -184,11 +216,13 @@ open_jit() {
   PHASE="$1"
   JIT_REGISTERED=false
   JIT_SECRET_SET=false
+  JIT_AGENT_STARTED=false
   JIT_DIR="$(mktemp -d)"
   chmod 700 "$JIT_DIR"
   KEY="$JIT_DIR/id_ed25519"
   ssh-keygen -q -t ed25519 -N '' -C "bob-quarantine-$PHASE-$RELEASE_SHA" -f "$KEY"
   SSH_FINGERPRINT="$(ssh-keygen -lf "$KEY" -E sha256 | awk '{print $2}')"
+  SSH_KEY_NAME="bob-quarantine-$PHASE-${RELEASE_SHA:0:12}"
   SSH_STARTED_AT="$(date -u +%s)"
   SSH_EXPIRES_AT="$((SSH_STARTED_AT + 10800))"
 
@@ -202,14 +236,27 @@ open_jit() {
   trap 'exit 130' INT
   trap 'exit 143' TERM
 
+  # v5.26 selects only keys discovered through ssh-agent or ~/.ssh; it does not load an
+  # arbitrary public-key path. Keep this one-off key outside ~/.ssh and expose it solely
+  # through an isolated agent for the duration of the phase.
+  eval "$(ssh-agent -s)" > "$EVIDENCE_DIR/$PHASE-ssh-agent-start.txt"
+  JIT_AGENT_STARTED=true
+  ssh-add "$KEY" > "$EVIDENCE_DIR/$PHASE-ssh-add.txt" 2>&1
+  ssh-add -l -E sha256 > "$EVIDENCE_DIR/$PHASE-ssh-agent-list.txt"
+  grep -Fq -- "$SSH_FINGERPRINT" "$EVIDENCE_DIR/$PHASE-ssh-agent-list.txt"
+
   # Set before each mutation so a lost ACK still triggers reconciliation by fingerprint/name.
   JIT_REGISTERED=true
-  "$RAILWAY_BIN" ssh keys add --key "$KEY.pub" \
-    --name "bob-quarantine-$PHASE-${RELEASE_SHA:0:12}" \
+  "$RAILWAY_BIN" ssh keys add --key "$SSH_FINGERPRINT" \
+    --name "$SSH_KEY_NAME" \
     > "$EVIDENCE_DIR/$PHASE-railway-add.txt" 2>&1
   "$RAILWAY_BIN" ssh keys list \
     > "$EVIDENCE_DIR/$PHASE-railway-list-after-add.txt" 2>&1
-  grep -Fq -- "$SSH_FINGERPRINT" "$EVIDENCE_DIR/$PHASE-railway-list-after-add.txt"
+  extract_registered_railway_keys "$EVIDENCE_DIR/$PHASE-railway-list-after-add.txt" \
+    > "$EVIDENCE_DIR/$PHASE-railway-registered-after-add.txt"
+  grep -Fqx -- "  $SSH_KEY_NAME" "$EVIDENCE_DIR/$PHASE-railway-registered-after-add.txt"
+  grep -Fqx -- "    Fingerprint: $SSH_FINGERPRINT" \
+    "$EVIDENCE_DIR/$PHASE-railway-registered-after-add.txt"
   add_output_sha256="$(shasum -a 256 "$EVIDENCE_DIR/$PHASE-railway-add.txt" | awk '{print $1}')"
   list_output_sha256="$(shasum -a 256 \
     "$EVIDENCE_DIR/$PHASE-railway-list-after-add.txt" | awk '{print $1}')"
