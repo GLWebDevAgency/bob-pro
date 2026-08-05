@@ -452,6 +452,17 @@ test('le certificat snapshot récupère uniquement le manifeste staging sans dé
     postOwnerSplitScope,
     /src\/persistence\/prisma\/document-archive-snapshot\.postgres\.test\.ts/u,
   );
+
+  const mistralRotationJobStart = ci.indexOf('  mistral-key-rotation-certification:');
+  const facturxJobStart = ci.indexOf('  facturx-conformance:', mistralRotationJobStart);
+  const mistralRotationJob = ci.slice(mistralRotationJobStart, facturxJobStart);
+  const storageBucket = mistralRotationJob.indexOf('SUPABASE_STORAGE_BUCKET: documents');
+  const releaseCall = mistralRotationJob.indexOf('sh apps/api/scripts/release.sh');
+  assert.ok(mistralRotationJobStart >= 0 && facturxJobStart > mistralRotationJobStart);
+  assert.ok(
+    storageBucket >= 0 && releaseCall > storageBucket,
+    'Le certificat Mistral isolé doit fournir le bucket Storage avant le rituel release.',
+  );
 });
 
 test('l’audit considère les intentions dues et ne confond pas création et mutation', () => {

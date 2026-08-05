@@ -533,6 +533,9 @@ jobs:
       CABINET_INVITATION_WORKER_ENABLED: 'false'
       RUN_RLS_CERT: 'true'
       RLS_CERT_CLEANUP: 'true'
+      # Le rituel release rejoue le certificat archive snapshot sur cette base isolée. Le bucket
+      # doit donc être explicite et identique à la surface Storage provisionnée ci-dessous.
+      SUPABASE_STORAGE_BUCKET: documents
       BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED: 'true'
       BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION: '1'
       BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING: '{"1":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE","2":"AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI"}'
