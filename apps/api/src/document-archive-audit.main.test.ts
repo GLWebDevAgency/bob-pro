@@ -7,12 +7,14 @@ import {
   buildValidatorSandboxSmokeInvocation,
   finalizeArchiveAuditRun,
   parseArchiveAuditRuntimeConfig,
+  persistAndPublishArchiveAuditEvidence,
+  publishArchiveAuditEvidenceMarker,
   SupabaseArchiveAuditStorage,
   ValidatorSandboxReadinessGate,
 } from './document-archive-audit.main';
 
 describe('finalizeArchiveAuditRun', () => {
-  it('publie seulement après la fin du travail et la libération de toutes les ressources', async () => {
+  it('rend le résultat seulement après la fin du travail et la libération de toutes les ressources', async () => {
     const events: string[] = [];
 
     const outcome = await finalizeArchiveAuditRun({
@@ -23,16 +25,13 @@ describe('finalizeArchiveAuditRun', () => {
       cleanup: async () => {
         events.push('cleanup');
       },
-      publish: () => {
-        events.push('publish');
-      },
     });
 
     expect(outcome).toEqual({ ready: true });
-    expect(events).toEqual(['work', 'cleanup', 'publish']);
+    expect(events).toEqual(['work', 'cleanup']);
   });
 
-  it('ne publie pas quand la libération échoue après un travail committé', async () => {
+  it('remonte une libération échouée après un travail committé', async () => {
     const events: string[] = [];
     const cleanupError = new Error('disconnect failed');
 
@@ -45,9 +44,6 @@ describe('finalizeArchiveAuditRun', () => {
         cleanup: async () => {
           events.push('cleanup');
           throw cleanupError;
-        },
-        publish: () => {
-          events.push('publish');
         },
       }),
     ).rejects.toBe(cleanupError);
@@ -68,12 +64,126 @@ describe('finalizeArchiveAuditRun', () => {
           events.push('cleanup');
           throw new Error('disconnect failed too');
         },
-        publish: () => {
-          events.push('publish');
-        },
       }),
     ).rejects.toBe(workError);
     expect(events).toEqual(['work', 'cleanup']);
+  });
+});
+
+describe('persistAndPublishArchiveAuditEvidence', () => {
+  it('publie la preuve committée avant un nettoyage local bloqué', async () => {
+    const events: string[] = [];
+    let releaseCleanup!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
+
+    const run = finalizeArchiveAuditRun({
+      work: async () => {
+        await persistAndPublishArchiveAuditEvidence({
+          persist: async () => {
+            events.push('persist');
+          },
+          publish: async () => {
+            events.push('publish');
+          },
+        });
+        return { ready: true };
+      },
+      cleanup: async () => {
+        events.push('cleanup:start');
+        await cleanupGate;
+        events.push('cleanup:end');
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(events).toEqual(['persist', 'publish', 'cleanup:start']);
+    });
+    releaseCleanup();
+    await expect(run).resolves.toEqual({ ready: true });
+    expect(events).toEqual(['persist', 'publish', 'cleanup:start', 'cleanup:end']);
+  });
+
+  it('n’émet aucun marqueur si la persistance échoue', async () => {
+    const persistFailure = new Error('persist failed');
+    const publish = vi.fn<() => Promise<void>>();
+
+    await expect(
+      persistAndPublishArchiveAuditEvidence({
+        persist: async () => {
+          throw persistFailure;
+        },
+        publish,
+      }),
+    ).rejects.toBe(persistFailure);
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('ne transforme jamais un échec de transport en succès', async () => {
+    const transportFailure = new Error('stdout failed');
+
+    await expect(
+      persistAndPublishArchiveAuditEvidence({
+        persist: async () => undefined,
+        publish: async () => {
+          throw transportFailure;
+        },
+      }),
+    ).rejects.toBe(transportFailure);
+  });
+});
+
+describe('publishArchiveAuditEvidenceMarker', () => {
+  it('émet exactement un marqueur canonique et attend son flush', async () => {
+    const envelope = buildArchiveAuditSafeEnvelope({
+      deploymentId: '123e4567-e89b-42d3-a456-426614174000',
+      report: protocolV2ByteAudit(),
+      reportSha256: '1'.repeat(64),
+      validatorEvidenceSeed: '2'.repeat(64),
+    });
+    const writes: string[] = [];
+    let acknowledgeFlush!: () => void;
+
+    const publication = publishArchiveAuditEvidenceMarker(envelope, (marker, callback) => {
+      writes.push(marker);
+      acknowledgeFlush = () => callback();
+    });
+
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatch(/^BOB_DOCUMENT_ARCHIVE_AUDIT_EVIDENCE=[A-Za-z0-9_-]+\n$/u);
+    let settled = false;
+    void publication.finally(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    acknowledgeFlush();
+    await expect(publication).resolves.toBeUndefined();
+    expect(settled).toBe(true);
+
+    const encoded = writes[0]?.slice(
+      'BOB_DOCUMENT_ARCHIVE_AUDIT_EVIDENCE='.length,
+      -1,
+    );
+    expect(JSON.parse(Buffer.from(encoded ?? '', 'base64url').toString('utf8'))).toEqual(envelope);
+  });
+
+  it('remonte une erreur de flush stdout', async () => {
+    const envelope = buildArchiveAuditSafeEnvelope({
+      deploymentId: '123e4567-e89b-42d3-a456-426614174000',
+      report: protocolV2ByteAudit(),
+      reportSha256: '1'.repeat(64),
+      validatorEvidenceSeed: '2'.repeat(64),
+    });
+    const flushFailure = new Error('flush failed');
+
+    await expect(
+      publishArchiveAuditEvidenceMarker(envelope, (_marker, callback) =>
+        callback(flushFailure),
+      ),
+    ).rejects.toBe(flushFailure);
   });
 });
 

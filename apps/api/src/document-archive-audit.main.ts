@@ -1625,10 +1625,46 @@ export function buildArchiveAuditSafeEnvelope(input: {
   };
 }
 
+export async function persistAndPublishArchiveAuditEvidence(input: {
+  persist: () => Promise<void>;
+  publish: () => Promise<void>;
+}): Promise<void> {
+  await input.persist();
+  await input.publish();
+}
+
+type ArchiveAuditEvidenceMarkerTransport = (
+  marker: string,
+  callback: (error?: Error | null) => void,
+) => unknown;
+
+export async function publishArchiveAuditEvidenceMarker(
+  envelope: ArchiveAuditSafeEnvelope,
+  transport: ArchiveAuditEvidenceMarkerTransport = (marker, callback) =>
+    process.stdout.write(marker, 'utf8', callback),
+): Promise<void> {
+  const marker = `BOB_DOCUMENT_ARCHIVE_AUDIT_EVIDENCE=${Buffer.from(
+    JSON.stringify(envelope),
+    'utf8',
+  ).toString('base64url')}\n`;
+  await new Promise<void>((resolve, reject) => {
+    try {
+      transport(marker, (error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
 export async function finalizeArchiveAuditRun<T>(input: {
   work: () => Promise<T>;
   cleanup: () => Promise<void>;
-  publish: (outcome: T) => void;
 }): Promise<T> {
   let outcome: T | undefined;
   let workFailed = false;
@@ -1649,7 +1685,6 @@ export async function finalizeArchiveAuditRun<T>(input: {
   }
   if (workFailed) throw workFailure;
   if (cleanupFailed) throw cleanupFailure;
-  input.publish(outcome as T);
   return outcome as T;
 }
 
@@ -1713,12 +1748,16 @@ export async function runDocumentArchiveAudit(environment: NodeJS.ProcessEnv): P
           reportSha256: evidence.sha256,
           validatorEvidenceSeed,
         });
-        await repository.persistEvidence({
-          databaseIdentity: protocolIdentity.databaseIdentity,
-          storageBucket: report.storageBucket,
-          envelope,
-          report,
-          auditedAt: report.auditedAt,
+        await persistAndPublishArchiveAuditEvidence({
+          persist: () =>
+            repository.persistEvidence({
+              databaseIdentity: protocolIdentity.databaseIdentity,
+              storageBucket: report.storageBucket,
+              envelope,
+              report,
+              auditedAt: report.auditedAt,
+            }),
+          publish: () => publishArchiveAuditEvidenceMarker(envelope),
         });
         return {
           envelope,
@@ -1740,11 +1779,6 @@ export async function runDocumentArchiveAudit(environment: NodeJS.ProcessEnv): P
           'La preuve Archive est committée mais les connexions PostgreSQL ne sont pas toutes libérées.',
         );
       }
-    },
-    publish: ({ envelope }) => {
-      process.stdout.write(
-        `BOB_DOCUMENT_ARCHIVE_AUDIT_EVIDENCE=${Buffer.from(JSON.stringify(envelope), 'utf8').toString('base64url')}\n`,
-      );
     },
   });
   return outcome.exitCode;

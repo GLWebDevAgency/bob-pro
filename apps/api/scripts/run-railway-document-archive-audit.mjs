@@ -328,7 +328,7 @@ export class ArchiveAuditTerminalEvidenceError extends Error {
     const missing = kind === 'missing';
     super(
       missing
-        ? 'Archive audit deployment ended as SUCCESS without valid evidence within 60 seconds.'
+        ? 'Archive audit runtime became terminal without valid evidence within 60 seconds.'
         : 'Archive audit evidence did not remain identical across two bounded observations.',
     );
     this.name = 'ArchiveAuditTerminalEvidenceError';
@@ -699,6 +699,44 @@ function deploymentCommitHash(metaValue) {
   const meta = object(metaValue);
   const commitHash = meta?.commitHash;
   return typeof commitHash === 'string' && SHA.test(commitHash) ? commitHash : null;
+}
+
+function parseObservedDeployment(value, deploymentId) {
+  const deployment = object(value);
+  if (
+    deployment === null ||
+    deployment.id !== deploymentId ||
+    typeof deployment.status !== 'string' ||
+    typeof deployment.deploymentStopped !== 'boolean' ||
+    !Array.isArray(deployment.instances)
+  ) {
+    throw new Error('Railway returned another deployment or an invalid deployment envelope.');
+  }
+  const instanceStatuses = deployment.instances.map((instanceValue) => {
+    const instance = object(instanceValue);
+    if (
+      instance === null ||
+      !UUID.test(instance.id ?? '') ||
+      typeof instance.status !== 'string' ||
+      !DEPLOYMENT_INSTANCE_STATUSES.has(instance.status)
+    ) {
+      throw new Error('Railway returned an invalid deployment instance envelope.');
+    }
+    return instance.status;
+  });
+  const hasNonterminalInstance = instanceStatuses.some((instanceStatus) =>
+    NONTERMINAL_DEPLOYMENT_INSTANCE_STATUSES.has(instanceStatus),
+  );
+  return {
+    status: deployment.status,
+    deploymentStopped: deployment.deploymentStopped,
+    runtimeState:
+      instanceStatuses.length === 0
+        ? 'unknown'
+        : hasNonterminalInstance
+          ? 'active'
+          : 'terminal',
+  };
 }
 
 function parseDeploymentSnapshotPage(value, config, projectId) {
@@ -1371,6 +1409,7 @@ export async function runRailwayDocumentArchiveAudit({
     let terminalSuccessDeadline = null;
     let terminalConfirmationDeadline = null;
     let firstReadyEvidenceCanonical = null;
+    let deploymentSuccessObserved = false;
 
     const terminalEvidenceError = () =>
       new ArchiveAuditTerminalEvidenceError(
@@ -1388,6 +1427,11 @@ export async function runRailwayDocumentArchiveAudit({
               deployment(id: $id) {
                 id
                 status
+                deploymentStopped
+                instances {
+                  id
+                  status
+                }
               }
             }
           `,
@@ -1407,14 +1451,8 @@ export async function runRailwayDocumentArchiveAudit({
         }
         throw error;
       }
-      const deployment = object(deploymentData?.deployment);
-      if (deployment === null || deployment.id !== deploymentId) {
-        throw new Error('Railway returned another deployment or an invalid deployment envelope.');
-      }
+      const deployment = parseObservedDeployment(deploymentData?.deployment, deploymentId);
       status = deployment.status;
-      if (typeof status !== 'string') {
-        throw new Error('Railway returned a deployment without a status.');
-      }
       const statusObservedAt = now();
       if (!Number.isFinite(statusObservedAt)) {
         throw new Error('The monotonic clock returned an invalid value.');
@@ -1461,17 +1499,29 @@ export async function runRailwayDocumentArchiveAudit({
         throw new Error(`Archive audit deployment ended as ${status} without a valid refusal.`);
       }
       if (TERMINAL_SUCCESSES.has(status)) {
-        terminalSuccessDeadline ??= Math.min(
-          deadline,
-          statusObservedAt + TERMINAL_SUCCESS_EVIDENCE_GRACE_MILLISECONDS,
-        );
+        deploymentSuccessObserved = true;
+        if (deployment.runtimeState === 'terminal') {
+          terminalSuccessDeadline ??= Math.min(
+            deadline,
+            statusObservedAt + TERMINAL_SUCCESS_EVIDENCE_GRACE_MILLISECONDS,
+          );
+        } else if (terminalSuccessDeadline !== null) {
+          throw new Error('Railway archive audit runtime regressed after terminal observation.');
+        }
         let observed;
         try {
           observed = await readDeploymentEvidence(config, deploymentId, graphqlDependencies, {
-            deadline: terminalConfirmationDeadline ?? terminalSuccessDeadline,
+            deadline: terminalConfirmationDeadline ?? terminalSuccessDeadline ?? deadline,
           });
         } catch (error) {
-          if (error instanceof GraphqlDeadlineExceededError) throw terminalEvidenceError();
+          if (error instanceof GraphqlDeadlineExceededError) {
+            if (terminalConfirmationDeadline !== null || terminalSuccessDeadline !== null) {
+              throw terminalEvidenceError();
+            }
+            throw new Error(
+              'Archive audit deployment exceeded its bounded timeout without valid evidence.',
+            );
+          }
           throw error;
         }
         if (observed !== null) {
@@ -1522,11 +1572,11 @@ export async function runRailwayDocumentArchiveAudit({
           successfulMarkerObservations = 0;
         }
         const terminalPhaseDeadline = terminalConfirmationDeadline ?? terminalSuccessDeadline;
-        if (now() >= terminalPhaseDeadline) {
+        if (terminalPhaseDeadline !== null && now() >= terminalPhaseDeadline) {
           throw terminalEvidenceError();
         }
       } else if (TRANSIENT_STATUSES.has(status)) {
-        if (terminalSuccessDeadline !== null) {
+        if (deploymentSuccessObserved) {
           throw new Error('Railway archive audit status regressed after SUCCESS.');
         }
         evidence = null;
@@ -1539,9 +1589,9 @@ export async function runRailwayDocumentArchiveAudit({
           (milliseconds) => sleepUntilOrCancellation(sleep, milliseconds, cancellationSignal),
           now,
           terminalConfirmationDeadline ?? terminalSuccessDeadline ?? deadline,
-          terminalSuccessDeadline === null
-            ? pollMilliseconds
-            : TERMINAL_SUCCESS_CONFIRMATION_POLL_MILLISECONDS,
+          deploymentSuccessObserved
+            ? TERMINAL_SUCCESS_CONFIRMATION_POLL_MILLISECONDS
+            : pollMilliseconds,
         ))
       )
         break;
