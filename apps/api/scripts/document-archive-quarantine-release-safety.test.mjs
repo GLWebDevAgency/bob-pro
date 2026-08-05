@@ -194,19 +194,66 @@ test('release et CI prouvent le catalogue exact sous owner vendor non SETtable',
   assert.match(packageJson, /archive:quarantine:finalize/u);
 });
 
-test('la CI solde le manifeste staging synthétique avant la preuve globale de quarantaine', () => {
-  const cleanupStep = ci.indexOf(
-    '- name: Re-certify archive snapshot cleanup after the schema-owner split',
+test('la CI certifie la quarantaine sur une base fraîche après le train V2 owner-split', () => {
+  const sharedStart = ci.indexOf('  rls-certification:\n');
+  const isolatedStart = ci.indexOf('  document-archive-quarantine-certification:\n');
+  const isolatedEnd = ci.indexOf('  realtime-global-capacity-certification:\n', isolatedStart);
+  assert.ok(sharedStart >= 0 && isolatedStart > sharedStart && isolatedEnd > isolatedStart);
+
+  const sharedJob = ci.slice(sharedStart, isolatedStart);
+  const isolatedJob = ci.slice(isolatedStart, isolatedEnd);
+  assert.doesNotMatch(sharedJob, /RUN_POSTGRES_DOCUMENT_ARCHIVE_QUARANTINE_CERT/u);
+  assert.match(isolatedJob, /POSTGRES_DB: bob_ephemeral_ci/u);
+  assert.match(isolatedJob, /DOCUMENT_ARCHIVE_TEST_SEED_ACTIVATION_EVIDENCE: 'true'/u);
+  assert.match(isolatedJob, /SUPABASE_STORAGE_BUCKET: documents/u);
+
+  const predeploy = isolatedJob.indexOf('BOB_RELEASE_PHASE=predeploy');
+  const archiveActivation = isolatedJob.indexOf('activate-document-archive-v2.sh', predeploy);
+  const snapshotActivation = isolatedJob.indexOf(
+    'activate-document-archive-snapshot-v2.sh',
+    archiveActivation,
   );
-  const quarantineStep = ci.indexOf(
-    '- name: Certify exact-key archive quarantine after the schema-owner split',
+  const settlementActivation = isolatedJob.indexOf(
+    'activate-invoice-settlement-v2.sh',
+    snapshotActivation,
   );
-  assert.notEqual(cleanupStep, -1);
-  assert.notEqual(quarantineStep, -1);
-  assert.ok(cleanupStep < quarantineStep);
-  const cleanupContract = ci.slice(cleanupStep, quarantineStep);
+  const outboxActivation = isolatedJob.indexOf(
+    'activate-notification-outbox-v2.sh',
+    settlementActivation,
+  );
+  const postdeploy = isolatedJob.indexOf('BOB_RELEASE_PHASE=postdeploy', outboxActivation);
+  const capacityClose = isolatedJob.indexOf(
+    'Close Bob Live capacity before the schema-owner split',
+    postdeploy,
+  );
+  const ownerSplit = isolatedJob.indexOf('certify-rls-owner-split.sh', capacityClose);
+  const cleanupStep = isolatedJob.indexOf(
+    'Re-certify archive snapshot cleanup after the schema-owner split',
+    ownerSplit,
+  );
+  const quarantineStep = isolatedJob.indexOf(
+    'Certify exact-key archive quarantine in isolation',
+    cleanupStep,
+  );
+  assert.ok(
+    predeploy >= 0 &&
+      archiveActivation > predeploy &&
+      snapshotActivation > archiveActivation &&
+      settlementActivation > snapshotActivation &&
+      outboxActivation > settlementActivation &&
+      postdeploy > outboxActivation &&
+      capacityClose > postdeploy &&
+      ownerSplit > capacityClose &&
+      cleanupStep > ownerSplit &&
+      quarantineStep > cleanupStep,
+  );
+  const cleanupContract = isolatedJob.slice(cleanupStep, quarantineStep);
   assert.match(cleanupContract, /CABINET_RELEASE_ENV: 'staging'/u);
   assert.match(cleanupContract, /RUN_POSTGRES_DOCUMENT_ARCHIVE_SNAPSHOT_CERT: 'true'/u);
+  assert.match(
+    isolatedJob.slice(quarantineStep),
+    /DOCUMENT_ARCHIVE_QUARANTINE_CERT_DATABASE_KIND: ephemeral/u,
+  );
 });
 
 test('le runtime sépare strictement les autorités public et Storage', () => {

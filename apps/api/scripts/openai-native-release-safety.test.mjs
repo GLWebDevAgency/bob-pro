@@ -125,7 +125,11 @@ function workflowJob(name, nextName) {
 
 test('chaque certificat PostgreSQL consomme le Storage vendor du bootstrap avant la migration', () => {
   const jobs = [
-    workflowJob('rls-certification', 'realtime-global-capacity-certification'),
+    workflowJob('rls-certification', 'document-archive-quarantine-certification'),
+    workflowJob(
+      'document-archive-quarantine-certification',
+      'realtime-global-capacity-certification',
+    ),
     workflowJob('realtime-global-capacity-certification', 'mistral-key-rotation-certification'),
     workflowJob('mistral-key-rotation-certification', 'facturx-conformance'),
   ];
@@ -258,7 +262,7 @@ test('le successeur natif rend le rolling N-1 réel et clôt les courses writer/
 test('la certification mutationnelle native reste confinée au PostgreSQL éphémère de CI', () => {
   const sharedAuthorityJob = workflowJob(
     'rls-certification',
-    'realtime-global-capacity-certification',
+    'document-archive-quarantine-certification',
   );
   const isolatedRotationJob = workflowJob(
     'mistral-key-rotation-certification',

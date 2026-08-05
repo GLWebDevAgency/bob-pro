@@ -431,7 +431,7 @@ test('le pipeline garde la capacité fermée jusqu’aux activations puis finali
   );
   assert.equal(
     (ci.match(/BOB_RELEASE_EXPECTED_ENV: development/gu) ?? []).length,
-    3,
+    4,
     'Chaque job PostgreSQL qui appelle release.sh doit figer son environnement attendu.',
   );
   assert.match(
@@ -1642,7 +1642,7 @@ test('la CI sépare la preuve AgentMission PostgreSQL 17 du owner-split Supabase
   const agentMissionJobStart = ci.indexOf('  agent-missions-postgres-certification:\n');
   const agentMissionJobEnd = ci.indexOf('  rls-certification:\n', agentMissionJobStart);
   const rlsJobStart = agentMissionJobEnd;
-  const rlsJobEnd = ci.indexOf('  realtime-global-capacity-certification:\n', rlsJobStart);
+  const rlsJobEnd = ci.indexOf('  document-archive-quarantine-certification:\n', rlsJobStart);
   assert.ok(agentMissionJobStart >= 0 && agentMissionJobEnd > agentMissionJobStart);
   assert.ok(rlsJobStart >= 0 && rlsJobEnd > rlsJobStart);
   const agentMissionJob = ci.slice(agentMissionJobStart, agentMissionJobEnd);
@@ -1674,12 +1674,12 @@ test('la CI sépare la preuve AgentMission PostgreSQL 17 du owner-split Supabase
   const ownerSplitTail = rlsJob.slice(destructiveOwnerSplit);
   assert.equal(
     ownerSplitTail.match(/^\s*- name:/gmu)?.length,
-    3,
-    'Après le owner-split, seuls les deux certificats explicitement compatibles sont permis.',
+    2,
+    'Après le owner-split, seul le cleanup explicitement compatible est permis.',
   );
   assert.match(
     ownerSplitTail,
-    /run: sh apps\/api\/scripts\/certify-rls-owner-split\.sh[\s\S]*?- name: Re-certify archive snapshot cleanup after the schema-owner split[\s\S]*?RUN_POSTGRES_DOCUMENT_ARCHIVE_SNAPSHOT_CERT: 'true'[\s\S]*?src\/persistence\/prisma\/document-archive-snapshot\.postgres\.test\.ts[\s\S]*?- name: Certify exact-key archive quarantine after the schema-owner split[\s\S]*?RUN_POSTGRES_DOCUMENT_ARCHIVE_QUARANTINE_CERT: 'true'[\s\S]*?src\/persistence\/prisma\/document-archive-quarantine\.postgres\.test\.ts\s*$/u,
+    /run: sh apps\/api\/scripts\/certify-rls-owner-split\.sh[\s\S]*?- name: Re-certify archive snapshot cleanup after the schema-owner split[\s\S]*?RUN_POSTGRES_DOCUMENT_ARCHIVE_SNAPSHOT_CERT: 'true'[\s\S]*?src\/persistence\/prisma\/document-archive-snapshot\.postgres\.test\.ts\s*$/u,
   );
   assert.match(
     rlsOwnerSplitCertificate,

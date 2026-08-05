@@ -213,7 +213,7 @@ test('l’autorité globale reste hors du replay RLS générique et les probes m
 test('la CI comporte une autorité active éphémère puis la certification N/N+1', () => {
   const sharedAuthorityJob = workflowJob(
     'rls-certification',
-    'realtime-global-capacity-certification',
+    'document-archive-quarantine-certification',
   );
   const isolatedCapacityJob = workflowJob(
     'realtime-global-capacity-certification',
