@@ -564,6 +564,7 @@ jobs:
           path: |
             .quarantine-evidence/
             document-archive-quarantine-*-receipt.json
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
       - name: Destroy runner-local SSH and OIDC material
