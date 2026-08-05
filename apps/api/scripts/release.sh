@@ -483,7 +483,17 @@ BEGIN
          OR NOT (owner.rolsuper OR owner.rolbypassrls)
          OR NOT function.proconfig @> ARRAY['row_security=off']::text[]
          OR NOT function.proconfig @> ARRAY['search_path=pg_catalog, public']::text[]
-         OR pg_catalog.has_function_privilege('PUBLIC', function.oid, 'EXECUTE')
+         OR EXISTS (
+           SELECT 1
+             FROM pg_catalog.aclexplode(
+               COALESCE(
+                 function.proacl,
+                 pg_catalog.acldefault('f', function.proowner)
+               )
+             ) AS privilege
+            WHERE privilege.grantee = 0
+              AND privilege.privilege_type = 'EXECUTE'
+         )
        )
   ) THEN
     RAISE EXCEPTION 'document archive quarantine fence function authority is unsafe';

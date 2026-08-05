@@ -89,6 +89,8 @@ test('release et CI prouvent le catalogue exact sous owner vendor non SETtable',
   assert.match(release, /exact_count <> 8 OR named_count <> 8/u);
   assert.match(release, /trigger\.tgfoid = expected\.function_oid/u);
   assert.match(release, /trigger\.tgtype::integer = expected\.trigger_type/u);
+  assert.match(release, /pg_catalog\.aclexplode\([\s\S]*privilege\.grantee = 0[\s\S]*privilege\.privilege_type = 'EXECUTE'/u);
+  assert.doesNotMatch(release, /has_function_privilege\('PUBLIC'/u);
   for (const source of [migration, release, runtime, postgresCert]) {
     assert.match(source, /expected\.update_column/u);
     assert.match(source, /trigger\.tgattr::text/u);

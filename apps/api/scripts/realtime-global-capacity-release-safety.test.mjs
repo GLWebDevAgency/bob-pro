@@ -240,21 +240,20 @@ test('la CI comporte une autorité active éphémère puis la certification N/N+
   assert.match(isolatedCapacityJob, /RUN_POSTGRES_REALTIME_CAPACITY_CERT/u);
   assert.match(isolatedCapacityJob, /realtime-capacity\.postgres\.test\.ts/u);
 
-  const buckets = isolatedCapacityJob.indexOf('CREATE TABLE IF NOT EXISTS storage.buckets');
-  const objects = isolatedCapacityJob.indexOf('CREATE TABLE IF NOT EXISTS storage.objects');
-  const foreignKey = isolatedCapacityJob.indexOf(
-    'FOREIGN KEY (bucket_id) REFERENCES storage.buckets(id)',
-    objects,
-  );
+  const bootstrap = isolatedCapacityJob.indexOf('bootstrap-supabase-ci-postgres.sh');
+  const vendorOwner = isolatedCapacityJob.indexOf('CI_STORAGE_VENDOR_OWNER_CONTRACT_INVALID');
   const release = isolatedCapacityJob.indexOf('sh apps/api/scripts/release.sh');
   const certificate = isolatedCapacityJob.indexOf('RUN_POSTGRES_REALTIME_CAPACITY_CERT');
   const teardown = isolatedCapacityJob.indexOf('Close isolated Bob Live capacity');
   assert.ok(
-    buckets >= 0 &&
-      objects > buckets &&
-      foreignKey > objects &&
-      release > foreignKey &&
+    bootstrap >= 0 &&
+      vendorOwner > bootstrap &&
+      release > vendorOwner &&
       certificate > release &&
       teardown > certificate,
+  );
+  assert.doesNotMatch(
+    isolatedCapacityJob,
+    /CREATE TABLE IF NOT EXISTS storage\.(?:buckets|objects)/u,
   );
 });
