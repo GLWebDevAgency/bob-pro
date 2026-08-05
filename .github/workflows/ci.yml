@@ -43,6 +43,21 @@ jobs:
           node-version: 22.18.0
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Validate GitHub Actions workflow semantics
+        run: |
+          set -euo pipefail
+          actionlint_version='1.7.12'
+          actionlint_sha256='8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8'
+          temp_dir="$(mktemp -d)"
+          trap 'rm -rf "$temp_dir"' EXIT
+          archive="$temp_dir/actionlint.tar.gz"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+            --retry 3 --retry-delay 2 --retry-all-errors \
+            --output "$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${actionlint_version}/actionlint_${actionlint_version}_linux_amd64.tar.gz"
+          printf '%s  %s\n' "$actionlint_sha256" "$archive" | sha256sum --check --status
+          tar --extract --gzip --file "$archive" --directory "$temp_dir" actionlint
+          "$temp_dir/actionlint" .github/workflows/*.yml
       - name: Certifier la lignée append-only des migrations
         env:
           MIGRATION_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}

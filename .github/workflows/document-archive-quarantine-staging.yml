@@ -59,7 +59,6 @@ jobs:
       RAILWAY_ARCHIVE_AUDIT_SERVICE_ID: ${{ vars.RAILWAY_ARCHIVE_AUDIT_SERVICE_ID }}
       DOCUMENT_ARCHIVE_SUPABASE_PROJECT_REF: ${{ vars.BOB_M1B_STAGING_SUPABASE_PROJECT_REF }}
       RELEASE_SHA: ${{ inputs.expected_sha }}
-      QUARANTINE_TEMP_ROOT: ${{ runner.temp }}/bob-document-archive-quarantine-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -68,6 +67,13 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22.18.0
+      - name: Initialize bounded runner workspace
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/bob-document-archive-quarantine-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -p "$root"
+          chmod 700 "$root"
+          echo "QUARANTINE_TEMP_ROOT=$root" >> "$GITHUB_ENV"
       - name: Validate immutable staging scope and typed confirmation
         env:
           MODE: ${{ inputs.mode }}

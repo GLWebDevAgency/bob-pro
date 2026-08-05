@@ -61,6 +61,12 @@ test('l’opérateur staging reste manuel, mono-instance, OIDC et distant', () =
   assert.match(workflow, /--identity-file\s+"\$SSH_IDENTITY"/u);
   assert.match(workflow, /DOCUMENT_ARCHIVE_RAILWAY_SSH_PRIVATE_KEY/u);
   assert.match(workflow, /ssh_key_fingerprint:/u);
+  assert.doesNotMatch(workflow, /\$\{\{ runner\.temp \}\}/u);
+  assert.match(
+    workflow,
+    /root="\$RUNNER_TEMP\/bob-document-archive-quarantine-\$GITHUB_RUN_ID-\$GITHUB_RUN_ATTEMPT"/u,
+  );
+  assert.match(workflow, /echo "QUARANTINE_TEMP_ROOT=\$root" >> "\$GITHUB_ENV"/u);
   assert.match(workflow, /ssh_authorization_started_at_epoch:/u);
   assert.match(workflow, /ssh_authorization_expires_at_epoch:/u);
   assert.match(workflow, /actual_fingerprint.*EXPECTED_SSH_KEY_FINGERPRINT/u);
