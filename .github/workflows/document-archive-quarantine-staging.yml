@@ -283,6 +283,7 @@ jobs:
             --deployment-instance "$DEPLOYMENT_INSTANCE_ID" \
             --identity-file "$SSH_IDENTITY" \
             env \
+              BOB_RELEASE_EXPECTED_ENV=staging \
               DOCUMENT_ARCHIVE_QUARANTINE_MODE=plan \
               DOCUMENT_ARCHIVE_SUPABASE_PROJECT_REF="$DOCUMENT_ARCHIVE_SUPABASE_PROJECT_REF" \
               DOCUMENT_ARCHIVE_QUARANTINE_AUDIT_DEPLOYMENT_ID="$AUDIT_DEPLOYMENT_ID" \
@@ -343,7 +344,8 @@ jobs:
             --environment "$RAILWAY_ENVIRONMENT_ID" \
             --deployment-instance "$DEPLOYMENT_INSTANCE_ID" \
             --identity-file "$SSH_IDENTITY" \
-            env DOCUMENT_ARCHIVE_QUARANTINE_MODE=apply \
+            env BOB_RELEASE_EXPECTED_ENV=staging \
+              DOCUMENT_ARCHIVE_QUARANTINE_MODE=apply \
               DOCUMENT_ARCHIVE_SUPABASE_PROJECT_REF="$DOCUMENT_ARCHIVE_SUPABASE_PROJECT_REF" \
               node dist/document-archive-quarantine-apply.main.js \
             < "$apply_input" > "$receipt"
@@ -404,6 +406,7 @@ jobs:
             env -u DOCUMENT_ARCHIVE_QUARANTINE_AUDIT_DEPLOYMENT_ID \
               -u DOCUMENT_ARCHIVE_QUARANTINE_AUDIT_INVENTORY_DIGEST \
               -u DOCUMENT_ARCHIVE_QUARANTINE_AUDIT_REPORT_SHA256 \
+              BOB_RELEASE_EXPECTED_ENV=staging \
               DOCUMENT_ARCHIVE_QUARANTINE_MODE=finalize \
               DOCUMENT_ARCHIVE_SUPABASE_PROJECT_REF="$DOCUMENT_ARCHIVE_SUPABASE_PROJECT_REF" \
               node dist/document-archive-quarantine-finalize.main.js \
@@ -514,7 +517,8 @@ jobs:
             --environment "$RAILWAY_ENVIRONMENT_ID" \
             --deployment-instance "$DEPLOYMENT_INSTANCE_ID" \
             --identity-file "$SSH_IDENTITY" \
-            env DOCUMENT_ARCHIVE_QUARANTINE_MODE=finalize \
+            env BOB_RELEASE_EXPECTED_ENV=staging \
+              DOCUMENT_ARCHIVE_QUARANTINE_MODE=finalize \
               DOCUMENT_ARCHIVE_SUPABASE_PROJECT_REF="$DOCUMENT_ARCHIVE_SUPABASE_PROJECT_REF" \
               DOCUMENT_ARCHIVE_QUARANTINE_AUDIT_DEPLOYMENT_ID="$AUDIT_DEPLOYMENT_ID" \
               DOCUMENT_ARCHIVE_QUARANTINE_AUDIT_INVENTORY_DIGEST="$AUDIT_INVENTORY_DIGEST" \

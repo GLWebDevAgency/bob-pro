@@ -92,7 +92,30 @@ test('l’opérateur staging reste manuel, mono-instance, OIDC et distant', () =
   const sshConfigIndex = workflow.indexOf('Host ssh.railway.com');
   const firstRailwaySshIndex = workflow.indexOf('railway ssh \\');
   assert.ok(sshConfigIndex >= 0 && firstRailwaySshIndex > sshConfigIndex);
-  assert.equal((workflow.match(/railway ssh \\/gu) ?? []).length, 4);
+  const remoteQuarantineCommands =
+    workflow.match(
+      /railway ssh \\\n[\s\S]*?\n\s+< "\$(?:plan_input|apply_input|finalize_input)" > "\$receipt"(?: 2> "\$failure")?/gu,
+    ) ?? [];
+  assert.equal(remoteQuarantineCommands.length, 4);
+  assert.deepEqual(
+    remoteQuarantineCommands.map(
+      (command) =>
+        command.match(
+          /node (dist\/document-archive-quarantine(?:-apply|-finalize)?\.main\.js)/u,
+        )?.[1],
+    ),
+    [
+      'dist/document-archive-quarantine.main.js',
+      'dist/document-archive-quarantine-apply.main.js',
+      'dist/document-archive-quarantine-finalize.main.js',
+      'dist/document-archive-quarantine-finalize.main.js',
+    ],
+  );
+  assert.ok(
+    remoteQuarantineCommands.every((command) =>
+      command.includes('BOB_RELEASE_EXPECTED_ENV=staging'),
+    ),
+  );
   assert.match(workflow, /Resume a durable final audit before requesting a new one/u);
   assert.match(workflow, /env -u DOCUMENT_ARCHIVE_QUARANTINE_AUDIT_DEPLOYMENT_ID/u);
   assert.match(workflow, /ARCHIVE_QUARANTINE_FINAL_AUDIT_NOT_RECORDED/u);
@@ -156,17 +179,36 @@ test('le runbook borne les deux fenêtres JIT et restaure la gouvernance staging
   );
   assert.match(operatorRunbook, /open_jit plan/u);
   assert.match(operatorRunbook, /open_jit apply/u);
-  assert.match(operatorRunbook, /ssh keys add --key "\$KEY\.pub"/u);
+  assert.match(operatorRunbook, /ssh-agent -a "\$JIT_AGENT_SOCKET" -s/u);
+  assert.match(operatorRunbook, /ssh-add "\$KEY"/u);
+  assert.match(operatorRunbook, /ssh keys add --key "\$SSH_FINGERPRINT"/u);
+  assert.doesNotMatch(operatorRunbook, /ssh keys add --key "\$KEY\.pub"/u);
+  assert.match(operatorRunbook, /extract_registered_railway_keys/u);
+  assert.match(operatorRunbook, /railway-registered-after-add\.txt/u);
+  assert.match(operatorRunbook, /Fingerprint: \$SSH_FINGERPRINT/u);
+  assert.match(operatorRunbook, /kill -TERM "\$JIT_AGENT_PID"/u);
+  assert.match(operatorRunbook, /kill -KILL "\$JIT_AGENT_PID"/u);
+  assert.match(operatorRunbook, /! kill -0 "\$JIT_AGENT_PID"/u);
+  assert.match(operatorRunbook, /! test -S "\$JIT_AGENT_SOCKET"/u);
+  assert.match(operatorRunbook, /"jitAgentStopped":%s/u);
+  assert.match(operatorRunbook, /"jitAgentSocketAbsent":%s/u);
   const registrationProof = operatorRunbook.indexOf('add_output_sha256=');
   const registrationReceipt = operatorRunbook.indexOf('"registeredAt"');
   assert.ok(registrationProof >= 0 && registrationReceipt > registrationProof);
   assert.match(operatorRunbook, /"addOutputSha256":"%s"/u);
   assert.match(operatorRunbook, /"listOutputSha256":"%s"/u);
   const revoke = operatorRunbook.indexOf('ssh keys remove "$SSH_FINGERPRINT"');
+  const stopIsolatedAgent = operatorRunbook.indexOf('stop_jit_agent || failed=1', revoke);
+  const proveRemoteAbsence = operatorRunbook.indexOf('ssh keys list', stopIsolatedAgent);
   const deleteSecret = operatorRunbook.indexOf(
     'secret delete DOCUMENT_ARCHIVE_RAILWAY_SSH_PRIVATE_KEY',
   );
-  assert.ok(revoke >= 0 && deleteSecret > revoke);
+  assert.ok(
+    revoke >= 0 &&
+      stopIsolatedAgent > revoke &&
+      proveRemoteAbsence > stopIsolatedAgent &&
+      deleteSecret > proveRemoteAbsence,
+  );
   assert.match(operatorRunbook, /pending_deployments/u);
   assert.match(operatorRunbook, /length == 1 and \.\[0\]\.environment\.id == \$environment/u);
   assert.match(operatorRunbook, /workflow run document-archive-quarantine-staging\.yml -R/u);
