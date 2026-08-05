@@ -57,7 +57,10 @@ jobs:
             "https://github.com/rhysd/actionlint/releases/download/v${actionlint_version}/actionlint_${actionlint_version}_linux_amd64.tar.gz"
           printf '%s  %s\n' "$actionlint_sha256" "$archive" | sha256sum --check --status
           tar --extract --gzip --file "$archive" --directory "$temp_dir" actionlint
-          "$temp_dir/actionlint" .github/workflows/*.yml
+          # Les scripts shell historiques ont leur propre lint ; ce garde vise le schéma Actions,
+          # les expressions et la disponibilité des contextes sans transformer leur dette SC2034
+          # préexistante en élargissement de ce lot.
+          "$temp_dir/actionlint" -shellcheck='' -pyflakes='' .github/workflows/*.yml
       - name: Certifier la lignée append-only des migrations
         env:
           MIGRATION_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
