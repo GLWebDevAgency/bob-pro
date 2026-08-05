@@ -215,29 +215,6 @@ jobs:
       - name: Certify the ephemeral Supabase Storage vendor-owner contract
         run: |
           psql "$DIRECT_URL" -v ON_ERROR_STOP=1 <<'SQL'
-          CREATE SCHEMA IF NOT EXISTS storage;
-          CREATE TABLE IF NOT EXISTS storage.buckets (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL UNIQUE,
-            public BOOLEAN NOT NULL DEFAULT false,
-            file_size_limit BIGINT,
-            allowed_mime_types TEXT[],
-            created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp()
-          );
-          CREATE TABLE IF NOT EXISTS storage.objects (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            bucket_id TEXT NOT NULL,
-            name TEXT NOT NULL,
-            version TEXT,
-            metadata JSONB,
-            user_metadata JSONB,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
-            CONSTRAINT "objects_bucketId_fkey"
-              FOREIGN KEY (bucket_id) REFERENCES storage.buckets(id),
-            UNIQUE (bucket_id, name)
-          );
           DO $$
           DECLARE vendor_oid OID := 'supabase_storage_admin'::regrole;
           BEGIN
@@ -460,27 +437,23 @@ jobs:
           psql "$DIRECT_URL" -v ON_ERROR_STOP=1 <<'SQL'
           CREATE ROLE bob_app LOGIN PASSWORD 'bob_app' NOSUPERUSER NOBYPASSRLS;
           SQL
-      - name: Provision the isolated Supabase Storage metadata contract
+      - name: Certify the isolated Supabase Storage vendor-owner contract
         run: |
           psql "$DIRECT_URL" -v ON_ERROR_STOP=1 <<'SQL'
-          CREATE SCHEMA IF NOT EXISTS storage;
-          CREATE TABLE IF NOT EXISTS storage.buckets (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL UNIQUE,
-            public BOOLEAN NOT NULL DEFAULT false,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp()
-          );
-          CREATE TABLE IF NOT EXISTS storage.objects (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            bucket_id TEXT NOT NULL,
-            name TEXT NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
-            CONSTRAINT "objects_bucketId_fkey"
-              FOREIGN KEY (bucket_id) REFERENCES storage.buckets(id),
-            UNIQUE (bucket_id, name)
-          );
+          DO $$
+          DECLARE vendor_oid OID := 'supabase_storage_admin'::regrole;
+          BEGIN
+            IF pg_has_role(current_user, vendor_oid, 'SET')
+               OR NOT has_table_privilege(current_user, 'storage.objects', 'TRIGGER')
+               OR NOT has_table_privilege(current_user, 'storage.buckets', 'TRIGGER')
+               OR (SELECT relowner <> vendor_oid FROM pg_class
+                    WHERE oid = 'storage.objects'::regclass)
+               OR (SELECT relowner <> vendor_oid FROM pg_class
+                    WHERE oid = 'storage.buckets'::regclass) THEN
+              RAISE EXCEPTION 'CI_STORAGE_VENDOR_OWNER_CONTRACT_INVALID';
+            END IF;
+          END;
+          $$;
           SQL
       - name: Install and certify the isolated capacity schema
         id: release_schema
@@ -604,29 +577,23 @@ jobs:
           ALTER DEFAULT PRIVILEGES IN SCHEMA public
             GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO bob_app;
           SQL
-      - name: Provision the isolated Supabase Storage metadata contract
+      - name: Certify the isolated Supabase Storage vendor-owner contract
         run: |
-          # Test-only vendor surface: release.sh must prove that the legal-object immutability
-          # trigger is physically attached, even in this key-rotation-specific database.
           psql "$DIRECT_URL" -v ON_ERROR_STOP=1 <<'SQL'
-          CREATE SCHEMA IF NOT EXISTS storage;
-          CREATE TABLE IF NOT EXISTS storage.buckets (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL UNIQUE,
-            public BOOLEAN NOT NULL DEFAULT false,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp()
-          );
-          CREATE TABLE IF NOT EXISTS storage.objects (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            bucket_id TEXT NOT NULL,
-            name TEXT NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
-            CONSTRAINT "objects_bucketId_fkey"
-              FOREIGN KEY (bucket_id) REFERENCES storage.buckets(id),
-            UNIQUE (bucket_id, name)
-          );
+          DO $$
+          DECLARE vendor_oid OID := 'supabase_storage_admin'::regrole;
+          BEGIN
+            IF pg_has_role(current_user, vendor_oid, 'SET')
+               OR NOT has_table_privilege(current_user, 'storage.objects', 'TRIGGER')
+               OR NOT has_table_privilege(current_user, 'storage.buckets', 'TRIGGER')
+               OR (SELECT relowner <> vendor_oid FROM pg_class
+                    WHERE oid = 'storage.objects'::regclass)
+               OR (SELECT relowner <> vendor_oid FROM pg_class
+                    WHERE oid = 'storage.buckets'::regclass) THEN
+              RAISE EXCEPTION 'CI_STORAGE_VENDOR_OWNER_CONTRACT_INVALID';
+            END IF;
+          END;
+          $$;
           SQL
       - name: Install and certify the isolated schema
         id: release_schema
