@@ -22,6 +22,7 @@ const [
   applyRunner,
   finalizeRunner,
   postgresCert,
+  operatorRunbook,
 ] = await Promise.all([
   readFile(path.join(rootDir, '.github/workflows/document-archive-quarantine-staging.yml'), 'utf8'),
   readFile(
@@ -45,6 +46,7 @@ const [
     path.join(apiDir, 'src/persistence/prisma/document-archive-quarantine.postgres.test.ts'),
     'utf8',
   ),
+  readFile(path.join(rootDir, 'docs/runbooks/fly-document-archive-quarantine-staging.md'), 'utf8'),
 ]);
 
 test('l’opérateur staging reste manuel, mono-instance, OIDC et distant', () => {
@@ -104,6 +106,7 @@ test('l’opérateur staging reste manuel, mono-instance, OIDC et distant', () =
   assert.match(workflow, /storageOrphans !== 0/u);
   assert.match(workflow, /phase !== 'deleted_verified'/u);
   assert.match(workflow, /phase !== 'completed'/u);
+  assert.match(workflow, /Upload bounded non-PII evidence[\s\S]*include-hidden-files:\s*true/u);
   assert.doesNotMatch(workflow, /railway run/u);
   assert.doesNotMatch(workflow, /oidcToken:\s*\$\{\{/u);
 });
@@ -137,6 +140,55 @@ test('plan et apply partagent l’autorité OIDC fondateur exacte et reprennent 
     assert.match(entrypoint, /FLY_ARCHIVE_QUARANTINE_TARGET/u);
   }
   assert.match(quarantineDomain, /ARCHIVE_QUARANTINE_RUNTIME_SCOPE_DIVERGENT/u);
+});
+
+test('le runbook borne les deux fenêtres JIT et restaure la gouvernance staging', () => {
+  assert.match(operatorRunbook, /set -euo pipefail/u);
+  assert.match(operatorRunbook, /FOUNDER_ID=84627817/u);
+  assert.match(operatorRunbook, /branch-policies-before\.json/u);
+  assert.match(operatorRunbook, /reviewers: \[\{type: "User", id: \$founder\}\]/u);
+  assert.match(operatorRunbook, /JIT_DIR="\$\(mktemp -d\)"/u);
+  assert.match(operatorRunbook, /trap abort_with_jit_cleanup EXIT/u);
+  assert.match(operatorRunbook, /github-secrets-before\.json/u);
+  assert.match(
+    operatorRunbook,
+    /github-secrets-before-set\.json[\s\S]*DOCUMENT_ARCHIVE_RAILWAY_SSH_PRIVATE_KEY/u,
+  );
+  assert.match(operatorRunbook, /open_jit plan/u);
+  assert.match(operatorRunbook, /open_jit apply/u);
+  assert.match(operatorRunbook, /ssh keys add --key "\$KEY\.pub"/u);
+  const registrationProof = operatorRunbook.indexOf('add_output_sha256=');
+  const registrationReceipt = operatorRunbook.indexOf('"registeredAt"');
+  assert.ok(registrationProof >= 0 && registrationReceipt > registrationProof);
+  assert.match(operatorRunbook, /"addOutputSha256":"%s"/u);
+  assert.match(operatorRunbook, /"listOutputSha256":"%s"/u);
+  const revoke = operatorRunbook.indexOf('ssh keys remove "$SSH_FINGERPRINT"');
+  const deleteSecret = operatorRunbook.indexOf(
+    'secret delete DOCUMENT_ARCHIVE_RAILWAY_SSH_PRIVATE_KEY',
+  );
+  assert.ok(revoke >= 0 && deleteSecret > revoke);
+  assert.match(operatorRunbook, /pending_deployments/u);
+  assert.match(operatorRunbook, /length == 1 and \.\[0\]\.environment\.id == \$environment/u);
+  assert.match(operatorRunbook, /workflow run document-archive-quarantine-staging\.yml -R/u);
+  assert.match(operatorRunbook, /--input "\$EVIDENCE_DIR\/environment-restore-payload\.json"/u);
+  assert.match(operatorRunbook, /counts\.storageOrphans == 5/u);
+  assert.match(operatorRunbook, /counts\.missingStoredObjects == 0/u);
+  assert.match(operatorRunbook, /counts\.p0Issues == 6/u);
+  assert.match(operatorRunbook, /counts\.storageOrphans == 0/u);
+  assert.match(operatorRunbook, /finalAuditDeploymentId == \$audit\[0\]\.deploymentId/u);
+  assert.match(operatorRunbook, /PRIOR_FINAL_AUDIT:\?La reprise exige le final-audit\.json/u);
+  assert.match(operatorRunbook, /prior-apply\/\.quarantine-evidence\/final-audit\.json/u);
+  assert.match(operatorRunbook, /workflow run railway-api\.yml -R/u);
+  assert.match(operatorRunbook, /document-archive-staging-\$RELEASE_SHA/u);
+  assert.match(
+    operatorRunbook,
+    /RELEASE_AUDIT="\$EVIDENCE_DIR\/final-release\/audit-\$RELEASE_SHA\.json"/u,
+  );
+  assert.doesNotMatch(operatorRunbook, /final-release\/\.release-evidence\/document-archive/u);
+  assert.ok(
+    (operatorRunbook.match(/commits\/main" --jq \.sha\)" = "\$RELEASE_SHA"/gu) ?? []).length >= 4,
+  );
+  assert.doesNotMatch(operatorRunbook, /environment=production|ENVIRONMENT=production/u);
 });
 
 test('la migration est bornée, append-only, privée et porte les huit fences exactes', () => {

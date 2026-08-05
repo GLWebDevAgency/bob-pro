@@ -851,6 +851,7 @@ jobs:
         with:
           name: document-archive-${{ inputs.environment }}-${{ github.sha }}
           path: .release-evidence/document-archive/
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 90
       - name: Activate archive/settlement/outbox v2 and finalize the certified release

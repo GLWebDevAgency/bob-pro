@@ -238,6 +238,10 @@ test('release et CI maintiennent V2 pendant expand puis activent V3 avant postde
     railwayWorkflow,
     /activate-release-protocols-v2\.sh[\s\S]*BOB_RELEASE_PHASE=postdeploy/u,
   );
+  assert.match(
+    railwayWorkflow,
+    /Preserve the non-PII archive audit envelope[\s\S]*include-hidden-files:\s*true/u,
+  );
 });
 
 test('le cleanup RLS est auto-réparable et respecte les FK du protocole archive V3', () => {
