@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { PrismaClient } from '@prisma/client';
+import type { PrismaClient } from '@prisma/client';
 import { CloseAccount, IssueInvoice, type ClockPort, type CompanyRepository } from '@bob/core';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { BackendService } from '../../backend.service';
@@ -16,6 +16,8 @@ const CERT_COMPANY_ID_PREFIX = 'invoice-lifecycle-company-';
 // donc son propre SIREN afin qu'aucune collision de SIRET inter-suites ne soit possible sur
 // l'unique companies.siret de la base partagée du gate.
 const CERT_SIREN = '000000000';
+const CERT_STALE_RECOVERY_HOOK_TIMEOUT_MS = 120_000;
+const CERT_CURRENT_RUN_CLEANUP_HOOK_TIMEOUT_MS = 60_000;
 const CERT_NOW = '2026-06-30T10:00:00.000Z';
 const CLOSE_NOW = '2026-06-30T10:00:01.000Z';
 const FISCAL_YEAR = 2026;
@@ -321,7 +323,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
     const companyIds: string[] = [];
     let fixtureSequence =
       10_000 + (parseInt(randomUUID().replaceAll('-', '').slice(0, 8), 16) % 80_000);
-    let admin!: PrismaClient;
+    let admin!: PrismaService;
     let firstWorker!: PrismaService;
     let secondWorker!: PrismaService;
     let firstPersistence!: PrismaPersistence;
@@ -567,7 +569,10 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       if (!runtimeUrl || !directUrl) {
         throw new Error('DATABASE_URL (rôle runtime) et DIRECT_URL (admin) sont requis.');
       }
-      admin = new PrismaClient({ datasourceUrl: directUrl });
+      // La purge admin est une transaction interactive distante elle aussi. PrismaService lui
+      // applique le timeout WAN borné du rituel (`PRISMA_TRANSACTION_TIMEOUT_MS`) ; un
+      // PrismaClient brut retomberait au défaut de 5 s et produirait P2028 sur Supabase.
+      admin = new PrismaService({ datasourceUrl: directUrl });
       firstWorker = new PrismaService({ datasourceUrl: runtimeUrl });
       secondWorker = new PrismaService({ datasourceUrl: runtimeUrl });
       firstPersistence = new PrismaPersistence(firstWorker);
@@ -604,7 +609,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         throw new Error(`Fixture interrupted-run non purgée (${residualFixtures} société(s)).`);
       }
       sentinel = await seedFixture('sentinel-second-tenant');
-    }, 30_000);
+    }, CERT_STALE_RECOVERY_HOOK_TIMEOUT_MS);
 
     afterAll(async () => {
       try {
@@ -616,7 +621,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           admin?.$disconnect(),
         ]);
       }
-    });
+    }, CERT_CURRENT_RUN_CLEANUP_HOOK_TIMEOUT_MS);
 
     it('exécute sous un rôle runtime sans superuser/bypass RLS et FORCE RLS sur les tables critiques', async () => {
       const roleRows = await firstWorker.$queryRaw<
