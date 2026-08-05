@@ -355,6 +355,10 @@ jobs:
         run: sh apps/api/scripts/certify-rls-owner-split.sh
       - name: Re-certify archive snapshot cleanup after the schema-owner split
         env:
+          # L'activation CI sème volontairement les deux versions orphelines exactes observées
+          # sur staging. Le certificat de cleanup doit donc consommer le manifeste staging scellé
+          # avant que la quarantaine globale exige zéro référence sans objet Storage.
+          CABINET_RELEASE_ENV: 'staging'
           RUN_POSTGRES_DOCUMENT_ARCHIVE_SNAPSHOT_CERT: 'true'
         run: >-
           pnpm --filter @bob/api exec vitest run

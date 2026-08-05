@@ -188,6 +188,21 @@ test('release et CI prouvent le catalogue exact sous owner vendor non SETtable',
   assert.match(packageJson, /archive:quarantine:finalize/u);
 });
 
+test('la CI solde le manifeste staging synthétique avant la preuve globale de quarantaine', () => {
+  const cleanupStep = ci.indexOf(
+    '- name: Re-certify archive snapshot cleanup after the schema-owner split',
+  );
+  const quarantineStep = ci.indexOf(
+    '- name: Certify exact-key archive quarantine after the schema-owner split',
+  );
+  assert.notEqual(cleanupStep, -1);
+  assert.notEqual(quarantineStep, -1);
+  assert.ok(cleanupStep < quarantineStep);
+  const cleanupContract = ci.slice(cleanupStep, quarantineStep);
+  assert.match(cleanupContract, /CABINET_RELEASE_ENV: 'staging'/u);
+  assert.match(cleanupContract, /RUN_POSTGRES_DOCUMENT_ARCHIVE_SNAPSHOT_CERT: 'true'/u);
+});
+
 test('le runtime sépare strictement les autorités public et Storage', () => {
   const sqlTemplates = [...runtime.matchAll(/`([^`]*)`/gs)].map((match) => match[1] ?? '');
   for (const sql of sqlTemplates) {
