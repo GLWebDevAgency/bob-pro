@@ -1,30 +1,67 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import type { ArchivePreactivationAuditReport } from './archive-preactivation-audit';
 import {
   applyArchiveQuarantine,
   buildArchiveQuarantineManifest,
+  finalizeArchiveQuarantine,
   type ArchiveQuarantineAuthorization,
   type ArchiveQuarantineAuthorizationVerifier,
+  type ArchiveQuarantineFinalAuditEvidence,
   type ArchiveQuarantineManifest,
   type ArchiveQuarantineObject,
   type ArchiveQuarantineSafetyGuard,
   type ArchiveQuarantineStorage,
+  type ArchiveQuarantineTarget,
 } from './archive-quarantine';
+import type { ArchivePreactivationAuditReport } from './archive-preactivation-audit';
 
+const CREATED_AT = '2026-08-03T11:34:16.123456Z';
+const UPDATED_AT = '2026-08-03T11:34:16.654321Z';
+const AUTHORIZED_AT = '2026-08-05T00:00:00.000Z';
+const DELETED_AT = '2026-08-05T01:00:00.000Z';
+const COMPLETED_AT = '2026-08-05T02:00:00.000Z';
+const STORAGE_WRITTEN_AT = '2026-08-05T01:00:00.000000Z';
+const COMPANY_ID = 'company-a';
 const RELEASE_SHA = 'a'.repeat(40);
-const INVENTORY_SHA = 'b'.repeat(64);
-const SNAPSHOT_SHA = 'c'.repeat(64);
+const SNAPSHOT_SHA = 'b'.repeat(64);
+const INVENTORY_SHA = 'c'.repeat(64);
 const REPORT_SHA = 'd'.repeat(64);
-const CREATED_AT = '2026-08-04T12:00:00.000Z';
-const COMPLETED_AT = '2026-08-04T13:00:00.000Z';
+const AUDIT_DEPLOYMENT_ID = '11111111-1111-4111-8111-111111111111';
 
-function report(keys: string[]): ArchivePreactivationAuditReport {
+function digest(value: Uint8Array | string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function sourceFixture(index: number): { key: string; object: ArchiveQuarantineObject } {
+  const bytes = new TextEncoder().encode(`pdf-${index}`);
+  const sha256 = digest(bytes);
+  return {
+    key: `companies/${COMPANY_ID}/documents/document-${index}/v1/${sha256}.pdf`,
+    object: {
+      bytes,
+      contentType: 'application/pdf',
+      objectId: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+      version: `version-${index}`,
+      createdAt: CREATED_AT,
+      updatedAt: UPDATED_AT,
+      metadata: { cacheControl: 'no-cache', fixture: index },
+      userMetadata: null,
+    },
+  };
+}
+
+const SOURCES = Array.from({ length: 5 }, (_, index) => sourceFixture(index + 1));
+const TARGET: ArchiveQuarantineTarget = {
+  companyIdSha256: digest(COMPANY_ID),
+  sourceKeySha256s: SOURCES.map(({ key }) => digest(key)),
+};
+
+function report(overrides: Partial<ArchivePreactivationAuditReport> = {}): ArchivePreactivationAuditReport {
   return {
     schemaVersion: 1,
-    auditedAt: CREATED_AT,
+    auditedAt: '2026-08-05T00:30:00.000Z',
     releaseSha: RELEASE_SHA,
-    databaseFingerprint: 'staging-project:database-system-1',
+    databaseFingerprint: 'staging-database',
     databaseSnapshotDigest: SNAPSHOT_SHA,
     storageBucket: 'bob-documents',
     inventoryDigest: INVENTORY_SHA,
@@ -33,93 +70,57 @@ function report(keys: string[]): ArchivePreactivationAuditReport {
     validators: { representationDetector: 1, mustang: '2.24.0', fnfe: '1.4.0.02' },
     readyForActivation: false,
     counts: {
-      generatedLegalDocuments: 0,
-      objectsRead: 0,
+      generatedLegalDocuments: 1,
+      objectsRead: 1,
       existingAttestations: 0,
       appliedAttestations: 0,
       externallyValidatedProfessionalInvoices: 0,
-      storageOrphans: keys.length,
+      storageOrphans: 5,
       missingStoredObjects: 0,
-      p0Issues: keys.length + 1,
+      p0Issues: 6,
     },
-    issues: keys.map((storageKey) => ({
-      severity: 'P0',
-      code: 'STORAGE_OBJECT_WITHOUT_SQL_REFERENCE',
-      storageKey,
-      detail: 'orphan fixture',
-    })),
+    issues: [
+      ...SOURCES.map(({ key }) => ({
+        severity: 'P0' as const,
+        code: 'STORAGE_OBJECT_WITHOUT_SQL_REFERENCE',
+        storageKey: key,
+        detail: 'private',
+      })),
+      {
+        severity: 'P0',
+        code: 'ARCHIVE_PROTOCOL_V2_STORAGE_ORPHAN_PRESENT',
+        detail: 'aggregate',
+      },
+    ],
+    ...overrides,
   };
 }
 
-function object(value: string, createdAt = CREATED_AT): ArchiveQuarantineObject {
-  return {
-    bytes: new TextEncoder().encode(value),
-    contentType: 'application/pdf; charset=binary',
-    createdAt,
-  };
-}
-
-function storageKey(bucket: string, key: string): string {
+function storageMapKey(bucket: string, key: string): string {
   return `${bucket}\u0000${key}`;
 }
 
 class MemoryStorage implements ArchiveQuarantineStorage {
   readonly objects = new Map<string, ArchiveQuarantineObject>();
   readonly operations: string[] = [];
-  failRemoveAfter = Number.POSITIVE_INFINITY;
-  mutateBeforeRemove = false;
-  private removeCount = 0;
+  readonly privateBuckets = new Set(['bob-documents', 'archive-quarantine']);
+  removeCount = 0;
+  failAfterRemoveCount = Number.POSITIVE_INFINITY;
+  loseDeleteAcknowledgement = false;
+
+  constructor() {
+    for (const source of SOURCES) {
+      this.objects.set(storageMapKey('bob-documents', source.key), source.object);
+    }
+  }
 
   async assertPrivateBucket(bucket: string): Promise<void> {
-    this.operations.push(`private:${bucket}`);
-    if (bucket !== 'archive-quarantine') throw new Error('bucket is not private');
+    if (!this.privateBuckets.has(bucket)) throw new Error('ARCHIVE_QUARANTINE_BUCKET_NOT_PRIVATE');
   }
 
   async load(bucket: string, key: string): Promise<ArchiveQuarantineObject | null> {
-    this.operations.push(`load:${bucket}:${key}`);
-    return this.objects.get(storageKey(bucket, key)) ?? null;
-  }
-
-  async copy(
-    sourceBucket: string,
-    sourceKey: string,
-    destinationBucket: string,
-    destinationKey: string,
-  ): Promise<void> {
-    this.operations.push(`copy:${sourceKey}`);
-    const source = this.objects.get(storageKey(sourceBucket, sourceKey));
-    if (!source) throw new Error('source missing');
-    const destination = storageKey(destinationBucket, destinationKey);
-    if (this.objects.has(destination)) throw new Error('destination exists');
-    this.objects.set(destination, { ...source, createdAt: '2026-08-04T12:30:00.000Z' });
-  }
-
-  async removeExact(
-    bucket: string,
-    key: string,
-    expected: ArchiveQuarantineManifest['entries'][number],
-  ): Promise<boolean> {
-    this.operations.push(`remove:${key}`);
-    this.removeCount += 1;
-    if (this.removeCount > this.failRemoveAfter) throw new Error('simulated remove crash');
-    const target = storageKey(bucket, key);
-    if (this.mutateBeforeRemove) {
-      this.objects.set(target, object('replaced-after-copy-receipt', expected.createdAt));
-      this.mutateBeforeRemove = false;
-    }
-    const current = this.objects.get(target);
-    if (!current) return false;
-    const currentContentType = (current.contentType.split(';')[0] ?? '').trim().toLowerCase();
-    if (
-      current.createdAt !== expected.createdAt
-      || current.bytes.byteLength !== expected.byteSize
-      || currentContentType !== expected.contentType
-      || createHash('sha256').update(current.bytes).digest('hex') !== expected.sha256
-    ) {
-      throw new Error('ARCHIVE_QUARANTINE_CONDITIONAL_DELETE_MISMATCH');
-    }
-    this.objects.delete(target);
-    return true;
+    const value = this.objects.get(storageMapKey(bucket, key));
+    return value === undefined ? null : { ...value, bytes: new Uint8Array(value.bytes) };
   }
 
   async putImmutable(
@@ -128,280 +129,397 @@ class MemoryStorage implements ArchiveQuarantineStorage {
     bytes: Uint8Array,
     contentType: string,
   ): Promise<void> {
-    this.operations.push(`put:${key}`);
-    const target = storageKey(bucket, key);
-    if (this.objects.has(target)) throw new Error('immutable collision');
-    this.objects.set(target, {
-      bytes,
+    this.operations.push(`put:${digest(key)}`);
+    const storageKey = storageMapKey(bucket, key);
+    if (this.objects.has(storageKey)) throw new Error('ARCHIVE_QUARANTINE_DESTINATION_EXISTS');
+    this.objects.set(storageKey, {
+      bytes: new Uint8Array(bytes),
       contentType,
-      createdAt: '2026-08-04T12:45:00.000Z',
+      objectId: randomUUID(),
+      version: randomUUID(),
+      createdAt: STORAGE_WRITTEN_AT,
+      updatedAt: STORAGE_WRITTEN_AT,
+      metadata: { cacheControl: 'no-cache' },
+      userMetadata: null,
     });
+  }
+
+  async removeFenced(bucket: string, key: string): Promise<void> {
+    this.operations.push(`remove:${digest(key)}`);
+    this.objects.delete(storageMapKey(bucket, key));
+    this.removeCount += 1;
+    if (this.removeCount >= this.failAfterRemoveCount) throw new Error('simulated remove crash');
+    if (this.loseDeleteAcknowledgement) throw new Error('simulated lost delete acknowledgement');
   }
 }
 
-function guard(): ArchiveQuarantineSafetyGuard & {
-  assertManifestFresh: ReturnType<typeof vi.fn>;
-  assertSafeToDelete: ReturnType<typeof vi.fn>;
-  assertFinalClean: ReturnType<typeof vi.fn>;
-} {
+function safetyGuard(): ArchiveQuarantineSafetyGuard {
   return {
-    assertManifestFresh: vi.fn(async () => undefined),
-    assertSafeToDelete: vi.fn(async () => undefined),
-    assertFinalClean: vi.fn(async () => undefined),
+    assertPlanSealed: vi.fn(async () => undefined),
+    recordAuthorized: vi.fn(async () => undefined),
+    recordDestinationVerified: vi.fn(async () => undefined),
+    recordCopiedVerified: vi.fn(async () => undefined),
+    assertEntryDeleteSafe: vi.fn(async () => undefined),
+    assertSourceDeleted: vi.fn(async () => undefined),
+    assertFinalSnapshotClean: vi.fn(async () => undefined),
+    recordDeletedVerified: vi.fn(async () => undefined),
+    recordFinalAuditVerified: vi.fn(async () => undefined),
+    recordCompleted: vi.fn(async () => undefined),
   };
 }
 
-function verifier(): ArchiveQuarantineAuthorizationVerifier & {
-  assertAuthenticated: ReturnType<typeof vi.fn>;
-} {
-  return { assertAuthenticated: vi.fn(async () => undefined) };
+function verifier(reject = false): ArchiveQuarantineAuthorizationVerifier {
+  return {
+    assertAuthenticated: vi.fn(async () => {
+      if (reject) throw new Error('ARCHIVE_QUARANTINE_OIDC_REJECTED');
+    }),
+  };
 }
 
 function authorization(manifest: ArchiveQuarantineManifest): ArchiveQuarantineAuthorization {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     environment: 'staging',
     manifestDigest: manifest.confirmationDigest,
-    founderAuthorizedAt: '2026-08-04T12:55:00.000Z',
-    founderChannel: 'conversation fondateur 2026-08-04',
-    countersignedBy: ['claude', 'gpt'],
+    authorizationRecordedAt: AUTHORIZED_AT,
+    authorizationChannel: 'github-actions:workflow_dispatch',
+    workflow: {
+      issuer: 'https://token.actions.githubusercontent.com',
+      audience: 'bob-document-archive-quarantine-staging',
+      repository: 'GLWebDevAgency/bob-pro',
+      ref: 'refs/heads/main',
+      sha: manifest.releaseSha,
+      environment: 'staging',
+      workflowRef: 'GLWebDevAgency/bob-pro/.github/workflows/document-archive-quarantine-staging.yml@refs/heads/main',
+      workflowSha: RELEASE_SHA,
+      eventName: 'workflow_dispatch',
+      subject: 'repo:GLWebDevAgency/bob-pro:environment:staging',
+      repositoryId: '1286748365',
+      repositoryOwnerId: '84627817',
+      actor: 'founder',
+      actorId: '84627817',
+      runId: '123456789',
+      runAttempt: 1,
+      tokenSha256: 'f'.repeat(64),
+    },
   };
 }
 
-async function manifestFor(storage: MemoryStorage, keys: string[]): Promise<ArchiveQuarantineManifest> {
-  for (const key of keys) storage.objects.set(storageKey('bob-documents', key), object(key));
+async function manifestFor(storage: MemoryStorage): Promise<ArchiveQuarantineManifest> {
   return buildArchiveQuarantineManifest({
-    report: report(keys),
+    report: report(),
+    auditDeploymentId: AUDIT_DEPLOYMENT_ID,
     auditReportSha256: REPORT_SHA,
     destinationBucket: 'archive-quarantine',
+    target: TARGET,
     storage,
   });
 }
 
-describe('quarantaine historique des orphelins Archive', () => {
-  it('construit un plan déterministe sans mutation et ne place aucune clé brute en destination', async () => {
-    const left = new MemoryStorage();
-    const right = new MemoryStorage();
-    const keys = [
-      'companies/company-b/documents/Facture Client sensible.pdf',
-      'companies/company-a/documents/orphan.pdf',
-    ];
-    const leftManifest = await manifestFor(left, keys);
-    const rightManifest = await manifestFor(right, [...keys].reverse());
+function applyInput(
+  manifest: ArchiveQuarantineManifest,
+  storage: MemoryStorage,
+  guard = safetyGuard(),
+) {
+  return {
+    manifest,
+    confirmation: `QUARANTINE-STAGING:${manifest.confirmationDigest}`,
+    authorization: authorization(manifest),
+    deletedAt: DELETED_AT,
+    storage,
+    guard,
+    authorizationVerifier: verifier(),
+  };
+}
 
-    expect(leftManifest).toEqual(rightManifest);
-    expect(left.operations.some((operation) => operation.startsWith('copy:'))).toBe(false);
-    expect(left.operations.some((operation) => operation.startsWith('remove:'))).toBe(false);
-    expect(leftManifest.entries.map(({ sourceKey }) => sourceKey)).toEqual([...keys].sort());
-    expect(leftManifest.entries.every(({ destinationKey, sourceKey }) => (
-      !destinationKey.includes(sourceKey) && !destinationKey.includes('sensible')
-    ))).toBe(true);
-  });
+function finalAudit(manifest: ArchiveQuarantineManifest): ArchiveQuarantineFinalAuditEvidence {
+  return {
+    deploymentId: '22222222-2222-4222-8222-222222222222',
+    releaseSha: manifest.releaseSha,
+    databaseFingerprint: manifest.databaseFingerprint,
+    databaseSnapshotDigest: 'e'.repeat(64),
+    storageBucket: manifest.sourceBucket,
+    inventoryDigest: '1'.repeat(64),
+    reportSha256: '2'.repeat(64),
+    auditedAt: '2026-08-05T01:30:00.000Z',
+    readyForActivation: true,
+    storageOrphans: 0,
+    missingStoredObjects: 0,
+    p0Issues: 0,
+  };
+}
 
-  it('refuse confirmation ou autorisation divergente avant toute mutation', async () => {
+describe('quarantaine Archive FLY fermée', () => {
+  it('lie exactement cinq PDF, un tenant hashé, l’audit et les métadonnées Storage', async () => {
     const storage = new MemoryStorage();
-    const manifest = await manifestFor(storage, ['companies/company-a/documents/orphan.pdf']);
-    const safety = guard();
-    const baseline = new Map(storage.objects);
-
-    await expect(applyArchiveQuarantine({
-      manifest,
-      confirmation: manifest.confirmationDigest,
-      authorization: authorization(manifest),
-      completedAt: COMPLETED_AT,
-      storage,
-      guard: safety,
-      authorizationVerifier: verifier(),
-    })).rejects.toThrow('ARCHIVE_QUARANTINE_CONFIRMATION_REQUIRED');
-    await expect(applyArchiveQuarantine({
-      manifest,
-      confirmation: `QUARANTINE-STAGING:${manifest.confirmationDigest}`,
-      authorization: { ...authorization(manifest), manifestDigest: 'e'.repeat(64) },
-      completedAt: COMPLETED_AT,
-      storage,
-      guard: safety,
-      authorizationVerifier: verifier(),
-    })).rejects.toThrow('ARCHIVE_QUARANTINE_FOUNDER_AUTHORIZATION_REQUIRED');
-    expect(storage.objects).toEqual(baseline);
-    expect(storage.operations.some((operation) => /^(?:copy|put|remove):/u.test(operation))).toBe(false);
-  });
-
-  it('copie et relit tout, scelle le receipt, puis seulement retire les sources', async () => {
-    const storage = new MemoryStorage();
-    const manifest = await manifestFor(storage, [
-      'companies/company-b/documents/orphan-b.pdf',
-      'companies/company-a/documents/orphan-a.pdf',
-    ]);
-    const safety = guard();
-    storage.operations.length = 0;
-    const receipt = await applyArchiveQuarantine({
-      manifest,
-      confirmation: `QUARANTINE-STAGING:${manifest.confirmationDigest}`,
-      authorization: authorization(manifest),
-      completedAt: COMPLETED_AT,
-      storage,
-      guard: safety,
-      authorizationVerifier: verifier(),
+    const manifest = await manifestFor(storage);
+    expect(manifest).toMatchObject({
+      schemaVersion: 2,
+      environment: 'staging',
+      releaseSha: RELEASE_SHA,
+      auditDeploymentId: AUDIT_DEPLOYMENT_ID,
+      auditReportSha256: REPORT_SHA,
+      sourceAuditInventoryDigest: INVENTORY_SHA,
+      companyIdSha256: digest(COMPANY_ID),
     });
-
-    expect(receipt.phase).toBe('completed');
-    expect(receipt.receiptSha256).toMatch(/^[0-9a-f]{64}$/u);
-    const copyReceiptIndex = storage.operations.findIndex((operation) =>
-      operation === `put:receipts/${manifest.confirmationDigest}/copied-verified.json`);
-    const firstRemoveIndex = storage.operations.findIndex((operation) => operation.startsWith('remove:'));
-    expect(copyReceiptIndex).toBeGreaterThanOrEqual(0);
-    expect(firstRemoveIndex).toBeGreaterThan(copyReceiptIndex);
-    expect(safety.assertSafeToDelete).toHaveBeenCalledTimes(4);
-    expect(safety.assertManifestFresh).toHaveBeenCalledTimes(3);
-    expect(safety.assertFinalClean).toHaveBeenCalledOnce();
-    expect(manifest.entries.every(({ sourceKey }) => (
-      !storage.objects.has(storageKey(manifest.sourceBucket, sourceKey))
+    expect(manifest.entries).toHaveLength(5);
+    expect(manifest.entries.map(({ sourceKeySha256 }) => sourceKeySha256).sort()).toEqual(
+      [...TARGET.sourceKeySha256s].sort(),
+    );
+    expect(manifest.entries.every(({ sourceObjectId, sourceStorageMetadataDigest }) => (
+      /^[0-9a-f-]{36}$/u.test(sourceObjectId) && /^[0-9a-f]{64}$/u.test(sourceStorageMetadataDigest)
     ))).toBe(true);
   });
 
-  it('refuse une collision destination sans supprimer la moindre source', async () => {
+  it('refuse tout élargissement : sixième objet, autre tenant, chantier ou code étranger', async () => {
     const storage = new MemoryStorage();
-    const manifest = await manifestFor(storage, ['companies/company-a/documents/orphan.pdf']);
-    const [entry] = manifest.entries;
-    storage.objects.set(
-      storageKey(manifest.destinationBucket, entry!.destinationKey),
-      object('different', '2026-08-04T12:30:00.000Z'),
-    );
-    await expect(applyArchiveQuarantine({
-      manifest,
-      confirmation: `QUARANTINE-STAGING:${manifest.confirmationDigest}`,
-      authorization: authorization(manifest),
-      completedAt: COMPLETED_AT,
+    const sixth = sourceFixture(6);
+    storage.objects.set(storageMapKey('bob-documents', sixth.key), sixth.object);
+    await expect(buildArchiveQuarantineManifest({
+      report: report({
+        counts: { ...report().counts, storageOrphans: 6, p0Issues: 7 },
+        issues: [
+          ...report().issues,
+          { severity: 'P0', code: 'STORAGE_OBJECT_WITHOUT_SQL_REFERENCE', storageKey: sixth.key, detail: 'private' },
+        ],
+      }),
+      auditDeploymentId: AUDIT_DEPLOYMENT_ID,
+      auditReportSha256: REPORT_SHA,
+      destinationBucket: 'archive-quarantine',
+      target: { ...TARGET, sourceKeySha256s: [...TARGET.sourceKeySha256s, digest(sixth.key)] },
       storage,
-      guard: guard(),
-      authorizationVerifier: verifier(),
-    })).rejects.toThrow('ARCHIVE_QUARANTINE_DESTINATION_COLLISION');
-    expect(storage.objects.has(storageKey(manifest.sourceBucket, entry!.sourceKey))).toBe(true);
+    })).rejects.toThrow('ARCHIVE_QUARANTINE_AUDIT_SCOPE_INVALID');
+
+    const alienKey = SOURCES[0]!.key.replace(COMPANY_ID, 'company-b');
+    const alienIssues = report().issues.map((issue, index) => (
+      index === 0 ? { ...issue, storageKey: alienKey } : issue
+    ));
+    await expect(buildArchiveQuarantineManifest({
+      report: report({ issues: alienIssues }),
+      auditDeploymentId: AUDIT_DEPLOYMENT_ID,
+      auditReportSha256: REPORT_SHA,
+      destinationBucket: 'archive-quarantine',
+      target: {
+        ...TARGET,
+        sourceKeySha256s: TARGET.sourceKeySha256s.map((value, index) => (
+          index === 0 ? digest(alienKey) : value
+        )),
+      },
+      storage,
+    })).rejects.toThrow('ARCHIVE_QUARANTINE_AUDIT_TENANT_DIVERGENT');
+
+    const chantierKey = SOURCES[0]!.key.replace('/documents/', '/chantiers/');
+    await expect(buildArchiveQuarantineManifest({
+      report: report({
+        issues: report().issues.map((issue, index) => (
+          index === 0 ? { ...issue, storageKey: chantierKey } : issue
+        )),
+      }),
+      auditDeploymentId: AUDIT_DEPLOYMENT_ID,
+      auditReportSha256: REPORT_SHA,
+      destinationBucket: 'archive-quarantine',
+      target: {
+        ...TARGET,
+        sourceKeySha256s: TARGET.sourceKeySha256s.map((value, index) => (
+          index === 0 ? digest(chantierKey) : value
+        )),
+      },
+      storage,
+    })).rejects.toThrow('ARCHIVE_QUARANTINE_AUDIT_TENANT_DIVERGENT');
+
+    await expect(buildArchiveQuarantineManifest({
+      report: report({
+        issues: [...report().issues, { severity: 'P0', code: 'UNEXPECTED_P0', detail: 'no' }],
+      }),
+      auditDeploymentId: AUDIT_DEPLOYMENT_ID,
+      auditReportSha256: REPORT_SHA,
+      destinationBucket: 'archive-quarantine',
+      target: TARGET,
+      storage,
+    })).rejects.toThrow('ARCHIVE_QUARANTINE_AUDIT_SCOPE_INVALID');
+  });
+
+  it('refuse un bucket source ou destination public avant toute copie', async () => {
+    const storage = new MemoryStorage();
+    storage.privateBuckets.delete('bob-documents');
+    await expect(manifestFor(storage)).rejects.toThrow('ARCHIVE_QUARANTINE_BUCKET_NOT_PRIVATE');
+    expect(storage.operations).toEqual([]);
+  });
+
+  it('copie et relit tout avant le premier DELETE, puis acquitte les cinq ordres', async () => {
+    const storage = new MemoryStorage();
+    const manifest = await manifestFor(storage);
+    const guard = safetyGuard();
+    storage.operations.length = 0;
+    const receipt = await applyArchiveQuarantine(applyInput(manifest, storage, guard));
+
+    const firstRemove = storage.operations.findIndex((operation) => operation.startsWith('remove:'));
+    const putsBeforeDelete = storage.operations.slice(0, firstRemove).filter((operation) => (
+      operation.startsWith('put:')
+    ));
+    expect(receipt.phase).toBe('deleted_verified');
+    expect(putsBeforeDelete).toHaveLength(6); // 5 PDF + copied_verified.json
+    expect(guard.recordAuthorized).toHaveBeenCalledOnce();
+    expect(guard.recordDestinationVerified).toHaveBeenCalledTimes(5);
+    expect(guard.recordCopiedVerified).toHaveBeenCalledOnce();
+    expect(guard.assertEntryDeleteSafe).toHaveBeenCalledTimes(5);
+    expect(guard.assertSourceDeleted).toHaveBeenCalledTimes(5);
+    expect(guard.assertFinalSnapshotClean).toHaveBeenCalledOnce();
+    expect(guard.recordDeletedVerified).toHaveBeenCalledOnce();
+  });
+
+  it('refuse une collision destination sans supprimer une source', async () => {
+    const storage = new MemoryStorage();
+    const manifest = await manifestFor(storage);
+    const entry = manifest.entries[0]!;
+    storage.objects.set(storageMapKey(manifest.destinationBucket, entry.destinationKey), {
+      ...SOURCES[0]!.object,
+      bytes: new TextEncoder().encode('different'),
+    });
+    await expect(applyArchiveQuarantine(applyInput(manifest, storage))).rejects.toThrow(
+      `ARCHIVE_QUARANTINE_DESTINATION_COLLISION:${entry.sourceKeySha256}`,
+    );
     expect(storage.operations.some((operation) => operation.startsWith('remove:'))).toBe(false);
   });
 
-  it('authentifie la décision et refuse un objet remplacé juste avant le DELETE conditionnel', async () => {
+  it('refuse une destination perdue après copied_verified avant le premier DELETE', async () => {
     const storage = new MemoryStorage();
-    const manifest = await manifestFor(storage, ['companies/company-a/documents/orphan.pdf']);
-    const rejectedVerifier: ArchiveQuarantineAuthorizationVerifier = {
-      assertAuthenticated: vi.fn(async () => {
-        throw new Error('ARCHIVE_QUARANTINE_AUTHENTICATION_FAILED');
-      }),
-    };
-    const common = {
-      manifest,
-      confirmation: `QUARANTINE-STAGING:${manifest.confirmationDigest}`,
-      authorization: authorization(manifest),
-      completedAt: COMPLETED_AT,
-      storage,
-      guard: guard(),
-    };
-    const baseline = new Map(storage.objects);
-    await expect(applyArchiveQuarantine({
-      ...common,
-      authorizationVerifier: rejectedVerifier,
-    })).rejects.toThrow('ARCHIVE_QUARANTINE_AUTHENTICATION_FAILED');
-    expect(storage.objects).toEqual(baseline);
+    const manifest = await manifestFor(storage);
+    const entry = manifest.entries[0]!;
+    const guard = safetyGuard();
+    vi.spyOn(guard, 'recordCopiedVerified').mockImplementation(async () => {
+      storage.objects.delete(storageMapKey(manifest.destinationBucket, entry.destinationKey));
+    });
 
-    storage.mutateBeforeRemove = true;
-    await expect(applyArchiveQuarantine({
-      ...common,
-      authorizationVerifier: verifier(),
-    })).rejects.toThrow('ARCHIVE_QUARANTINE_CONDITIONAL_DELETE_MISMATCH');
-    const [entry] = manifest.entries;
-    expect(storage.objects.has(storageKey(manifest.sourceBucket, entry!.sourceKey))).toBe(true);
+    await expect(applyArchiveQuarantine(applyInput(manifest, storage, guard))).rejects.toThrow(
+      `ARCHIVE_QUARANTINE_COPY_LOST_BEFORE_DELETE:${entry.sourceKeySha256}`,
+    );
+    expect(storage.operations.some((operation) => operation.startsWith('remove:'))).toBe(false);
   });
 
-  it('reprend après crash post-receipt sans exiger une source déjà retirée', async () => {
+  it('refuse un reçu de copie remplacé après copied_verified avant le premier DELETE', async () => {
     const storage = new MemoryStorage();
-    const manifest = await manifestFor(storage, [
-      'companies/company-a/documents/orphan-a.pdf',
-      'companies/company-b/documents/orphan-b.pdf',
-    ]);
-    storage.failRemoveAfter = 1;
-    const input = {
-      manifest,
-      confirmation: `QUARANTINE-STAGING:${manifest.confirmationDigest}`,
-      authorization: authorization(manifest),
-      completedAt: COMPLETED_AT,
-      storage,
-      guard: guard(),
-      authorizationVerifier: verifier(),
-    };
-    await expect(applyArchiveQuarantine(input)).rejects.toThrow('simulated remove crash');
-    expect(storage.objects.has(storageKey(
-      manifest.destinationBucket,
-      `receipts/${manifest.confirmationDigest}/copied-verified.json`,
-    ))).toBe(true);
-    storage.failRemoveAfter = Number.POSITIVE_INFINITY;
+    const manifest = await manifestFor(storage);
+    const guard = safetyGuard();
+    const copyReceiptKey = `receipts/${manifest.confirmationDigest}/copied-verified.json`;
+    vi.spyOn(guard, 'recordCopiedVerified').mockImplementation(async () => {
+      const current = storage.objects.get(storageMapKey(manifest.destinationBucket, copyReceiptKey));
+      if (current === undefined) throw new Error('test receipt missing');
+      storage.objects.set(storageMapKey(manifest.destinationBucket, copyReceiptKey), {
+        ...current,
+        objectId: randomUUID(),
+      });
+    });
+
+    await expect(applyArchiveQuarantine(applyInput(manifest, storage, guard))).rejects.toThrow(
+      'ARCHIVE_QUARANTINE_COPY_RECEIPT_LOST_BEFORE_DELETE',
+    );
+    expect(storage.operations.some((operation) => operation.startsWith('remove:'))).toBe(false);
+  });
+
+  it('authentifie le workflow avant toute mutation', async () => {
+    const storage = new MemoryStorage();
+    const manifest = await manifestFor(storage);
+    const input = applyInput(manifest, storage);
     await expect(applyArchiveQuarantine({
       ...input,
-      guard: guard(),
-      authorizationVerifier: verifier(),
-    })).resolves.toMatchObject({
-      phase: 'completed',
+      authorizationVerifier: verifier(true),
+    })).rejects.toThrow('ARCHIVE_QUARANTINE_OIDC_REJECTED');
+    expect(storage.operations).toEqual([]);
+  });
+
+  it('reprend après crash post-DELETE sans perdre ni recopier un objet', async () => {
+    const storage = new MemoryStorage();
+    const manifest = await manifestFor(storage);
+    storage.failAfterRemoveCount = 2;
+    await expect(applyArchiveQuarantine(applyInput(manifest, storage))).rejects.toThrow(
+      'simulated remove crash',
+    );
+    expect(storage.removeCount).toBe(2);
+    storage.failAfterRemoveCount = Number.POSITIVE_INFINITY;
+    await expect(applyArchiveQuarantine(applyInput(manifest, storage))).resolves.toMatchObject({
+      phase: 'deleted_verified',
       manifestDigest: manifest.confirmationDigest,
     });
+    expect(storage.removeCount).toBe(5);
   });
 
-  it('lie le plan aux octets, dates, rapport et identité de staging', async () => {
+  it('réconcilie un ACK DELETE perdu au passage suivant', async () => {
     const storage = new MemoryStorage();
-    const manifest = await manifestFor(storage, ['companies/company-a/documents/orphan.pdf']);
-    const changed = {
-      ...manifest,
-      databaseSnapshotDigest: 'f'.repeat(64),
-    };
-    expect(createHash('sha256').update(JSON.stringify(changed)).digest('hex')).not.toBe(
-      manifest.confirmationDigest,
+    const manifest = await manifestFor(storage);
+    storage.loseDeleteAcknowledgement = true;
+    await expect(applyArchiveQuarantine(applyInput(manifest, storage))).rejects.toThrow(
+      'simulated lost delete acknowledgement',
     );
-    await expect(applyArchiveQuarantine({
-      manifest: changed,
-      confirmation: `QUARANTINE-STAGING:${manifest.confirmationDigest}`,
-      authorization: authorization(manifest),
-      completedAt: COMPLETED_AT,
-      storage,
-      guard: guard(),
-      authorizationVerifier: verifier(),
-    })).rejects.toThrow('ARCHIVE_QUARANTINE_MANIFEST_DIGEST_MISMATCH');
+    storage.loseDeleteAcknowledgement = false;
+    await expect(applyArchiveQuarantine(applyInput(manifest, storage))).resolves.toMatchObject({
+      phase: 'deleted_verified',
+    });
+    expect(storage.removeCount).toBe(5);
   });
 
-  it('refuse une destination non dérivée et un receipt final incomplet', async () => {
+  it('rend le deuxième apply strictement idempotent via le receipt deleted_verified', async () => {
     const storage = new MemoryStorage();
-    const manifest = await manifestFor(storage, ['companies/company-a/documents/orphan.pdf']);
-    const [entry] = manifest.entries;
-    const redirected = {
-      ...manifest,
-      entries: [{ ...entry!, destinationKey: 'v1/manual/orphan.pdf' }],
-    };
-    await expect(applyArchiveQuarantine({
-      manifest: redirected,
-      confirmation: `QUARANTINE-STAGING:${manifest.confirmationDigest}`,
-      authorization: authorization(manifest),
-      completedAt: COMPLETED_AT,
-      storage,
-      guard: guard(),
-      authorizationVerifier: verifier(),
-    })).rejects.toThrow('ARCHIVE_QUARANTINE_DESTINATION_DERIVATION_INVALID');
+    const manifest = await manifestFor(storage);
+    const first = await applyArchiveQuarantine(applyInput(manifest, storage));
+    const operations = [...storage.operations];
+    const second = await applyArchiveQuarantine(applyInput(manifest, storage));
+    expect(second).toEqual(first);
+    expect(storage.operations).toEqual(operations);
+  });
 
-    const finalKey = `receipts/${manifest.confirmationDigest}/completed.json`;
-    storage.objects.set(storageKey(manifest.destinationBucket, finalKey), {
-      bytes: new TextEncoder().encode(JSON.stringify({
-        schemaVersion: 1,
-        phase: 'completed',
-        manifestDigest: manifest.confirmationDigest,
-        receiptSha256: 'e'.repeat(64),
-      })),
-      contentType: 'application/json',
-      createdAt: CREATED_AT,
-    });
-    await expect(applyArchiveQuarantine({
+  it('n’écrit completed qu’après le nouvel audit global exact 0/0/0', async () => {
+    const storage = new MemoryStorage();
+    const manifest = await manifestFor(storage);
+    const guard = safetyGuard();
+    await applyArchiveQuarantine(applyInput(manifest, storage, guard));
+    expect(guard.recordCompleted).not.toHaveBeenCalled();
+
+    const evidence = finalAudit(manifest);
+    const first = await finalizeArchiveQuarantine({
       manifest,
-      confirmation: `QUARANTINE-STAGING:${manifest.confirmationDigest}`,
-      authorization: authorization(manifest),
+      evidence,
       completedAt: COMPLETED_AT,
       storage,
-      guard: guard(),
-      authorizationVerifier: verifier(),
-    })).rejects.toThrow('ARCHIVE_QUARANTINE_FINAL_RECEIPT_INVALID');
+      guard,
+    });
+    expect(first).toMatchObject({
+      phase: 'completed',
+      finalAuditDeploymentId: evidence.deploymentId,
+      finalAuditInventoryDigest: evidence.inventoryDigest,
+      finalAuditReportSha256: evidence.reportSha256,
+    });
+    expect(guard.recordFinalAuditVerified).toHaveBeenCalledOnce();
+    expect(guard.recordCompleted).toHaveBeenCalledOnce();
+
+    const operations = [...storage.operations];
+    const second = await finalizeArchiveQuarantine({
+      manifest,
+      evidence,
+      completedAt: COMPLETED_AT,
+      storage,
+      guard,
+    });
+    expect(second).toEqual(first);
+    expect(storage.operations).toEqual(operations);
+  });
+
+  it('ne révèle jamais une clé brute dans une erreur de source modifiée', async () => {
+    const storage = new MemoryStorage();
+    const manifest = await manifestFor(storage);
+    const entry = manifest.entries[0]!;
+    storage.objects.set(storageMapKey(manifest.sourceBucket, entry.sourceKey), {
+      ...SOURCES[0]!.object,
+      updatedAt: '2026-08-05T00:00:00.000001Z',
+    });
+    let message = '';
+    try {
+      await applyArchiveQuarantine(applyInput(manifest, storage));
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain(entry.sourceKeySha256);
+    expect(message).not.toContain(entry.sourceKey);
+    expect(message).not.toContain(COMPANY_ID);
   });
 });

@@ -377,29 +377,120 @@ SQL
 }
 
 certify_generated_legal_storage_fence() {
-  fence_count="$(
-    psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
-SELECT count(*)
-  FROM pg_catalog.pg_trigger AS trigger
-  JOIN pg_catalog.pg_class AS relation ON relation.oid = trigger.tgrelid
-  JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
-  JOIN pg_catalog.pg_proc AS function ON function.oid = trigger.tgfoid
-  JOIN pg_catalog.pg_roles AS function_owner ON function_owner.oid = function.proowner
- WHERE namespace.nspname = 'storage'
-   AND relation.relname = 'objects'
-   AND trigger.tgname = 'generated_legal_storage_object_immutable'
-   AND NOT trigger.tgisinternal
-   AND trigger.tgenabled = 'O'
-   AND function.proname = 'prevent_generated_legal_storage_object_mutation'
-   AND function.prosecdef
-   AND function.proconfig @> ARRAY['row_security=off']::TEXT[]
-   AND (function_owner.rolsuper OR function_owner.rolbypassrls);
+  psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 <<'SQL'
+DO $document_archive_quarantine_release_fences$
+DECLARE
+  exact_count INTEGER;
+  named_count INTEGER;
+BEGIN
+  WITH expected(
+    schema_name, table_name, trigger_name, function_oid, trigger_type, update_column
+  ) AS (
+    VALUES
+      ('storage', 'objects', 'generated_legal_storage_object_immutable',
+        'public.prevent_generated_legal_storage_object_mutation()'::regprocedure, 31, NULL::text),
+      ('storage', 'buckets', 'document_archive_quarantine_bucket_fence',
+        'public.prevent_document_archive_quarantine_bucket_mutation_v1()'::regprocedure,
+        27, NULL::text),
+      ('public', 'documents', 'document_archive_quarantine_documents_reference_fence',
+        'public.prevent_document_archive_quarantine_reference_v1()'::regprocedure,
+        23, 'storageKey'),
+      ('public', 'document_versions', 'document_archive_quarantine_versions_reference_fence',
+        'public.prevent_document_archive_quarantine_reference_v1()'::regprocedure,
+        23, 'storageKey'),
+      ('public', 'chantier_photos', 'document_archive_quarantine_photos_reference_fence',
+        'public.prevent_document_archive_quarantine_reference_v1()'::regprocedure,
+        23, 'storageKey'),
+      ('public', 'document_archive_artifact_intents',
+        'document_archive_quarantine_intents_reference_fence',
+        'public.prevent_document_archive_quarantine_reference_v1()'::regprocedure,
+        23, 'storageKey'),
+      ('public', 'document_archive_job_artifacts',
+        'document_archive_quarantine_job_artifacts_reference_fence',
+        'public.prevent_document_archive_quarantine_reference_v1()'::regprocedure,
+        23, 'storageKey'),
+      ('public', 'document_archive_jobs', 'document_archive_quarantine_worker_lease_fence',
+        'public.prevent_document_archive_worker_during_quarantine_v1()'::regprocedure,
+        23, 'leaseToken')
+  )
+  SELECT count(*)::integer INTO exact_count
+    FROM expected
+    JOIN pg_catalog.pg_namespace AS namespace ON namespace.nspname = expected.schema_name
+    JOIN pg_catalog.pg_class AS relation
+      ON relation.relnamespace = namespace.oid AND relation.relname = expected.table_name
+    LEFT JOIN pg_catalog.pg_attribute AS update_attribute
+      ON update_attribute.attrelid = relation.oid
+     AND update_attribute.attname = expected.update_column
+     AND update_attribute.attnum > 0
+     AND NOT update_attribute.attisdropped
+    JOIN pg_catalog.pg_trigger AS trigger
+      ON trigger.tgrelid = relation.oid
+     AND trigger.tgname = expected.trigger_name
+     AND trigger.tgfoid = expected.function_oid
+     AND trigger.tgtype::integer = expected.trigger_type
+     AND trigger.tgenabled = 'O'
+     AND NOT trigger.tgisinternal
+     AND trigger.tgqual IS NULL
+     AND trigger.tgnargs = 0
+     AND trigger.tgconstraint = 0
+     AND NOT trigger.tgdeferrable
+     AND NOT trigger.tginitdeferred
+     AND trigger.tgoldtable IS NULL
+     AND trigger.tgnewtable IS NULL
+     AND (expected.update_column IS NULL OR update_attribute.attnum IS NOT NULL)
+     AND trigger.tgattr::text = CASE
+       WHEN expected.update_column IS NULL THEN ''
+       ELSE update_attribute.attnum::text
+     END;
+
+  WITH expected(schema_name, table_name, trigger_name) AS (
+    VALUES
+      ('storage', 'objects', 'generated_legal_storage_object_immutable'),
+      ('storage', 'buckets', 'document_archive_quarantine_bucket_fence'),
+      ('public', 'documents', 'document_archive_quarantine_documents_reference_fence'),
+      ('public', 'document_versions', 'document_archive_quarantine_versions_reference_fence'),
+      ('public', 'chantier_photos', 'document_archive_quarantine_photos_reference_fence'),
+      ('public', 'document_archive_artifact_intents',
+        'document_archive_quarantine_intents_reference_fence'),
+      ('public', 'document_archive_job_artifacts',
+        'document_archive_quarantine_job_artifacts_reference_fence'),
+      ('public', 'document_archive_jobs', 'document_archive_quarantine_worker_lease_fence')
+  )
+  SELECT count(*)::integer INTO named_count
+    FROM pg_catalog.pg_trigger AS trigger
+    JOIN pg_catalog.pg_class AS relation ON relation.oid = trigger.tgrelid
+    JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+   WHERE (namespace.nspname, relation.relname, trigger.tgname) IN (
+     SELECT schema_name, table_name, trigger_name FROM expected
+   ) AND NOT trigger.tgisinternal;
+
+  IF exact_count <> 8 OR named_count <> 8 THEN
+    RAISE EXCEPTION 'document archive quarantine fence inventory is missing or divergent';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_proc AS function
+      JOIN pg_catalog.pg_roles AS owner ON owner.oid = function.proowner
+     WHERE function.oid = ANY(ARRAY[
+       'public.prevent_generated_legal_storage_object_mutation()'::regprocedure,
+       'public.prevent_document_archive_quarantine_bucket_mutation_v1()'::regprocedure,
+       'public.prevent_document_archive_quarantine_reference_v1()'::regprocedure,
+       'public.prevent_document_archive_worker_during_quarantine_v1()'::regprocedure
+     ]::oid[])
+       AND (
+         NOT function.prosecdef
+         OR NOT (owner.rolsuper OR owner.rolbypassrls)
+         OR NOT function.proconfig @> ARRAY['row_security=off']::text[]
+         OR NOT function.proconfig @> ARRAY['search_path=pg_catalog, public']::text[]
+         OR pg_catalog.has_function_privilege('PUBLIC', function.oid, 'EXECUTE')
+       )
+  ) THEN
+    RAISE EXCEPTION 'document archive quarantine fence function authority is unsafe';
+  END IF;
+END;
+$document_archive_quarantine_release_fences$;
 SQL
-  )"
-  if [ "$fence_count" != "1" ]; then
-    echo "generated legal Storage immutability trigger is missing or invalid" >&2
-    return 1
-  fi
 }
 
 certify_openai_native_legacy_gate_pregrant() {
@@ -510,6 +601,8 @@ DECLARE
     'guard_document_archive_job_proof_v1',
     'guard_document_archive_job_scope_v2',
     'guard_document_archive_job_snapshot_required_v1',
+    'guard_document_archive_quarantine_event_insert_v1',
+    'guard_document_archive_quarantine_plan_complete_v1',
     'guard_document_invoice_pdf_attestation_immutable_v1',
     'guard_document_original_facts_v1',
     'guard_document_version_immutable_v1',
@@ -517,6 +610,10 @@ DECLARE
     'guard_generated_legal_archive_cutover_v2',
     'guard_generated_legal_archive_representation_v2',
     'prevent_generated_legal_storage_object_mutation',
+    'prevent_document_archive_quarantine_bucket_mutation_v1',
+    'prevent_document_archive_quarantine_ledger_mutation_v1',
+    'prevent_document_archive_quarantine_reference_v1',
+    'prevent_document_archive_worker_during_quarantine_v1',
     'prevent_document_archive_artifact_intent_mutation',
     'prevent_document_archive_snapshot_mutation',
     'spool_document_archive_job_during_v2_cutover'
@@ -587,7 +684,10 @@ BEGIN
     'document_archive_job_artifacts',
     'document_invoice_pdf_attestations',
     'document_archive_render_snapshots',
-    'document_archive_artifact_intents'
+    'document_archive_artifact_intents',
+    'document_archive_quarantine_operations',
+    'document_archive_quarantine_entries',
+    'document_archive_quarantine_events'
   ]::TEXT[] LOOP
     SELECT relation.oid, relation.relacl, relation.relowner,
            relation.relrowsecurity, relation.relforcerowsecurity
@@ -901,6 +1001,13 @@ REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE
 FROM :"app_role";
 -- Preuve globale de cutover, sans PII mais strictement réservée aux opérations DIRECT_URL.
 REVOKE ALL ON TABLE public.document_archive_audit_evidence FROM :"app_role";
+-- Les plans, clés privées et reçus de quarantaine ne sont jamais exposés au runtime/Data API.
+REVOKE ALL ON TABLE
+  public.document_archive_quarantine_operations,
+  public.document_archive_quarantine_entries,
+  public.document_archive_quarantine_events
+FROM :"app_role";
+REVOKE ALL ON SEQUENCE public.document_archive_quarantine_events_id_seq FROM :"app_role";
 -- La projection relationnelle est toujours privée. L'outbox conserve temporairement INSERT /
 -- UPDATE en phase expand uniquement pour que N-1 puisse déposer un ordre qui sera spoolé ; aucune
 -- archive légale générée ne peut être matérialisée avant l'activation post-readiness.
@@ -3092,6 +3199,7 @@ if [ "$BOB_RELEASE_PHASE" = predeploy ]; then
   node apps/api/scripts/release-phase-receipt.mjs clear
 fi
 node apps/api/scripts/assert-database-pair.mjs
+node --test apps/api/scripts/document-archive-quarantine-release-safety.test.mjs
 # Avant la première mutation, toute migration déjà appliquée doit encore correspondre octet pour
 # octet au dépôt. Seul predeploy accepte des fichiers locaux en attente jusqu'au migrate deploy ;
 # postdeploy exige une bijection stricte et ne sert jamais de voie de migration de secours.

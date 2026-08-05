@@ -139,6 +139,69 @@ CREATE ROLE bob_rls_schema_owner_cert
 RESET ROLE;
 ALTER ROLE bob_rls_schema_owner_cert BYPASSRLS;
 
+-- Surface vendor Supabase Storage : le déployeur n'en est ni owner ni membre SET. Il possède
+-- seulement les privilèges opérationnels nécessaires, notamment TRIGGER. Les migrations sont
+-- ainsi réellement rejouées sous la topologie qui a cassé staging le 25/07.
+CREATE ROLE supabase_storage_admin
+  NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+CREATE SCHEMA storage AUTHORIZATION supabase_storage_admin;
+SET ROLE supabase_storage_admin;
+CREATE TABLE storage.buckets (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  public BOOLEAN NOT NULL DEFAULT false,
+  file_size_limit BIGINT,
+  allowed_mime_types TEXT[],
+  created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp()
+);
+CREATE TABLE storage.objects (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  bucket_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  version TEXT,
+  metadata JSONB,
+  user_metadata JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+  CONSTRAINT "objects_bucketId_fkey"
+    FOREIGN KEY (bucket_id) REFERENCES storage.buckets(id),
+  UNIQUE (bucket_id, name)
+);
+
+-- Helper strictement éphémère : il permet au certificat PostgreSQL de simuler la perte du
+-- trigger vendor `storage.buckets` depuis la même transaction que le DELETE adversarial. Le
+-- déployeur reste incapable de SET le rôle vendor ; le helper n'existe jamais sur Supabase.
+CREATE FUNCTION storage.bob_ci_set_quarantine_bucket_fence(enabled BOOLEAN)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, storage
+AS $$
+BEGIN
+  IF session_user <> 'postgres'
+     OR current_database() NOT IN (
+       'bob_ephemeral_ci',
+       'bob_ephemeral_global_capacity',
+       'bob_ephemeral_key_rotation'
+     ) THEN
+    RAISE EXCEPTION 'BOB_CI_QUARANTINE_TRIGGER_HELPER_FORBIDDEN';
+  END IF;
+  IF enabled THEN
+    ALTER TABLE storage.buckets
+      ENABLE TRIGGER document_archive_quarantine_bucket_fence;
+  ELSE
+    ALTER TABLE storage.buckets
+      DISABLE TRIGGER document_archive_quarantine_bucket_fence;
+  END IF;
+END;
+$$;
+RESET ROLE;
+GRANT USAGE ON SCHEMA storage TO postgres;
+GRANT SELECT, INSERT, UPDATE, DELETE, TRIGGER ON storage.buckets, storage.objects TO postgres;
+REVOKE ALL ON FUNCTION storage.bob_ci_set_quarantine_bucket_fence(BOOLEAN) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION storage.bob_ci_set_quarantine_bucket_fence(BOOLEAN) TO postgres;
+
 SELECT pg_catalog.format(
   'ALTER DATABASE %I OWNER TO %I',
   current_database(),
@@ -195,6 +258,7 @@ DECLARE
   internal_admin pg_catalog.pg_roles%ROWTYPE;
   data_api_role pg_catalog.pg_roles%ROWTYPE;
   rls_owner pg_catalog.pg_roles%ROWTYPE;
+  storage_owner pg_catalog.pg_roles%ROWTYPE;
   has_set_membership BOOLEAN;
   has_admin_membership BOOLEAN;
   has_inherit_membership BOOLEAN;
@@ -249,6 +313,23 @@ BEGIN
      OR rls_owner.rolreplication
      OR NOT rls_owner.rolbypassrls THEN
     RAISE EXCEPTION 'SUPABASE_CI_RLS_OWNER_PROFILE_MISMATCH';
+  END IF;
+
+  SELECT * INTO STRICT storage_owner
+    FROM pg_catalog.pg_roles WHERE rolname = 'supabase_storage_admin';
+  IF storage_owner.rolcanlogin
+     OR storage_owner.rolsuper
+     OR storage_owner.rolbypassrls
+     OR pg_catalog.pg_has_role(current_user, storage_owner.oid, 'SET')
+     OR NOT pg_catalog.has_table_privilege(current_user, 'storage.objects', 'TRIGGER')
+     OR NOT pg_catalog.has_table_privilege(current_user, 'storage.buckets', 'TRIGGER')
+     OR (SELECT relation.relowner <> storage_owner.oid
+           FROM pg_catalog.pg_class AS relation
+          WHERE relation.oid = 'storage.objects'::pg_catalog.regclass)
+     OR (SELECT relation.relowner <> storage_owner.oid
+           FROM pg_catalog.pg_class AS relation
+          WHERE relation.oid = 'storage.buckets'::pg_catalog.regclass) THEN
+    RAISE EXCEPTION 'SUPABASE_CI_STORAGE_VENDOR_OWNER_PROFILE_MISMATCH';
   END IF;
 
   SELECT COALESCE(pg_catalog.bool_or(membership.set_option), FALSE),

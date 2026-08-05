@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   archiveQuarantineSourceCompanyId,
   parseArchiveQuarantinePlanConfig,
+  parseArchiveQuarantinePlanInput,
 } from './document-archive-quarantine.main';
 
 function validEnvironment(): NodeJS.ProcessEnv {
@@ -14,20 +15,41 @@ function validEnvironment(): NodeJS.ProcessEnv {
     DOCUMENT_ARCHIVE_SUPABASE_PROJECT_REF: 'abcdefghijklmnopqrst',
     SUPABASE_SERVICE_ROLE_KEY: 'test-only-secret',
     SUPABASE_STORAGE_BUCKET: 'bob-documents',
-    DOCUMENT_ARCHIVE_QUARANTINE_DESTINATION_BUCKET: 'archive-quarantine',
-    DOCUMENT_ARCHIVE_QUARANTINE_AUDIT_REPORT: '/private/report.json',
+    DOCUMENT_ARCHIVE_QUARANTINE_AUDIT_DEPLOYMENT_ID:
+      '11111111-1111-4111-8111-111111111111',
+    DOCUMENT_ARCHIVE_QUARANTINE_AUDIT_INVENTORY_DIGEST: 'c'.repeat(64),
     DOCUMENT_ARCHIVE_QUARANTINE_AUDIT_REPORT_SHA256: 'b'.repeat(64),
-    DOCUMENT_ARCHIVE_QUARANTINE_OUTPUT: '/private/plan.json',
   };
 }
 
 describe('CLI plan de quarantaine Archive staging', () => {
-  it('est staging-only, read-only et lié à la release', () => {
+  it('exige un jeton OIDC borné et aucun champ d’autorité libre', () => {
+    expect(parseArchiveQuarantinePlanInput(JSON.stringify({
+      schemaVersion: 1,
+      oidcToken: 'x'.repeat(100),
+    }))).toMatchObject({ schemaVersion: 1 });
+    expect(() => parseArchiveQuarantinePlanInput(JSON.stringify({
+      schemaVersion: 1,
+      oidcToken: 'x'.repeat(100),
+      actor: 'invented',
+    }))).toThrow('ARCHIVE_QUARANTINE_PLAN_INPUT_INVALID');
+    expect(() => parseArchiveQuarantinePlanInput('{}')).toThrow(
+      'ARCHIVE_QUARANTINE_PLAN_INPUT_INVALID',
+    );
+  });
+  it('est staging-only et lié à la release et à une preuve d’audit exacte', () => {
     expect(parseArchiveQuarantinePlanConfig(validEnvironment())).toMatchObject({
-      sourceBucket: 'bob-documents',
-      destinationBucket: 'archive-quarantine',
-      releaseSha: 'a'.repeat(40),
-      maxObjectBytes: 64 * 1024 * 1024,
+      runtime: {
+        sourceBucket: 'bob-documents',
+        destinationBucket: 'archive-quarantine',
+        releaseSha: 'a'.repeat(40),
+        maxObjectBytes: 64 * 1024 * 1024,
+      },
+      audit: {
+        deploymentId: '11111111-1111-4111-8111-111111111111',
+        inventoryDigest: 'c'.repeat(64),
+        reportSha256: 'b'.repeat(64),
+      },
     });
     expect(() => parseArchiveQuarantinePlanConfig({
       ...validEnvironment(),
@@ -36,7 +58,7 @@ describe('CLI plan de quarantaine Archive staging', () => {
     expect(() => parseArchiveQuarantinePlanConfig({
       ...validEnvironment(),
       DOCUMENT_ARCHIVE_QUARANTINE_MODE: 'apply',
-    })).toThrow('ARCHIVE_QUARANTINE_APPLY_NOT_EXPOSED_WITHOUT_FOUNDER_RECEIPT');
+    })).toThrow('ARCHIVE_QUARANTINE_PLAN_MODE_REQUIRED');
   });
 
   it('refuse un rapport, une URL ou un bucket ambigus', () => {
@@ -50,17 +72,17 @@ describe('CLI plan de quarantaine Archive staging', () => {
     })).toThrow('ARCHIVE_QUARANTINE_SUPABASE_URL_INVALID');
     expect(() => parseArchiveQuarantinePlanConfig({
       ...validEnvironment(),
-      DOCUMENT_ARCHIVE_QUARANTINE_DESTINATION_BUCKET: 'bob-documents',
+      SUPABASE_STORAGE_BUCKET: 'archive-quarantine',
     })).toThrow('ARCHIVE_QUARANTINE_BUCKET_INVALID');
   });
 
-  it('accepte exactement les deux familles de clés produites par l’audit', () => {
+  it('accepte uniquement le chemin PDF document scellé par ce lot', () => {
     expect(archiveQuarantineSourceCompanyId(
       'companies/company-a/documents/document-a/v1/original.pdf',
     )).toBe('company-a');
-    expect(archiveQuarantineSourceCompanyId(
+    expect(() => archiveQuarantineSourceCompanyId(
       'companies/company-b/chantiers/chantier-a/photo.jpg',
-    )).toBe('company-b');
+    )).toThrow('ARCHIVE_QUARANTINE_SOURCE_KEY_INVALID');
     expect(() => archiveQuarantineSourceCompanyId(
       'companies/company-a/other/object.pdf',
     )).toThrow('ARCHIVE_QUARANTINE_SOURCE_KEY_INVALID');

@@ -1252,14 +1252,15 @@ model InvoiceSettlementProtocolState {
 /// Rail monotone du passage de l'ancien worker d'archive (mutations SQL directes) aux capacités
 /// bornées V2. L'état est global et administré uniquement avec DIRECT_URL après readiness.
 model DocumentArchiveProtocolState {
-  id                    Int                            @id @db.SmallInt
-  activeVersion         Int                            @db.SmallInt
-  databaseIdentity      String                         @unique @default(uuid()) @db.Uuid
-  activatedAt           DateTime?                      @db.Timestamptz(6)
-  activatedByReleaseSha String?                        @db.Char(40)
-  createdAt             DateTime                       @default(now()) @db.Timestamptz(6)
-  updatedAt             DateTime                       @updatedAt @db.Timestamptz(6)
-  auditEvidence         DocumentArchiveAuditEvidence[] @relation("DocumentArchiveAuditDatabaseIdentity")
+  id                    Int                                  @id @db.SmallInt
+  activeVersion         Int                                  @db.SmallInt
+  databaseIdentity      String                               @unique @default(uuid()) @db.Uuid
+  activatedAt           DateTime?                            @db.Timestamptz(6)
+  activatedByReleaseSha String?                              @db.Char(40)
+  createdAt             DateTime                             @default(now()) @db.Timestamptz(6)
+  updatedAt             DateTime                             @updatedAt @db.Timestamptz(6)
+  auditEvidence         DocumentArchiveAuditEvidence[]       @relation("DocumentArchiveAuditDatabaseIdentity")
+  quarantineOperations  DocumentArchiveQuarantineOperation[] @relation("DocumentArchiveQuarantineDatabaseIdentity")
 
   @@map("document_archive_protocol_state")
 }
@@ -1267,28 +1268,123 @@ model DocumentArchiveProtocolState {
 /// Preuve opérationnelle append-only du scanner historique. L'enveloppe exportée reste sans PII ;
 /// le rapport détaillé optionnel demeure privé à DIRECT_URL pour diagnostiquer un refus.
 model DocumentArchiveAuditEvidence {
-  id                      String                       @id @default(uuid()) @db.Uuid
-  deploymentId            String                       @unique(map: "document_archive_audit_evidence_deployment_key") @db.Uuid
-  releaseSha              String                       @db.Char(40)
-  databaseIdentity        String                       @db.Uuid
+  id                      String                               @id @default(uuid()) @db.Uuid
+  deploymentId            String                               @unique(map: "document_archive_audit_evidence_deployment_key") @db.Uuid
+  releaseSha              String                               @db.Char(40)
+  databaseIdentity        String                               @db.Uuid
   storageBucket           String
-  protocolState           DocumentArchiveProtocolState @relation("DocumentArchiveAuditDatabaseIdentity", fields: [databaseIdentity], references: [databaseIdentity], onDelete: Restrict, onUpdate: Restrict)
-  protocolVersion         Int                          @db.SmallInt
+  protocolState           DocumentArchiveProtocolState         @relation("DocumentArchiveAuditDatabaseIdentity", fields: [databaseIdentity], references: [databaseIdentity], onDelete: Restrict, onUpdate: Restrict)
+  protocolVersion         Int                                  @db.SmallInt
   mode                    String
-  inventoryDigest         String                       @db.Char(64)
-  reportSha256            String                       @db.Char(64)
-  validatorEvidenceDigest String                       @db.Char(64)
+  inventoryDigest         String                               @db.Char(64)
+  reportSha256            String                               @db.Char(64)
+  validatorEvidenceDigest String                               @db.Char(64)
   validatorVersions       Json
   counts                  Json
   issueCodes              String[]
   privateReport           Json?
   readyForActivation      Boolean
-  auditedAt               DateTime                     @db.Timestamptz(6)
-  createdAt               DateTime                     @default(now()) @db.Timestamptz(6)
+  auditedAt               DateTime                             @db.Timestamptz(6)
+  createdAt               DateTime                             @default(now()) @db.Timestamptz(6)
+  quarantineOperations    DocumentArchiveQuarantineOperation[] @relation("DocumentArchiveQuarantineAudit")
+  finalQuarantineEvents   DocumentArchiveQuarantineEvent[]     @relation("DocumentArchiveQuarantineFinalAudit")
 
   @@unique([releaseSha, inventoryDigest, reportSha256], map: "document_archive_audit_evidence_exact_replay_key")
+  @@unique([deploymentId, releaseSha, inventoryDigest, reportSha256, storageBucket, databaseIdentity], map: "document_archive_audit_evidence_quarantine_exact_key")
   @@index([releaseSha, readyForActivation, auditedAt], map: "document_archive_audit_evidence_release_ready_idx")
   @@map("document_archive_audit_evidence")
+}
+
+/// Plan exact-key privé d'une quarantaine Storage staging. Cette table et ses enfants sont
+/// append-only, FORCE RLS et sans policy runtime ; seul l'opérateur DIRECT_URL peut les lire.
+model DocumentArchiveQuarantineOperation {
+  id                        String                           @id @default(uuid()) @db.Uuid
+  environment               String
+  companyId                 String
+  companyIdSha256           String                           @db.Char(64)
+  sourceBucket              String
+  destinationBucket         String
+  manifestDigest            String                           @unique(map: "document_archive_quarantine_operation_manifest_key") @db.Char(64)
+  databaseIdentity          String                           @db.Uuid
+  databaseSnapshotDigest    String                           @db.Char(64)
+  auditDeploymentId         String                           @unique(map: "document_archive_quarantine_operation_audit_key") @db.Uuid
+  releaseSha                String                           @db.Char(40)
+  auditInventoryDigest      String                           @db.Char(64)
+  auditReportSha256         String                           @db.Char(64)
+  entryCount                Int                              @db.SmallInt
+  copyReceiptKey            String
+  deletedReceiptKey         String
+  finalReceiptKey           String
+  privateManifest           Json
+  createdAt                 DateTime                         @default(now()) @db.Timestamptz(6)
+  protocolState             DocumentArchiveProtocolState     @relation("DocumentArchiveQuarantineDatabaseIdentity", fields: [databaseIdentity], references: [databaseIdentity], onDelete: Restrict, onUpdate: Restrict)
+  auditEvidence             DocumentArchiveAuditEvidence     @relation("DocumentArchiveQuarantineAudit", fields: [auditDeploymentId, releaseSha, auditInventoryDigest, auditReportSha256, sourceBucket, databaseIdentity], references: [deploymentId, releaseSha, inventoryDigest, reportSha256, storageBucket, databaseIdentity], onDelete: Restrict, onUpdate: Restrict)
+  entries                   DocumentArchiveQuarantineEntry[]
+  events                    DocumentArchiveQuarantineEvent[]
+
+  @@unique([id, companyId, sourceBucket, destinationBucket, manifestDigest], map: "document_archive_quarantine_operation_identity_key")
+  @@map("document_archive_quarantine_operations")
+}
+
+model DocumentArchiveQuarantineEntry {
+  operationId                 String                             @db.Uuid
+  ordinal                     Int                                @db.SmallInt
+  companyId                   String
+  sourceBucket                String
+  destinationBucket           String
+  manifestDigest              String                             @db.Char(64)
+  sourceKey                   String
+  sourceKeySha256             String                             @unique(map: "document_archive_quarantine_entry_source_hash") @db.Char(64)
+  destinationKey              String
+  sourceObjectId              String                             @db.Uuid
+  sourceObjectVersion         String?
+  sourceCreatedAt             DateTime                           @db.Timestamptz(6)
+  sourceUpdatedAt             DateTime                           @db.Timestamptz(6)
+  sourceMetadata              Json
+  sourceUserMetadata          Json
+  sourceStorageMetadataDigest String                             @db.Char(64)
+  byteSha256                  String                             @db.Char(64)
+  byteSize                    BigInt
+  contentType                 String
+  createdAt                   DateTime                           @default(now()) @db.Timestamptz(6)
+  operation                   DocumentArchiveQuarantineOperation @relation(fields: [operationId, companyId, sourceBucket, destinationBucket, manifestDigest], references: [id, companyId, sourceBucket, destinationBucket, manifestDigest], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([operationId, ordinal], name: "document_archive_quarantine_entries_pkey")
+  @@unique([sourceBucket, sourceKey], map: "document_archive_quarantine_entry_source_key")
+  @@unique([destinationBucket, destinationKey], map: "document_archive_quarantine_entry_destination_key")
+  @@map("document_archive_quarantine_entries")
+}
+
+model DocumentArchiveQuarantineEvent {
+  id                 BigInt                             @id @default(autoincrement())
+  operationId        String                             @db.Uuid
+  kind               String
+  ordinal            Int                                @db.SmallInt
+  objectId           String?                            @db.Uuid
+  objectVersion      String?
+  objectCreatedAt    DateTime?                          @db.Timestamptz(6)
+  objectUpdatedAt    DateTime?                          @db.Timestamptz(6)
+  objectMetadata     Json?
+  objectUserMetadata Json?
+  byteSha256         String?                            @db.Char(64)
+  byteSize           BigInt?
+  contentType        String?
+  evidence           Json
+  evidenceSha256     String                             @db.Char(64)
+  workflowIdentity   Json?
+  finalAuditDeploymentId    String?                            @db.Uuid
+  finalAuditReleaseSha      String?                            @db.Char(40)
+  finalAuditInventoryDigest String?                            @db.Char(64)
+  finalAuditReportSha256    String?                            @db.Char(64)
+  finalAuditStorageBucket   String?
+  finalAuditDatabaseIdentity String?                           @db.Uuid
+  createdAt          DateTime                           @default(now()) @db.Timestamptz(6)
+  operation          DocumentArchiveQuarantineOperation @relation(fields: [operationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  finalAuditEvidence DocumentArchiveAuditEvidence?      @relation("DocumentArchiveQuarantineFinalAudit", fields: [finalAuditDeploymentId, finalAuditReleaseSha, finalAuditInventoryDigest, finalAuditReportSha256, finalAuditStorageBucket, finalAuditDatabaseIdentity], references: [deploymentId, releaseSha, inventoryDigest, reportSha256, storageBucket, databaseIdentity], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([operationId, kind, ordinal], map: "document_archive_quarantine_event_key")
+  @@index([operationId, kind, ordinal], map: "document_archive_quarantine_events_operation_kind_idx")
+  @@map("document_archive_quarantine_events")
 }
 
 model LineItem {
@@ -1622,21 +1718,21 @@ model DocumentInvoicePdfAttestation {
 }
 
 model DocumentArchiveJob {
-  id                   String                       @id
+  id                   String                         @id
   companyId            String
-  company              Company                      @relation(fields: [companyId], references: [id])
+  company              Company                        @relation(fields: [companyId], references: [id])
   invoiceId            String
-  reason               String                       @default("invoice-issued")
-  status               DocumentArchiveJobStatus     @default(pending)
-  attempts             Int                          @default(0)
+  reason               String                         @default("invoice-issued")
+  status               DocumentArchiveJobStatus       @default(pending)
+  attempts             Int                            @default(0)
   nextAttemptAt        DateTime
-  leaseToken           String?                      @unique
+  leaseToken           String?                        @unique
   lastError            String?
   integrityProof       Json?
-  integrityProofSha256 String?                      @db.Char(64)
-  completedAt          DateTime?                    @db.Timestamptz(6)
-  createdAt            DateTime                     @default(now())
-  updatedAt            DateTime                     @updatedAt
+  integrityProofSha256 String?                        @db.Char(64)
+  completedAt          DateTime?                      @db.Timestamptz(6)
+  createdAt            DateTime                       @default(now())
+  updatedAt            DateTime                       @updatedAt
   artifacts            DocumentArchiveJobArtifact[]
   renderSnapshot       DocumentArchiveRenderSnapshot?
 
@@ -1651,17 +1747,17 @@ model DocumentArchiveJob {
  * qu'aucun UPDATE opérationnel ne puisse réécrire la représentation ordonnée au commit métier.
  */
 model DocumentArchiveRenderSnapshot {
-  jobId           String             @id
+  jobId           String                          @id
   companyId       String
-  job             DocumentArchiveJob @relation(fields: [jobId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict, map: "document_archive_render_snapshots_job_fkey")
+  job             DocumentArchiveJob              @relation(fields: [jobId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict, map: "document_archive_render_snapshots_job_fkey")
   pieceId         String
   reason          String
-  schemaVersion   Int                @db.SmallInt
-  rendererVersion Int                @db.SmallInt
-  payload         String             @db.Text
-  payloadSha256   String             @db.Char(64)
-  renderAt        DateTime           @db.Timestamptz(6)
-  createdAt       DateTime           @default(now()) @db.Timestamptz(6)
+  schemaVersion   Int                             @db.SmallInt
+  rendererVersion Int                             @db.SmallInt
+  payload         String                          @db.Text
+  payloadSha256   String                          @db.Char(64)
+  renderAt        DateTime                        @db.Timestamptz(6)
+  createdAt       DateTime                        @default(now()) @db.Timestamptz(6)
   artifactIntents DocumentArchiveArtifactIntent[]
 
   @@unique([jobId, companyId], name: "uniq_document_archive_render_snapshot_company", map: "uniq_document_archive_render_snapshot_company")
@@ -1670,7 +1766,9 @@ model DocumentArchiveRenderSnapshot {
   @@map("document_archive_render_snapshots")
 }
 
-/** Intention durable écrite avant le premier upload Storage. */
+/**
+ * Intention durable écrite avant le premier upload Storage.
+ */
 model DocumentArchiveArtifactIntent {
   jobId          String
   companyId      String
@@ -1693,7 +1791,9 @@ model DocumentArchiveArtifactIntent {
   @@map("document_archive_artifact_intents")
 }
 
-/** Cutover distinct : le protocole archive V2 historique est terminal et n'est jamais rouvert. */
+/**
+ * Cutover distinct : le protocole archive V2 historique est terminal et n'est jamais rouvert.
+ */
 model DocumentArchiveSnapshotProtocolState {
   id                    Int       @id @db.SmallInt
   activeVersion         Int       @db.SmallInt
@@ -1730,6 +1830,7 @@ model DocumentArchiveJobArtifact {
   @@unique([jobId, documentId], name: "uniq_document_archive_job_artifact_document")
   @@unique([jobId, versionId], name: "uniq_document_archive_job_artifact_version")
   @@index([companyId, jobId])
+  @@index([storageKey], map: "document_archive_job_artifacts_storage_key_idx")
   @@map("document_archive_job_artifacts")
 }
 

@@ -187,6 +187,8 @@ jobs:
           cache: pnpm
       - run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - run: pnpm install --frozen-lockfile
+      - name: Certify the exact-key quarantine release contract
+        run: pnpm --filter @bob/api run test:archive-quarantine-release
       - name: Reproduce the non-superuser Supabase deployer and Data API defaults
         run: sh apps/api/scripts/bootstrap-supabase-ci-postgres.sh
       # `release.sh` exécute les certifications sur le vrai code API. Un checkout CI neuf
@@ -210,16 +212,16 @@ jobs:
         env:
           RUN_CUSTOMER_SIRET_POSTGRES_CERT: 'true'
         run: node --test apps/api/scripts/customer-siret.postgres.test.mjs
-      - name: Provision the ephemeral Supabase Storage metadata contract
+      - name: Certify the ephemeral Supabase Storage vendor-owner contract
         run: |
-          # Test-only vendor surface: production already owns this schema. Creating it before
-          # migrate proves that the legal-object immutability trigger is attached by the migration.
           psql "$DIRECT_URL" -v ON_ERROR_STOP=1 <<'SQL'
           CREATE SCHEMA IF NOT EXISTS storage;
           CREATE TABLE IF NOT EXISTS storage.buckets (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL UNIQUE,
             public BOOLEAN NOT NULL DEFAULT false,
+            file_size_limit BIGINT,
+            allowed_mime_types TEXT[],
             created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp()
           );
@@ -227,12 +229,29 @@ jobs:
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             bucket_id TEXT NOT NULL,
             name TEXT NOT NULL,
+            version TEXT,
+            metadata JSONB,
+            user_metadata JSONB,
             created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
             CONSTRAINT "objects_bucketId_fkey"
               FOREIGN KEY (bucket_id) REFERENCES storage.buckets(id),
             UNIQUE (bucket_id, name)
           );
+          DO $$
+          DECLARE vendor_oid OID := 'supabase_storage_admin'::regrole;
+          BEGIN
+            IF pg_has_role(current_user, vendor_oid, 'SET')
+               OR NOT has_table_privilege(current_user, 'storage.objects', 'TRIGGER')
+               OR NOT has_table_privilege(current_user, 'storage.buckets', 'TRIGGER')
+               OR (SELECT relowner <> vendor_oid FROM pg_class
+                    WHERE oid = 'storage.objects'::regclass)
+               OR (SELECT relowner <> vendor_oid FROM pg_class
+                    WHERE oid = 'storage.buckets'::regclass) THEN
+              RAISE EXCEPTION 'CI_STORAGE_VENDOR_OWNER_CONTRACT_INVALID';
+            END IF;
+          END;
+          $$;
           SQL
       - name: Expand schema, spool outbox and certify the mixed-version phase
         id: release_schema
@@ -364,6 +383,13 @@ jobs:
           pnpm --filter @bob/api exec vitest run
           --testTimeout=120000
           src/persistence/prisma/document-archive-snapshot.postgres.test.ts
+      - name: Certify exact-key archive quarantine after the schema-owner split
+        env:
+          RUN_POSTGRES_DOCUMENT_ARCHIVE_QUARANTINE_CERT: 'true'
+        run: >-
+          pnpm --filter @bob/api exec vitest run
+          --testTimeout=120000
+          src/persistence/prisma/document-archive-quarantine.postgres.test.ts
 
   realtime-global-capacity-certification:
     # Les certificats d'autorité partagés laissent volontairement des sessions observables.
