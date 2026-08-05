@@ -2,6 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import {
   applyArchiveQuarantine,
+  archiveQuarantineManifestDigest,
+  assertArchiveQuarantineRuntimeScope,
   buildArchiveQuarantineManifest,
   finalizeArchiveQuarantine,
   type ArchiveQuarantineAuthorization,
@@ -12,6 +14,7 @@ import {
   type ArchiveQuarantineSafetyGuard,
   type ArchiveQuarantineStorage,
   type ArchiveQuarantineTarget,
+  validateArchiveQuarantineManifest,
 } from './archive-quarantine';
 import type { ArchivePreactivationAuditReport } from './archive-preactivation-audit';
 
@@ -32,6 +35,16 @@ function digest(value: Uint8Array | string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
+function reverseJsonObjectKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(reverseJsonObjectKeys);
+  if (typeof value !== 'object' || value === null) return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .reverse()
+      .map(([key, nested]) => [key, reverseJsonObjectKeys(nested)]),
+  );
+}
+
 function sourceFixture(index: number): { key: string; object: ArchiveQuarantineObject } {
   const bytes = new TextEncoder().encode(`pdf-${index}`);
   const sha256 = digest(bytes);
@@ -44,7 +57,13 @@ function sourceFixture(index: number): { key: string; object: ArchiveQuarantineO
       version: `version-${index}`,
       createdAt: CREATED_AT,
       updatedAt: UPDATED_AT,
-      metadata: { cacheControl: 'no-cache', fixture: index },
+      metadata: {
+        cacheControl: 'no-cache',
+        fixture: index,
+        // Deux clés Unicode distinctes que certaines collations considèrent équivalentes.
+        é: `precomposed-${index}`,
+        'e\u0301': `decomposed-${index}`,
+      },
       userMetadata: null,
     },
   };
@@ -56,7 +75,9 @@ const TARGET: ArchiveQuarantineTarget = {
   sourceKeySha256s: SOURCES.map(({ key }) => digest(key)),
 };
 
-function report(overrides: Partial<ArchivePreactivationAuditReport> = {}): ArchivePreactivationAuditReport {
+function report(
+  overrides: Partial<ArchivePreactivationAuditReport> = {},
+): ArchivePreactivationAuditReport {
   return {
     schemaVersion: 1,
     auditedAt: '2026-08-05T00:30:00.000Z',
@@ -190,7 +211,8 @@ function authorization(manifest: ArchiveQuarantineManifest): ArchiveQuarantineAu
       ref: 'refs/heads/main',
       sha: manifest.releaseSha,
       environment: 'staging',
-      workflowRef: 'GLWebDevAgency/bob-pro/.github/workflows/document-archive-quarantine-staging.yml@refs/heads/main',
+      workflowRef:
+        'GLWebDevAgency/bob-pro/.github/workflows/document-archive-quarantine-staging.yml@refs/heads/main',
       workflowSha: RELEASE_SHA,
       eventName: 'workflow_dispatch',
       subject: 'repo:GLWebDevAgency/bob-pro:environment:staging',
@@ -250,6 +272,65 @@ function finalAudit(manifest: ArchiveQuarantineManifest): ArchiveQuarantineFinal
 }
 
 describe('quarantaine Archive FLY fermée', () => {
+  it('conserve son digest après un aller-retour JSONB qui réordonne toutes les propriétés', async () => {
+    const manifest = await buildArchiveQuarantineManifest({
+      report: report(),
+      auditDeploymentId: AUDIT_DEPLOYMENT_ID,
+      auditReportSha256: REPORT_SHA,
+      destinationBucket: 'archive-quarantine',
+      target: TARGET,
+      storage: new MemoryStorage(),
+    });
+
+    expect(
+      validateArchiveQuarantineManifest(
+        reverseJsonObjectKeys(manifest) as ArchiveQuarantineManifest,
+      ),
+    ).toEqual(manifest);
+  });
+
+  it('ré-ancre chaque entrypoint au tenant, aux cinq clés, aux buckets et au SHA compilés', async () => {
+    const manifest = await manifestFor(new MemoryStorage());
+    const scope = {
+      releaseSha: manifest.releaseSha,
+      sourceBucket: manifest.sourceBucket,
+      destinationBucket: manifest.destinationBucket,
+      target: {
+        companyIdSha256: manifest.companyIdSha256,
+        sourceKeySha256s: manifest.entries.map(({ sourceKeySha256 }) => sourceKeySha256),
+      },
+    } as const;
+    expect(assertArchiveQuarantineRuntimeScope(manifest, scope)).toEqual(manifest);
+
+    const resign = (
+      overrides: Partial<Omit<ArchiveQuarantineManifest, 'confirmationDigest'>>,
+    ): ArchiveQuarantineManifest => {
+      const { confirmationDigest: _discarded, ...payload } = manifest;
+      const changed = { ...payload, ...overrides };
+      return { ...changed, confirmationDigest: archiveQuarantineManifestDigest(changed) };
+    };
+    const hostile = [
+      resign({ releaseSha: 'f'.repeat(40) }),
+      resign({ sourceBucket: 'another-private-source' }),
+      resign({ destinationBucket: 'another-private-destination' }),
+      resign({ companyIdSha256: 'f'.repeat(64) }),
+    ];
+    for (const candidate of hostile) {
+      expect(() => assertArchiveQuarantineRuntimeScope(candidate, scope)).toThrow(
+        'ARCHIVE_QUARANTINE_RUNTIME_SCOPE_DIVERGENT',
+      );
+    }
+    expect(() =>
+      assertArchiveQuarantineRuntimeScope(manifest, {
+        ...scope,
+        target: {
+          ...scope.target,
+          sourceKeySha256s: ['f'.repeat(64), ...scope.target.sourceKeySha256s.slice(1)],
+        },
+      }),
+    ).toThrow('ARCHIVE_QUARANTINE_RUNTIME_SCOPE_DIVERGENT');
+  });
+
   it('lie exactement cinq PDF, un tenant hashé, l’audit et les métadonnées Storage', async () => {
     const storage = new MemoryStorage();
     const manifest = await manifestFor(storage);
@@ -266,77 +347,94 @@ describe('quarantaine Archive FLY fermée', () => {
     expect(manifest.entries.map(({ sourceKeySha256 }) => sourceKeySha256).sort()).toEqual(
       [...TARGET.sourceKeySha256s].sort(),
     );
-    expect(manifest.entries.every(({ sourceObjectId, sourceStorageMetadataDigest }) => (
-      /^[0-9a-f-]{36}$/u.test(sourceObjectId) && /^[0-9a-f]{64}$/u.test(sourceStorageMetadataDigest)
-    ))).toBe(true);
+    expect(
+      manifest.entries.every(
+        ({ sourceObjectId, sourceStorageMetadataDigest }) =>
+          /^[0-9a-f-]{36}$/u.test(sourceObjectId) &&
+          /^[0-9a-f]{64}$/u.test(sourceStorageMetadataDigest),
+      ),
+    ).toBe(true);
   });
 
   it('refuse tout élargissement : sixième objet, autre tenant, chantier ou code étranger', async () => {
     const storage = new MemoryStorage();
     const sixth = sourceFixture(6);
     storage.objects.set(storageMapKey('bob-documents', sixth.key), sixth.object);
-    await expect(buildArchiveQuarantineManifest({
-      report: report({
-        counts: { ...report().counts, storageOrphans: 6, p0Issues: 7 },
-        issues: [
-          ...report().issues,
-          { severity: 'P0', code: 'STORAGE_OBJECT_WITHOUT_SQL_REFERENCE', storageKey: sixth.key, detail: 'private' },
-        ],
+    await expect(
+      buildArchiveQuarantineManifest({
+        report: report({
+          counts: { ...report().counts, storageOrphans: 6, p0Issues: 7 },
+          issues: [
+            ...report().issues,
+            {
+              severity: 'P0',
+              code: 'STORAGE_OBJECT_WITHOUT_SQL_REFERENCE',
+              storageKey: sixth.key,
+              detail: 'private',
+            },
+          ],
+        }),
+        auditDeploymentId: AUDIT_DEPLOYMENT_ID,
+        auditReportSha256: REPORT_SHA,
+        destinationBucket: 'archive-quarantine',
+        target: { ...TARGET, sourceKeySha256s: [...TARGET.sourceKeySha256s, digest(sixth.key)] },
+        storage,
       }),
-      auditDeploymentId: AUDIT_DEPLOYMENT_ID,
-      auditReportSha256: REPORT_SHA,
-      destinationBucket: 'archive-quarantine',
-      target: { ...TARGET, sourceKeySha256s: [...TARGET.sourceKeySha256s, digest(sixth.key)] },
-      storage,
-    })).rejects.toThrow('ARCHIVE_QUARANTINE_AUDIT_SCOPE_INVALID');
+    ).rejects.toThrow('ARCHIVE_QUARANTINE_AUDIT_SCOPE_INVALID');
 
     const alienKey = SOURCES[0]!.key.replace(COMPANY_ID, 'company-b');
-    const alienIssues = report().issues.map((issue, index) => (
-      index === 0 ? { ...issue, storageKey: alienKey } : issue
-    ));
-    await expect(buildArchiveQuarantineManifest({
-      report: report({ issues: alienIssues }),
-      auditDeploymentId: AUDIT_DEPLOYMENT_ID,
-      auditReportSha256: REPORT_SHA,
-      destinationBucket: 'archive-quarantine',
-      target: {
-        ...TARGET,
-        sourceKeySha256s: TARGET.sourceKeySha256s.map((value, index) => (
-          index === 0 ? digest(alienKey) : value
-        )),
-      },
-      storage,
-    })).rejects.toThrow('ARCHIVE_QUARANTINE_AUDIT_TENANT_DIVERGENT');
+    const alienIssues = report().issues.map((issue, index) =>
+      index === 0 ? { ...issue, storageKey: alienKey } : issue,
+    );
+    await expect(
+      buildArchiveQuarantineManifest({
+        report: report({ issues: alienIssues }),
+        auditDeploymentId: AUDIT_DEPLOYMENT_ID,
+        auditReportSha256: REPORT_SHA,
+        destinationBucket: 'archive-quarantine',
+        target: {
+          ...TARGET,
+          sourceKeySha256s: TARGET.sourceKeySha256s.map((value, index) =>
+            index === 0 ? digest(alienKey) : value,
+          ),
+        },
+        storage,
+      }),
+    ).rejects.toThrow('ARCHIVE_QUARANTINE_AUDIT_TENANT_DIVERGENT');
 
     const chantierKey = SOURCES[0]!.key.replace('/documents/', '/chantiers/');
-    await expect(buildArchiveQuarantineManifest({
-      report: report({
-        issues: report().issues.map((issue, index) => (
-          index === 0 ? { ...issue, storageKey: chantierKey } : issue
-        )),
+    await expect(
+      buildArchiveQuarantineManifest({
+        report: report({
+          issues: report().issues.map((issue, index) =>
+            index === 0 ? { ...issue, storageKey: chantierKey } : issue,
+          ),
+        }),
+        auditDeploymentId: AUDIT_DEPLOYMENT_ID,
+        auditReportSha256: REPORT_SHA,
+        destinationBucket: 'archive-quarantine',
+        target: {
+          ...TARGET,
+          sourceKeySha256s: TARGET.sourceKeySha256s.map((value, index) =>
+            index === 0 ? digest(chantierKey) : value,
+          ),
+        },
+        storage,
       }),
-      auditDeploymentId: AUDIT_DEPLOYMENT_ID,
-      auditReportSha256: REPORT_SHA,
-      destinationBucket: 'archive-quarantine',
-      target: {
-        ...TARGET,
-        sourceKeySha256s: TARGET.sourceKeySha256s.map((value, index) => (
-          index === 0 ? digest(chantierKey) : value
-        )),
-      },
-      storage,
-    })).rejects.toThrow('ARCHIVE_QUARANTINE_AUDIT_TENANT_DIVERGENT');
+    ).rejects.toThrow('ARCHIVE_QUARANTINE_AUDIT_TENANT_DIVERGENT');
 
-    await expect(buildArchiveQuarantineManifest({
-      report: report({
-        issues: [...report().issues, { severity: 'P0', code: 'UNEXPECTED_P0', detail: 'no' }],
+    await expect(
+      buildArchiveQuarantineManifest({
+        report: report({
+          issues: [...report().issues, { severity: 'P0', code: 'UNEXPECTED_P0', detail: 'no' }],
+        }),
+        auditDeploymentId: AUDIT_DEPLOYMENT_ID,
+        auditReportSha256: REPORT_SHA,
+        destinationBucket: 'archive-quarantine',
+        target: TARGET,
+        storage,
       }),
-      auditDeploymentId: AUDIT_DEPLOYMENT_ID,
-      auditReportSha256: REPORT_SHA,
-      destinationBucket: 'archive-quarantine',
-      target: TARGET,
-      storage,
-    })).rejects.toThrow('ARCHIVE_QUARANTINE_AUDIT_SCOPE_INVALID');
+    ).rejects.toThrow('ARCHIVE_QUARANTINE_AUDIT_SCOPE_INVALID');
   });
 
   it('refuse un bucket source ou destination public avant toute copie', async () => {
@@ -353,10 +451,12 @@ describe('quarantaine Archive FLY fermée', () => {
     storage.operations.length = 0;
     const receipt = await applyArchiveQuarantine(applyInput(manifest, storage, guard));
 
-    const firstRemove = storage.operations.findIndex((operation) => operation.startsWith('remove:'));
-    const putsBeforeDelete = storage.operations.slice(0, firstRemove).filter((operation) => (
-      operation.startsWith('put:')
-    ));
+    const firstRemove = storage.operations.findIndex((operation) =>
+      operation.startsWith('remove:'),
+    );
+    const putsBeforeDelete = storage.operations
+      .slice(0, firstRemove)
+      .filter((operation) => operation.startsWith('put:'));
     expect(receipt.phase).toBe('deleted_verified');
     expect(putsBeforeDelete).toHaveLength(6); // 5 PDF + copied_verified.json
     expect(guard.recordAuthorized).toHaveBeenCalledOnce();
@@ -403,7 +503,9 @@ describe('quarantaine Archive FLY fermée', () => {
     const guard = safetyGuard();
     const copyReceiptKey = `receipts/${manifest.confirmationDigest}/copied-verified.json`;
     vi.spyOn(guard, 'recordCopiedVerified').mockImplementation(async () => {
-      const current = storage.objects.get(storageMapKey(manifest.destinationBucket, copyReceiptKey));
+      const current = storage.objects.get(
+        storageMapKey(manifest.destinationBucket, copyReceiptKey),
+      );
       if (current === undefined) throw new Error('test receipt missing');
       storage.objects.set(storageMapKey(manifest.destinationBucket, copyReceiptKey), {
         ...current,
@@ -421,10 +523,12 @@ describe('quarantaine Archive FLY fermée', () => {
     const storage = new MemoryStorage();
     const manifest = await manifestFor(storage);
     const input = applyInput(manifest, storage);
-    await expect(applyArchiveQuarantine({
-      ...input,
-      authorizationVerifier: verifier(true),
-    })).rejects.toThrow('ARCHIVE_QUARANTINE_OIDC_REJECTED');
+    await expect(
+      applyArchiveQuarantine({
+        ...input,
+        authorizationVerifier: verifier(true),
+      }),
+    ).rejects.toThrow('ARCHIVE_QUARANTINE_OIDC_REJECTED');
     expect(storage.operations).toEqual([]);
   });
 

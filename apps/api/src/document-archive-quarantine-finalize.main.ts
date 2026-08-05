@@ -1,15 +1,18 @@
 import {
+  assertArchiveQuarantineRuntimeScope,
   finalizeArchiveQuarantine,
+  type ArchiveQuarantineFinalAuditEvidence,
+  type ArchiveQuarantineManifest,
 } from './documents/archive-quarantine';
 import {
   connectArchiveQuarantineRuntime,
-  parseArchiveQuarantineAuditPin,
+  FLY_ARCHIVE_QUARANTINE_TARGET,
+  parseOptionalArchiveQuarantineAuditPin,
   parseArchiveQuarantineRuntimeConfig,
+  type ArchiveQuarantineAuditPin,
   withArchiveQuarantineMutationLease,
 } from './document-archive-quarantine.runtime';
-import {
-  parseArchiveQuarantineApplyInput,
-} from './document-archive-quarantine-apply.main';
+import { parseArchiveQuarantineApplyInput } from './document-archive-quarantine-apply.main';
 import { verifyArchiveQuarantineOidc } from './document-archive-quarantine-oidc';
 
 const MAX_STDIN_BYTES = 32 * 1024;
@@ -26,6 +29,19 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+/** Chemin de reprise exact : l'ACK durable prime sur le pin externe après un redémarrage. */
+export async function loadArchiveQuarantineFinalAuditForResume(input: {
+  repository: Pick<
+    Awaited<ReturnType<typeof connectArchiveQuarantineRuntime>>['repository'],
+    'loadRecordedFinalAudit' | 'loadFinalAudit'
+  >;
+  manifest: ArchiveQuarantineManifest;
+  loadFallbackPin: () => ArchiveQuarantineAuditPin;
+}): Promise<ArchiveQuarantineFinalAuditEvidence> {
+  const recorded = await input.repository.loadRecordedFinalAudit(input.manifest);
+  return recorded ?? input.repository.loadFinalAudit(input.loadFallbackPin(), input.manifest);
+}
+
 export async function runDocumentArchiveQuarantineFinalize(
   environment: NodeJS.ProcessEnv,
   serializedInput: string,
@@ -37,17 +53,31 @@ export async function runDocumentArchiveQuarantineFinalize(
   const input = parseArchiveQuarantineApplyInput(serializedInput);
   const runtime = await connectArchiveQuarantineRuntime(config);
   try {
-    const manifest = await runtime.repository.loadManifest(input.manifestDigest);
-    if (manifest.releaseSha !== config.releaseSha) {
-      throw new Error('ARCHIVE_QUARANTINE_FINALIZE_RELEASE_DIVERGENT');
-    }
+    const manifest = assertArchiveQuarantineRuntimeScope(
+      await runtime.repository.loadManifest(input.manifestDigest),
+      {
+        releaseSha: config.releaseSha,
+        sourceBucket: config.sourceBucket,
+        destinationBucket: config.destinationBucket,
+        target: FLY_ARCHIVE_QUARANTINE_TARGET,
+      },
+    );
     await verifyArchiveQuarantineOidc({
       token: input.oidcToken,
       releaseSha: manifest.releaseSha,
     });
     const receipt = await withArchiveQuarantineMutationLease(config, async () => {
-      const evidence = await runtime.repository.loadRecordedFinalAudit(manifest)
-        ?? await runtime.repository.loadFinalAudit(parseArchiveQuarantineAuditPin(environment), manifest);
+      const evidence = await loadArchiveQuarantineFinalAuditForResume({
+        repository: runtime.repository,
+        manifest,
+        loadFallbackPin: () => {
+          const pin = parseOptionalArchiveQuarantineAuditPin(environment);
+          if (pin === null) {
+            throw new Error('ARCHIVE_QUARANTINE_FINAL_AUDIT_NOT_RECORDED');
+          }
+          return pin;
+        },
+      });
       const nowRows = await runtime.authority.$queryRawUnsafe<Array<{ now: Date }>>(
         'SELECT clock_timestamp() AS now',
       );
@@ -63,18 +93,23 @@ export async function runDocumentArchiveQuarantineFinalize(
         guard: runtime.repository,
       });
     });
-    process.stdout.write(`BOB_DOCUMENT_ARCHIVE_QUARANTINE_FINALIZE=${Buffer.from(JSON.stringify({
-      schemaVersion: 2,
-      environment: 'staging',
-      releaseSha: manifest.releaseSha,
-      manifestDigest: receipt.manifestDigest,
-      phase: receipt.phase,
-      sourceCount: receipt.sourceKeySha256s.length,
-      receiptSha256: receipt.receiptSha256,
-      finalAuditDeploymentId: receipt.finalAuditDeploymentId,
-      finalAuditInventoryDigest: receipt.finalAuditInventoryDigest,
-      finalAuditReportSha256: receipt.finalAuditReportSha256,
-    }), 'utf8').toString('base64url')}\n`);
+    process.stdout.write(
+      `BOB_DOCUMENT_ARCHIVE_QUARANTINE_FINALIZE=${Buffer.from(
+        JSON.stringify({
+          schemaVersion: 2,
+          environment: 'staging',
+          releaseSha: manifest.releaseSha,
+          manifestDigest: receipt.manifestDigest,
+          phase: receipt.phase,
+          sourceCount: receipt.sourceKeySha256s.length,
+          receiptSha256: receipt.receiptSha256,
+          finalAuditDeploymentId: receipt.finalAuditDeploymentId,
+          finalAuditInventoryDigest: receipt.finalAuditInventoryDigest,
+          finalAuditReportSha256: receipt.finalAuditReportSha256,
+        }),
+        'utf8',
+      ).toString('base64url')}\n`,
+    );
   } finally {
     await runtime.authority.$disconnect();
   }

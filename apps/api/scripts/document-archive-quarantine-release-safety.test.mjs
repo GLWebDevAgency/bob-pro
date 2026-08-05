@@ -9,11 +9,28 @@ const apiDir = path.resolve(scriptDir, '..');
 const rootDir = path.resolve(apiDir, '../..');
 
 const [
-  workflow, migration, release, ci, bootstrap, packageJson, planRunner, oidc, runtime,
+  workflow,
+  migration,
+  release,
+  ci,
+  bootstrap,
+  packageJson,
+  planRunner,
+  oidc,
+  runtime,
+  quarantineDomain,
+  applyRunner,
+  finalizeRunner,
   postgresCert,
 ] = await Promise.all([
   readFile(path.join(rootDir, '.github/workflows/document-archive-quarantine-staging.yml'), 'utf8'),
-  readFile(path.join(apiDir, 'prisma/migrations/20260805010000_document_archive_quarantine_fence/migration.sql'), 'utf8'),
+  readFile(
+    path.join(
+      apiDir,
+      'prisma/migrations/20260805010000_document_archive_quarantine_fence/migration.sql',
+    ),
+    'utf8',
+  ),
   readFile(path.join(scriptDir, 'release.sh'), 'utf8'),
   readFile(path.join(rootDir, '.github/workflows/ci.yml'), 'utf8'),
   readFile(path.join(scriptDir, 'bootstrap-supabase-ci-postgres.sh'), 'utf8'),
@@ -21,10 +38,13 @@ const [
   readFile(path.join(apiDir, 'src/document-archive-quarantine.main.ts'), 'utf8'),
   readFile(path.join(apiDir, 'src/document-archive-quarantine-oidc.ts'), 'utf8'),
   readFile(path.join(apiDir, 'src/document-archive-quarantine.runtime.ts'), 'utf8'),
-  readFile(path.join(
-    apiDir,
-    'src/persistence/prisma/document-archive-quarantine.postgres.test.ts',
-  ), 'utf8'),
+  readFile(path.join(apiDir, 'src/documents/archive-quarantine.ts'), 'utf8'),
+  readFile(path.join(apiDir, 'src/document-archive-quarantine-apply.main.ts'), 'utf8'),
+  readFile(path.join(apiDir, 'src/document-archive-quarantine-finalize.main.ts'), 'utf8'),
+  readFile(
+    path.join(apiDir, 'src/persistence/prisma/document-archive-quarantine.postgres.test.ts'),
+    'utf8',
+  ),
 ]);
 
 test('l’opérateur staging reste manuel, mono-instance, OIDC et distant', () => {
@@ -33,10 +53,47 @@ test('l’opérateur staging reste manuel, mono-instance, OIDC et distant', () =
   assert.match(workflow, /group:\s*railway-api-staging/u);
   assert.match(workflow, /cancel-in-progress:\s*false/u);
   assert.match(workflow, /permissions:[\s\S]*id-token:\s*write/u);
-  assert.equal((workflow.match(/audience=bob-document-archive-quarantine-staging/gu) ?? []).length, 3);
+  assert.equal(
+    (workflow.match(/audience=bob-document-archive-quarantine-staging/gu) ?? []).length,
+    4,
+  );
   assert.match(workflow, /--deployment-instance\s+"\$DEPLOYMENT_INSTANCE_ID"/u);
   assert.match(workflow, /--identity-file\s+"\$SSH_IDENTITY"/u);
   assert.match(workflow, /DOCUMENT_ARCHIVE_RAILWAY_SSH_PRIVATE_KEY/u);
+  assert.match(workflow, /ssh_key_fingerprint:/u);
+  assert.match(workflow, /ssh_authorization_started_at_epoch:/u);
+  assert.match(workflow, /ssh_authorization_expires_at_epoch:/u);
+  assert.match(workflow, /actual_fingerprint.*EXPECTED_SSH_KEY_FINGERPRINT/u);
+  assert.match(workflow, /now - SSH_AUTHORIZATION_STARTED_AT_EPOCH\)\)" -le 1800/u);
+  assert.match(workflow, /SSH_AUTHORIZATION_EXPIRES_AT_EPOCH - now\)\)" -ge 9300/u);
+  assert.match(
+    workflow,
+    /SSH_AUTHORIZATION_EXPIRES_AT_EPOCH - SSH_AUTHORIZATION_STARTED_AT_EPOCH\)\)" -le 14400/u,
+  );
+  assert.match(workflow, /Trust once and prove the Railway SSH relay on the exact instance/u);
+  assert.match(workflow, /Host ssh\.railway\.com/u);
+  assert.match(workflow, /BatchMode yes/u);
+  assert.match(workflow, /IdentitiesOnly yes/u);
+  assert.match(workflow, /StrictHostKeyChecking accept-new/u);
+  assert.match(workflow, /ConnectTimeout 10/u);
+  assert.match(workflow, /ConnectionAttempts 2/u);
+  assert.match(workflow, /timeout 20s ssh/u);
+  assert.match(workflow, /ssh -G -F "\$HOME\/\.ssh\/config"/u);
+  assert.match(workflow, /"\$DEPLOYMENT_INSTANCE_ID@ssh\.railway\.com"/u);
+  assert.doesNotMatch(workflow, /StrictHostKeyChecking(?:=|\s+)(?:no|off)/u);
+  const sshConfigIndex = workflow.indexOf('Host ssh.railway.com');
+  const firstRailwaySshIndex = workflow.indexOf('railway ssh \\');
+  assert.ok(sshConfigIndex >= 0 && firstRailwaySshIndex > sshConfigIndex);
+  assert.equal((workflow.match(/railway ssh \\/gu) ?? []).length, 4);
+  assert.match(workflow, /Resume a durable final audit before requesting a new one/u);
+  assert.match(workflow, /env -u DOCUMENT_ARCHIVE_QUARANTINE_AUDIT_DEPLOYMENT_ID/u);
+  assert.match(workflow, /ARCHIVE_QUARANTINE_FINAL_AUDIT_NOT_RECORDED/u);
+  assert.match(workflow, /steps\.resume\.outputs\.resumed != 'true'/u);
+  assert.match(
+    workflow,
+    /Destroy runner-local SSH and OIDC material[\s\S]*if: \$\{\{ always\(\) \}\}/u,
+  );
+  assert.match(workflow, /rm -rf -- "\$QUARANTINE_TEMP_ROOT"/u);
   assert.match(workflow, /storageOrphans !== 5/u);
   assert.match(workflow, /storageOrphans !== 0/u);
   assert.match(workflow, /phase !== 'deleted_verified'/u);
@@ -50,17 +107,30 @@ test('plan et apply partagent l’autorité OIDC fondateur exacte et reprennent 
   assert.match(planRunner, /verifyArchiveQuarantineOidc/u);
   assert.match(planRunner, /loadRecoverablePlan/u);
   for (const claim of [
-    'repository_id', 'repository_owner_id', 'workflow_sha', 'event_name', 'actor_id',
-  ]) assert.match(oidc, new RegExp(`claims\\.${claim}`, 'u'));
+    'repository_id',
+    'repository_owner_id',
+    'workflow_sha',
+    'event_name',
+    'actor_id',
+  ])
+    assert.match(oidc, new RegExp(`claims\\.${claim}`, 'u'));
   assert.match(oidc, /FOUNDER_ACTOR_ID = '84627817'/u);
   assert.match(oidc, /SUBJECT = 'repo:GLWebDevAgency\/bob-pro:environment:staging'/u);
   assert.match(runtime, /ARCHIVE_QUARANTINE_APPLY_OIDC_PROOF_REPLAYED/u);
   assert.match(runtime, /assertArchiveQuarantineCompletionBoundary/u);
   assert.match(runtime, /LOCK TABLE storage\.buckets IN SHARE ROW EXCLUSIVE MODE/u);
-  assert.match(runtime, /LOCK TABLE public\.document_archive_job_artifacts IN SHARE ROW EXCLUSIVE MODE/u);
+  assert.match(
+    runtime,
+    /LOCK TABLE public\.document_archive_job_artifacts IN SHARE ROW EXCLUSIVE MODE/u,
+  );
   assert.match(runtime, /LOCK TABLE public\.document_archive_jobs IN SHARE ROW EXCLUSIVE MODE/u);
   assert.match(runtime, /ARCHIVE_QUARANTINE_COMPLETION_STATE_CHANGED/u);
   assert.match(migration, /tokenSha256' IS DISTINCT FROM/u);
+  for (const entrypoint of [planRunner, applyRunner, finalizeRunner]) {
+    assert.match(entrypoint, /assertArchiveQuarantineRuntimeScope/u);
+    assert.match(entrypoint, /FLY_ARCHIVE_QUARANTINE_TARGET/u);
+  }
+  assert.match(quarantineDomain, /ARCHIVE_QUARANTINE_RUNTIME_SCOPE_DIVERGENT/u);
 });
 
 test('la migration est bornée, append-only, privée et porte les huit fences exactes', () => {
@@ -82,14 +152,18 @@ test('la migration est bornée, append-only, privée et porte les huit fences ex
     'document_archive_quarantine_intents_reference_fence',
     'document_archive_quarantine_job_artifacts_reference_fence',
     'document_archive_quarantine_worker_lease_fence',
-  ]) assert.match(migration, new RegExp(name, 'u'));
+  ])
+    assert.match(migration, new RegExp(name, 'u'));
 });
 
 test('release et CI prouvent le catalogue exact sous owner vendor non SETtable', () => {
   assert.match(release, /exact_count <> 8 OR named_count <> 8/u);
   assert.match(release, /trigger\.tgfoid = expected\.function_oid/u);
   assert.match(release, /trigger\.tgtype::integer = expected\.trigger_type/u);
-  assert.match(release, /pg_catalog\.aclexplode\([\s\S]*privilege\.grantee = 0[\s\S]*privilege\.privilege_type = 'EXECUTE'/u);
+  assert.match(
+    release,
+    /pg_catalog\.aclexplode\([\s\S]*privilege\.grantee = 0[\s\S]*privilege\.privilege_type = 'EXECUTE'/u,
+  );
   assert.doesNotMatch(release, /has_function_privilege\('PUBLIC'/u);
   for (const source of [migration, release, runtime, postgresCert]) {
     assert.match(source, /expected\.update_column/u);
@@ -108,7 +182,52 @@ test('release et CI prouvent le catalogue exact sous owner vendor non SETtable',
   assert.match(bootstrap, /REVOKE ALL ON FUNCTION storage\.bob_ci_set_quarantine_bucket_fence/u);
   assert.match(ci, /pg_has_role\(current_user, vendor_oid, 'SET'\)/u);
   assert.match(ci, /RUN_POSTGRES_DOCUMENT_ARCHIVE_QUARANTINE_CERT/u);
+  assert.match(ci, /DOCUMENT_ARCHIVE_QUARANTINE_CERT_DATABASE_KIND: ephemeral/u);
   assert.match(packageJson, /archive:quarantine:plan/u);
   assert.match(packageJson, /archive:quarantine:apply/u);
   assert.match(packageJson, /archive:quarantine:finalize/u);
+});
+
+test('le runtime sépare strictement les autorités public et Storage', () => {
+  const sqlTemplates = [...runtime.matchAll(/`([^`]*)`/gs)].map((match) => match[1] ?? '');
+  for (const sql of sqlTemplates) {
+    assert.equal(
+      sql.includes('public.') && sql.includes('storage.'),
+      false,
+      'Une même requête SQL ne peut pas joindre public et Storage sous des owners distincts.',
+    );
+  }
+  assert.match(runtime, /ARCHIVE_QUARANTINE_PUBLIC_OWNER_INVENTORY_INVALID/u);
+  assert.match(runtime, /ARCHIVE_QUARANTINE_STORAGE_AUTHORITY_NOT_RESTORED/u);
+  assert.match(runtime, /prepareArchiveReferenceProjection/u);
+  assert.match(runtime, /populateArchiveReferenceProjection/u);
+  assert.match(runtime, /authorities\[0\]!\.superuser/u);
+  assert.match(runtime, /canSetStorageOwner/u);
+  assert.match(runtime, /ARCHIVE_QUARANTINE_AUTHORITY_SEPARATION_INVALID/u);
+  assert.match(runtime, /publicAuthority\.owner === publicAuthority\.sessionUser/u);
+  assert.match(postgresCert, /connectArchiveQuarantineRuntime/u);
+  assert.match(postgresCert, /DOCUMENT_ARCHIVE_QUARANTINE_CERT_REQUIRES_EPHEMERAL_DATABASE/u);
+  for (const repositoryMethod of [
+    'loadPinnedAudit',
+    'sealPlan',
+    'loadRecoverablePlan',
+    'recordAuthorized',
+    'recordDestinationVerified',
+    'recordCopiedVerified',
+    'assertEntryDeleteSafe',
+    'assertSourceDeleted',
+    'assertFinalSnapshotClean',
+    'recordDeletedVerified',
+    'loadFinalAudit',
+    'recordFinalAuditVerified',
+    'loadRecordedFinalAudit',
+  ]) {
+    assert.match(postgresCert, new RegExp(`repository\\.${repositoryMethod}\\(`, 'u'));
+  }
+  assert.match(postgresCert, /loadArchiveQuarantineFinalAuditForResume/u);
+  assert.match(postgresCert, /finalizeArchiveQuarantine\(\{[\s\S]*guard: repository/u);
+  assert.match(quarantineDomain, /input\.guard\.recordCompleted/u);
+  assert.match(postgresCert, /ARCHIVE_QUARANTINE_CERT_LOST_FINAL_RECEIPT_PUT_ACK/u);
+  assert.match(postgresCert, /completedBeforeRecovery/u);
+  assert.match(postgresCert, /SELECT 1 FROM storage\.objects LIMIT 1/u);
 });

@@ -1,5 +1,6 @@
 import {
   applyArchiveQuarantine,
+  assertArchiveQuarantineRuntimeScope,
   type ArchiveQuarantineAuthorization,
   type ArchiveQuarantineAuthorizationVerifier,
   type ArchiveQuarantineManifest,
@@ -7,6 +8,7 @@ import {
 import { verifyArchiveQuarantineOidc } from './document-archive-quarantine-oidc';
 import {
   connectArchiveQuarantineRuntime,
+  FLY_ARCHIVE_QUARANTINE_TARGET,
   parseArchiveQuarantineRuntimeConfig,
   withArchiveQuarantineMutationLease,
 } from './document-archive-quarantine.runtime';
@@ -44,21 +46,16 @@ export function parseArchiveQuarantineApplyInput(value: string): ArchiveQuaranti
     throw new Error('ARCHIVE_QUARANTINE_APPLY_INPUT_INVALID');
   }
   const input = parsed as Record<string, unknown>;
-  const exactKeys = [
-    'confirmation',
-    'manifestDigest',
-    'oidcToken',
-    'schemaVersion',
-  ].sort();
+  const exactKeys = ['confirmation', 'manifestDigest', 'oidcToken', 'schemaVersion'].sort();
   if (
-    Object.keys(input).sort().join('\u0000') !== exactKeys.join('\u0000')
-    || input.schemaVersion !== 1
-    || typeof input.manifestDigest !== 'string'
-    || !SHA256.test(input.manifestDigest)
-    || input.confirmation !== `QUARANTINE-STAGING:${input.manifestDigest}`
-    || typeof input.oidcToken !== 'string'
-    || input.oidcToken.length < 100
-    || input.oidcToken.length > 16_384
+    Object.keys(input).sort().join('\u0000') !== exactKeys.join('\u0000') ||
+    input.schemaVersion !== 1 ||
+    typeof input.manifestDigest !== 'string' ||
+    !SHA256.test(input.manifestDigest) ||
+    input.confirmation !== `QUARANTINE-STAGING:${input.manifestDigest}` ||
+    typeof input.oidcToken !== 'string' ||
+    input.oidcToken.length < 100 ||
+    input.oidcToken.length > 16_384
   ) {
     throw new Error('ARCHIVE_QUARANTINE_APPLY_INPUT_INVALID');
   }
@@ -73,9 +70,9 @@ class ExactVerifiedAuthorization implements ArchiveQuarantineAuthorizationVerifi
     manifest: ArchiveQuarantineManifest,
   ): Promise<void> {
     if (
-      authorization !== this.expected
-      || authorization.manifestDigest !== manifest.confirmationDigest
-      || authorization.workflow.sha !== manifest.releaseSha
+      authorization !== this.expected ||
+      authorization.manifestDigest !== manifest.confirmationDigest ||
+      authorization.workflow.sha !== manifest.releaseSha
     ) {
       throw new Error('ARCHIVE_QUARANTINE_OIDC_AUTHORITY_LOST');
     }
@@ -93,10 +90,15 @@ export async function runDocumentArchiveQuarantineApply(
   const input = parseArchiveQuarantineApplyInput(serializedInput);
   const runtime = await connectArchiveQuarantineRuntime(config);
   try {
-    const manifest = await runtime.repository.loadManifest(input.manifestDigest);
-    if (manifest.releaseSha !== config.releaseSha) {
-      throw new Error('ARCHIVE_QUARANTINE_APPLY_RELEASE_DIVERGENT');
-    }
+    const manifest = assertArchiveQuarantineRuntimeScope(
+      await runtime.repository.loadManifest(input.manifestDigest),
+      {
+        releaseSha: config.releaseSha,
+        sourceBucket: config.sourceBucket,
+        destinationBucket: config.destinationBucket,
+        target: FLY_ARCHIVE_QUARANTINE_TARGET,
+      },
+    );
     const workflow = await verifyArchiveQuarantineOidc({
       token: input.oidcToken,
       releaseSha: manifest.releaseSha,
@@ -127,15 +129,20 @@ export async function runDocumentArchiveQuarantineApply(
         authorizationVerifier: new ExactVerifiedAuthorization(authorization),
       });
     });
-    process.stdout.write(`BOB_DOCUMENT_ARCHIVE_QUARANTINE_APPLY=${Buffer.from(JSON.stringify({
-      schemaVersion: 2,
-      environment: 'staging',
-      releaseSha: manifest.releaseSha,
-      manifestDigest: receipt.manifestDigest,
-      phase: receipt.phase,
-      sourceCount: receipt.sourceKeySha256s.length,
-      receiptSha256: receipt.receiptSha256,
-    }), 'utf8').toString('base64url')}\n`);
+    process.stdout.write(
+      `BOB_DOCUMENT_ARCHIVE_QUARANTINE_APPLY=${Buffer.from(
+        JSON.stringify({
+          schemaVersion: 2,
+          environment: 'staging',
+          releaseSha: manifest.releaseSha,
+          manifestDigest: receipt.manifestDigest,
+          phase: receipt.phase,
+          sourceCount: receipt.sourceKeySha256s.length,
+          receiptSha256: receipt.receiptSha256,
+        }),
+        'utf8',
+      ).toString('base64url')}\n`,
+    );
   } finally {
     await runtime.authority.$disconnect();
   }

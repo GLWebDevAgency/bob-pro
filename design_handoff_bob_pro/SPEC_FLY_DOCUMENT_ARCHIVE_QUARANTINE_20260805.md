@@ -62,7 +62,10 @@ partielle, mais jamais un octet retiré sans copie vérifiée préalable.
 3. Le manifeste v2 lie : environnement, SHA servi, identité de base, digest snapshot, deployment
    d'audit, rapport, inventaire, bucket source/destination, companyId, cardinalité, ensemble exact
    des hashes de clés et, par entrée, `objectId`, `version`, `createdAt`, `updatedAt`, métadonnées,
-   MIME, taille et SHA-256 recalculé depuis les octets.
+   MIME, taille et SHA-256 recalculé depuis les octets. Sa sérialisation est canonique par champ,
+   y compris après un aller-retour JSONB qui réordonne les propriétés : le digest chargé doit être
+   strictement celui qui a été scellé. L'ordre des clés est total par unités de code, jamais lié à
+   la locale, y compris pour des clés Unicode distinctes mais visuellement équivalentes.
 4. L'ETag n'est jamais utilisé comme hash de contenu. Le SHA-256 des bytes reste l'autorité.
 5. Le **plan et l'apply** exigent chacun un jeton OIDC GitHub lié au workflow immuable, au SHA et
    workflow SHA servis, à l'environment staging, à l'événement `workflow_dispatch`, au dépôt et
@@ -143,7 +146,12 @@ WORM. La preuve finale repose aussi sur le rapport Archive append-only déjà pr
    huit fences exacts. Si l'ACK est perdu après le lien de l'audit ou le
    reçu Storage final, la reprise relit la preuve append-only déjà liée au lieu d'exiger un nouvel
    audit incompatible.
-10. `/health/ready` et la topologie prouvent encore le même SHA après l'opération. Un échec de
+10. À chaque relance `apply`, l'opérateur tente d'abord le finalizer sans aucune variable de pin :
+    une preuve `final_audit_verified` durable permet la reprise immédiate ; seule l'absence nommée
+    de cette preuve autorise un nouvel audit global. Une configuration partielle ou toute autre
+    erreur ferme l'opération. Plan, apply et finalize ré-ancrent le manifeste relu au SHA, tenant
+    hashé, cinq hashes et deux buckets exacts compilés dans l'artefact.
+11. `/health/ready` et la topologie prouvent encore le même SHA après l'opération. Un échec de
     l'opération ne déclenche jamais un autre SHA.
 
 ## 6. Contrat Storage
@@ -162,6 +170,11 @@ WORM. La preuve finale repose aussi sur le rapport Archive append-only déjà pr
 - [ ] Le builder refuse autre tenant, préfixe `chantiers`, cardinalité différente de 5, sixième
       orphelin, hash de clé absent/supplémentaire ou SQL-missing object.
 - [ ] Le manifeste v2 lie toutes les métadonnées Storage et les octets au rapport frais exact.
+- [ ] Le digest du manifeste survit à un aller-retour JSONB réel ; un test unitaire réordonne toutes
+      les propriétés, dont des clés Unicode distinctes équivalentes sous certaines collations, et le
+      certificat PostgreSQL recharge le manifeste persisté avant l'apply.
+- [ ] Plan, apply et finalize refusent un manifeste pourtant valide s'il diverge du SHA, des deux
+      buckets, du tenant hashé ou de l'ensemble fermé des cinq hashes compilés.
 - [ ] Source **et** destination publiques ou mal configurées sont refusées avant copie.
 - [ ] Une collision destination différente ne retire aucune source.
 - [ ] Les cinq copies et le reçu `copied_verified` sont relus avant le premier DELETE.
@@ -177,14 +190,41 @@ WORM. La preuve finale repose aussi sur le rapport Archive append-only déjà pr
 - [ ] Jeton plan absent/invalide : aucune création de bucket ni opération ; plan et apply portent
       deux preuves OIDC distinctes avec la même autorité stable.
 - [ ] ACK perdu après le commit du plan, après `final_audit_verified`, après le PUT du reçu final ou
-      après `completed` reprend la même saga sans second plan ni seconde suppression.
+      après `completed` reprend la même saga sans second plan ni seconde suppression. Le workflow
+      tente cette reprise sans pin avant tout nouvel audit ; seul le code d'absence explicite lance
+      l'audit frais, toute autre erreur reste bloquante.
 - [ ] `completed` refuse dans la même transaction une destination perdue, un bucket public, une
       lease worker vivante, un reçu divergent ou un état exact incomplet, puis accepte la reprise
       d'un ACK perdu sur l'unique événement déjà persisté.
 - [ ] Tests de confidentialité garantissent zéro clé brute dans les sorties non privées.
+- [ ] Le runtime passe sous la topologie Supabase exacte à owners séparés : le déployeur
+      non-superuser lit/verrouille Storage sans pouvoir prendre son owner ; le rôle NOLOGIN des
+      tables `public` est assumé seulement dans des transactions bornées ; aucune requête ne joint
+      les deux autorités, aucun GRANT transversal n'est ajouté, et chaque retour au `session_user`
+      est prouvé avant une lecture Storage.
+- [ ] Le certificat PostgreSQL owner-split appelle les vraies méthodes du repository de
+      `loadPinnedAudit` à `recordCompleted`, rejoue chaque ACK, traverse les deux leases mutatifs et
+      termine avec une opération, cinq entrées, seize événements, zéro source, cinq destinations et
+      trois reçus. Il refuse de s'exécuter si la base n'est pas explicitement déclarée éphémère.
 - [ ] Tests de contrat Railway prouvent SHA servi exact, topologie, mutex staging partagé et
       exécution distante dans l'artefact déployé sur l'instance exacte, avec clé SSH dédiée — jamais
-      `railway run` local ni « première instance » implicite.
+      `railway run` local ni « première instance » implicite. Le runner éphémère amorce le relais
+      Railway avec `StrictHostKeyChecking=accept-new` : première clé acceptée, clé changée refusée,
+      et jamais de désactivation du contrôle de clé hôte. La configuration SSH par défaut impose
+      aussi `BatchMode`, `IdentitiesOnly`, un délai court et la clé dédiée aux quatre sites d'appel
+      Railway scellés (au plus trois exécutés dans un run), dont la reprise sans pin avant audit.
+- [ ] Pour chaque run `plan` ou `apply`, l'opérateur crée et enregistre une clé SSH Railway unique,
+      conserve le reçu externe horodaté de cet enregistrement, puis lie le workflow à son empreinte
+      SHA-256 exacte et à une fenêtre d'autorisation commencée depuis moins de 30 minutes, couvrant
+      le timeout entier et bornée à quatre heures. Le workflow ne présente jamais cette fenêtre
+      déclarative comme une preuve d'âge de la clé. Après le run, l'opérateur retire d'abord cette
+      empreinte de Railway et prouve son absence, supprime ensuite le secret GitHub staging et
+      prouve son absence. Sans reçu d'enregistrement et des deux retraits, le lot reste non certifié
+      même si la saga est `completed`.
+- [ ] Avant de poser le secret SSH temporaire, l'environnement GitHub `staging` exige une revue du
+      compte fondateur et ne laisse passer que `main`. Cette protection reste active jusqu'aux deux
+      retraits prouvés ; l'état de protection antérieur est capturé puis restauré après la fenêtre
+      JIT, afin que cette opération bornée ne modifie pas silencieusement la gouvernance globale.
 - [ ] Typecheck, lint, tests ciblés, suite API complète, build et garde artefact sont verts.
 - [ ] Review adversariale indépendante : zéro P0/P1 ouvert.
 - [ ] Certification réelle Supabase staging : bucket privé, copie/hash/receipt, retrait des cinq

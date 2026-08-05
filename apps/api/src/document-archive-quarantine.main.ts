@@ -1,4 +1,7 @@
-import { buildArchiveQuarantineManifest } from './documents/archive-quarantine';
+import {
+  assertArchiveQuarantineRuntimeScope,
+  buildArchiveQuarantineManifest,
+} from './documents/archive-quarantine';
 import { verifyArchiveQuarantineOidc } from './document-archive-quarantine-oidc';
 import {
   connectArchiveQuarantineRuntime,
@@ -47,11 +50,11 @@ export function parseArchiveQuarantinePlanInput(value: string): ArchiveQuarantin
   }
   const input = parsed as Record<string, unknown>;
   if (
-    Object.keys(input).sort().join('\u0000') !== ['oidcToken', 'schemaVersion'].join('\u0000')
-    || input.schemaVersion !== 1
-    || typeof input.oidcToken !== 'string'
-    || input.oidcToken.length < 100
-    || input.oidcToken.length > 16_384
+    Object.keys(input).sort().join('\u0000') !== ['oidcToken', 'schemaVersion'].join('\u0000') ||
+    input.schemaVersion !== 1 ||
+    typeof input.oidcToken !== 'string' ||
+    input.oidcToken.length < 100 ||
+    input.oidcToken.length > 16_384
   ) {
     throw new Error('ARCHIVE_QUARANTINE_PLAN_INPUT_INVALID');
   }
@@ -99,17 +102,28 @@ export async function runDocumentArchiveQuarantinePlan(
       });
       await runtime.repository.sealPlan(manifest, workflowIdentity);
     }
-    process.stdout.write(`BOB_DOCUMENT_ARCHIVE_QUARANTINE_PLAN=${Buffer.from(JSON.stringify({
-      schemaVersion: 2,
-      environment: 'staging',
-      releaseSha: manifest.releaseSha,
-      auditDeploymentId: manifest.auditDeploymentId,
-      auditInventoryDigest: manifest.sourceAuditInventoryDigest,
-      auditReportSha256: manifest.auditReportSha256,
-      manifestDigest: manifest.confirmationDigest,
-      entryCount: manifest.entries.length,
-      companyIdSha256: manifest.companyIdSha256,
-    }), 'utf8').toString('base64url')}\n`);
+    manifest = assertArchiveQuarantineRuntimeScope(manifest, {
+      releaseSha: config.runtime.releaseSha,
+      sourceBucket: config.runtime.sourceBucket,
+      destinationBucket: config.runtime.destinationBucket,
+      target: FLY_ARCHIVE_QUARANTINE_TARGET,
+    });
+    process.stdout.write(
+      `BOB_DOCUMENT_ARCHIVE_QUARANTINE_PLAN=${Buffer.from(
+        JSON.stringify({
+          schemaVersion: 2,
+          environment: 'staging',
+          releaseSha: manifest.releaseSha,
+          auditDeploymentId: manifest.auditDeploymentId,
+          auditInventoryDigest: manifest.sourceAuditInventoryDigest,
+          auditReportSha256: manifest.auditReportSha256,
+          manifestDigest: manifest.confirmationDigest,
+          entryCount: manifest.entries.length,
+          companyIdSha256: manifest.companyIdSha256,
+        }),
+        'utf8',
+      ).toString('base64url')}\n`,
+    );
   } finally {
     await runtime.authority.$disconnect();
   }

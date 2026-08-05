@@ -16,6 +16,11 @@ function sha256(value: Uint8Array | string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
+/** Ordre total UTF-16 stable entre runtimes, sans collation ni locale implicite. */
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 export interface ArchiveQuarantineObject {
   readonly bytes: Uint8Array;
   readonly contentType: string;
@@ -106,6 +111,13 @@ export interface ArchiveQuarantineAuthorizationVerifier {
 export interface ArchiveQuarantineTarget {
   readonly companyIdSha256: string;
   readonly sourceKeySha256s: readonly string[];
+}
+
+export interface ArchiveQuarantineRuntimeScope {
+  readonly releaseSha: string;
+  readonly sourceBucket: string;
+  readonly destinationBucket: string;
+  readonly target: ArchiveQuarantineTarget;
 }
 
 export interface ArchiveQuarantineManifestEntry {
@@ -249,43 +261,47 @@ function canonicalJson(value: unknown): ArchiveQuarantineJson {
     }
     return Object.fromEntries(
       Object.entries(value)
-        .sort(([left], [right]) => left.localeCompare(right))
+        .sort(([left], [right]) => compareCodeUnits(left, right))
         .map(([key, nested]) => [key, canonicalJson(nested)]),
     );
   }
   throw new Error('ARCHIVE_QUARANTINE_METADATA_INVALID');
 }
 
-function metadataDigest(metadata: ArchiveQuarantineJson, userMetadata: ArchiveQuarantineJson): string {
+function metadataDigest(
+  metadata: ArchiveQuarantineJson,
+  userMetadata: ArchiveQuarantineJson,
+): string {
   return sha256(JSON.stringify({ metadata, userMetadata }));
 }
 
 function validStorageKey(value: string): boolean {
-  return value.length >= 1
-    && value.length <= 1_024
-    && !value.startsWith('/')
-    && !value.includes('//')
-    && value.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..');
+  return (
+    value.length >= 1 &&
+    value.length <= 1_024 &&
+    !value.startsWith('/') &&
+    !value.includes('//') &&
+    value.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..')
+  );
 }
 
 function canonicalEntry(entry: ArchiveQuarantineManifestEntry): ArchiveQuarantineManifestEntry {
   const sourceMetadata = canonicalJson(entry.sourceMetadata);
   const sourceUserMetadata = canonicalJson(entry.sourceUserMetadata);
   if (
-    !validStorageKey(entry.sourceKey)
-    || !validStorageKey(entry.destinationKey)
-    || sha256(entry.sourceKey) !== entry.sourceKeySha256
-    || !SHA256.test(entry.sourceKeySha256)
-    || !SHA256.test(entry.sha256)
-    || !SHA256.test(entry.sourceStorageMetadataDigest)
-    || entry.sourceStorageMetadataDigest !== metadataDigest(sourceMetadata, sourceUserMetadata)
-    || !Number.isSafeInteger(entry.byteSize)
-    || entry.byteSize < 1
-    || canonicalContentType(entry.contentType) !== 'application/pdf'
-    || !UUID.test(entry.sourceObjectId)
-    || (entry.sourceObjectVersion !== null && (
-      entry.sourceObjectVersion.length < 1 || entry.sourceObjectVersion.length > 256
-    ))
+    !validStorageKey(entry.sourceKey) ||
+    !validStorageKey(entry.destinationKey) ||
+    sha256(entry.sourceKey) !== entry.sourceKeySha256 ||
+    !SHA256.test(entry.sourceKeySha256) ||
+    !SHA256.test(entry.sha256) ||
+    !SHA256.test(entry.sourceStorageMetadataDigest) ||
+    entry.sourceStorageMetadataDigest !== metadataDigest(sourceMetadata, sourceUserMetadata) ||
+    !Number.isSafeInteger(entry.byteSize) ||
+    entry.byteSize < 1 ||
+    canonicalContentType(entry.contentType) !== 'application/pdf' ||
+    !UUID.test(entry.sourceObjectId) ||
+    (entry.sourceObjectVersion !== null &&
+      (entry.sourceObjectVersion.length < 1 || entry.sourceObjectVersion.length > 256))
   ) {
     throw new Error('ARCHIVE_QUARANTINE_ENTRY_INVALID');
   }
@@ -296,8 +312,17 @@ function canonicalEntry(entry: ArchiveQuarantineManifestEntry): ArchiveQuarantin
     throw new Error('ARCHIVE_QUARANTINE_SOURCE_KEY_INVALID');
   }
   return {
-    ...entry,
+    sourceKey: entry.sourceKey,
+    sourceKeySha256: entry.sourceKeySha256,
+    destinationKey: entry.destinationKey,
+    sha256: entry.sha256,
+    byteSize: entry.byteSize,
     contentType: canonicalContentType(entry.contentType),
+    sourceObjectId: entry.sourceObjectId,
+    sourceObjectVersion: entry.sourceObjectVersion,
+    sourceCreatedAt: entry.sourceCreatedAt,
+    sourceUpdatedAt: entry.sourceUpdatedAt,
+    sourceStorageMetadataDigest: entry.sourceStorageMetadataDigest,
     sourceMetadata,
     sourceUserMetadata,
   };
@@ -309,7 +334,9 @@ function compareEntries(
 ): number {
   return left.sourceKeySha256 < right.sourceKeySha256
     ? -1
-    : left.sourceKeySha256 > right.sourceKeySha256 ? 1 : 0;
+    : left.sourceKeySha256 > right.sourceKeySha256
+      ? 1
+      : 0;
 }
 
 function expectedDestinationKey(
@@ -340,31 +367,32 @@ export function archiveQuarantineManifestDigest(
   input: Omit<ArchiveQuarantineManifest, 'confirmationDigest'>,
 ): string {
   if (
-    input.schemaVersion !== 2
-    || input.environment !== 'staging'
-    || !RELEASE_SHA.test(input.releaseSha)
-    || input.databaseFingerprint.trim().length < 1
-    || input.databaseFingerprint.length > 512
-    || !SHA256.test(input.databaseSnapshotDigest)
-    || !UUID.test(input.auditDeploymentId)
-    || !SHA256.test(input.auditReportSha256)
-    || !SHA256.test(input.sourceAuditInventoryDigest)
-    || !SHA256.test(input.companyIdSha256)
-    || !BUCKET.test(input.sourceBucket)
-    || !BUCKET.test(input.destinationBucket)
-    || input.sourceBucket === input.destinationBucket
-    || input.entries.length !== 5
+    input.schemaVersion !== 2 ||
+    input.environment !== 'staging' ||
+    !RELEASE_SHA.test(input.releaseSha) ||
+    input.databaseFingerprint.trim().length < 1 ||
+    input.databaseFingerprint.length > 512 ||
+    !SHA256.test(input.databaseSnapshotDigest) ||
+    !UUID.test(input.auditDeploymentId) ||
+    !SHA256.test(input.auditReportSha256) ||
+    !SHA256.test(input.sourceAuditInventoryDigest) ||
+    !SHA256.test(input.companyIdSha256) ||
+    !BUCKET.test(input.sourceBucket) ||
+    !BUCKET.test(input.destinationBucket) ||
+    input.sourceBucket === input.destinationBucket ||
+    input.entries.length !== 5
   ) {
     throw new Error('ARCHIVE_QUARANTINE_MANIFEST_INVALID');
   }
   const canonical = [...input.entries].map(canonicalEntry).sort(compareEntries);
   if (
-    new Set(canonical.map(({ sourceKey }) => sourceKey)).size !== canonical.length
-    || new Set(canonical.map(({ sourceKeySha256 }) => sourceKeySha256)).size !== canonical.length
-    || new Set(canonical.map(({ destinationKey }) => destinationKey)).size !== canonical.length
-    || canonical.some((entry) => (
-      entry.destinationKey !== expectedDestinationKey(input.sourceAuditInventoryDigest, entry)
-    ))
+    new Set(canonical.map(({ sourceKey }) => sourceKey)).size !== canonical.length ||
+    new Set(canonical.map(({ sourceKeySha256 }) => sourceKeySha256)).size !== canonical.length ||
+    new Set(canonical.map(({ destinationKey }) => destinationKey)).size !== canonical.length ||
+    canonical.some(
+      (entry) =>
+        entry.destinationKey !== expectedDestinationKey(input.sourceAuditInventoryDigest, entry),
+    )
   ) {
     throw new Error('ARCHIVE_QUARANTINE_MANIFEST_SCOPE_INVALID');
   }
@@ -372,8 +400,10 @@ export function archiveQuarantineManifestDigest(
 }
 
 function exactSet(actual: readonly string[], expected: readonly string[]): boolean {
-  return actual.length === expected.length
-    && [...actual].sort().every((value, index) => value === [...expected].sort()[index]);
+  return (
+    actual.length === expected.length &&
+    [...actual].sort().every((value, index) => value === [...expected].sort()[index])
+  );
 }
 
 function orphanKeys(
@@ -385,22 +415,22 @@ function orphanKeys(
     ({ code }) => code === 'STORAGE_OBJECT_WITHOUT_SQL_REFERENCE',
   );
   if (
-    report.schemaVersion !== 1
-    || report.protocolVersion !== 2
-    || report.mode !== 'protocol-v2-verified'
-    || report.readyForActivation
-    || !SHA256.test(report.inventoryDigest)
-    || !BUCKET.test(report.storageBucket)
-    || report.counts.storageOrphans !== 5
-    || report.counts.missingStoredObjects !== 0
-    || report.counts.p0Issues !== 6
-    || report.issues.length !== 6
-    || storageIssues.length !== 5
-    || !exactSet(uniqueCodes, EXPECTED_AUDIT_CODES)
-    || !SHA256.test(target.companyIdSha256)
-    || target.sourceKeySha256s.length !== 5
-    || new Set(target.sourceKeySha256s).size !== 5
-    || target.sourceKeySha256s.some((value) => !SHA256.test(value))
+    report.schemaVersion !== 1 ||
+    report.protocolVersion !== 2 ||
+    report.mode !== 'protocol-v2-verified' ||
+    report.readyForActivation ||
+    !SHA256.test(report.inventoryDigest) ||
+    !BUCKET.test(report.storageBucket) ||
+    report.counts.storageOrphans !== 5 ||
+    report.counts.missingStoredObjects !== 0 ||
+    report.counts.p0Issues !== 6 ||
+    report.issues.length !== 6 ||
+    storageIssues.length !== 5 ||
+    !exactSet(uniqueCodes, EXPECTED_AUDIT_CODES) ||
+    !SHA256.test(target.companyIdSha256) ||
+    target.sourceKeySha256s.length !== 5 ||
+    new Set(target.sourceKeySha256s).size !== 5 ||
+    target.sourceKeySha256s.some((value) => !SHA256.test(value))
   ) {
     throw new Error('ARCHIVE_QUARANTINE_AUDIT_SCOPE_INVALID');
   }
@@ -409,9 +439,9 @@ function orphanKeys(
     .filter((key): key is string => typeof key === 'string');
   const keyHashes = keys.map((key) => sha256(key));
   if (
-    keys.length !== 5
-    || new Set(keys).size !== 5
-    || !exactSet(keyHashes, target.sourceKeySha256s)
+    keys.length !== 5 ||
+    new Set(keys).size !== 5 ||
+    !exactSet(keyHashes, target.sourceKeySha256s)
   ) {
     throw new Error('ARCHIVE_QUARANTINE_AUDIT_KEYS_DIVERGENT');
   }
@@ -421,20 +451,19 @@ function orphanKeys(
       throw new Error('ARCHIVE_QUARANTINE_AUDIT_TENANT_DIVERGENT');
     }
   }
-  return keys.sort((left, right) => sha256(left).localeCompare(sha256(right)));
+  return keys.sort((left, right) => compareCodeUnits(sha256(left), sha256(right)));
 }
 
-function objectFacts(object: ArchiveQuarantineObject): Omit<
-  ArchiveQuarantineManifestEntry,
-  'sourceKey' | 'sourceKeySha256' | 'destinationKey'
-> {
+function objectFacts(
+  object: ArchiveQuarantineObject,
+): Omit<ArchiveQuarantineManifestEntry, 'sourceKey' | 'sourceKeySha256' | 'destinationKey'> {
   canonicalStorageInstant(object.createdAt, 'ARCHIVE_QUARANTINE_OBJECT_CREATED_AT_INVALID');
   canonicalStorageInstant(object.updatedAt, 'ARCHIVE_QUARANTINE_OBJECT_UPDATED_AT_INVALID');
   const sourceMetadata = canonicalJson(object.metadata);
   const sourceUserMetadata = canonicalJson(object.userMetadata);
   if (
-    !UUID.test(object.objectId)
-    || (object.version !== null && (object.version.length < 1 || object.version.length > 256))
+    !UUID.test(object.objectId) ||
+    (object.version !== null && (object.version.length < 1 || object.version.length > 256))
   ) {
     throw new Error('ARCHIVE_QUARANTINE_OBJECT_METADATA_INVALID');
   }
@@ -458,36 +487,42 @@ function exactSourceObject(
 ): boolean {
   if (object === null) return false;
   const facts = objectFacts(object);
-  return JSON.stringify(facts) === JSON.stringify({
-    sha256: expected.sha256,
-    byteSize: expected.byteSize,
-    contentType: expected.contentType,
-    sourceObjectId: expected.sourceObjectId,
-    sourceObjectVersion: expected.sourceObjectVersion,
-    sourceCreatedAt: expected.sourceCreatedAt,
-    sourceUpdatedAt: expected.sourceUpdatedAt,
-    sourceStorageMetadataDigest: expected.sourceStorageMetadataDigest,
-    sourceMetadata: expected.sourceMetadata,
-    sourceUserMetadata: expected.sourceUserMetadata,
-  });
+  return (
+    JSON.stringify(facts) ===
+    JSON.stringify({
+      sha256: expected.sha256,
+      byteSize: expected.byteSize,
+      contentType: expected.contentType,
+      sourceObjectId: expected.sourceObjectId,
+      sourceObjectVersion: expected.sourceObjectVersion,
+      sourceCreatedAt: expected.sourceCreatedAt,
+      sourceUpdatedAt: expected.sourceUpdatedAt,
+      sourceStorageMetadataDigest: expected.sourceStorageMetadataDigest,
+      sourceMetadata: expected.sourceMetadata,
+      sourceUserMetadata: expected.sourceUserMetadata,
+    })
+  );
 }
 
 function exactCopiedObject(
   object: ArchiveQuarantineObject | null,
   expected: ArchiveQuarantineManifestEntry,
 ): object is ArchiveQuarantineObject {
-  return object !== null
-    && sha256(object.bytes) === expected.sha256
-    && object.bytes.byteLength === expected.byteSize
-    && canonicalContentType(object.contentType) === expected.contentType;
+  return (
+    object !== null &&
+    sha256(object.bytes) === expected.sha256 &&
+    object.bytes.byteLength === expected.byteSize &&
+    canonicalContentType(object.contentType) === expected.contentType
+  );
 }
 
 function exactSealedObject(
   object: ArchiveQuarantineObject | null,
   sealed: ArchiveQuarantineObject,
 ): object is ArchiveQuarantineObject {
-  return object !== null
-    && JSON.stringify(objectFacts(object)) === JSON.stringify(objectFacts(sealed));
+  return (
+    object !== null && JSON.stringify(objectFacts(object)) === JSON.stringify(objectFacts(sealed))
+  );
 }
 
 function entryError(code: string, entry: ArchiveQuarantineManifestEntry): Error {
@@ -504,10 +539,10 @@ export async function buildArchiveQuarantineManifest(input: {
   storage: ArchiveQuarantineStorage;
 }): Promise<ArchiveQuarantineManifest> {
   if (
-    !UUID.test(input.auditDeploymentId)
-    || !SHA256.test(input.auditReportSha256)
-    || !BUCKET.test(input.destinationBucket)
-    || input.destinationBucket === input.report.storageBucket
+    !UUID.test(input.auditDeploymentId) ||
+    !SHA256.test(input.auditReportSha256) ||
+    !BUCKET.test(input.destinationBucket) ||
+    input.destinationBucket === input.report.storageBucket
   ) {
     throw new Error('ARCHIVE_QUARANTINE_TARGET_INVALID');
   }
@@ -571,6 +606,37 @@ export function validateArchiveQuarantineManifest(
   return { ...payload, confirmationDigest: digest };
 }
 
+/**
+ * Ré-ancre tout manifeste relu au périmètre destructif compilé dans l'artefact opérateur.
+ * Le digest fourni au workflow n'est jamais, à lui seul, une autorité de suppression.
+ */
+export function assertArchiveQuarantineRuntimeScope(
+  input: ArchiveQuarantineManifest,
+  scope: ArchiveQuarantineRuntimeScope,
+): ArchiveQuarantineManifest {
+  const manifest = validateArchiveQuarantineManifest(input);
+  if (
+    !RELEASE_SHA.test(scope.releaseSha) ||
+    !BUCKET.test(scope.sourceBucket) ||
+    !BUCKET.test(scope.destinationBucket) ||
+    !SHA256.test(scope.target.companyIdSha256) ||
+    scope.target.sourceKeySha256s.length !== 5 ||
+    new Set(scope.target.sourceKeySha256s).size !== 5 ||
+    scope.target.sourceKeySha256s.some((value) => !SHA256.test(value)) ||
+    manifest.releaseSha !== scope.releaseSha ||
+    manifest.sourceBucket !== scope.sourceBucket ||
+    manifest.destinationBucket !== scope.destinationBucket ||
+    manifest.companyIdSha256 !== scope.target.companyIdSha256 ||
+    !exactSet(
+      manifest.entries.map(({ sourceKeySha256 }) => sourceKeySha256),
+      scope.target.sourceKeySha256s,
+    )
+  ) {
+    throw new Error('ARCHIVE_QUARANTINE_RUNTIME_SCOPE_DIVERGENT');
+  }
+  return manifest;
+}
+
 function canonicalSourceKeySha256s(manifest: ArchiveQuarantineManifest): string[] {
   return manifest.entries.map(({ sourceKeySha256 }) => sourceKeySha256).sort();
 }
@@ -590,9 +656,8 @@ function parseDeletedReceipt(
   }
   const receipt = parsed as Record<string, unknown>;
   const expectedKeys = canonicalSourceKeySha256s(manifest);
-  const deletedAt = typeof receipt.deletedAt === 'string'
-    ? new Date(receipt.deletedAt)
-    : new Date(Number.NaN);
+  const deletedAt =
+    typeof receipt.deletedAt === 'string' ? new Date(receipt.deletedAt) : new Date(Number.NaN);
   const payload = {
     schemaVersion: 2 as const,
     phase: 'deleted_verified' as const,
@@ -601,19 +666,19 @@ function parseDeletedReceipt(
     sourceKeySha256s: expectedKeys,
   };
   if (
-    Object.keys(receipt).sort().join('\u0000') !== [
-      'deletedAt', 'manifestDigest', 'phase', 'receiptSha256', 'schemaVersion',
-      'sourceKeySha256s',
-    ].sort().join('\u0000')
-    || receipt.schemaVersion !== 2
-    || receipt.phase !== 'deleted_verified'
-    || receipt.manifestDigest !== manifest.confirmationDigest
-    || !Number.isFinite(deletedAt.getTime())
-    || deletedAt.toISOString() !== receipt.deletedAt
-    || !Array.isArray(receipt.sourceKeySha256s)
-    || !exactSet(receipt.sourceKeySha256s as string[], expectedKeys)
-    || typeof receipt.receiptSha256 !== 'string'
-    || receipt.receiptSha256 !== sha256(JSON.stringify(payload))
+    Object.keys(receipt).sort().join('\u0000') !==
+      ['deletedAt', 'manifestDigest', 'phase', 'receiptSha256', 'schemaVersion', 'sourceKeySha256s']
+        .sort()
+        .join('\u0000') ||
+    receipt.schemaVersion !== 2 ||
+    receipt.phase !== 'deleted_verified' ||
+    receipt.manifestDigest !== manifest.confirmationDigest ||
+    !Number.isFinite(deletedAt.getTime()) ||
+    deletedAt.toISOString() !== receipt.deletedAt ||
+    !Array.isArray(receipt.sourceKeySha256s) ||
+    !exactSet(receipt.sourceKeySha256s as string[], expectedKeys) ||
+    typeof receipt.receiptSha256 !== 'string' ||
+    receipt.receiptSha256 !== sha256(JSON.stringify(payload))
   ) {
     throw new Error('ARCHIVE_QUARANTINE_DELETED_RECEIPT_INVALID');
   }
@@ -636,9 +701,8 @@ function parseCompletedReceipt(
   }
   const receipt = parsed as Record<string, unknown>;
   const sourceKeySha256s = canonicalSourceKeySha256s(manifest);
-  const completedAt = typeof receipt.completedAt === 'string'
-    ? new Date(receipt.completedAt)
-    : new Date(Number.NaN);
+  const completedAt =
+    typeof receipt.completedAt === 'string' ? new Date(receipt.completedAt) : new Date(Number.NaN);
   const payload = {
     schemaVersion: 2 as const,
     phase: 'completed' as const,
@@ -650,23 +714,32 @@ function parseCompletedReceipt(
     sourceKeySha256s,
   };
   if (
-    Object.keys(receipt).sort().join('\u0000') !== [
-      'completedAt', 'finalAuditDeploymentId', 'finalAuditInventoryDigest',
-      'finalAuditReportSha256', 'manifestDigest', 'phase', 'receiptSha256', 'schemaVersion',
-      'sourceKeySha256s',
-    ].sort().join('\u0000')
-    || receipt.schemaVersion !== 2
-    || receipt.phase !== 'completed'
-    || receipt.manifestDigest !== manifest.confirmationDigest
-    || !Number.isFinite(completedAt.getTime())
-    || completedAt.toISOString() !== receipt.completedAt
-    || receipt.finalAuditDeploymentId !== evidence.deploymentId
-    || receipt.finalAuditInventoryDigest !== evidence.inventoryDigest
-    || receipt.finalAuditReportSha256 !== evidence.reportSha256
-    || !Array.isArray(receipt.sourceKeySha256s)
-    || !exactSet(receipt.sourceKeySha256s as string[], sourceKeySha256s)
-    || typeof receipt.receiptSha256 !== 'string'
-    || receipt.receiptSha256 !== sha256(JSON.stringify(payload))
+    Object.keys(receipt).sort().join('\u0000') !==
+      [
+        'completedAt',
+        'finalAuditDeploymentId',
+        'finalAuditInventoryDigest',
+        'finalAuditReportSha256',
+        'manifestDigest',
+        'phase',
+        'receiptSha256',
+        'schemaVersion',
+        'sourceKeySha256s',
+      ]
+        .sort()
+        .join('\u0000') ||
+    receipt.schemaVersion !== 2 ||
+    receipt.phase !== 'completed' ||
+    receipt.manifestDigest !== manifest.confirmationDigest ||
+    !Number.isFinite(completedAt.getTime()) ||
+    completedAt.toISOString() !== receipt.completedAt ||
+    receipt.finalAuditDeploymentId !== evidence.deploymentId ||
+    receipt.finalAuditInventoryDigest !== evidence.inventoryDigest ||
+    receipt.finalAuditReportSha256 !== evidence.reportSha256 ||
+    !Array.isArray(receipt.sourceKeySha256s) ||
+    !exactSet(receipt.sourceKeySha256s as string[], sourceKeySha256s) ||
+    typeof receipt.receiptSha256 !== 'string' ||
+    receipt.receiptSha256 !== sha256(JSON.stringify(payload))
   ) {
     throw new Error('ARCHIVE_QUARANTINE_FINAL_RECEIPT_INVALID');
   }
@@ -678,24 +751,25 @@ export function validateArchiveQuarantineWorkflowIdentity(
   releaseSha: string,
 ): void {
   if (
-    workflow.issuer !== 'https://token.actions.githubusercontent.com'
-    || workflow.audience !== 'bob-document-archive-quarantine-staging'
-    || workflow.repository !== 'GLWebDevAgency/bob-pro'
-    || workflow.ref !== 'refs/heads/main'
-    || workflow.sha !== releaseSha
-    || workflow.environment !== 'staging'
-    || workflow.workflowRef !== 'GLWebDevAgency/bob-pro/.github/workflows/document-archive-quarantine-staging.yml@refs/heads/main'
-    || workflow.workflowSha !== releaseSha
-    || workflow.eventName !== 'workflow_dispatch'
-    || workflow.subject !== 'repo:GLWebDevAgency/bob-pro:environment:staging'
-    || workflow.repositoryId !== '1286748365'
-    || workflow.repositoryOwnerId !== '84627817'
-    || !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u.test(workflow.actor)
-    || workflow.actorId !== '84627817'
-    || !/^[1-9][0-9]{0,19}$/u.test(workflow.runId)
-    || !Number.isSafeInteger(workflow.runAttempt)
-    || workflow.runAttempt < 1
-    || !SHA256.test(workflow.tokenSha256)
+    workflow.issuer !== 'https://token.actions.githubusercontent.com' ||
+    workflow.audience !== 'bob-document-archive-quarantine-staging' ||
+    workflow.repository !== 'GLWebDevAgency/bob-pro' ||
+    workflow.ref !== 'refs/heads/main' ||
+    workflow.sha !== releaseSha ||
+    workflow.environment !== 'staging' ||
+    workflow.workflowRef !==
+      'GLWebDevAgency/bob-pro/.github/workflows/document-archive-quarantine-staging.yml@refs/heads/main' ||
+    workflow.workflowSha !== releaseSha ||
+    workflow.eventName !== 'workflow_dispatch' ||
+    workflow.subject !== 'repo:GLWebDevAgency/bob-pro:environment:staging' ||
+    workflow.repositoryId !== '1286748365' ||
+    workflow.repositoryOwnerId !== '84627817' ||
+    !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u.test(workflow.actor) ||
+    workflow.actorId !== '84627817' ||
+    !/^[1-9][0-9]{0,19}$/u.test(workflow.runId) ||
+    !Number.isSafeInteger(workflow.runAttempt) ||
+    workflow.runAttempt < 1 ||
+    !SHA256.test(workflow.tokenSha256)
   ) {
     throw new Error('ARCHIVE_QUARANTINE_WORKFLOW_IDENTITY_INVALID');
   }
@@ -707,12 +781,12 @@ function validateAuthorization(
 ): void {
   const authorizedAt = new Date(authorization.authorizationRecordedAt);
   if (
-    authorization.schemaVersion !== 2
-    || authorization.environment !== 'staging'
-    || authorization.manifestDigest !== manifest.confirmationDigest
-    || !Number.isFinite(authorizedAt.getTime())
-    || authorizedAt.toISOString() !== authorization.authorizationRecordedAt
-    || authorization.authorizationChannel !== 'github-actions:workflow_dispatch'
+    authorization.schemaVersion !== 2 ||
+    authorization.environment !== 'staging' ||
+    authorization.manifestDigest !== manifest.confirmationDigest ||
+    !Number.isFinite(authorizedAt.getTime()) ||
+    authorizedAt.toISOString() !== authorization.authorizationRecordedAt ||
+    authorization.authorizationChannel !== 'github-actions:workflow_dispatch'
   ) {
     throw new Error('ARCHIVE_QUARANTINE_AUTHORIZATION_INVALID');
   }
@@ -753,13 +827,9 @@ export async function applyArchiveQuarantine(input: {
     throw new Error('ARCHIVE_QUARANTINE_CONFIRMATION_REQUIRED');
   }
   validateAuthorization(input.authorization, manifest);
-  const deletedAt = canonicalInstant(
-    input.deletedAt,
-    'ARCHIVE_QUARANTINE_DELETED_AT_INVALID',
-  );
+  const deletedAt = canonicalInstant(input.deletedAt, 'ARCHIVE_QUARANTINE_DELETED_AT_INVALID');
   if (
-    new Date(deletedAt).getTime()
-      < new Date(input.authorization.authorizationRecordedAt).getTime()
+    new Date(deletedAt).getTime() < new Date(input.authorization.authorizationRecordedAt).getTime()
   ) {
     throw new Error('ARCHIVE_QUARANTINE_DELETED_AT_INVALID');
   }
@@ -796,8 +866,8 @@ export async function applyArchiveQuarantine(input: {
   const existingCopyReceipt = await input.storage.load(manifest.destinationBucket, copyReceiptKey);
   const durableCopyReceiptPresent = existingCopyReceipt !== null;
   if (
-    existingCopyReceipt !== null
-    && !Buffer.from(existingCopyReceipt.bytes).equals(Buffer.from(copyReceiptBytes))
+    existingCopyReceipt !== null &&
+    !Buffer.from(existingCopyReceipt.bytes).equals(Buffer.from(copyReceiptBytes))
   ) {
     throw new Error('ARCHIVE_QUARANTINE_COPY_RECEIPT_CONFLICT');
   }
@@ -846,8 +916,8 @@ export async function applyArchiveQuarantine(input: {
   }
   const persistedCopyReceipt = await input.storage.load(manifest.destinationBucket, copyReceiptKey);
   if (
-    persistedCopyReceipt === null
-    || !Buffer.from(persistedCopyReceipt.bytes).equals(Buffer.from(copyReceiptBytes))
+    persistedCopyReceipt === null ||
+    !Buffer.from(persistedCopyReceipt.bytes).equals(Buffer.from(copyReceiptBytes))
   ) {
     throw new Error('ARCHIVE_QUARANTINE_COPY_RECEIPT_UNVERIFIED');
   }
@@ -876,8 +946,8 @@ export async function applyArchiveQuarantine(input: {
         throw entryError('ARCHIVE_QUARANTINE_COPY_LOST_BEFORE_DELETE', entry);
       }
       if (
-        !exactSealedObject(copyReceiptBeforeDelete, persistedCopyReceipt)
-        || !Buffer.from(copyReceiptBeforeDelete.bytes).equals(Buffer.from(copyReceiptBytes))
+        !exactSealedObject(copyReceiptBeforeDelete, persistedCopyReceipt) ||
+        !Buffer.from(copyReceiptBeforeDelete.bytes).equals(Buffer.from(copyReceiptBytes))
       ) {
         throw new Error('ARCHIVE_QUARANTINE_COPY_RECEIPT_LOST_BEFORE_DELETE');
       }
@@ -924,13 +994,10 @@ export async function applyArchiveQuarantine(input: {
     receiptBytes,
     'application/json',
   );
-  const persistedDeleted = await input.storage.load(
-    manifest.destinationBucket,
-    deletedReceiptKey,
-  );
+  const persistedDeleted = await input.storage.load(manifest.destinationBucket, deletedReceiptKey);
   if (
-    persistedDeleted === null
-    || !Buffer.from(persistedDeleted.bytes).equals(Buffer.from(receiptBytes))
+    persistedDeleted === null ||
+    !Buffer.from(persistedDeleted.bytes).equals(Buffer.from(receiptBytes))
   ) {
     throw new Error('ARCHIVE_QUARANTINE_DELETED_RECEIPT_UNVERIFIED');
   }
@@ -948,17 +1015,17 @@ function validateFinalAuditEvidence(
 ): ArchiveQuarantineFinalAuditEvidence {
   canonicalInstant(evidence.auditedAt, 'ARCHIVE_QUARANTINE_FINAL_AUDIT_INVALID');
   if (
-    !UUID.test(evidence.deploymentId)
-    || evidence.releaseSha !== manifest.releaseSha
-    || evidence.databaseFingerprint !== manifest.databaseFingerprint
-    || !SHA256.test(evidence.databaseSnapshotDigest)
-    || evidence.storageBucket !== manifest.sourceBucket
-    || !SHA256.test(evidence.inventoryDigest)
-    || !SHA256.test(evidence.reportSha256)
-    || evidence.readyForActivation !== true
-    || evidence.storageOrphans !== 0
-    || evidence.missingStoredObjects !== 0
-    || evidence.p0Issues !== 0
+    !UUID.test(evidence.deploymentId) ||
+    evidence.releaseSha !== manifest.releaseSha ||
+    evidence.databaseFingerprint !== manifest.databaseFingerprint ||
+    !SHA256.test(evidence.databaseSnapshotDigest) ||
+    evidence.storageBucket !== manifest.sourceBucket ||
+    !SHA256.test(evidence.inventoryDigest) ||
+    !SHA256.test(evidence.reportSha256) ||
+    evidence.readyForActivation !== true ||
+    evidence.storageOrphans !== 0 ||
+    evidence.missingStoredObjects !== 0 ||
+    evidence.p0Issues !== 0
   ) {
     throw new Error('ARCHIVE_QUARANTINE_FINAL_AUDIT_INVALID');
   }

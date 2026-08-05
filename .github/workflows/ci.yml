@@ -363,6 +363,7 @@ jobs:
       - name: Certify exact-key archive quarantine after the schema-owner split
         env:
           RUN_POSTGRES_DOCUMENT_ARCHIVE_QUARANTINE_CERT: 'true'
+          DOCUMENT_ARCHIVE_QUARANTINE_CERT_DATABASE_KIND: ephemeral
         run: >-
           pnpm --filter @bob/api exec vitest run
           --testTimeout=120000
