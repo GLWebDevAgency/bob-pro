@@ -351,10 +351,19 @@ jobs:
           $$;
           SQL
       # Le owner-split retire volontairement au déployeur l'ownership des tables et fonctions.
-      # Il est donc destructif pour les fixtures administratives des certificats suivants et doit
-      # rester le tout dernier geste SQL, après la fermeture exacte de la capacité partagée.
+      # Il reste la dernière transformation de topologie SQL, après la fermeture exacte de la
+      # capacité partagée. Seule une re-certification read/write explicitement compatible avec ce
+      # modèle Supabase est autorisée ensuite : elle prouve précisément le cleanup qui s'exécutera
+      # sur staging, sans réaccorder de privilège au déployeur.
       - name: Certify the full RLS replay after an exact schema-owner split
         run: sh apps/api/scripts/certify-rls-owner-split.sh
+      - name: Re-certify archive snapshot cleanup after the schema-owner split
+        env:
+          RUN_POSTGRES_DOCUMENT_ARCHIVE_SNAPSHOT_CERT: 'true'
+        run: >-
+          pnpm --filter @bob/api exec vitest run
+          --testTimeout=120000
+          src/persistence/prisma/document-archive-snapshot.postgres.test.ts
 
   realtime-global-capacity-certification:
     # Les certificats d'autorité partagés laissent volontairement des sessions observables.

@@ -127,6 +127,37 @@ function stoppedDeploymentSnapshotFixture({ id = DEPLOYMENT_ID, commitHash = REL
   });
 }
 
+function drainingDeploymentSnapshotFixture({
+  id = DEPLOYMENT_ID,
+  commitHash = RELEASE_SHA,
+  instanceStatus = 'RUNNING',
+} = {}) {
+  return deploymentSnapshotFixture({
+    id,
+    status: 'SUCCESS',
+    commitHash,
+    overrides: {
+      deploymentStopped: true,
+      instances: [{ id: '60000000-0000-4000-8000-000000000012', status: instanceStatus }],
+    },
+  });
+}
+
+function unacknowledgedRunningDeploymentSnapshotFixture({
+  id = DEPLOYMENT_ID,
+  commitHash = RELEASE_SHA,
+} = {}) {
+  return deploymentSnapshotFixture({
+    id,
+    status: 'SUCCESS',
+    commitHash,
+    overrides: {
+      deploymentStopped: false,
+      instances: [{ id: '60000000-0000-4000-8000-000000000012', status: 'RUNNING' }],
+    },
+  });
+}
+
 function marker(evidence = evidenceFixture()) {
   return `${EVIDENCE_PREFIX}${Buffer.from(JSON.stringify(evidence), 'utf8').toString('base64url')}`;
 }
@@ -471,6 +502,60 @@ test('refuse un nouveau one-shot tant qu’un déploiement du service est encore
         },
       }),
     ]),
+  ]);
+
+  await assert.rejects(
+    runRailwayDocumentArchiveAudit({
+      environment: baseEnvironment(outputPath),
+      fetchImpl,
+      ...fakeRuntime(),
+    }),
+    /already has 1 active deployment/u,
+  );
+  assert.equal(
+    fetchImpl.calls.some(({ operation }) => operation === 'DeployArchiveAudit'),
+    false,
+  );
+  fetchImpl.assertDone();
+});
+
+test('refuse un nouveau one-shot après ACK stop tant que l’instance Railway draine', async (t) => {
+  const outputPath = await temporaryOutput(t);
+  const fetchImpl = scriptedFetch([
+    projectStep(),
+    serviceInstanceStep(),
+    deploymentSnapshotStep([drainingDeploymentSnapshotFixture()]),
+  ]);
+
+  await assert.rejects(
+    runRailwayDocumentArchiveAudit({
+      environment: baseEnvironment(outputPath),
+      fetchImpl,
+      ...fakeRuntime(),
+    }),
+    /already has 1 active deployment/u,
+  );
+  assert.equal(
+    fetchImpl.calls.some(({ operation }) => operation === 'DeployArchiveAudit'),
+    false,
+  );
+  assert.equal(
+    fetchImpl.calls.some(({ operation }) => operation === 'ArchiveAuditDeploymentCancel'),
+    false,
+  );
+  assert.equal(
+    fetchImpl.calls.some(({ operation }) => operation === 'ArchiveAuditDeploymentStop'),
+    false,
+  );
+  fetchImpl.assertDone();
+});
+
+test('considère une instance REMOVING comme non quiescente après ACK stop', async (t) => {
+  const outputPath = await temporaryOutput(t);
+  const fetchImpl = scriptedFetch([
+    projectStep(),
+    serviceInstanceStep(),
+    deploymentSnapshotStep([drainingDeploymentSnapshotFixture({ instanceStatus: 'REMOVING' })]),
   ]);
 
   await assert.rejects(
@@ -858,6 +943,7 @@ test('le cleanup durable découvre tardivement puis arrête le déploiement de l
     deploymentSnapshotStep([stoppedDeployment]),
     deploymentSnapshotStep([stoppedDeployment]),
     deploymentSnapshotStep([stoppedDeployment]),
+    deploymentSnapshotStep([stoppedDeployment]),
   ]);
   const runtime = fakeRuntime();
 
@@ -868,7 +954,7 @@ test('le cleanup durable découvre tardivement puis arrête le déploiement de l
   });
 
   assert.deepEqual(result, { cleanedDeploymentCount: 1 });
-  assert.deepEqual(runtime.sleeps, [10_000, 10_000, 10_000, 10_000, 10_000, 10_000]);
+  assert.deepEqual(runtime.sleeps, [10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000]);
   assert.deepEqual(JSON.parse(runtime.output()), { cleanedDeploymentCount: 1 });
   assert.equal(
     fetchImpl.calls.filter(({ operation }) => operation === 'ArchiveAuditDeploymentCancel').length,
@@ -877,11 +963,14 @@ test('le cleanup durable découvre tardivement puis arrête le déploiement de l
   fetchImpl.assertDone();
 });
 
-test('le cleanup durable observe une fenêtre complète même sans déploiement visible', async (t) => {
+test('le cleanup attend RUNNING puis EXITED après ACK stop sans rejouer de mutation', async (t) => {
+  const drainingDeployment = drainingDeploymentSnapshotFixture();
+  const exitedDeployment = drainingDeploymentSnapshotFixture({ instanceStatus: 'EXITED' });
   const fetchImpl = scriptedFetch([
     projectStep(),
     serviceInstanceStep(),
-    ...Array.from({ length: 7 }, () => deploymentSnapshotStep()),
+    deploymentSnapshotStep([drainingDeployment]),
+    ...Array.from({ length: 7 }, () => deploymentSnapshotStep([exitedDeployment])),
   ]);
   const runtime = fakeRuntime();
 
@@ -892,7 +981,137 @@ test('le cleanup durable observe une fenêtre complète même sans déploiement 
   });
 
   assert.deepEqual(result, { cleanedDeploymentCount: 0 });
-  assert.deepEqual(runtime.sleeps, [10_000, 10_000, 10_000, 10_000, 10_000, 10_000]);
+  assert.deepEqual(runtime.sleeps, [10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000]);
+  assert.equal(
+    fetchImpl.calls.some(({ operation }) => operation === 'ArchiveAuditDeploymentCancel'),
+    false,
+  );
+  assert.equal(
+    fetchImpl.calls.some(({ operation }) => operation === 'ArchiveAuditDeploymentStop'),
+    false,
+  );
+  fetchImpl.assertDone();
+});
+
+test('le cleanup échoue fermé si une instance arrêtée ne termine jamais son drainage', async (t) => {
+  const drainingDeployment = drainingDeploymentSnapshotFixture();
+  const fetchImpl = scriptedFetch([
+    projectStep(),
+    serviceInstanceStep(),
+    ...Array.from({ length: 8 }, () => deploymentSnapshotStep([drainingDeployment])),
+  ]);
+  const runtime = fakeRuntime();
+
+  await assert.rejects(
+    cleanupRailwayDocumentArchiveAuditDeployments({
+      environment: baseEnvironment(await temporaryOutput(t)),
+      fetchImpl,
+      ...runtime,
+    }),
+    /did not converge to an inactive stable state/u,
+  );
+  assert.deepEqual(runtime.sleeps, [10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000]);
+  assert.equal(
+    fetchImpl.calls.some(({ operation }) => operation === 'ArchiveAuditDeploymentCancel'),
+    false,
+  );
+  assert.equal(
+    fetchImpl.calls.some(({ operation }) => operation === 'ArchiveAuditDeploymentStop'),
+    false,
+  );
+  fetchImpl.assertDone();
+});
+
+test('le cleanup refuse un ACK stop qui régresse et ne remute jamais le déploiement', async (t) => {
+  const fetchImpl = scriptedFetch([
+    projectStep(),
+    serviceInstanceStep(),
+    deploymentSnapshotStep([drainingDeploymentSnapshotFixture()]),
+    deploymentSnapshotStep([unacknowledgedRunningDeploymentSnapshotFixture()]),
+  ]);
+  const runtime = fakeRuntime();
+
+  await assert.rejects(
+    cleanupRailwayDocumentArchiveAuditDeployments({
+      environment: baseEnvironment(await temporaryOutput(t)),
+      fetchImpl,
+      ...runtime,
+    }),
+    /deploymentStopped regress from true to false/u,
+  );
+  assert.deepEqual(runtime.sleeps, [10_000]);
+  assert.equal(
+    fetchImpl.calls.some(({ operation }) => operation === 'ArchiveAuditDeploymentCancel'),
+    false,
+  );
+  assert.equal(
+    fetchImpl.calls.some(({ operation }) => operation === 'ArchiveAuditDeploymentStop'),
+    false,
+  );
+  fetchImpl.assertDone();
+});
+
+test('le cleanup exige deux observations d’une cible corrélée apparue en fin de fenêtre', async (t) => {
+  await t.test('avant-dernier puis dernier snapshot : admis', async (subtest) => {
+    const stoppedDeployment = stoppedDeploymentSnapshotFixture();
+    const fetchImpl = scriptedFetch([
+      projectStep(),
+      serviceInstanceStep(),
+      ...Array.from({ length: 6 }, () => deploymentSnapshotStep()),
+      deploymentSnapshotStep([stoppedDeployment]),
+      deploymentSnapshotStep([stoppedDeployment]),
+    ]);
+    const runtime = fakeRuntime();
+
+    await assert.doesNotReject(
+      cleanupRailwayDocumentArchiveAuditDeployments({
+        environment: baseEnvironment(await temporaryOutput(subtest)),
+        fetchImpl,
+        ...runtime,
+      }),
+    );
+    assert.deepEqual(runtime.sleeps, [10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000]);
+    fetchImpl.assertDone();
+  });
+
+  await t.test('dernier snapshot seulement : refusé', async (subtest) => {
+    const fetchImpl = scriptedFetch([
+      projectStep(),
+      serviceInstanceStep(),
+      ...Array.from({ length: 7 }, () => deploymentSnapshotStep()),
+      deploymentSnapshotStep([stoppedDeploymentSnapshotFixture()]),
+    ]);
+    const runtime = fakeRuntime();
+
+    await assert.rejects(
+      cleanupRailwayDocumentArchiveAuditDeployments({
+        environment: baseEnvironment(await temporaryOutput(subtest)),
+        fetchImpl,
+        ...runtime,
+      }),
+      /did not converge to an inactive stable state/u,
+    );
+    assert.deepEqual(runtime.sleeps, [10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000]);
+    fetchImpl.assertDone();
+  });
+});
+
+test('le cleanup durable observe une fenêtre complète même sans déploiement visible', async (t) => {
+  const fetchImpl = scriptedFetch([
+    projectStep(),
+    serviceInstanceStep(),
+    ...Array.from({ length: 8 }, () => deploymentSnapshotStep()),
+  ]);
+  const runtime = fakeRuntime();
+
+  const result = await cleanupRailwayDocumentArchiveAuditDeployments({
+    environment: baseEnvironment(await temporaryOutput(t)),
+    fetchImpl,
+    ...runtime,
+  });
+
+  assert.deepEqual(result, { cleanedDeploymentCount: 0 });
+  assert.deepEqual(runtime.sleeps, [10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000]);
   fetchImpl.assertDone();
 });
 
@@ -918,6 +1137,32 @@ test('le cleanup durable refuse de stopper un déploiement actif d’une autre r
   assert.equal(
     fetchImpl.calls.filter(({ operation }) => operation === 'ArchiveAuditDeploymentStop').length,
     0,
+  );
+  fetchImpl.assertDone();
+});
+
+test('le cleanup refuse aussi une autre release arrêtée mais encore RUNNING', async (t) => {
+  const fetchImpl = scriptedFetch([
+    projectStep(),
+    serviceInstanceStep(),
+    deploymentSnapshotStep([drainingDeploymentSnapshotFixture({ commitHash: 'b'.repeat(40) })]),
+  ]);
+
+  await assert.rejects(
+    cleanupRailwayDocumentArchiveAuditDeployments({
+      environment: baseEnvironment(await temporaryOutput(t)),
+      fetchImpl,
+      ...fakeRuntime(),
+    }),
+    /active deployment\(s\) from another release/u,
+  );
+  assert.equal(
+    fetchImpl.calls.some(({ operation }) => operation === 'ArchiveAuditDeploymentCancel'),
+    false,
+  );
+  assert.equal(
+    fetchImpl.calls.some(({ operation }) => operation === 'ArchiveAuditDeploymentStop'),
+    false,
   );
   fetchImpl.assertDone();
 });
@@ -1032,6 +1277,106 @@ test('attend un déploiement retardé et nettoie une métadonnée commit encore 
   fetchImpl.assertDone();
 });
 
+test('la réconciliation attend le drainage après ACK sans rejouer de mutation', async (t) => {
+  const outputPath = await temporaryOutput(t);
+  const exitedDeployment = drainingDeploymentSnapshotFixture({ instanceStatus: 'EXITED' });
+  const fetchImpl = scriptedFetch([
+    projectStep(),
+    serviceInstanceStep(),
+    deploymentSnapshotStep(),
+    deployStep({ throw: new TypeError('socket closed after request') }),
+    deploymentSnapshotStep([drainingDeploymentSnapshotFixture()]),
+    ...Array.from({ length: 6 }, () => deploymentSnapshotStep([exitedDeployment])),
+  ]);
+
+  await assert.rejects(
+    runRailwayDocumentArchiveAudit({
+      environment: baseEnvironment(outputPath),
+      fetchImpl,
+      ...fakeRuntime(),
+    }),
+    /cleanup was attempted for 0 correlated deployment/u,
+  );
+  assert.equal(
+    fetchImpl.calls.some(({ operation }) => operation === 'ArchiveAuditDeploymentCancel'),
+    false,
+  );
+  assert.equal(
+    fetchImpl.calls.some(({ operation }) => operation === 'ArchiveAuditDeploymentStop'),
+    false,
+  );
+  fetchImpl.assertDone();
+});
+
+test('la réconciliation échoue si le drainage acquitté ne converge jamais', async (t) => {
+  const outputPath = await temporaryOutput(t);
+  const drainingDeployment = drainingDeploymentSnapshotFixture();
+  const fetchImpl = scriptedFetch([
+    projectStep(),
+    serviceInstanceStep(),
+    deploymentSnapshotStep(),
+    deployStep({ throw: new TypeError('socket closed after request') }),
+    ...Array.from({ length: 8 }, () => deploymentSnapshotStep([drainingDeployment])),
+  ]);
+
+  await assert.rejects(
+    runRailwayDocumentArchiveAudit({
+      environment: baseEnvironment(outputPath),
+      fetchImpl,
+      ...fakeRuntime(),
+    }),
+    /remote reconciliation failed/u,
+  );
+  assert.equal(
+    fetchImpl.calls.some(({ operation }) => operation === 'ArchiveAuditDeploymentCancel'),
+    false,
+  );
+  assert.equal(
+    fetchImpl.calls.some(({ operation }) => operation === 'ArchiveAuditDeploymentStop'),
+    false,
+  );
+  fetchImpl.assertDone();
+});
+
+test('la réconciliation refuse un ACK stop qui régresse sans remuter', async (t) => {
+  const outputPath = await temporaryOutput(t);
+  const fetchImpl = scriptedFetch([
+    projectStep(),
+    serviceInstanceStep(),
+    deploymentSnapshotStep(),
+    deployStep({ throw: new TypeError('socket closed after request') }),
+    deploymentSnapshotStep([drainingDeploymentSnapshotFixture()]),
+    deploymentSnapshotStep([unacknowledgedRunningDeploymentSnapshotFixture()]),
+  ]);
+
+  await assert.rejects(
+    runRailwayDocumentArchiveAudit({
+      environment: baseEnvironment(outputPath),
+      fetchImpl,
+      ...fakeRuntime(),
+    }),
+    (error) => {
+      assert.match(error.message, /remote reconciliation failed/u);
+      assert.ok(error.cause instanceof AggregateError);
+      assert.ok(
+        error.cause.errors.some((cause) =>
+          /deploymentStopped regress from true to false/u.test(cause?.message ?? ''),
+        ),
+      );
+      return true;
+    },
+  );
+  assert.equal(
+    fetchImpl.calls.some(({ operation }) => operation === 'ArchiveAuditDeploymentCancel'),
+    false,
+  );
+  assert.equal(
+    fetchImpl.calls.some(({ operation }) => operation === 'ArchiveAuditDeploymentStop'),
+    false,
+  );
+  fetchImpl.assertDone();
+});
+
 test('la réconciliation primaire ne mute jamais un nouveau SHA absent devenu étranger', async (t) => {
   const outputPath = await temporaryOutput(t);
   const deploymentId = '40000000-0000-4000-8000-000000000078';
@@ -1046,11 +1391,6 @@ test('la réconciliation primaire ne mute jamais un nouveau SHA absent devenu é
     deployStep({ throw: new TypeError('socket closed after request') }),
     deploymentSnapshotStep([deploymentSnapshotFixture({ id: deploymentId, commitHash: null })]),
     deploymentSnapshotStep([foreignDeployment]),
-    deploymentSnapshotStep([foreignDeployment]),
-    deploymentSnapshotStep([foreignDeployment]),
-    deploymentSnapshotStep([foreignDeployment]),
-    deploymentSnapshotStep([foreignDeployment]),
-    deploymentSnapshotStep([foreignDeployment]),
   ]);
   const runtime = fakeRuntime();
 
@@ -1060,9 +1400,9 @@ test('la réconciliation primaire ne mute jamais un nouveau SHA absent devenu é
       fetchImpl,
       ...runtime,
     }),
-    /cleanup was attempted for 0 correlated deployment/u,
+    /remote reconciliation failed/u,
   );
-  assert.deepEqual(runtime.sleeps, [10_000, 10_000, 10_000, 10_000, 10_000, 10_000]);
+  assert.deepEqual(runtime.sleeps, [10_000]);
   assert.equal(
     fetchImpl.calls.filter(({ operation }) => operation === 'ArchiveAuditDeploymentCancel').length,
     0,
@@ -1135,7 +1475,7 @@ test('réconcilie tous les nouveaux déploiements du commit sans toucher aux dé
       preExistingDeployment,
       deploymentSnapshotFixture(),
       deploymentSnapshotFixture({ id: secondCorrelatedDeploymentId }),
-      deploymentSnapshotFixture({
+      stoppedDeploymentSnapshotFixture({
         id: '40000000-0000-4000-8000-000000000008',
         commitHash: 'b'.repeat(40),
       }),

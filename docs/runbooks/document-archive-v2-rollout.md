@@ -208,7 +208,8 @@ réponse est absente, invalide ou réutilise un identifiant antérieur, il ouvre
 convergence : au moins sept et jusqu’à huit instantanés espacés de dix secondes, soit au minimum
 soixante secondes de surveillance après l’ambiguïté. Il suit les nouveaux identifiants du SHA demandé
 ainsi que ceux dont la métadonnée de commit n’est pas encore propagée, tente de les
-arrêter une seule fois, puis exige deux instantanés stables confirmant `deploymentStopped=true`.
+arrêter une seule fois, puis exige deux instantanés stables confirmant `deploymentStopped=true` et
+l’absence de toute instance non terminale.
 Une cible encore active, disparue de la liste ou non convergée fait échouer le gate. Il refuse
 également de muter tant qu’une instance antérieure du service n’est pas explicitement marquée
 arrêtée par Railway. Le gate attend le déploiement exact et un unique marqueur final corrélé à
@@ -236,7 +237,16 @@ annulation — un mode `--cleanup-only` indépendant. Railway peut en effet acce
 `deploymentStop` sur un one-shot déjà marqué `SUCCESS` sans retirer son instance encore `RUNNING` ;
 le runner tente donc `deploymentCancel` en premier dans cet état. Le cleanup recherche pendant au
 moins 60 secondes tout déploiement actif du SHA, l’annule ou le stoppe puis exige deux confirmations
-d’arrêt avant de rendre la main. Son échec interdit toute activation, même si la preuve d’audit était
+d’arrêt avant de rendre la main. `deploymentStopped=true` signifie seulement que Railway a acquitté
+l'arrêt : si une instance reste `CREATED`, `INITIALIZING`, `RESTARTING`, `RUNNING` ou `REMOVING`, le
+déploiement est encore non quiescent. Le runner ne rejoue alors ni `cancel` ni `stop` ; il attend le
+drainage borné et exige ensuite deux snapshots consécutifs sans instance non terminale. L'ACK est
+un latch monotone par identifiant : si un snapshot ultérieur le montre à nouveau à `false`, le
+runner refuse cette régression périmée et ne réarme jamais la mutation. Toute cible corrélée entre
+dans le suivi même si elle est déjà quiescente ; une cible découverte à l'avant-dernier snapshot
+doit être revue au dernier et une cible découverte seulement au dernier est refusée. Cette même
+forme bloque le preflight d'un nouveau one-shot, et reste une erreur si elle appartient à une autre
+release ou ne converge pas. Son échec interdit toute activation, même si la preuve d'audit était
 positive. Le conteneur Railway dispose séparément d’au plus 30 secondes entre `SIGTERM` et `SIGKILL`,
 laissant au cleanup durable assez de temps pour observer sa terminaison même si tout ce délai de
 drainage est consommé. Le job est borné à six

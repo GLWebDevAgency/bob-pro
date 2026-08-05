@@ -46,18 +46,18 @@ const DEPLOYMENT_STATUSES = new Set([
   'SKIPPED',
   'SUCCESS',
 ]);
-const ACTIVE_DEPLOYMENT_INSTANCE_STATUSES = new Set([
+const NONTERMINAL_DEPLOYMENT_INSTANCE_STATUSES = new Set([
   'CREATED',
   'INITIALIZING',
   'RESTARTING',
   'RUNNING',
+  'REMOVING',
 ]);
 const DEPLOYMENT_INSTANCE_STATUSES = new Set([
-  ...ACTIVE_DEPLOYMENT_INSTANCE_STATUSES,
+  ...NONTERMINAL_DEPLOYMENT_INSTANCE_STATUSES,
   'CRASHED',
   'EXITED',
   'REMOVED',
-  'REMOVING',
   'SKIPPED',
   'STOPPED',
 ]);
@@ -747,17 +747,19 @@ function parseDeploymentSnapshotPage(value, config, projectId) {
       }
       return instance.status;
     });
-    const hasActiveInstance = instanceStatuses.some((status) =>
-      ACTIVE_DEPLOYMENT_INSTANCE_STATUSES.has(status),
+    const hasNonterminalInstance = instanceStatuses.some((status) =>
+      NONTERMINAL_DEPLOYMENT_INSTANCE_STATUSES.has(status),
     );
-    if (deployment.deploymentStopped && hasActiveInstance) {
-      throw new Error('Railway returned a contradictory stopped deployment snapshot.');
-    }
+    // Railway acquitte deploymentStop avant la fin de la fenêtre de drainage. Un déploiement
+    // arrêté mais encore RUNNING/REMOVING n'est donc pas contradictoire : il reste non quiescent
+    // et bloque la suite, sans autoriser une seconde mutation du control plane.
+    const quiescent = deployment.deploymentStopped && !hasNonterminalInstance;
     deployments.push({
       id: deployment.id,
       status: deployment.status,
       commitHash: deploymentCommitHash(deployment.meta),
-      active: !deployment.deploymentStopped,
+      deploymentStopped: deployment.deploymentStopped,
+      active: !quiescent,
     });
   }
 
@@ -919,6 +921,17 @@ async function cleanupDeploymentBestEffort(config, deploymentId, status, graphql
   }
 }
 
+function observeMonotonicStopAcknowledgement(deployment, stopAcknowledgedDeploymentIds, context) {
+  if (stopAcknowledgedDeploymentIds.has(deployment.id) && !deployment.deploymentStopped) {
+    throw new Error(
+      `Railway ${context} observed deploymentStopped regress from true to false for ${deployment.id}.`,
+    );
+  }
+  if (deployment.deploymentStopped) {
+    stopAcknowledgedDeploymentIds.add(deployment.id);
+  }
+}
+
 async function reconcileAmbiguousDeployment(
   config,
   projectId,
@@ -928,6 +941,7 @@ async function reconcileAmbiguousDeployment(
   const trackedDeployments = new Map();
   const cleanupAttempted = new Set();
   const foreignDeploymentIds = new Set();
+  const stopAcknowledgedDeploymentIds = new Set();
   let quiescentSnapshots = 0;
 
   for (
@@ -951,13 +965,31 @@ async function reconcileAmbiguousDeployment(
     let discoveredDeployment = false;
 
     for (const deployment of snapshotAfterMutation.values()) {
-      if (snapshotBeforeMutation.has(deployment.id) || foreignDeploymentIds.has(deployment.id)) {
+      if (snapshotBeforeMutation.has(deployment.id)) {
+        continue;
+      }
+      observeMonotonicStopAcknowledgement(
+        deployment,
+        stopAcknowledgedDeploymentIds,
+        'ambiguous reconciliation',
+      );
+      if (foreignDeploymentIds.has(deployment.id)) {
+        if (deployment.active) {
+          throw new Error(
+            'Railway ambiguous deployment reconciliation found an active deployment from another release.',
+          );
+        }
         continue;
       }
       const alreadyTracked = trackedDeployments.has(deployment.id);
       if (deployment.commitHash !== null && deployment.commitHash !== config.releaseSha) {
         trackedDeployments.delete(deployment.id);
         foreignDeploymentIds.add(deployment.id);
+        if (deployment.active) {
+          throw new Error(
+            'Railway ambiguous deployment reconciliation found an active deployment from another release.',
+          );
+        }
         continue;
       }
       if (!alreadyTracked) discoveredDeployment = true;
@@ -965,6 +997,7 @@ async function reconcileAmbiguousDeployment(
       presentTrackedDeploymentIds.add(deployment.id);
       if (
         deployment.active &&
+        !deployment.deploymentStopped &&
         deployment.commitHash === config.releaseSha &&
         !cleanupAttempted.has(deployment.id)
       ) {
@@ -981,8 +1014,15 @@ async function reconcileAmbiguousDeployment(
     const unresolvedDeployment = [...trackedDeployments.values()].some(
       (deployment) => deployment.active || !presentTrackedDeploymentIds.has(deployment.id),
     );
-    quiescentSnapshots =
-      !discoveredDeployment && !unresolvedDeployment ? quiescentSnapshots + 1 : 0;
+    if (unresolvedDeployment) {
+      quiescentSnapshots = 0;
+    } else if (discoveredDeployment) {
+      // La première observation quiescente compte. Une cible apparue à l'avant-dernier snapshot
+      // doit encore être revue une fois ; une cible apparue au dernier ne peut jamais être admise.
+      quiescentSnapshots = 1;
+    } else {
+      quiescentSnapshots += 1;
+    }
     if (
       snapshotIndex + 1 >= MIN_AMBIGUOUS_RECONCILIATION_SNAPSHOTS &&
       quiescentSnapshots >= REQUIRED_QUIESCENT_RECONCILIATION_SNAPSHOTS
@@ -1091,6 +1131,7 @@ export async function cleanupRailwayDocumentArchiveAuditDeployments({
   const projectId = await preflightArchiveAuditService(config, graphqlDependencies);
   const trackedDeploymentIds = new Set();
   const cleanupAttempted = new Set();
+  const stopAcknowledgedDeploymentIds = new Set();
   let quiescentSnapshots = 0;
 
   for (
@@ -1121,9 +1162,34 @@ export async function cleanupRailwayDocumentArchiveAuditDeployments({
     const correlatedActiveDeployments = activeDeployments.filter(
       (deployment) => deployment.commitHash === config.releaseSha,
     );
+    const correlatedDeployments = [...snapshot.values()].filter(
+      (deployment) => deployment.commitHash === config.releaseSha,
+    );
+    let discoveredCorrelatedDeployment = false;
+
+    for (const deployment of snapshot.values()) {
+      if (
+        deployment.commitHash === null ||
+        deployment.commitHash === config.releaseSha ||
+        trackedDeploymentIds.has(deployment.id)
+      ) {
+        observeMonotonicStopAcknowledgement(
+          deployment,
+          stopAcknowledgedDeploymentIds,
+          'archive audit cleanup',
+        );
+      }
+    }
+
+    for (const deployment of correlatedDeployments) {
+      if (!trackedDeploymentIds.has(deployment.id)) {
+        trackedDeploymentIds.add(deployment.id);
+        discoveredCorrelatedDeployment = true;
+      }
+    }
 
     for (const deployment of correlatedActiveDeployments) {
-      trackedDeploymentIds.add(deployment.id);
+      if (deployment.deploymentStopped) continue;
       if (cleanupAttempted.has(deployment.id)) continue;
       cleanupAttempted.add(deployment.id);
       await cleanupDeploymentBestEffort(
@@ -1138,12 +1204,17 @@ export async function cleanupRailwayDocumentArchiveAuditDeployments({
       const deployment = snapshot.get(deploymentId);
       return deployment === undefined || deployment.active;
     });
-    quiescentSnapshots =
-      trackedDeploymentIsUnresolved || unidentifiedActiveDeployments.length > 0
-        ? 0
-        : quiescentSnapshots + 1;
+    if (trackedDeploymentIsUnresolved || unidentifiedActiveDeployments.length > 0) {
+      quiescentSnapshots = 0;
+    } else if (discoveredCorrelatedDeployment) {
+      quiescentSnapshots = 1;
+    } else {
+      quiescentSnapshots += 1;
+    }
     if (
-      snapshotIndex + 1 >= MIN_AMBIGUOUS_RECONCILIATION_SNAPSHOTS &&
+      // Le cleanup durable consomme toujours la fenêtre entière : rendre la main au septième
+      // snapshot laisserait un déploiement corrélé propagé au huitième hors de toute observation.
+      snapshotIndex + 1 >= MAX_AMBIGUOUS_RECONCILIATION_SNAPSHOTS &&
       quiescentSnapshots >= REQUIRED_QUIESCENT_RECONCILIATION_SNAPSHOTS
     ) {
       const result = { cleanedDeploymentCount: cleanupAttempted.size };

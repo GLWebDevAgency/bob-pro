@@ -12,6 +12,10 @@
 **Incident de parité ACL V2 découvert après merge :** workflow staging `30939161845`, SHA
 `042607f920e7bc1ecd4c2448f84fcbdd5b5e005e`
 
+**Incident de cohérence archive et de drainage découvert après merge :** workflow staging
+`30956265151`, SHA `ca9b6916d7a1fa4a53e89cbf6cb6802213347c3d`, déploiement d'audit
+`403beb4b-c9b4-4a94-a954-071583dd6cd5`
+
 ## 1. Objectif
 
 Une release ne doit pas échouer parce que le flux de logs attaché du CLI Railway est interrompu
@@ -48,6 +52,23 @@ runtime. Il doit garder l'enqueue métier réel, neutraliser uniquement l'accél
 worker dans l'instance de certificat — comme le fait déjà le certificat d'émission de facture — et
 laisser la purge administrateur vérifier puis retirer le graphe synthétique exact.
 
+La release normale suivante (`30956265151`) a déployé et servi l'API staging au SHA exact, puis
+l'audit V2 a refusé l'activation avec cinq objets Storage sans référence SQL et deux références SQL
+sans objet. L'analyse en lecture seule a séparé deux causes qui ne doivent pas être confondues :
+
+- les deux références SQL sont des `document_versions` synthétiques portant la signature exacte du
+  certificat snapshot. Son cleanup passe temporairement `session_replication_role` à `replica`,
+  puis supprimait le parent `documents` en comptant à tort sur une cascade FK désactivée par ce
+  mode ;
+- les cinq objets Storage appartiennent au tenant FLY SERVICES et proviennent d'émissions
+  interrompues. Ils ne sont pas des fixtures et restent hors de ce correctif. Leur retrait exige
+  un manifeste scellé et l'opérateur de quarantaine séparé ; l'audit ne sera pas affaibli.
+
+Le cleanup durable a ensuite rencontré `deploymentStopped=true` alors que l'instance était encore
+`RUNNING` pendant la fenêtre de drainage Railway. Ce snapshot n'est pas contradictoire : l'arrêt
+est acquitté mais pas encore quiescent. Le runner doit attendre la fin effective sans rejouer de
+mutation, et n'accepter le cleanup qu'après deux observations quiescentes.
+
 ## 2. Périmètre
 
 ### Inclus
@@ -66,6 +87,11 @@ laisser la purge administrateur vérifier puis retirer le graphe synthétique ex
 - chemin de reprise staging manuel et explicite lorsqu'un déploiement Railway terminal en échec
   est plus récent que l'unique réplique saine ;
 - réutilisation du même contrat de déploiement par les opérateurs staging existants.
+- suppression explicite des versions du certificat snapshot avant leurs parents sans suspendre les
+  FK/cascades/RLS, et récupération bornée des seuls résidus synthétiques à signature exacte laissés
+  par les runs interrompus ;
+- distinction Railway entre arrêt acquitté et quiescence réelle d'un déploiement, y compris pendant
+  l'état d'instance `REMOVING`.
 
 ### Exclus
 
@@ -75,6 +101,9 @@ laisser la purge administrateur vérifier puis retirer le graphe synthétique ex
 - aucune activation Bob Live ou Archive hors du workflow canonique ;
 - aucune relance automatique d'un upload dont l'acceptation est ambiguë ;
 - aucune quarantaine ou suppression des objets Storage historiques.
+- aucune suppression, réécriture ou création de référence SQL pour les cinq objets FLY SERVICES ;
+  leur opération de quarantaine est un lot séparé et ne devient exécutable qu'avec un manifeste
+  scellé et la décision fondatrice contre-signée ; elle n'est pas exécutée par cette PR.
 
 ## 3. Invariants
 
@@ -142,6 +171,39 @@ laisser la purge administrateur vérifier puis retirer le graphe synthétique ex
     avant la suppression normale du job et des lignes métier. Les compteurs de suppression doivent
     égaler les ensembles validés, puis le graphe est recompté à zéro. La bijection des sociétés
     reste tenue sous verrou pendant toute l'opération.
+17. Le certificat snapshot est borné à `development` et `staging`. Avant de créer sa fixture, il
+    prend le même verrou advisory transactionnel que l'audit des octets, puis verrouille les
+    versions orphelines portant son préfixe réservé. En staging, leur ensemble doit être soit vide,
+    soit exactement égal au manifeste fermé des deux identifiants de l'incident `30956265151` ; un
+    état partiel ou un identifiant supplémentaire ferme le certificat. Chaque candidate doit
+    prouver la même UUID v4 dans `id`, `documentId`, `storageKey` et les identifiants de tenant
+    attendus, ainsi que version, hash synthétique, MIME, taille, date, motif et absence de parent,
+    dépendance et objet Storage exacts. Une seule divergence ferme le certificat sans suppression.
+    Une transaction `READ COMMITTED` prend d'abord, dans l'ordre canonique Storage → graphe métier
+    → archive, des verrous `SHARE ROW EXCLUSIVE` sur toutes les tables pouvant invalider ces
+    prédicats d'absence. Le `session_user` déployeur verrouille et lit Storage ; sans aucun GRANT,
+    la même transaction inventorie ensuite l'owner public commun exact, prouve
+    `pg_has_role(session_user, owner, 'SET')`, bascule par une commande `SET LOCAL ROLE` quotée par
+    PostgreSQL et vérifie `current_user` avant de verrouiller et lire les tables publiques. Chaque
+    relecture Storage repasse explicitement par `SET LOCAL ROLE NONE`, vérifie le retour au
+    `session_user`, puis reprend et revérifie l'owner public. Elle relit ainsi un snapshot frais
+    après drainage des writers puis revalide l'ensemble juste avant le DELETE. Elle suspend uniquement le
+    constraint trigger de représentation de `document_versions`, puis restaure exactement son
+    état antérieur `O`, `D`, `R` ou `A`, exige le compteur exact et un second passage à zéro. Le
+    cleanup courant garde FK, cascades, RLS et les autres triggers actifs ; il supprime
+    explicitement la version avant son document sous la même suspension étroite. La CI rejoue ce
+    certificat après le transfert effectif de toutes les tables publiques vers l'owner NOLOGIN.
+18. Un déploiement Railway est quiescent si et seulement si `deploymentStopped=true` et qu'aucune
+    instance n'est dans `CREATED`, `INITIALIZING`, `RESTARTING`, `RUNNING` ou `REMOVING`. Les autres
+    états d'instance connus sont terminaux. Un arrêt déjà acquitté avec une instance non terminale
+    reste bloquant pour le preflight et le cleanup, mais ne déclenche jamais un second `cancel` ou
+    `stop`. Deux snapshots quiescents consécutifs sont requis ; une autre release non quiescente ou
+    une instance qui ne draine pas dans la fenêtre bornée échoue fermée. Une fois
+    `deploymentStopped=true` observé pour un identifiant suivi ou corrélé, toute observation
+    ultérieure à `false` est une régression de contrôle refusée : elle ne réarme jamais une mutation. Toute cible
+    corrélée, même déjà quiescente lors de sa découverte, entre dans le suivi ; sa première
+    observation compte pour une des deux confirmations, si bien qu'une cible découverte au dernier
+    snapshot est refusée et qu'une cible découverte à l'avant-dernier doit être revue au dernier.
 
 ## 4. Critères d'acceptation binaires
 
@@ -179,6 +241,18 @@ laisser la purge administrateur vérifier puis retirer le graphe synthétique ex
 - [ ] Le scénario gagnant prouve exactement un job `quote-signed` pending sans lease/preuve et son
       snapshot V3 scellé avant la purge ; staging refuse le seed si `JOB_COMPANY_IDS` est vide.
 - [ ] Un nouveau workflow staging au SHA mergé termine audit, activation et postdeploy.
+- [ ] Le certificat snapshot conserve FK/cascades/RLS actifs, supprime explicitement sa version
+      avant son parent sous suspension du seul trigger de représentation, récupère le manifeste
+      exact, refuse les états partiels et les formes voisines puis prouve qu'un second passage ne
+      trouve plus rien. Sa CI post-owner-split prouve aussi les verrous d'absence, le `SET ROLE`
+      depuis un déployeur non-superuser et la restauration exacte de l'état des triggers.
+- [ ] `deploymentStopped=true` avec une instance `RUNNING` puis `EXITED` converge sans nouvelle
+      mutation ; la même instance persistante échoue fermée et `REMOVING` reste non quiescent.
+- [ ] Le preflight refuse un nouveau one-shot tant qu'une instance arrêtée mais non drainée existe,
+      et le cleanup ne masque jamais une autre release non quiescente.
+- [ ] Après un ACK stop, un snapshot périmé à `deploymentStopped=false` est refusé sans remutation ;
+      une cible corrélée apparue à l'avant-dernier snapshot doit être confirmée au dernier, tandis
+      qu'une première apparition au dernier snapshot échoue fermée.
 
 ## 5. Blocage explicite de promotion production
 
