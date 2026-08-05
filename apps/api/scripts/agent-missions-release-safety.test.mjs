@@ -1671,9 +1671,15 @@ test('la CI sépare la preuve AgentMission PostgreSQL 17 du owner-split Supabase
     capacityTeardown >= 0 && destructiveOwnerSplit > capacityTeardown,
     'Le owner-split retire les droits du déployeur et doit rester après tous les certificats SQL.',
   );
-  assert.ok(
-    rlsJob.trimEnd().endsWith('run: sh apps/api/scripts/certify-rls-owner-split.sh'),
-    'Le owner-split destructif doit rester le dernier step du job PostgreSQL partagé.',
+  const ownerSplitTail = rlsJob.slice(destructiveOwnerSplit);
+  assert.equal(
+    ownerSplitTail.match(/^\s*- name:/gmu)?.length,
+    2,
+    'Après le owner-split, seul son certificat de cleanup explicitement compatible est permis.',
+  );
+  assert.match(
+    ownerSplitTail,
+    /run: sh apps\/api\/scripts\/certify-rls-owner-split\.sh[\s\S]*?- name: Re-certify archive snapshot cleanup after the schema-owner split[\s\S]*?RUN_POSTGRES_DOCUMENT_ARCHIVE_SNAPSHOT_CERT: 'true'[\s\S]*?src\/persistence\/prisma\/document-archive-snapshot\.postgres\.test\.ts\s*$/u,
   );
   assert.match(
     rlsOwnerSplitCertificate,
