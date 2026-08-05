@@ -205,7 +205,9 @@ WORM. La preuve finale repose aussi sur le rapport Archive append-only déjà pr
 - [ ] Le certificat PostgreSQL owner-split appelle les vraies méthodes du repository de
       `loadPinnedAudit` à `recordCompleted`, rejoue chaque ACK, traverse les deux leases mutatifs et
       termine avec une opération, cinq entrées, seize événements, zéro source, cinq destinations et
-      trois reçus. Il refuse de s'exécuter si la base n'est pas explicitement déclarée éphémère.
+      trois reçus. Il refuse de s'exécuter si la base n'est pas explicitement déclarée éphémère,
+      utilise le bucket documentaire runtime réel et prouve qu'une pièce voisine saine reste intacte,
+      tandis que sa disparition ou la perte de sa référence bloque la clôture globale.
 - [ ] Tests de contrat Railway prouvent SHA servi exact, topologie, mutex staging partagé et
       exécution distante dans l'artefact déployé sur l'instance exacte, avec clé SSH dédiée — jamais
       `railway run` local ni « première instance » implicite. Le runner éphémère amorce le relais

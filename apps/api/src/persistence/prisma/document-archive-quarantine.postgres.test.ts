@@ -84,6 +84,14 @@ function sha256(value: Uint8Array | string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
+function canonicalSourceBucket(): string {
+  const bucket = process.env.SUPABASE_STORAGE_BUCKET?.trim();
+  if (!bucket) {
+    throw new Error('SUPABASE_STORAGE_BUCKET is required for quarantine certification.');
+  }
+  return bucket;
+}
+
 function quotedRole(value: string): string {
   if (!/^[a-z_][a-z0-9_$-]{0,62}$/u.test(value)) {
     throw new Error('Quarantine certificate owner role is not canonical.');
@@ -377,9 +385,13 @@ describePostgres('document archive quarantine — certificat PostgreSQL réel', 
 
             const suffix = randomUUID();
             const companyId = `quarantine-cert-${suffix}`;
-            const sourceBucket = `q-src-${suffix}`;
+            const sourceBucket = canonicalSourceBucket();
             const destinationBucket = `q-dst-${suffix}`;
             const ordinaryKey = `ordinary/${suffix}.pdf`;
+            const healthyDocumentId = `healthy-document-${suffix}`;
+            const healthySha256 = sha256(`healthy-document-${suffix}`);
+            const healthyKey =
+              `companies/${companyId}/documents/${healthyDocumentId}/v1/${healthySha256}.pdf`;
             const clock = await tx.$queryRaw<Array<{ createdAt: string; updatedAt: string }>>`
           SELECT pg_catalog.to_char(
                    clock_timestamp() - interval '2 minutes',
@@ -451,11 +463,35 @@ describePostgres('document archive quarantine — certificat PostgreSQL réel', 
             await tx.$executeRawUnsafe('SET LOCAL ROLE NONE');
             await tx.$executeRawUnsafe(
               `INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-           VALUES ($1, $1, false, 1048576, ARRAY['application/pdf','application/json']),
-                  ($2, $2, false, 1048576, ARRAY['application/pdf','application/json'])`,
-              sourceBucket,
+           VALUES ($1, $1, false, 1048576, ARRAY['application/pdf','application/json'])`,
               destinationBucket,
             );
+            const bucketFacts = await tx.$queryRawUnsafe<
+              Array<{
+                id: string;
+                name: string;
+                isPublic: boolean;
+                fileSizeLimit: bigint | null;
+                mimeTypes: string[] | null;
+              }>
+            >(
+              `SELECT id, name, public AS "isPublic", file_size_limit AS "fileSizeLimit",
+                      allowed_mime_types AS "mimeTypes"
+                 FROM storage.buckets
+                WHERE id = ANY($1::text[])
+                ORDER BY id`,
+              [sourceBucket, destinationBucket],
+            );
+            expect(bucketFacts).toHaveLength(2);
+            expect(bucketFacts.every(({ id, name, isPublic }) => id === name && !isPublic)).toBe(
+              true,
+            );
+            const destinationFacts = bucketFacts.find(({ id }) => id === destinationBucket);
+            expect(destinationFacts?.fileSizeLimit).toBe(1_048_576n);
+            expect([...(destinationFacts?.mimeTypes ?? [])].sort()).toEqual([
+              'application/json',
+              'application/pdf',
+            ]);
             await tx.$executeRawUnsafe(
               `INSERT INTO storage.objects
              (id, bucket_id, name, version, metadata, user_metadata, created_at, updated_at)
@@ -464,6 +500,16 @@ describePostgres('document archive quarantine — certificat PostgreSQL réel', 
               randomUUID(),
               sourceBucket,
               ordinaryKey,
+              sourceCreatedAt,
+            );
+            await tx.$executeRawUnsafe(
+              `INSERT INTO storage.objects
+             (id, bucket_id, name, version, metadata, user_metadata, created_at, updated_at)
+           VALUES ($1::uuid, $2, $3, 'healthy-v1', '{}'::jsonb, '{}'::jsonb,
+                   $4::timestamptz, $4::timestamptz)`,
+              randomUUID(),
+              sourceBucket,
+              healthyKey,
               sourceCreatedAt,
             );
             for (const entry of entries) {
@@ -498,6 +544,17 @@ describePostgres('document archive quarantine — certificat PostgreSQL réel', 
             }
 
             await tx.$executeRawUnsafe(`SET LOCAL ROLE ${owner}`);
+            await tx.$executeRawUnsafe(
+              `INSERT INTO public.documents
+             (id, "companyId", kind, origin, filename, "mimeType", "byteSize", sha256,
+              "storageKey", "createdAt", "retentionUntil")
+           VALUES ($1, $2, 'other', 'uploaded', 'healthy.pdf', 'application/pdf', 1,
+                   $3, $4, now(), '2036-08-05')`,
+              healthyDocumentId,
+              companyId,
+              healthySha256,
+              healthyKey,
+            );
             const protocol = await tx.$queryRaw<Array<{ databaseIdentity: string }>>`
           SELECT "databaseIdentity"::TEXT AS "databaseIdentity"
             FROM public.document_archive_protocol_state WHERE id = 1
@@ -1254,6 +1311,36 @@ describePostgres('document archive quarantine — certificat PostgreSQL réel', 
               });
             await assertCompletionBoundary();
 
+            await tx.$executeRawUnsafe('SAVEPOINT quarantine_completion_global_missing');
+            await tx.$executeRawUnsafe('SET LOCAL ROLE NONE');
+            await tx.$executeRawUnsafe(
+              'DELETE FROM storage.objects WHERE bucket_id = $1 AND name = $2',
+              sourceBucket,
+              healthyKey,
+            );
+            await expectConstraint(tx, 'ARCHIVE_QUARANTINE_COMPLETION_STATE_CHANGED:global_missing', () =>
+              assertCompletionBoundary(),
+            );
+            await tx.$executeRawUnsafe(
+              'ROLLBACK TO SAVEPOINT quarantine_completion_global_missing',
+            );
+            await tx.$executeRawUnsafe(
+              'RELEASE SAVEPOINT quarantine_completion_global_missing',
+            );
+
+            await tx.$executeRawUnsafe('SAVEPOINT quarantine_completion_global_orphan');
+            await tx.$executeRawUnsafe(`SET LOCAL ROLE ${owner}`);
+            await tx.$executeRawUnsafe('DELETE FROM public.documents WHERE id = $1', healthyDocumentId);
+            await expectConstraint(tx, 'ARCHIVE_QUARANTINE_COMPLETION_STATE_CHANGED:global_orphans', () =>
+              assertCompletionBoundary(),
+            );
+            await tx.$executeRawUnsafe(
+              'ROLLBACK TO SAVEPOINT quarantine_completion_global_orphan',
+            );
+            await tx.$executeRawUnsafe(
+              'RELEASE SAVEPOINT quarantine_completion_global_orphan',
+            );
+
             await tx.$executeRawUnsafe('SAVEPOINT quarantine_completion_destination_drift');
             await tx.$executeRawUnsafe('SET LOCAL ROLE NONE');
             await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'replica'");
@@ -1596,7 +1683,7 @@ describePostgres('document archive quarantine — certificat PostgreSQL réel', 
       const owner = quotedRole(ownerName);
       const suffix = randomUUID();
       const companyId = `quarantine-repository-${suffix}`;
-      const sourceBucket = `q-src-${suffix}`;
+      const sourceBucket = canonicalSourceBucket();
       const destinationBucket = 'archive-quarantine';
       const siren = BigInt(`0x${sha256(suffix).slice(0, 12)}`)
         .toString()
