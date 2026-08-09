@@ -189,7 +189,7 @@ test('Gradle et CocoaPods restent des caches d’ENTRÉES, revalidés par leurs 
   const gradleCache = slice(
     androidJob,
     '- name: Mettre en cache les dépendances Gradle (wrapper + dépôts)',
-    '- name: Compile the Android bridge and run its deterministic VAD tests',
+    '- name: Compile the real Android app, patched Expo modules, and deterministic VAD tests',
   );
   assert.match(gradleCache, /uses: actions\/cache@[a-f0-9]{40} # v4/u);
   assert.match(gradleCache, /\$\{\{ runner\.temp \}\}\/bob-live-gradle\/caches/u);
@@ -198,11 +198,12 @@ test('Gradle et CocoaPods restent des caches d’ENTRÉES, revalidés par leurs 
     !gradleCache.includes('bob-live-gradle\n'),
     'ne jamais cacher GRADLE_USER_HOME entier (démons, verrous) : caches/ et wrapper/ seulement',
   );
-  // Les tests VAD Android tournent toujours, à l'identique, daemon désactivé.
+  // L'app et les modules Expo patchés compilent avant les tests VAD, daemon désactivé.
   assert.match(
     androidJob,
-    /\.\/gradlew :bob-live-audio:testDebugUnitTest --no-daemon --stacktrace/u,
+    /\.\/gradlew :app:compileDebugKotlin :bob-live-audio:testDebugUnitTest/u,
   );
+  assert.match(androidJob, /--no-daemon --stacktrace/u);
   assert.match(androidJob, /GRADLE_USER_HOME: \$\{\{ runner\.temp \}\}\/bob-live-gradle/u);
 
   const swiftJob = slice(bobLiveNative, '\n  swift-contract:\n');
