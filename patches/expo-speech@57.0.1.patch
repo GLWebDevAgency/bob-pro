@@ -1,0 +1,170 @@
+diff --git a/android/src/main/java/expo/modules/speech/SpeechModule.kt b/android/src/main/java/expo/modules/speech/SpeechModule.kt
+index 9ca869c..9114be7 100644
+--- a/android/src/main/java/expo/modules/speech/SpeechModule.kt
++++ b/android/src/main/java/expo/modules/speech/SpeechModule.kt
+@@ -94,7 +94,9 @@ class SpeechModule : Module() {
+         identifier = it.name,
+         name = it.name,
+         quality = quality,
+-        language = LanguageUtils.getISOCode(it.locale)
++        language = LanguageUtils.getISOCode(it.locale),
++        networkConnectionRequired = it.isNetworkConnectionRequired,
++        installed = !it.features.contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED)
+       )
+     }
+   }
+@@ -103,24 +105,45 @@ class SpeechModule : Module() {
+     options.pitch?.let(textToSpeech::setPitch)
+     options.rate?.let(textToSpeech::setSpeechRate)
+
+-    textToSpeech.language = options.language?.let {
+-      val locale = Locale(it)
+-      val languageAvailable = textToSpeech.isLanguageAvailable(locale)
+-
+-      return@let if (
+-        languageAvailable != TextToSpeech.LANG_MISSING_DATA &&
+-        languageAvailable != TextToSpeech.LANG_NOT_SUPPORTED
+-      ) {
+-        locale
++    if (options.requiresOfflineVoice == true) {
++      val selectedVoice = options.voice?.let { voiceName ->
++        textToSpeech.voices.firstOrNull { it.name == voiceName }
++      }
++      val isStrictlyOffline = selectedVoice != null &&
++        !selectedVoice.isNetworkConnectionRequired &&
++        !selectedVoice.features.contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED)
++      val selected = if (isStrictlyOffline) {
++        textToSpeech.setVoice(selectedVoice)
+       } else {
+-        Locale.getDefault()
++        TextToSpeech.ERROR
++      }
++      if (selected != TextToSpeech.SUCCESS) {
++        // Fail closed for callers that explicitly require an installed offline voice. Emitting
++        // the normal error event preserves expo-speech callback cleanup without speaking through
++        // Locale.getDefault() or a transient download fallback.
++        sendEvent(speakingErrorEvent, idToMap(id))
++        return
+       }
+-    } ?: Locale.getDefault()
++    } else {
++      textToSpeech.language = options.language?.let {
++        val locale = Locale(it)
++        val languageAvailable = textToSpeech.isLanguageAvailable(locale)
++
++        return@let if (
++          languageAvailable != TextToSpeech.LANG_MISSING_DATA &&
++          languageAvailable != TextToSpeech.LANG_NOT_SUPPORTED
++        ) {
++          locale
++        } else {
++          Locale.getDefault()
++        }
++      } ?: Locale.getDefault()
+
+-    options.voice?.let { voiceName ->
+-      textToSpeech.voices
+-        .firstOrNull { it.name == voiceName }
+-        ?.let(textToSpeech::setVoice)
++      options.voice?.let { voiceName ->
++        textToSpeech.voices
++          .firstOrNull { it.name == voiceName }
++          ?.let(textToSpeech::setVoice)
++      }
+     }
+
+     val params = Bundle().apply {
+diff --git a/android/src/main/java/expo/modules/speech/SpeechOptions.kt b/android/src/main/java/expo/modules/speech/SpeechOptions.kt
+index 44ac504..3c58ebd 100644
+--- a/android/src/main/java/expo/modules/speech/SpeechOptions.kt
++++ b/android/src/main/java/expo/modules/speech/SpeechOptions.kt
+@@ -10,5 +10,6 @@ data class SpeechOptions(
+   @Field val pitch: Float?,
+   @Field val rate: Float?,
+   @Field val voice: String?,
+-  @Field val volume: Float?
++  @Field val volume: Float?,
++  @Field val requiresOfflineVoice: Boolean?
+ ) : Record
+diff --git a/android/src/main/java/expo/modules/speech/VoiceRecord.kt b/android/src/main/java/expo/modules/speech/VoiceRecord.kt
+index 480ce46..e15cb7b 100644
+--- a/android/src/main/java/expo/modules/speech/VoiceRecord.kt
++++ b/android/src/main/java/expo/modules/speech/VoiceRecord.kt
+@@ -15,5 +15,7 @@ data class VoiceRecord(
+   @Field val identifier: String,
+   @Field val name: String,
+   @Field val quality: VoiceQuality,
+-  @Field val language: String
++  @Field val language: String,
++  @Field val networkConnectionRequired: Boolean,
++  @Field val installed: Boolean
+ ) : Record
+diff --git a/build/Speech.types.d.ts b/build/Speech.types.d.ts
+index 099ae12..a552ce2 100644
+--- a/build/Speech.types.d.ts
++++ b/build/Speech.types.d.ts
+@@ -57,6 +57,10 @@ export type SpeechOptions = {
+      * Voice identifier.
+      */
+     voice?: string;
++    /**
++     * Android-only fail-closed guard: refuse to speak unless `voice` is installed and offline.
++     */
++    requiresOfflineVoice?: boolean;
+     _voiceIndex?: number;
+     /**
+      * A callback that is invoked when the spoken utterance reaches a word.
+@@ -93,6 +97,13 @@ export type Voice = {
+      * Voice language.
+      */
+     language: string;
++    /**
++     * Android-only proof that the selected system voice requires a network connection.
++     * Bob fails closed unless this field is explicitly `false` on Android.
++     */
++    networkConnectionRequired?: boolean;
++    /** Android-only proof that the voice data is already installed. */
++    installed?: boolean;
+ };
+ export type WebVoice = Voice & {
+     isDefault: boolean;
+@@ -100,4 +111,4 @@ export type WebVoice = Voice & {
+     name: string;
+     voiceURI: string;
+ };
+-//# sourceMappingURL=Speech.types.d.ts.map
+\ No newline at end of file
++//# sourceMappingURL=Speech.types.d.ts.map
+diff --git a/src/Speech.types.ts b/src/Speech.types.ts
+index 5c730e3..ecea43f 100644
+--- a/src/Speech.types.ts
++++ b/src/Speech.types.ts
+@@ -57,6 +57,11 @@ export type SpeechOptions = {
+    * Voice identifier.
+    */
+   voice?: string;
++  /**
++   * Android-only fail-closed guard: refuse to speak unless `voice` is installed and offline.
++   * @platform android
++   */
++  requiresOfflineVoice?: boolean;
+   _voiceIndex?: number;
+
+   /**
+@@ -98,6 +103,16 @@ export type Voice = {
+    * Voice language.
+    */
+   language: string;
++  /**
++   * Android-only proof that the selected system voice requires a network connection.
++   * Bob fails closed unless this field is explicitly `false` on Android.
++   */
++  networkConnectionRequired?: boolean;
++  /**
++   * Android-only proof that the voice data is already installed. A voice marked
++   * `KEY_FEATURE_NOT_INSTALLED` can otherwise fall back while Android downloads it.
++   */
++  installed?: boolean;
+ };
+
+ // @docsMissing

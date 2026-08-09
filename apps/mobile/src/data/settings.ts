@@ -26,24 +26,22 @@ export async function setAutonomy(mode: AgentAutonomy): Promise<void> {
   }
 }
 
-/** Mode de dictée vocale : natif (sur l'appareil, gratuit, défaut) ou cloud (Whisper, plus précis, clé requise). */
-export type VoiceMode = 'native' | 'cloud';
 const KEY_VOICE = 'bob.voiceMode';
 
-export async function getVoiceMode(): Promise<VoiceMode> {
+/**
+ * Migration de démarrage irréversible côté version courante : une installation ayant mémorisé
+ * `cloud` est réécrite en `native`. Cette écriture empêche aussi un rollback OTA compatible de
+ * réactiver silencieusement l'ancien upload. La politique de release doit malgré tout interdire
+ * tout retour vers un binaire antérieur qui ignorerait cette migration.
+ */
+export async function neutralizeLegacyCloudVoiceMode(): Promise<boolean> {
   try {
-    const v = await AsyncStorage.getItem(KEY_VOICE);
-    if (v === 'native' || v === 'cloud') return v;
+    if (await AsyncStorage.getItem(KEY_VOICE) !== 'cloud') return false;
+    await AsyncStorage.setItem(KEY_VOICE, 'native');
+    return true;
   } catch {
-    // défaut
-  }
-  return 'native';
-}
-
-export async function setVoiceMode(mode: VoiceMode): Promise<void> {
-  try {
-    await AsyncStorage.setItem(KEY_VOICE, mode);
-  } catch {
-    // best-effort
+    // La migration est best-effort au montage. Un stockage illisible ne réactive aucune capacité
+    // réseau : l'ancien chemin cloud n'existe plus dans le runtime mobile courant.
+    return false;
   }
 }

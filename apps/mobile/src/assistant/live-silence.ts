@@ -10,11 +10,11 @@
  *
  * Garde-fous fail-safe — on ne réagit qu'à une fermeture RÉELLE de l'oreille :
  * · `earWasOpen` : l'oreille a été observée OUVERTE puis fermée (transition), jamais la
- *   latence d'ouverture (permission, getVoiceMode) prise pour un silence ;
+ *   latence d'ouverture (permission, vérification du modèle local) prise pour un silence ;
  * · `echoRelistenInFlight` : la ré-écoute post-écho traverse la grâce du lease natif —
  *   parler pendant cette fenêtre répondrait à son propre écho ;
- * · reco CLOUD : la transcription arrive APRÈS la fermeture du micro — toute relance parlée
- *   piétinerait le transcript en vol ; on garde le repos silencieux historique.
+ * · tout futur moteur non local reste fail-closed ici : aucune relance parlée ne doit piétiner
+ *   un transcript encore en vol.
  */
 
 export interface LiveSilenceInput {

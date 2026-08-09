@@ -1,47 +1,50 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, AppState } from 'react-native';
-// Module NATIF absent d'Expo Go : chargement paresseux + stubs sûrs (Rules of Hooks respectées —
-// le stub de hook est une fonction stable qui ne fait rien). En dev build, le vrai module est utilisé.
-type SpeechModule = typeof import('expo-speech-recognition');
-let speech: SpeechModule | null = null;
-try {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  speech = require('expo-speech-recognition') as SpeechModule;
-} catch {
-  speech = null; // Expo Go / simulateur sans module natif → secours texte de l'écran (C20)
-}
-export const speechRecognitionAvailable = speech !== null;
-const ExpoSpeechRecognitionModule = speech?.ExpoSpeechRecognitionModule ?? null;
-const useSpeechRecognitionEvent: SpeechModule['useSpeechRecognitionEvent'] =
-  speech?.useSpeechRecognitionEvent ??
-  ((() => undefined) as unknown as SpeechModule['useSpeechRecognitionEvent']);
-import {
-  useAudioRecorder,
-  AudioModule,
-  RecordingPresets,
-  createAudioPlayer,
-  setAudioModeAsync,
-  type AudioPlayer,
-} from 'expo-audio';
-import {
-  readAsStringAsync,
-  writeAsStringAsync,
-  deleteAsync,
-  getInfoAsync,
-  cacheDirectory,
-  EncodingType,
-} from 'expo-file-system/legacy';
+import { Alert, AppState, Platform } from 'react-native';
 import * as Speech from 'expo-speech';
 import {
   processAudioSession,
   type ProcessAudioLease,
 } from '../audio';
-import { getVoiceMode } from './settings';
-import { useBobClient } from './client';
-import { appErrorMessage } from './hooks';
+import {
+  abortNativeSpeechAndWait,
+  nativeSpeechRecognitionModule as ExpoSpeechRecognitionModule,
+  speechRecognitionAvailable,
+  supportsStrictOnDeviceSpeechLocale,
+  useNativeSpeechRecognitionEvent as useSpeechRecognitionEvent,
+} from './native-speech-recognition-adapter';
+
+export { speechRecognitionAvailable };
+import {
+  advanceNativeSpeechTerminal,
+  classifyNativeSpeechError,
+  openNativeSpeechTerminal,
+  supportsPrivateNativeSpeech,
+  terminalEventForNativeSpeechError,
+  type NativeSpeechCommand,
+  type NativeSpeechTerminalEvent,
+  type NativeSpeechTerminalTransition,
+} from './native-speech-session';
+import { neutralizeLegacyCloudVoiceMode } from './settings';
 
 /** Accroc du canal voix : refus micro, module natif absent (Expo Go), transcription ratée. */
 export type VoiceInputIssue = 'denied' | 'unavailable' | 'failed';
+export type VoiceOutputOutcome = 'completed' | 'interrupted' | 'failed' | 'timed_out';
+
+interface NativeTtsOperation {
+  readonly generation: number;
+  readonly lease: ProcessAudioLease;
+  readonly onFinished: (outcome: VoiceOutputOutcome) => void;
+  timer: ReturnType<typeof setTimeout> | null;
+  stopPromise: Promise<boolean> | null;
+  settled: boolean;
+}
+
+interface NativeReleaseWaiter {
+  readonly generation: number;
+  readonly promise: Promise<boolean>;
+  readonly resolve: (released: boolean) => void;
+  readonly timer: ReturnType<typeof setTimeout>;
+}
 
 type VoiceLeaseState = 'active' | 'closing';
 
@@ -58,6 +61,14 @@ interface VoiceLease {
  */
 let activeVoiceLease: VoiceLease | null = null;
 const NATIVE_TERMINAL_GRACE_MS = 350;
+const NATIVE_END_WATCHDOG_MS = 2_000;
+const NATIVE_END_WATCHDOG_MAX_CHECKS = 4;
+const NATIVE_CAPABILITY_TIMEOUT_MS = 2_000;
+const NATIVE_CANCEL_RELEASE_TIMEOUT_MS =
+  NATIVE_CAPABILITY_TIMEOUT_MS + NATIVE_TERMINAL_GRACE_MS + 250;
+const PRIVATE_SPEECH_NEGATIVE_CACHE_MS = 30_000;
+const NATIVE_TTS_MIN_TIMEOUT_MS = 5_000;
+const NATIVE_TTS_MAX_TIMEOUT_MS = 45_000;
 const PERMISSION_LIFECYCLE_STABILIZATION_MS = 1_000;
 
 /**
@@ -114,7 +125,23 @@ export async function voiceMayActivateMicrophone(): Promise<boolean> {
 async function withPermissionRequest<T>(run: () => Promise<T>): Promise<T> {
   return processAudioSession.withPermissionRequest(run);
 }
-const MAX_CLOUD_AUDIO_BYTES = 8 * 1024 * 1024;
+
+async function withNativeCapabilityTimeout<T>(run: () => Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      run(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('native_speech_capability_timeout')),
+          NATIVE_CAPABILITY_TIMEOUT_MS,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
+}
 
 async function acquireVoiceLease(
   owner: symbol,
@@ -157,8 +184,9 @@ function releaseVoiceLease(owner: symbol, generation: number): boolean {
 }
 
 /**
- * Entrée vocale de Bob. NATIF par défaut (expo-speech-recognition, sur l'appareil, gratuit) ;
- * CLOUD en option (enregistrement -> backend Whisper) selon le réglage. La voix n'est qu'un canal :
+ * Entrée vocale de Bob : reconnaissance locale forcée via expo-speech-recognition. L'ancien STT
+ * cloud sans sélecteur/disclosure est fermé ; l'indisponibilité locale mène au texte. La voix
+ * n'est qu'un canal :
  * transcription -> onTranscript(text) -> MÊME cerveau Bob.
  * NB : nécessite un build natif (les modules micro ne tournent pas en bundle JS pur).
  * `onIssue` (optionnel) : l'écran affiche l'état honnête lui-même (C20) au lieu des Alert historiques.
@@ -171,17 +199,36 @@ export function useVoiceInput(
     owner?: string;
   } = {},
 ) {
-  const client = useBobClient();
-  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const [listening, setListening] = useState(false);
   const leaseOwnerName = useRef(opts.owner ?? 'bob-voice-input').current;
   const lease = useRef(Symbol(leaseOwnerName)).current;
   const preemptRef = useRef<() => Promise<void>>(async () => undefined);
+  const mountedRef = useRef(true);
+  const startIntentGenerationRef = useRef(0);
+  const startInFlightRef = useRef<{
+    readonly intentGeneration: number;
+    readonly promise: Promise<boolean>;
+  } | null>(null);
   const sessionRef = useRef<{
     generation: number;
-    mode: 'native' | 'cloud';
+    mode: 'native';
   } | null>(null);
-  const deliveredNativeGenerationRef = useRef<number | null>(null);
+  const nativeTerminalRef = useRef<ReturnType<typeof openNativeSpeechTerminal> | null>(null);
+  const nativeEndGraceTimerRef = useRef<{
+    readonly generation: number;
+    readonly timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
+  const nativeEndWatchdogRef = useRef<{
+    readonly generation: number;
+    readonly attempt: number;
+    readonly timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
+  const nativeReleaseWaiterRef = useRef<NativeReleaseWaiter | null>(null);
+  const privateSpeechCapabilityRef = useRef<{
+    readonly key: string;
+    readonly supported: boolean;
+    readonly retryAfter: number;
+  } | null>(null);
   const ownsLease = useCallback(() => {
     const session = sessionRef.current;
     return session !== null && matchesVoiceLease(lease, session.generation);
@@ -193,7 +240,7 @@ export function useVoiceInput(
   const onPartialRef = useRef(opts.onPartial);
   onPartialRef.current = opts.onPartial;
   const report = useCallback((issue: VoiceInputIssue, title: string, message: string): void => {
-    console.warn('[bob-voice] issue:', issue, '—', message);
+    console.warn('[bob-voice] issue:', issue);
     if (onIssueRef.current) onIssueRef.current(issue);
     else Alert.alert(title, message);
   }, []);
@@ -202,29 +249,265 @@ export function useVoiceInput(
     if (sessionRef.current?.generation === generation) setListening(value);
   }, []);
 
+  const settleNativeReleaseWaiter = useCallback((
+    generation: number,
+    released: boolean,
+  ): void => {
+    const waiter = nativeReleaseWaiterRef.current;
+    if (waiter?.generation !== generation) return;
+    nativeReleaseWaiterRef.current = null;
+    clearTimeout(waiter.timer);
+    waiter.resolve(released);
+  }, []);
+
+  const waitForNativeGenerationRelease = useCallback((generation: number): Promise<boolean> => {
+    if (!matchesVoiceLease(lease, generation)) return Promise.resolve(true);
+    const current = nativeReleaseWaiterRef.current;
+    if (current?.generation === generation) return current.promise;
+    if (current !== null) {
+      clearTimeout(current.timer);
+      current.resolve(false);
+    }
+    let resolve!: (released: boolean) => void;
+    const promise = new Promise<boolean>((settle) => { resolve = settle; });
+    const timer = setTimeout(() => {
+      const waiter = nativeReleaseWaiterRef.current;
+      if (waiter?.generation !== generation) return;
+      nativeReleaseWaiterRef.current = null;
+      waiter.resolve(false);
+    }, NATIVE_CANCEL_RELEASE_TIMEOUT_MS);
+    nativeReleaseWaiterRef.current = { generation, promise, resolve, timer };
+    return promise;
+  }, [lease]);
+
   const releaseGeneration = useCallback(
     (generation: number): boolean => {
       if (!releaseVoiceLease(lease, generation)) return false;
+      if (nativeEndWatchdogRef.current?.generation === generation) {
+        clearTimeout(nativeEndWatchdogRef.current.timer);
+        nativeEndWatchdogRef.current = null;
+      }
+      if (nativeEndGraceTimerRef.current?.generation === generation) {
+        clearTimeout(nativeEndGraceTimerRef.current.timer);
+        nativeEndGraceTimerRef.current = null;
+      }
       if (sessionRef.current?.generation === generation) {
         sessionRef.current = null;
         setListening(false);
       }
+      settleNativeReleaseWaiter(generation, true);
       return true;
     },
-    [lease],
+    [lease, settleNativeReleaseWaiter],
   );
 
-  const releaseNativeGenerationAfterGrace = useCallback(
-    (generation: number): void => {
-      setTimeout(() => {
-        // Un timer d'une generation N ne peut jamais liberer N+1.
-        releaseGeneration(generation);
-      }, NATIVE_TERMINAL_GRACE_MS);
+  const advanceNativeTerminal = useCallback(
+    (
+      generation: number,
+      event: NativeSpeechTerminalEvent,
+    ): NativeSpeechTerminalTransition | null => {
+      const current = nativeTerminalRef.current;
+      if (current === null) return null;
+      const transition = advanceNativeSpeechTerminal(current, generation, event);
+      nativeTerminalRef.current = transition.next;
+      return transition;
     },
-    [releaseGeneration],
+    [],
+  );
+
+  const clearNativeEndWatchdog = useCallback((generation: number): void => {
+    const pending = nativeEndWatchdogRef.current;
+    if (pending?.generation !== generation) return;
+    clearTimeout(pending.timer);
+    nativeEndWatchdogRef.current = null;
+  }, []);
+
+  const releaseNativeGenerationAfterEndGrace = useCallback(
+    (generation: number): void => {
+      if (nativeEndGraceTimerRef.current?.generation === generation) return;
+      if (nativeEndGraceTimerRef.current !== null) {
+        clearTimeout(nativeEndGraceTimerRef.current.timer);
+      }
+      const timer = setTimeout(() => {
+        // La grâce termine honnêtement un cycle sans résultat. Le release reste fencé par la
+        // génération ET n'est armé qu'après le `end` contractuellement dernier chez Expo.
+        advanceNativeTerminal(generation, 'grace_expired');
+        releaseGeneration(generation);
+        if (nativeEndGraceTimerRef.current?.generation === generation) {
+          nativeEndGraceTimerRef.current = null;
+        }
+      }, NATIVE_TERMINAL_GRACE_MS);
+      nativeEndGraceTimerRef.current = { generation, timer };
+    },
+    [advanceNativeTerminal, releaseGeneration],
+  );
+
+  const dispatchNativeCommand = useCallback(
+    (generation: number, command: NativeSpeechCommand): void => {
+      if (command === 'none') return;
+      const dispatchAbortBarrier = (): void => {
+        const lifecycle = nativeTerminalRef.current?.lifecycle;
+        void withNativeCapabilityTimeout(abortNativeSpeechAndWait).then((completed) => {
+          if (!completed) {
+            // Sans le barrier patché, un abort pendant `starting` pourrait gagner avant la Task
+            // start iOS. On ferme donc la capacité au lieu de rendre un lease faussement libre.
+            if (lifecycle !== 'starting') ExpoSpeechRecognitionModule?.abort();
+            settleNativeReleaseWaiter(generation, false);
+            return;
+          }
+          const transition = advanceNativeTerminal(generation, 'abort_completed');
+          if (transition?.changed !== true) return;
+          clearNativeEndWatchdog(generation);
+          releaseNativeGenerationAfterEndGrace(generation);
+        }).catch(() => {
+          console.warn('[bob-voice] native abort barrier unavailable');
+          settleNativeReleaseWaiter(generation, false);
+        });
+      };
+      try {
+        if (command === 'stop') {
+          ExpoSpeechRecognitionModule?.stop();
+          return;
+        }
+        dispatchAbortBarrier();
+      } catch {
+        const issueTransition = advanceNativeTerminal(generation, 'issue');
+        if (issueTransition?.effect === 'issue') {
+          report('failed', 'Dictée', "La commande d'écoute n'a pas pu être appliquée.");
+        }
+        // Un stop synchrone refusé est promu vers un unique abort. Un abort refusé reste en
+        // quarantaine : surtout pas de release au timer sans preuve native.
+        if (command === 'stop') {
+          const abortTransition = advanceNativeTerminal(generation, 'cancel_requested');
+          if (abortTransition?.command === 'abort') {
+            dispatchAbortBarrier();
+          }
+        }
+      }
+    },
+    [
+      advanceNativeTerminal,
+      clearNativeEndWatchdog,
+      releaseNativeGenerationAfterEndGrace,
+      report,
+      settleNativeReleaseWaiter,
+    ],
+  );
+
+  const armNativeEndWatchdog = useCallback(
+    (generation: number): void => {
+      if (nativeEndWatchdogRef.current?.generation === generation) return;
+      if (nativeEndWatchdogRef.current !== null) {
+        clearTimeout(nativeEndWatchdogRef.current.timer);
+      }
+
+      const scheduleCheck = (attempt: number): void => {
+        if (
+          sessionRef.current?.generation !== generation
+          || !matchesVoiceLease(lease, generation)
+          || nativeTerminalRef.current?.lifecycle === 'ended'
+        ) return;
+        const timer = setTimeout(() => {
+          if (
+            nativeEndWatchdogRef.current?.generation === generation
+            && nativeEndWatchdogRef.current.attempt === attempt
+          ) nativeEndWatchdogRef.current = null;
+          if (
+            sessionRef.current?.generation !== generation
+            || !matchesVoiceLease(lease, generation)
+            || nativeTerminalRef.current?.lifecycle === 'ended'
+          ) return;
+
+          const retryOrQuarantine = (reason: string): void => {
+            if (attempt < NATIVE_END_WATCHDOG_MAX_CHECKS) {
+              scheduleCheck(attempt + 1);
+              return;
+            }
+            // Sans `end` ni preuve ordonnée, N conserve le lease. On arrête seulement le polling
+            // pour ne pas maintenir un composant démonté en vie indéfiniment.
+            console.warn('[bob-voice] native end quarantined:', reason);
+            settleNativeReleaseWaiter(generation, false);
+          };
+
+          let stateRequest: ReturnType<NonNullable<
+            typeof ExpoSpeechRecognitionModule
+          >['getStateAsync']>;
+          try {
+            const nativeModule = ExpoSpeechRecognitionModule;
+            if (nativeModule === null) {
+              retryOrQuarantine('module_unavailable');
+              return;
+            }
+            stateRequest = withNativeCapabilityTimeout(
+              () => nativeModule.getStateAsync(),
+            );
+          } catch {
+            retryOrQuarantine('state_query_threw');
+            return;
+          }
+          void stateRequest.then((state) => {
+            if (
+              sessionRef.current?.generation !== generation
+              || !matchesVoiceLease(lease, generation)
+              || nativeTerminalRef.current?.lifecycle === 'ended'
+            ) return;
+
+            // Si l'ack `start` React a été perdu (notamment au démontage), un état natif actif
+            // constitue la preuve ordonnée que start a réellement gagné. La commande différée
+            // peut alors être envoyée une seule fois et `inactive` suivant devient probant.
+            if (nativeTerminalRef.current?.lifecycle === 'starting') {
+              if (state !== 'inactive') {
+                const activity = advanceNativeTerminal(generation, 'native_active');
+                dispatchNativeCommand(generation, activity?.command ?? 'none');
+                // La commande vient seulement d'être installée. Un nouveau snapshot est exigé :
+                // on ne réutilise jamais l'ancien `inactive` comme preuve terminale.
+                retryOrQuarantine(`command_dispatched:${state}`);
+                return;
+              }
+            }
+
+            const lifecycle = nativeTerminalRef.current?.lifecycle;
+            const command = nativeTerminalRef.current?.command;
+            // Pendant un abort, le module patché retire intentionnellement le recognizer public
+            // avant de terminer son teardown. `getStateAsync() === inactive` décrit alors le slot,
+            // pas la fin de la ressource en cours de retrait. Seule la résolution de
+            // `abortAndWaitAsync` est une preuve terminale ; sinon N reste en quarantaine.
+            const inactiveIsAuthoritative = state === 'inactive'
+              && command !== 'abort'
+              && (lifecycle === 'arming' || lifecycle === 'started');
+            if (!inactiveIsAuthoritative) {
+              retryOrQuarantine(`${lifecycle ?? 'missing'}:${state}`);
+              return;
+            }
+            const transition = advanceNativeTerminal(generation, 'end');
+            if (transition?.changed === true) {
+              releaseNativeGenerationAfterEndGrace(generation);
+            }
+          }).catch(() => retryOrQuarantine('state_query_rejected'));
+        }, NATIVE_END_WATCHDOG_MS);
+        nativeEndWatchdogRef.current = { generation, attempt, timer };
+      };
+
+      scheduleCheck(1);
+    }, [
+      advanceNativeTerminal,
+      dispatchNativeCommand,
+      lease,
+      releaseNativeGenerationAfterEndGrace,
+      settleNativeReleaseWaiter,
+    ],
   );
 
   // —— Événements de la reconnaissance NATIVE ——
+  useSpeechRecognitionEvent('start', () => {
+    const session = sessionRef.current;
+    if (session?.mode !== 'native' || !matchesVoiceLease(lease, session.generation)) return;
+    const transition = advanceNativeTerminal(session.generation, 'start');
+    if (transition !== null && transition.command !== 'none') {
+      dispatchNativeCommand(session.generation, transition.command);
+      armNativeEndWatchdog(session.generation);
+    }
+  });
   useSpeechRecognitionEvent('result', (e) => {
     const session = sessionRef.current;
     if (session?.mode !== 'native' || !matchesVoiceLease(lease, session.generation)) {
@@ -233,13 +516,18 @@ export function useVoiceInput(
     const generation = session.generation;
     const text = e.results?.[0]?.transcript?.trim();
     if (e.isFinal) {
-      if (deliveredNativeGenerationRef.current === generation) return;
-      deliveredNativeGenerationRef.current = generation;
+      const transition = advanceNativeTerminal(generation, 'final');
+      if (transition?.effect !== 'transcript') return;
       setGenerationListening(generation, false);
       closeVoiceLease(lease, generation);
-      releaseNativeGenerationAfterGrace(generation);
+      armNativeEndWatchdog(generation);
       if (text) onTranscriptRef.current(text);
-    } else if (text && matchesVoiceLease(lease, generation, 'active')) {
+    } else if (
+      text
+      && nativeTerminalRef.current?.generation === generation
+      && nativeTerminalRef.current.state === 'open'
+      && matchesVoiceLease(lease, generation, 'active')
+    ) {
       // Résultats PARTIELS (LIVE-3 barge-in) : détecter la parole pendant que Bob parle.
       onPartialRef.current?.(text);
     }
@@ -249,23 +537,67 @@ export function useVoiceInput(
     if (session?.mode !== 'native' || !matchesVoiceLease(lease, session.generation)) {
       return;
     }
+    const transition = advanceNativeTerminal(session.generation, 'end');
+    if (transition?.changed !== true) return;
     setGenerationListening(session.generation, false);
     closeVoiceLease(lease, session.generation);
-    // Certains moteurs livrent le resultat final juste APRES `end`.
-    releaseNativeGenerationAfterGrace(session.generation);
+    clearNativeEndWatchdog(session.generation);
+    // Le contrat Expo place `end` en dernier. La grâce absorbe seulement la file JS/bridge avant
+    // de terminaliser le silence et de rendre le lease ; jamais un timer armé par final/error.
+    releaseNativeGenerationAfterEndGrace(session.generation);
+  });
+  useSpeechRecognitionEvent('nomatch', () => {
+    const session = sessionRef.current;
+    if (session?.mode !== 'native' || !matchesVoiceLease(lease, session.generation)) return;
+    const transition = advanceNativeTerminal(session.generation, 'silence');
+    if (transition?.effect !== 'silence') return;
+    setGenerationListening(session.generation, false);
+    closeVoiceLease(lease, session.generation);
+    armNativeEndWatchdog(session.generation);
   });
   useSpeechRecognitionEvent('error', (e) => {
-    console.warn('[bob-voice] event error:', JSON.stringify(e));
     const session = sessionRef.current;
     if (session?.mode !== 'native' || !matchesVoiceLease(lease, session.generation)) {
       return;
     }
+    const decision = classifyNativeSpeechError(e);
+    if (decision.errorCode === 'language-not-supported') {
+      privateSpeechCapabilityRef.current = null;
+    }
+    const transition = advanceNativeTerminal(
+      session.generation,
+      terminalEventForNativeSpeechError(decision),
+    );
+    if (transition?.changed !== true) return;
+
     setGenerationListening(session.generation, false);
     closeVoiceLease(lease, session.generation);
-    releaseNativeGenerationAfterGrace(session.generation);
+    armNativeEndWatchdog(session.generation);
+    if (transition.effect !== 'issue' || decision.disposition === 'ignore') return;
+    // Diagnostic fermé et exactement-une-fois : jamais le message libre du moteur, encore moins
+    // un transcript. Les événements tardifs/dupliqués ont déjà été absorbés par le terminal.
+    console.warn(
+      '[bob-voice] native error:',
+      decision.errorCode,
+      'nativeCode=',
+      decision.nativeCode ?? 'none',
+    );
+    if (decision.disposition === 'denied') {
+      report('denied', 'Micro', 'Autorise le micro pour parler à Bob.');
+    } else if (decision.disposition === 'unavailable') {
+      report('unavailable', 'Dictée', "Le service de dictée native n'est pas disponible.");
+    } else {
+      report('failed', 'Dictée', 'La dictée a échoué. Réessaie.');
+    }
   });
 
-  const start = useCallback(async (): Promise<boolean> => {
+  const startCore = useCallback(async (
+    startIntentGeneration: number,
+  ): Promise<boolean> => {
+    const startIntentIsCurrent = (): boolean => (
+      mountedRef.current
+      && startIntentGenerationRef.current === startIntentGeneration
+    );
     const onPreempt = async (): Promise<void> => {
       await preemptRef.current();
       // La reconnaissance native conserve une courte grâce pour son résultat terminal.
@@ -275,6 +607,10 @@ export function useVoiceInput(
       }
     };
     let generation = await acquireVoiceLease(lease, leaseOwnerName, onPreempt);
+    if (!startIntentIsCurrent()) {
+      if (generation !== null) releaseVoiceLease(lease, generation);
+      return false;
+    }
     if (generation === null && activeVoiceLease?.owner === lease) {
       // AUTO-COLLISION du même flux — jamais une « erreur micro » : ① l'écoute est encore
       // ACTIVE → l'intention de l'appelant (être à l'écoute) est déjà satisfaite ; ② elle se
@@ -282,211 +618,221 @@ export function useVoiceInput(
       // libération puis on rouvre une génération fraîche (les timers N restent fencés).
       if (activeVoiceLease.state === 'active') return true;
       await new Promise((resolve) => setTimeout(resolve, NATIVE_TERMINAL_GRACE_MS + 50));
+      if (!startIntentIsCurrent()) return false;
       generation = await acquireVoiceLease(lease, leaseOwnerName, onPreempt);
+      if (!startIntentIsCurrent()) {
+        if (generation !== null) releaseVoiceLease(lease, generation);
+        return false;
+      }
     }
     if (generation === null) {
+      if (!startIntentIsCurrent()) return false;
       report('unavailable', 'Micro', 'Le micro est déjà utilisé par un autre flux Bob.');
       return false;
     }
     sessionRef.current = { generation, mode: 'native' };
-    deliveredNativeGenerationRef.current = null;
+    nativeTerminalRef.current = openNativeSpeechTerminal(generation);
     try {
-      const selectedMode = await getVoiceMode();
-      if (!matchesVoiceLease(lease, generation, 'active')) {
-        console.warn('[bob-voice] start annulé pendant getVoiceMode (lease invalidé)', String(lease));
+      const nativeModule = ExpoSpeechRecognitionModule;
+      if (!nativeModule) {
+        releaseGeneration(generation);
+        report('unavailable', 'Dictée', "La dictée native n'est pas disponible ici.");
         return false;
       }
-      sessionRef.current = { generation, mode: selectedMode };
-
-      if (selectedMode === 'native') {
-        if (!ExpoSpeechRecognitionModule) {
-          releaseGeneration(generation);
-          report('unavailable', 'Dictée', "La dictée native n'est pas disponible ici.");
-          return false;
-        }
-        const perm = await withPermissionRequest(() => ExpoSpeechRecognitionModule.requestPermissionsAsync());
-        if (!matchesVoiceLease(lease, generation, 'active')) {
-          console.warn('[bob-voice] start annulé pendant la permission (lease invalidé)');
-          return false;
-        }
-        if (!perm.granted) {
-          releaseGeneration(generation);
-          report('denied', 'Micro', 'Autorise le micro pour parler à Bob.');
-          return false;
-        }
-        if (!(await voiceMayActivateMicrophone())) {
-          if (matchesVoiceLease(lease, generation)) releaseGeneration(generation);
-          return false;
-        }
-        if (!matchesVoiceLease(lease, generation, 'active')) return false;
-        setGenerationListening(generation, true);
-        ExpoSpeechRecognitionModule.start({
-          lang: 'fr-FR',
-          interimResults: !!onPartialRef.current,
-          continuous: false,
-        });
-      } else {
-        const perm = await withPermissionRequest(() => AudioModule.requestRecordingPermissionsAsync());
-        if (!matchesVoiceLease(lease, generation, 'active')) return false;
-        if (!perm.granted) {
-          report('denied', 'Micro', 'Autorise le micro pour la dictée cloud.');
-          releaseGeneration(generation);
-          return false;
-        }
-        if (!(await voiceMayActivateMicrophone())) {
-          if (matchesVoiceLease(lease, generation)) releaseGeneration(generation);
-          return false;
-        }
-        if (!matchesVoiceLease(lease, generation, 'active')) return false;
-        await recorder.prepareToRecordAsync();
-        if (!matchesVoiceLease(lease, generation, 'active')) {
-          try {
-            await recorder.stop();
-            if (recorder.uri) await deleteAsync(recorder.uri, { idempotent: true });
-          } catch {
-            // Une annulation concurrente possede deja le nettoyage de cette generation.
-          }
-          return false;
-        }
-        setGenerationListening(generation, true);
-        recorder.record();
+      const capabilityKey = `${Platform.OS}:${String(Platform.Version)}:fr-FR`;
+      const platformEligible = Platform.OS === 'ios' || (
+        Platform.OS === 'android'
+        && typeof Platform.Version === 'number'
+        && Number.isInteger(Platform.Version)
+        && Platform.Version >= 33
+      );
+      const cachedCapability = privateSpeechCapabilityRef.current;
+      const cachedPositive = cachedCapability?.key === capabilityKey
+        && cachedCapability.supported;
+      const cachedNegative = cachedCapability?.key === capabilityKey
+        && !cachedCapability.supported
+        && Date.now() < cachedCapability.retryAfter;
+      if (!platformEligible || cachedNegative) {
+        releaseGeneration(generation);
+        report(
+          'unavailable',
+          'Dictée',
+          "La dictée locale française n'est pas disponible sur cet appareil.",
+        );
+        return false;
       }
+      if (!cachedPositive) {
+        const supportedLocales = await withNativeCapabilityTimeout(
+          () => nativeModule.getSupportedLocales({}),
+        );
+        if (!startIntentIsCurrent() || !matchesVoiceLease(lease, generation, 'active')) {
+          return false;
+        }
+        if (!supportsPrivateNativeSpeech({
+          platform: Platform.OS,
+          platformVersion: Platform.Version,
+          supportsOnDeviceRecognition: supportsStrictOnDeviceSpeechLocale('fr-FR'),
+          installedLocales: supportedLocales.installedLocales,
+          requestedLocale: 'fr-FR',
+        })) {
+          privateSpeechCapabilityRef.current = {
+            key: capabilityKey,
+            supported: false,
+            retryAfter: Date.now() + PRIVATE_SPEECH_NEGATIVE_CACHE_MS,
+          };
+          releaseGeneration(generation);
+          report(
+            'unavailable',
+            'Dictée',
+            "La dictée locale française n'est pas disponible sur cet appareil.",
+          );
+          return false;
+        }
+        // Le bridge Android 56.0.1 crée un executor pour getSupportedLocales. Une preuve positive
+        // est donc mémorisée pendant la vie du hook au lieu de refaire ce coût à chaque phrase.
+        privateSpeechCapabilityRef.current = {
+          key: capabilityKey,
+          supported: true,
+          retryAfter: Number.POSITIVE_INFINITY,
+        };
+      }
+      const perm = await withPermissionRequest(
+        () => nativeModule.requestMicrophonePermissionsAsync(),
+      );
+      if (!startIntentIsCurrent() || !matchesVoiceLease(lease, generation, 'active')) {
+        console.warn('[bob-voice] start annulé pendant la permission (lease invalidé)');
+        return false;
+      }
+      if (!perm.granted) {
+        releaseGeneration(generation);
+        report('denied', 'Micro', 'Autorise le micro pour parler à Bob.');
+        return false;
+      }
+      if (!(await voiceMayActivateMicrophone()) || !startIntentIsCurrent()) {
+        if (matchesVoiceLease(lease, generation)) releaseGeneration(generation);
+        return false;
+      }
+      if (!matchesVoiceLease(lease, generation, 'active')) return false;
+      const nativeState = await withNativeCapabilityTimeout(() => nativeModule.getStateAsync());
+      if (!startIntentIsCurrent() || !matchesVoiceLease(lease, generation, 'active')) return false;
+      if (nativeState !== 'inactive') {
+        releaseGeneration(generation);
+        report('unavailable', 'Dictée', "Le service de dictée termine encore l'écoute précédente.");
+        return false;
+      }
+      setGenerationListening(generation, true);
+      nativeModule.start({
+        lang: 'fr-FR',
+        interimResults: !!onPartialRef.current,
+        continuous: false,
+        // Invariant RGPD : aucun recognizer réseau. Sans modèle fr-FR local, l'erreur native
+        // devient une indisponibilité honnête et la sortie texte est proposée.
+        requiresOnDeviceRecognition: true,
+      });
+      advanceNativeTerminal(generation, 'start_requested');
       return true;
     } catch {
       // Une ancienne continuation async ne modifie jamais la generation qui lui a succede.
-      if (matchesVoiceLease(lease, generation)) {
+      if (startIntentIsCurrent() && matchesVoiceLease(lease, generation)) {
         setGenerationListening(generation, false);
         releaseGeneration(generation);
         report('unavailable', 'Dictée', "Le micro n'a pas pu démarrer.");
       }
       return false;
     }
-  }, [lease, leaseOwnerName, recorder, releaseGeneration, report, setGenerationListening]);
-
-  const stop = useCallback(async () => {
-    const session = sessionRef.current;
-    if (!session || !matchesVoiceLease(lease, session.generation, 'active')) return;
-    const { generation, mode } = session;
-    closeVoiceLease(lease, generation);
-
-    if (mode === 'native') {
-      setGenerationListening(generation, false);
-      try {
-        await ExpoSpeechRecognitionModule?.stop();
-      } catch {
-        if (matchesVoiceLease(lease, generation)) {
-          report('failed', 'Dictée', "L'écoute n'a pas pu être arrêtée proprement.");
-        }
-      } finally {
-        // `end` et ce finally peuvent tous deux armer un timer : les deux sont fences.
-        releaseNativeGenerationAfterGrace(generation);
-      }
-      return;
-    }
-
-    let recordingUri = recorder.uri;
-    try {
-      // CLOUD : arrêter l'enregistrement -> base64 -> backend Whisper.
-      await recorder.stop();
-      setGenerationListening(generation, false);
-      recordingUri = recorder.uri ?? recordingUri;
-      if (!recordingUri) {
-        report('failed', 'Dictée', "L'enregistrement audio est introuvable.");
-        return;
-      }
-
-      const info = await getInfoAsync(recordingUri);
-      if (!info.exists) {
-        report('failed', 'Dictée', "L'enregistrement audio est introuvable.");
-        return;
-      }
-      if (typeof info.size === 'number' && info.size > MAX_CLOUD_AUDIO_BYTES) {
-        report(
-          'failed',
-          'Dictée',
-          'La dictée est trop longue. Réessaie avec une demande plus courte.',
-        );
-        return;
-      }
-
-      const base64 = await readAsStringAsync(recordingUri, { encoding: EncodingType.Base64 });
-      const r = await client.transcribe({ audioBase64: base64, mimeType: 'audio/m4a' });
-      if (!matchesVoiceLease(lease, generation, 'closing')) return;
-      if (r.ok && r.value.text) onTranscriptRef.current(r.value.text);
-      else {
-        report('failed', 'Dictée', r.ok ? 'Rien compris, réessaie.' : appErrorMessage(r.error));
-      }
-    } catch {
-      if (matchesVoiceLease(lease, generation)) {
-        setGenerationListening(generation, false);
-        report('failed', 'Dictée', 'La transcription a échoué.');
-      }
-    } finally {
-      if (recordingUri) {
-        try {
-          await deleteAsync(recordingUri, { idempotent: true });
-        } catch {
-          // Fichier cache ephemere : suppression best-effort.
-        }
-      }
-      releaseGeneration(generation);
-    }
   }, [
-    client,
+    advanceNativeTerminal,
     lease,
-    recorder,
+    leaseOwnerName,
     releaseGeneration,
-    releaseNativeGenerationAfterGrace,
     report,
     setGenerationListening,
   ]);
 
-  /** Abandon sans transcription : background, unmount ou changement de proprietaire. */
-  const cancel = useCallback(async (): Promise<void> => {
-    const session = sessionRef.current;
-    if (!session || !matchesVoiceLease(lease, session.generation)) return;
-    const { generation, mode } = session;
-    closeVoiceLease(lease, generation);
-    setGenerationListening(generation, false);
+  const start = useCallback((): Promise<boolean> => {
+    const inFlight = startInFlightRef.current;
+    if (
+      inFlight !== null
+      && inFlight.intentGeneration === startIntentGenerationRef.current
+    ) return inFlight.promise;
 
-    if (mode === 'native') {
-      try {
-        ExpoSpeechRecognitionModule?.abort();
-      } catch {
-        // Le moteur peut deja etre termine ; la grace libere quand meme cette generation.
-      } finally {
-        releaseNativeGenerationAfterGrace(generation);
-      }
+    const intentGeneration = ++startIntentGenerationRef.current;
+    const run = (): Promise<boolean> => (
+      mountedRef.current && startIntentGenerationRef.current === intentGeneration
+        ? startCore(intentGeneration)
+        : Promise.resolve(false)
+    );
+    const pending = inFlight === null
+      ? run()
+      : inFlight.promise.then(run, run);
+    const entry = { intentGeneration, promise: pending } as const;
+    startInFlightRef.current = entry;
+    const clear = (): void => {
+      if (startInFlightRef.current === entry) startInFlightRef.current = null;
+    };
+    void pending.then(clear, clear);
+    return pending;
+  }, [startCore]);
+
+  const stop = useCallback(async () => {
+    startIntentGenerationRef.current += 1;
+    startInFlightRef.current = null;
+    const session = sessionRef.current;
+    if (!session || !matchesVoiceLease(lease, session.generation, 'active')) return;
+    const { generation } = session;
+    const lifecycle = nativeTerminalRef.current?.lifecycle;
+    closeVoiceLease(lease, generation);
+    const transition = advanceNativeTerminal(generation, 'stop_requested');
+    setGenerationListening(generation, false);
+    if (lifecycle === 'arming') {
+      advanceNativeTerminal(generation, 'end');
+      releaseGeneration(generation);
       return;
     }
-
-    let recordingUri = recorder.uri;
-    try {
-      await recorder.stop();
-      recordingUri = recorder.uri ?? recordingUri;
-    } catch {
-      // Nettoyage best-effort ; le finally invalide tout retour async de cette generation.
-    } finally {
-      recordingUri = recorder.uri ?? recordingUri;
-      if (recordingUri) {
-        try {
-          await deleteAsync(recordingUri, { idempotent: true });
-        } catch {
-          // Fichier cache ephemere : suppression best-effort.
-        }
-      }
-      releaseGeneration(generation);
-    }
+    dispatchNativeCommand(generation, transition?.command ?? 'none');
+    armNativeEndWatchdog(generation);
   }, [
     lease,
-    recorder,
-    releaseGeneration,
-    releaseNativeGenerationAfterGrace,
     setGenerationListening,
+    advanceNativeTerminal,
+    armNativeEndWatchdog,
+    dispatchNativeCommand,
+    releaseGeneration,
   ]);
-  preemptRef.current = cancel;
+
+  /** Abandon sans transcription : background, unmount ou changement de proprietaire. */
+  const cancel = useCallback(async (): Promise<boolean> => {
+    startIntentGenerationRef.current += 1;
+    startInFlightRef.current = null;
+    const session = sessionRef.current;
+    if (!session || !matchesVoiceLease(lease, session.generation)) return true;
+    const { generation } = session;
+    const lifecycle = nativeTerminalRef.current?.lifecycle;
+    const nativeTransition = advanceNativeTerminal(generation, 'cancel_requested');
+    closeVoiceLease(lease, generation);
+    setGenerationListening(generation, false);
+    if (lifecycle === 'arming') {
+      advanceNativeTerminal(generation, 'end');
+      releaseGeneration(generation);
+      return true;
+    }
+    dispatchNativeCommand(generation, nativeTransition?.command ?? 'none');
+    armNativeEndWatchdog(generation);
+    return waitForNativeGenerationRelease(generation);
+  }, [
+    lease,
+    setGenerationListening,
+    advanceNativeTerminal,
+    armNativeEndWatchdog,
+    dispatchNativeCommand,
+    releaseGeneration,
+    waitForNativeGenerationRelease,
+  ]);
+  preemptRef.current = async () => { await cancel(); };
 
   useEffect(() => {
+    mountedRef.current = true;
+    void neutralizeLegacyCloudVoiceMode();
     const subscription = AppState.addEventListener('change', (state) => {
       // 'background' SEULEMENT : sur iOS, la boîte de permission micro, le Control Center ou
       // un bandeau d'appel passent l'app en 'inactive' — annuler là tuerait le PREMIER usage
@@ -494,6 +840,8 @@ export function useVoiceInput(
       if (state === 'background' && !voicePermissionRequestInFlight()) void cancel();
     });
     return () => {
+      mountedRef.current = false;
+      startIntentGenerationRef.current += 1;
       subscription.remove();
       void cancel();
     };
@@ -502,176 +850,231 @@ export function useVoiceInput(
   return { listening, start, stop, cancel, ownsLease };
 }
 
-// mimeType renvoyé par Voxtral TTS -> extension de fichier pour que le décodeur natif le reconnaisse.
-function extForMime(mime: string | null): string {
-  switch ((mime ?? '').toLowerCase()) {
-    case 'audio/wav':
-    case 'audio/x-wav':
-      return 'wav';
-    case 'audio/ogg':
-    case 'audio/opus':
-      return 'ogg';
-    case 'audio/aac':
-      return 'aac';
-    case 'audio/mp4':
-    case 'audio/m4a':
-      return 'm4a';
-    default:
-      return 'mp3'; // audio/mpeg par défaut (sortie usuelle Voxtral TTS)
-  }
-}
-
 /**
- * Sortie vocale de Bob (TTS) — miroir de useVoiceInput. Deux canaux, MÊME texte de domaine :
- *  - NATIF (expo-speech, on-device, gratuit, hors-ligne, fr-FR) : défaut, tous paliers.
- *  - CLOUD souverain (Voxtral TTS via le backend) : quand voiceMode='cloud' ET que l'offre l'autorise
- *    (Pro+ ; ttsCloudAvailable exposé par /voice/config). On synthétise côté serveur, on écrit l'audio
- *    dans le cache, et on le lit avec expo-audio.
- *
- * FAIL-SAFE : toute anicroche cloud (offre non éligible, réseau, audio vide, décodage) retombe sur le
- * natif. Bob parle TOUJOURS. Les montants viennent du domaine (jamais inventés) -> sûrs à vocaliser.
+ * Sortie vocale de Bob (TTS) — miroir de useVoiceInput, avec le MÊME texte de domaine.
+ * Le moteur classique est exclusivement expo-speech. Le canal Bob Live possède son transport
+ * audité distinct ; une préférence historique `cloud` ne peut donc lancer aucun transfert ici.
+ * Les montants viennent du domaine (jamais inventés) -> sûrs à vocaliser.
  */
 export function useSpeak() {
-  const client = useBobClient();
-  const playerRef = useRef<AudioPlayer | null>(null);
-  const fileRef = useRef<string | null>(null);
   const outputLeaseRef = useRef<ProcessAudioLease | null>(null);
+  const outputOperationRef = useRef<NativeTtsOperation | null>(null);
+  const outputGenerationRef = useRef(0);
+  const outputIntentGenerationRef = useRef(0);
+  const outputMountedRef = useRef(true);
   const outputOwner = useRef('bob-legacy-output').current;
   const preemptOutputRef = useRef<() => Promise<void>>(async () => undefined);
-  // Éligibilité TTS cloud : un seul appel /voice/config par session, mémoïsé (évite un round-trip par énoncé).
-  const ttsCloudReady = useRef<Promise<boolean> | null>(null);
-
-  const cleanupCloud = useCallback(async () => {
-    try {
-      playerRef.current?.remove();
-    } catch {
-      /* player déjà libéré */
-    }
-    playerRef.current = null;
-    const uri = fileRef.current;
-    fileRef.current = null;
-    if (uri) {
-      try {
-        await deleteAsync(uri, { idempotent: true });
-      } catch {
-        /* fichier cache éphémère : suppression best-effort */
-      }
-    }
-  }, []);
 
   const releaseOutputLease = useCallback((): void => {
     const lease = outputLeaseRef.current;
     outputLeaseRef.current = null;
-    processAudioSession.release(lease);
+    if (lease !== null) processAudioSession.release(lease);
   }, []);
 
-  const stopOutput = useCallback(async (): Promise<void> => {
-    Speech.stop();
-    await cleanupCloud();
-    releaseOutputLease();
-  }, [cleanupCloud, releaseOutputLease]);
-  preemptOutputRef.current = stopOutput;
-  useEffect(() => () => { void stopOutput(); }, [stopOutput]);
+  const releaseOutputOperation = useCallback((operation: NativeTtsOperation): void => {
+    if (outputOperationRef.current !== operation) return;
+    outputOperationRef.current = null;
+    if (outputLeaseRef.current?.token === operation.lease.token) releaseOutputLease();
+  }, [releaseOutputLease]);
 
-  const speakNative = useCallback((t: string, onFinished?: () => void) => {
-    Speech.stop(); // ne pas superposer deux réponses
-    Speech.speak(t, {
-      language: 'fr-FR',
-      rate: 1.0,
-      ...(onFinished ? { onDone: onFinished, onStopped: onFinished, onError: onFinished } : {}),
-    });
-  }, []);
+  const settleOutputOperation = useCallback((
+    operation: NativeTtsOperation,
+    outcome: VoiceOutputOutcome,
+    release: boolean,
+  ): boolean => {
+    const firstSettlement = !operation.settled;
+    if (firstSettlement) {
+      operation.settled = true;
+      if (operation.timer !== null) {
+        clearTimeout(operation.timer);
+        operation.timer = null;
+      }
+      operation.onFinished(outcome);
+    }
+    // Un callback terminal natif tardif reste une preuve de fin valide même si le consommateur a
+    // déjà été réglé par stop/timeout. Il libère N sans jamais rappeler le consommateur ni N+1.
+    if (release) releaseOutputOperation(operation);
+    return firstSettlement;
+  }, [releaseOutputOperation]);
+
+  const stopOutputOperation = useCallback(async (
+    operation: NativeTtsOperation,
+    outcome: 'interrupted' | 'timed_out',
+  ): Promise<boolean> => {
+    // Résout immédiatement l'ancien consommateur et annule son watchdog. Le lease reste pourtant
+    // détenu tant que le moteur n'a pas confirmé son arrêt : aucune génération N+1 ne se superpose.
+    settleOutputOperation(operation, outcome, false);
+    if (operation.stopPromise !== null) return operation.stopPromise;
+    operation.stopPromise = (async () => {
+      let stopped = false;
+      try {
+        await withNativeCapabilityTimeout(() => Promise.resolve(Speech.stop()));
+        stopped = true;
+      } catch {
+        try {
+          stopped = !(await withNativeCapabilityTimeout(() => Speech.isSpeakingAsync()));
+        } catch {
+          stopped = false;
+        }
+      }
+      if (stopped) {
+        releaseOutputOperation(operation);
+      } else {
+        // Fail-closed : garder le lease empêche une nouvelle synthèse de chevaucher un moteur dont
+        // l'état est inconnu. Un prochain appel retentera explicitement l'arrêt.
+        console.warn('[bob-voice] native TTS stop quarantined');
+        operation.stopPromise = null;
+      }
+      return stopped;
+    })();
+    return operation.stopPromise;
+  }, [releaseOutputOperation, settleOutputOperation]);
+
+  const stopOutput = useCallback(async (): Promise<boolean> => {
+    const operation = outputOperationRef.current;
+    if (operation === null) return true;
+    return stopOutputOperation(operation, 'interrupted');
+  }, [stopOutputOperation]);
+  preemptOutputRef.current = async () => {
+    outputIntentGenerationRef.current += 1;
+    await stopOutput();
+  };
+  useEffect(() => {
+    outputMountedRef.current = true;
+    return () => {
+      outputMountedRef.current = false;
+      outputIntentGenerationRef.current += 1;
+      void stopOutput();
+    };
+  }, [stopOutput]);
+
+  const speakNative = useCallback(async (
+    t: string,
+    operation: NativeTtsOperation,
+    mayStart: () => boolean,
+  ): Promise<void> => {
+    try {
+      const voices = await withNativeCapabilityTimeout(() => Speech.getAvailableVoicesAsync());
+      const voice = voices.find((candidate) =>
+        candidate.language.trim().replaceAll('_', '-').toLowerCase() === 'fr-fr'
+        && (
+          Platform.OS !== 'android'
+          || (
+            (candidate as typeof candidate & {
+              networkConnectionRequired?: boolean;
+              installed?: boolean;
+            }).networkConnectionRequired === false
+            && (candidate as typeof candidate & { installed?: boolean }).installed === true
+          )
+        ));
+      if (voice === undefined) {
+        if (operation.stopPromise !== null) return;
+        settleOutputOperation(operation, 'failed', true);
+        return;
+      }
+      if (!mayStart()) {
+        if (operation.stopPromise !== null) return;
+        settleOutputOperation(operation, 'interrupted', true);
+        return;
+      }
+      const timeoutMs = Math.max(
+        NATIVE_TTS_MIN_TIMEOUT_MS,
+        Math.min(NATIVE_TTS_MAX_TIMEOUT_MS, 3_000 + t.length * 120),
+      );
+      operation.timer = setTimeout(() => {
+        if (outputOperationRef.current !== operation || !mayStart()) return;
+        void stopOutputOperation(operation, 'timed_out');
+      }, timeoutMs);
+      Speech.speak(t, {
+        language: 'fr-FR',
+        voice: voice.identifier,
+        ...(Platform.OS === 'android' ? { requiresOfflineVoice: true } : {}),
+        rate: 1.0,
+        onDone: () => { settleOutputOperation(operation, 'completed', true); },
+        onStopped: () => { settleOutputOperation(operation, 'interrupted', true); },
+        onError: () => { settleOutputOperation(operation, 'failed', true); },
+      });
+    } catch {
+      if (operation.stopPromise !== null) return;
+      settleOutputOperation(operation, 'failed', true);
+    }
+  }, [settleOutputOperation, stopOutputOperation]);
 
   /** Cœur commun : parle, et signale la FIN de l'énoncé (onFinished) — la boucle live (LIVE-0)
    *  enchaîne l'écoute à ce signal ; le fire-and-forget historique n'en a pas besoin. */
   const speakCore = useCallback(
-    async (text: string, onFinished?: () => void) => {
+    async (text: string, onFinished?: (outcome: VoiceOutputOutcome) => void) => {
       const t = text?.trim();
       if (!t) {
-        onFinished?.();
+        onFinished?.('completed');
         return;
       }
+      const outputIntentGeneration = ++outputIntentGenerationRef.current;
+      const outputIntentIsCurrent = (): boolean => (
+        outputMountedRef.current
+        && outputIntentGenerationRef.current === outputIntentGeneration
+      );
       // Couper toute sortie précédente de CE hook, puis obtenir l'unique lease audio process.
-      await stopOutput();
+      const priorStopped = await stopOutput();
+      if (!outputIntentIsCurrent()) {
+        onFinished?.('interrupted');
+        return;
+      }
+      if (!priorStopped || outputOperationRef.current !== null) {
+        onFinished?.('failed');
+        return;
+      }
       const acquired = await processAudioSession.acquire({
         owner: outputOwner,
         mode: 'legacy_output',
         onPreempt: () => preemptOutputRef.current(),
       });
+      if (!outputIntentIsCurrent()) {
+        if (acquired.ok) processAudioSession.release(acquired.lease);
+        onFinished?.('interrupted');
+        return;
+      }
       if (!acquired.ok) {
         // Bob Live possède déjà le pipeline : ne jamais superposer un TTS historique.
-        onFinished?.();
+        onFinished?.('interrupted');
         return;
       }
       outputLeaseRef.current = acquired.lease;
-      let finished = false;
-      const finish = (): void => {
-        if (finished) return;
-        finished = true;
-        if (outputLeaseRef.current?.token === acquired.lease.token) releaseOutputLease();
-        onFinished?.();
+      const operation: NativeTtsOperation = {
+        generation: ++outputGenerationRef.current,
+        lease: acquired.lease,
+        onFinished: (outcome) => onFinished?.(outcome),
+        timer: null,
+        stopPromise: null,
+        settled: false,
       };
-
-      let mode: 'native' | 'cloud' = 'native';
-      try {
-        mode = await getVoiceMode();
-      } catch {
-        /* réglage illisible -> natif */
-      }
-      if (mode !== 'cloud') return speakNative(t, finish);
-
-      try {
-        if (!ttsCloudReady.current) {
-          ttsCloudReady.current = client
-            .voiceConfig()
-            .then((r) => (r.ok ? !!r.value.ttsCloudAvailable : false))
-            .catch(() => false);
-        }
-        if (!(await ttsCloudReady.current)) return speakNative(t, finish);
-
-        const r = await client.synthesizeSpeech({ text: t });
-        if (!(r.ok && r.value.audioBase64 && cacheDirectory)) return speakNative(t, finish);
-
-        const uri = `${cacheDirectory}bob-tts-${Date.now()}.${extForMime(r.value.mimeType)}`;
-        await writeAsStringAsync(uri, r.value.audioBase64, { encoding: EncodingType.Base64 });
-        fileRef.current = uri;
-
-        await setAudioModeAsync({ playsInSilentMode: true }); // Bob s'entend même en mode silencieux
-        const player = createAudioPlayer(uri);
-        playerRef.current = player;
-        player.addListener('playbackStatusUpdate', (s) => {
-          if (s.didJustFinish) {
-            void cleanupCloud();
-            finish();
-          }
-        });
-        player.play();
-      } catch {
-        await cleanupCloud();
-        if (processAudioSession.isCurrent(acquired.lease)) {
-          speakNative(t, finish); // repli inconditionnel tant que ce flux possède encore l'audio
-        } else {
-          finish();
-        }
-      }
+      outputOperationRef.current = operation;
+      await speakNative(
+        t,
+        operation,
+        () => outputLeaseRef.current?.token === acquired.lease.token
+          && outputOperationRef.current === operation
+          && outputIntentIsCurrent()
+          && processAudioSession.isCurrent(acquired.lease),
+      );
     },
-    [client, cleanupCloud, outputOwner, releaseOutputLease, speakNative, stopOutput],
+    [outputOwner, speakNative, stopOutput],
   );
 
   const speak = useCallback(async (text: string) => speakCore(text), [speakCore]);
 
   /** Parle et RÉSOUT à la fin de l'énoncé (fin naturelle, interruption ou erreur) — LIVE-0. */
   const speakAndWait = useCallback(
-    (text: string): Promise<void> =>
+    (text: string): Promise<VoiceOutputOutcome> =>
       new Promise((resolve) => {
         let settled = false;
-        const done = (): void => {
+        const done = (outcome: VoiceOutputOutcome): void => {
           if (!settled) {
             settled = true;
-            resolve();
+            resolve(outcome);
           }
         };
-        void speakCore(text, done).catch(done);
+        void speakCore(text, done).catch(() => done('failed'));
       }),
     [speakCore],
   );
@@ -681,20 +1084,34 @@ export function useSpeak() {
 
   const stopSpeaking = useCallback(() => {
     speakQueueGenerationRef.current += 1;
+    outputIntentGenerationRef.current += 1;
     void stopOutput();
   }, [stopOutput]);
 
   /** BOB LIVE P1 : parle une FILE de phrases — interruptible ENTRE les phrases (tap/barge-in),
    * et dès la première phrase l'utilisateur entend Bob (latence perçue ÷ n). */
   const speakSentences = useCallback(
-    async (sentences: readonly string[]): Promise<{ interrupted: boolean }> => {
+    async (sentences: readonly string[]): Promise<{
+      interrupted: boolean;
+      failed: boolean;
+    }> => {
       const generation = ++speakQueueGenerationRef.current;
       for (const sentence of sentences) {
-        if (speakQueueGenerationRef.current !== generation) return { interrupted: true };
-        await speakAndWait(sentence);
-        if (speakQueueGenerationRef.current !== generation) return { interrupted: true };
+        if (speakQueueGenerationRef.current !== generation) {
+          return { interrupted: true, failed: false };
+        }
+        const outcome = await speakAndWait(sentence);
+        if (speakQueueGenerationRef.current !== generation) {
+          return { interrupted: true, failed: false };
+        }
+        if (outcome === 'failed' || outcome === 'timed_out') {
+          return { interrupted: false, failed: true };
+        }
+        if (outcome === 'interrupted') {
+          return { interrupted: true, failed: false };
+        }
       }
-      return { interrupted: false };
+      return { interrupted: false, failed: false };
     },
     [speakAndWait],
   );

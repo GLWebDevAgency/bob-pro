@@ -21,6 +21,10 @@
     "eslint": "^8.57.0"
   },
   "pnpm": {
+    "patchedDependencies": {
+      "expo-speech-recognition@56.0.1": "patches/expo-speech-recognition@56.0.1.patch",
+      "expo-speech@57.0.1": "patches/expo-speech@57.0.1.patch"
+    },
     "overrides": {
       "multer": "^2.2.0",
       "vite": "^6.4.3",

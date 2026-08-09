@@ -8,11 +8,14 @@ on:
   pull_request:
     paths:
       - .github/workflows/bob-live-native.yml
+      - package.json
+      - patches/**
       - apps/mobile/app.json
       - apps/mobile/package.json
       - apps/mobile/modules/bob-live-audio/**
       - apps/mobile/src/agent/**
       - apps/mobile/src/audio/**
+      - apps/mobile/src/data/**
       - apps/mobile/src/realtime/**
       - packages/ai/src/realtime/**
       - pnpm-lock.yaml
@@ -21,11 +24,14 @@ on:
       - main
     paths:
       - .github/workflows/bob-live-native.yml
+      - package.json
+      - patches/**
       - apps/mobile/app.json
       - apps/mobile/package.json
       - apps/mobile/modules/bob-live-audio/**
       - apps/mobile/src/agent/**
       - apps/mobile/src/audio/**
+      - apps/mobile/src/data/**
       - apps/mobile/src/realtime/**
       - packages/ai/src/realtime/**
       - pnpm-lock.yaml
@@ -106,11 +112,13 @@ jobs:
           # et ignore ce qui ne correspond plus, il ne peut pas produire de faux vert.
           restore-keys: |
             bob-live-gradle-${{ runner.os }}-
-      - name: Compile the Android bridge and run its deterministic VAD tests
+      - name: Compile the real Android app, patched Expo modules, and deterministic VAD tests
         working-directory: apps/mobile/android
         env:
           GRADLE_USER_HOME: ${{ runner.temp }}/bob-live-gradle
-        run: ./gradlew :bob-live-audio:testDebugUnitTest --no-daemon --stacktrace
+        run: |
+          ./gradlew :app:compileDebugKotlin :bob-live-audio:testDebugUnitTest \
+            --no-daemon --stacktrace
 
   swift-contract:
     name: Swift bridge + Expo iOS build + VAD contract
