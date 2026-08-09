@@ -245,7 +245,8 @@ Les chemins claim (`apps/mobile/src/agent/**`, `src/realtime/**`, `apps/api/src/
 1. `live.error` n'est plus une copy unique : discrimination minimale exigée —
    **admission fermée** (`unavailable`/503 → BOB-ADM-503, proposer réessai + heure), **session
    terminée côté serveur** (`gone`/410 → BOB-LIVE-410, proposer relance de session), **tour en
-   échec** (`dependency`/502 → BOB-LIVE-502, réécoute/dictée hors-ligne), défaut BOB-LIVE-xxx.
+   échec** (`dependency`/502 → BOB-LIVE-502, dictée locale si le modèle est disponible, sinon
+   saisie texte), défaut BOB-LIVE-xxx.
 2. Toute surface d'erreur vocale AFFICHE (ou énonce) le code court et journalise via le même
    `onError` du client (les routes realtime sont déjà couvertes par la table route→contexte).
 3. Aucun `catch` de la boucle vocale n'avale un `AppError` sans le pousser vers le journal.

@@ -1,5 +1,11 @@
 # Bob = service vocal complet (Jarvis) + stockage documents — ADR & roadmap commune
 
+> **DOCUMENT HISTORIQUE — SUPPLANTÉ POUR LA VOIX.** Les constats STT/TTS, fournisseurs et durées
+> audio ci-dessous décrivent une étape antérieure et ne constituent plus l'autorité runtime ou de
+> publication. Références actuelles :
+> `design_handoff_bob_pro/OBJECTIFS_SPECS_DOD_PUBLICATION.md` et
+> `design_handoff_bob_pro/SPEC_BOB_LIVE_NATIVE_ASR_RECOVERY_P0_20260809.md`.
+
 > Décision conjointe **Claude (Opus) + Codex (GPT-5.5)** — co-audit croisé, convergence indépendante.
 > Statut : **archi tranchée, en attente du feu vert user sur les questions ouvertes** avant implémentation M0.
 > Invariant produit : tout ce qu'on ajoute au backend a une **contrepartie mobile** consommant `@bob/api-client` + `@bob/tokens`/`@bob/ui` (zéro couleur/typo en dur), fidèle à la **direction artistique** (marine + palette `ai` indigo pour Bob, cartes squircle, ombres bleutées, Schibsted/Hanken Grotesk).

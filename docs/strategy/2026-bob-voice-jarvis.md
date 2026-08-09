@@ -1,6 +1,6 @@
 # Bob en mode vocal — le « Jarvis » de l'artisan
 
-> Principe : la **voix n'est qu'un canal d'entrée**. `voix → transcription (STT natif/cloud) → MÊME cerveau Bob (classifieur LLM → outils) → action`. Tout ce que Bob fait passe par les **mêmes use cases** que l'UI manuelle (parité). Garde-fous toujours actifs : périmètre strict (admin/finance), `parse` des arguments, money-guard (aucun montant inventé), et **politique d'autonomie** (auto / recommandé / tout-confirmer) — les actions sortantes/sensibles demandent confirmation (modale de choix).
+> Principe : la **voix n'est qu'un canal d'entrée**. `voix → transcription locale ou canal Bob Live admis → MÊME cerveau Bob (classifieur LLM → outils) → action`. Tout ce que Bob fait passe par les **mêmes use cases** que l'UI manuelle (parité). Garde-fous toujours actifs : périmètre strict (admin/finance), `parse` des arguments, money-guard (aucun montant inventé), et **politique d'autonomie** (auto / recommandé / tout-confirmer) — les actions sortantes/sensibles demandent confirmation (modale de choix).
 
 Statut : ✅ = fonctionne aujourd'hui · 🧭 = Bob **ouvre le bon écran** (navigation) · ⏳ = prévu (tool à brancher).
 
@@ -24,11 +24,20 @@ Statut : ✅ = fonctionne aujourd'hui · 🧭 = Bob **ouvre le bon écran** (nav
 | Classer automatiquement les documents | « classe ce document dans Assurances » | ⏳ à venir | tools de classement (le coffre Documents existe) |
 | Naviguer partout (clients, trésorerie, compte…) | « ouvre la trésorerie » | ⏳ extension simple des intents de navigation | ajouter des routes à `NAV_ROUTES` |
 
-## Vocal : natif vs cloud
-- **Natif (défaut)** : `expo-speech-recognition`, sur l'appareil, gratuit, privé, fr-FR.
-- **Cloud (option)** : enregistrement → backend **Whisper (OpenAI)** ; plus précis (jargon BTP, bruit). Activable dans les **réglages** (Compte) + nécessite une clé `OPENAI_API_KEY`. Alternative UE : **Mistral Voxtral**.
-- Le réglage natif/cloud est dans Paramètres ; `/voice/config` expose `cloudAvailable`.
-- ⚠️ La **capture micro** nécessite un **build natif** (les modules micro ne tournent pas en bundle JS pur) — code prêt, à valider sur appareil.
+## Vocal : dictée locale et Bob Live
+- **Dictée classique** : `expo-speech-recognition` avec `requiresOnDeviceRecognition: true`, sur
+  l'appareil, fr-FR. Aucun repli réseau silencieux ; si le modèle local manque, Bob explique
+  l'indisponibilité et ouvre la saisie texte.
+- **Ancienne préférence cloud du client courant** : neutralisée. Le client ne déclenche plus les
+  routes tour-par-tour depuis cette préférence. Les routes Voxtral V1 restent toutefois actives pour
+  compatibilité avec d'anciens binaires conformément à la matrice autoritaire ; leur parc,
+  information/choix et contrat fournisseur doivent être certifiés ou la capacité fermée dans un lot
+  atomique distinct.
+- **Bob Live serveur** : canal distinct, soumis à son entitlement, son admission et ses preuves de
+  release. La cible de publication est GPT Realtime/OpenAI ; Mistral V3 reste différé et ne peut
+  jamais devenir un repli silencieux. Bob Live n'est pas le repli automatique de la dictée classique.
+- ⚠️ La **capture micro** nécessite un **build natif** et un modèle local compatible ; les preuves
+  iPhone/Android physiques restent nécessaires avant certification.
 
 ## Comment on étend Bob (recette)
 Chaque nouvelle commande = **1 outil** dans le registre (`packages/ai/src/tools/registry.ts` + spec LLM dans `classifier.ts` + détection regex dans `intent.ts`), qui **délègue à un use case existant**. C'est ce qui garde Bob en parité stricte avec l'app, sécurisé et borné — un vrai chef d'orchestre **agentique**, jamais hors-périmètre.
