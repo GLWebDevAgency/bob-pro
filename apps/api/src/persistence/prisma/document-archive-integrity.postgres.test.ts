@@ -6,6 +6,7 @@ import {
   documentArchiveIntegrityProofSha256,
   type DocumentArchiveIntegrityProof,
 } from '../document-archive-jobs';
+import { DOCUMENT_ARCHIVE_INVALID_JOB_PREDICATE_SQL } from '../../documents/archive-v2-job-validity';
 import { PrismaDocumentArchiveJobRepository } from './repositories';
 import { PrismaService } from './prisma.service';
 
@@ -192,6 +193,19 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           dueAt: new Date('2026-08-20T10:00:00.000Z'),
         },
       });
+    }
+
+    async function auditTreatsJobAsInvalid(jobId: string): Promise<boolean> {
+      const [row] = await admin.$queryRawUnsafe<Array<{ invalid: boolean }>>(
+        `
+          SELECT (${DOCUMENT_ARCHIVE_INVALID_JOB_PREDICATE_SQL}) AS invalid
+            FROM public.document_archive_jobs AS job
+           WHERE job.id = $1::uuid
+        `,
+        jobId,
+      );
+      if (row === undefined) throw new Error(`job archive absent du certificat: ${jobId}`);
+      return row.invalid;
     }
 
     async function attestInvoicePdf(
@@ -1447,6 +1461,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           now: '2099-01-01T00:00:00.000Z',
         }),
       );
+      await expect(auditTreatsJobAsInvalid(id)).resolves.toBe(true);
       const candidate = await workers[0]!.withTenant(companyA, () =>
         repository.findByPiece(companyA, pieceId, 'invoice-issued'),
       );
@@ -1524,6 +1539,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           repository.markDone(id, companyA, leaseToken, proof, digest, new Date().toISOString()),
         ),
       ).resolves.toBe(true);
+      await expect(auditTreatsJobAsInvalid(id)).resolves.toBe(false);
       await expect(
         workers[0]!.withTenant(companyA, (tx) =>
           tx.documentArchiveJobArtifact.findMany({ where: { jobId: id, companyId: companyA } }),
@@ -1542,6 +1558,50 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           }),
         ]),
       );
+
+      const failedId = randomUUID();
+      const failedPieceId = `db-proof-failed-${randomUUID()}`;
+      await seedIssuedInvoice(companyA, failedPieceId);
+      await workers[0]!.withTenant(companyA, () =>
+        repository.enqueue({
+          id: failedId,
+          companyId: companyA,
+          pieceId: failedPieceId,
+          reason: 'invoice-issued',
+          now: new Date(Date.now() - 1_000).toISOString(),
+        }),
+      );
+      const failedCandidate = await workers[0]!.withTenant(companyA, () =>
+        repository.findByPiece(companyA, failedPieceId, 'invoice-issued'),
+      );
+      if (failedCandidate === null) throw new Error('job de preuve failed absent');
+      const failedLeaseToken = randomUUID();
+      await expect(
+        workers[0]!.withTenant(companyA, () =>
+          repository.claimForArchive(
+            failedId,
+            companyA,
+            failedCandidate.updatedAt,
+            new Date().toISOString(),
+            new Date(Date.now() + 60_000).toISOString(),
+            failedLeaseToken,
+          ),
+        ),
+      ).resolves.toMatchObject({ outcome: 'claimed' });
+      const failedAt = new Date();
+      await expect(
+        workers[0]!.withTenant(companyA, () =>
+          repository.markFailed(
+            failedId,
+            companyA,
+            failedLeaseToken,
+            failedAt.toISOString(),
+            new Date(failedAt.getTime() + 60_000).toISOString(),
+            'échec injecté par le certificat',
+          ),
+        ),
+      ).resolves.toBe(true);
+      await expect(auditTreatsJobAsInvalid(failedId)).resolves.toBe(true);
     });
 
     it('fige explicitement le périmètre PDF seul B2C sans inventer de Flux 2', async () => {
@@ -2654,6 +2714,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       );
       const legacy = due.find((job) => job.id === legacyId);
       expect(legacy).toMatchObject({ status: 'done', integrityProof: null });
+      await expect(auditTreatsJobAsInvalid(legacyId)).resolves.toBe(true);
       const token = randomUUID();
       const claimed = await workers[0]!.withTenant(companyA, () =>
         repository.claimForArchive(
