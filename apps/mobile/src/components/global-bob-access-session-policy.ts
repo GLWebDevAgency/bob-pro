@@ -1,6 +1,19 @@
 import type { RealtimeVoiceClientPolicyCloseReason } from '@bob/core';
+import type { VoiceInputIssue } from '../data/voice';
+import { requestAssistantTextRecoveryFocus } from '../assistant/text-recovery-focus';
 
 export type GlobalBobSessionStopReason = RealtimeVoiceClientPolicyCloseReason;
+export type GlobalBobRecoveryAction =
+  | 'none'
+  | 'continue_in_assistant'
+  | 'write_in_assistant';
+
+export const GLOBAL_BOB_TEXT_RECOVERY_ROUTE = '/(tabs)/assistant' as const;
+
+export interface GlobalBobRecoveryPresentation {
+  readonly cardVisible: boolean;
+  readonly action: GlobalBobRecoveryAction;
+}
 
 /**
  * Parcours où Bob est volontairement indisponible en V1 : Auth n'a aucune session exploitable ;
@@ -52,4 +65,43 @@ export function advanceGlobalBobSessionStopFence(input: {
   }
   if (input.latched) return Object.freeze({ latched: true, shouldStop: false });
   return Object.freeze({ latched: true, shouldStop: true });
+}
+
+/**
+ * Une seule action de reprise est présentée. Un handoff scellé conserve la priorité ; une panne
+ * sans proposition ouvre uniquement le canal texte, sans prétendre transporter un contexte absent.
+ */
+export function deriveGlobalBobRecoveryAction(input: {
+  readonly active: boolean;
+  readonly reviewRequired: boolean;
+  readonly hasHandoff: boolean;
+  readonly issue: VoiceInputIssue | null;
+}): GlobalBobRecoveryAction {
+  if (input.active) return 'none';
+  if (input.reviewRequired && input.hasHandoff) return 'continue_in_assistant';
+  if (input.issue !== null) return 'write_in_assistant';
+  return 'none';
+}
+
+/** Même autorité pour le rendu et l'annonce : une action démontée ne reste jamais annoncée. */
+export function deriveGlobalBobRecoveryPresentation(input: {
+  readonly response: string | null;
+  readonly active: boolean;
+  readonly reviewRequired: boolean;
+  readonly hasHandoff: boolean;
+  readonly issue: VoiceInputIssue | null;
+}): GlobalBobRecoveryPresentation {
+  const cardVisible = input.response !== null || input.active;
+  return Object.freeze({
+    cardVisible,
+    action: cardVisible ? deriveGlobalBobRecoveryAction(input) : 'none',
+  });
+}
+
+/** Capacité volontairement étroite : aucun moteur vocal ni handoff n'est injectable ici. */
+export function navigateGlobalBobTextRecovery(
+  navigate: (route: typeof GLOBAL_BOB_TEXT_RECOVERY_ROUTE) => void,
+): void {
+  requestAssistantTextRecoveryFocus();
+  navigate(GLOBAL_BOB_TEXT_RECOVERY_ROUTE);
 }

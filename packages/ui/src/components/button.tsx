@@ -51,6 +51,7 @@ export interface ButtonProps {
   size?: ButtonSize;
   style?: StyleProp<ViewStyle>;
   accessibilityLabel?: string;
+  accessibilityHint?: string;
   accessibilityRole?: AccessibilityRole;
   accessibilityState?: AccessibilityState;
 }
@@ -67,6 +68,7 @@ export function Button({
   size = 'regular',
   style,
   accessibilityLabel,
+  accessibilityHint,
   accessibilityRole = 'button',
   accessibilityState,
 }: ButtonProps) {
@@ -126,6 +128,7 @@ export function Button({
       disabled={disabled || loading}
       accessibilityRole={accessibilityRole}
       accessibilityLabel={accessibilityLabel ?? title}
+      accessibilityHint={accessibilityHint}
       accessibilityState={{
         ...accessibilityState,
         disabled: disabled || accessibilityState?.disabled === true,

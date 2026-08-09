@@ -34,6 +34,15 @@ describe('i18n', () => {
     expect(PERSONALITY_LABELS[normalizePersonality('Direct')]).toBe('Direct');
   });
 
+  it('décrit la clôture de compte sans promettre une purge inexistante', () => {
+    for (const personality of ['pote', 'pro', 'direct'] as const) {
+      expect(t('account.deleteAccountRow', { personality })).toContain('Clôturer');
+      expect(t('account.deleteSheetIntro', { personality }).toLowerCase()).toContain('données métier');
+      expect(t('account.deleteSheetStaysBody', { personality }).toLowerCase()).toContain('conserv');
+      expect(t('account.deleteSheetSubmit', { personality })).not.toContain('Supprimer');
+    }
+  });
+
   it('today.subtitle interpole {count} sur les 3 humeurs (variante n=0 séparée)', () => {
     expect(t('today.subtitle', { params: { count: 3 } })).toBe(
       '3 trucs à régler, et après tu factures tranquille.',
@@ -382,6 +391,22 @@ describe('i18n — C15 assistant.*', () => {
     expect(t('agent.global.continueInAssistant', { personality: 'direct' })).toBe(
       'Ouvrir l’Assistant',
     );
+    expect(t('agent.global.writeInAssistant', { personality: 'direct' })).toBe('Écrire à Bob');
+    expect(t('agent.global.writeInAssistantHint', { personality: 'pro' })).toBe(
+      'Ouvrir l’Assistant en mode texte, sans relancer le microphone.',
+    );
+    for (const personality of ['pote', 'pro', 'direct'] as const) {
+      expect(t('agent.global.writeInAssistant', { personality }).trim()).not.toBe('');
+      expect(t('agent.global.writeInAssistantHint', { personality }).trim()).not.toBe('');
+      expect(t('agent.global.outputUnavailable', { personality }).trim()).not.toBe('');
+      const disclosure = t('agent.global.diagnosticTrace', {
+        personality,
+        params: { retentionDays: 30 },
+      });
+      expect(disclosure).toContain('15');
+      expect(disclosure).toContain('30');
+      expect(disclosure).not.toContain('Aucun audio');
+    }
     expect(t('agent.global.heardNothing', { personality: 'pro' })).toBe(
       'Je n’ai rien entendu. Touchez le bouton pour reprendre.',
     );

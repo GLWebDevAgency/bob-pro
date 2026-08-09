@@ -9,6 +9,17 @@ export interface GlobalBobAccessibilityAnnouncementInput {
 
 export type GlobalBobAccessibilityLiveRegion = 'none' | 'polite' | 'assertive';
 
+/** Compose l'information dynamique dans l'ordre utile : cause précise, puis action disponible. */
+export function composeGlobalBobSilentIssueAlert(input: {
+  readonly response: string | null;
+  readonly fallbackStateLabel: string;
+  readonly recoveryActionLabel: string | null;
+}): string {
+  const cause = input.response?.trim() || input.fallbackStateLabel.trim();
+  const action = input.recoveryActionLabel?.trim() ?? '';
+  return [cause, action].filter((part) => part !== '').join(' ');
+}
+
 /**
  * Contenu dédupliquable annoncé explicitement à VoiceOver (`liveRegion` est Android-only).
  * Une réponse Bob n'entre volontairement jamais ici : elle possède déjà son canal TTS/audité.

@@ -18,6 +18,7 @@ import { useAgentAccessLayout, useAgentContext, useAgentSession } from '../agent
 import { useSubscription } from '../data/hooks';
 import { CloseIcon, MicIcon, SparkIcon } from './icons';
 import {
+  composeGlobalBobSilentIssueAlert,
   deriveGlobalBobAccessibilityAnnouncement,
   deriveGlobalBobAccessibilityLiveRegion,
 } from './global-bob-access-a11y';
@@ -27,10 +28,12 @@ import {
 } from './global-bob-access-layout';
 import {
   advanceGlobalBobSessionStopFence,
+  deriveGlobalBobRecoveryPresentation,
   deriveGlobalBobSessionStopReason,
   isBobEntryRoute,
   isGlobalBobSubscriptionVerified,
 } from './global-bob-access-session-policy';
+import { GlobalBobTextRecoveryAction } from './GlobalBobTextRecoveryAction';
 import { ConversationTimeZoneSheet } from './ConversationTimeZoneSheet';
 import { RealtimeDiagnosticTraceSheet } from './RealtimeDiagnosticTraceSheet';
 import { useBobOverlayMetrics } from './use-bob-aware-scroll-insets';
@@ -121,6 +124,23 @@ export function GlobalBobAccess() {
     ownsItsVoiceChrome ||
     isBobEntryRoute(pathname)
   );
+  const recoveryPresentation = deriveGlobalBobRecoveryPresentation({
+    response: session.response,
+    active: session.active,
+    reviewRequired: session.reviewRequired,
+    hasHandoff: session.handoff !== null,
+    issue: session.issue,
+  });
+  const recoveryAction = recoveryPresentation.action;
+  const silentIssueAlert = recoveryPresentation.cardVisible && session.phase === 'error'
+    ? composeGlobalBobSilentIssueAlert({
+        response: session.response,
+        fallbackStateLabel: stateLabel,
+        recoveryActionLabel: recoveryAction === 'write_in_assistant'
+          ? t('agent.global.writeInAssistant', { personality })
+          : null,
+      })
+    : null;
   const accessibilityAnnouncementInput = {
     visible,
     announceActiveState: session.active
@@ -128,9 +148,7 @@ export function GlobalBobAccess() {
     stateLabel,
     silentAlert: entitlementUnavailable
       ? t('agent.global.entitlementError', { personality })
-      : session.phase === 'error'
-        ? stateLabel
-        : null,
+      : silentIssueAlert,
   } as const;
   const iosAnnouncement = deriveGlobalBobAccessibilityAnnouncement(
     accessibilityAnnouncementInput,
@@ -184,6 +202,9 @@ export function GlobalBobAccess() {
   const accessibleCardHeaderLabel = cardHeaderLabel === stateLabel
     ? stateLabel
     : `${cardHeaderLabel}. ${stateLabel}`;
+  const accessibleLiveCardLabel = androidLiveRegion === 'assertive' && silentIssueAlert !== null
+    ? silentIssueAlert
+    : accessibleCardHeaderLabel;
   const scale = pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.07] });
 
   if (entitlementUnavailable) {
@@ -239,7 +260,7 @@ export function GlobalBobAccess() {
           gap: 8,
         }}
       >
-        {session.response !== null || session.active ? (
+        {recoveryPresentation.cardVisible ? (
           <View
             accessibilityLiveRegion="none"
             style={{
@@ -254,7 +275,7 @@ export function GlobalBobAccess() {
           >
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <Text
-                accessibilityLabel={accessibleCardHeaderLabel}
+                accessibilityLabel={accessibleLiveCardLabel}
                 accessibilityLiveRegion={androidLiveRegion}
                 style={[font('meta', 700), { color: semantic.ai, flex: 1 }]}
                 numberOfLines={1}
@@ -286,7 +307,7 @@ export function GlobalBobAccess() {
                 />
               </View>
             ) : null}
-            {session.reviewRequired && session.handoff !== null ? (
+            {recoveryAction === 'continue_in_assistant' ? (
               <>
                 <Text style={[font('meta'), { color: semantic.warning, marginTop: 6 }]}>
                   {t('agent.global.reviewRequired', { personality })}
@@ -311,6 +332,11 @@ export function GlobalBobAccess() {
                 </View>
               </>
             ) : null}
+            <GlobalBobTextRecoveryAction
+              visible={recoveryAction === 'write_in_assistant'}
+              personality={personality}
+              navigate={(route) => router.push(route)}
+            />
           </View>
         ) : null}
 

@@ -3747,20 +3747,35 @@ const legacyFr = {
     pro: 'Continuer dans l’Assistant',
     direct: 'Ouvrir l’Assistant',
   },
+  'agent.global.writeInAssistant': {
+    pote: 'Écrire dans l’Assistant',
+    pro: 'Écrire dans l’Assistant',
+    direct: 'Écrire à Bob',
+  },
+  'agent.global.writeInAssistantHint': {
+    pote: 'Ouvre l’Assistant pour écrire, sans relancer le micro.',
+    pro: 'Ouvrir l’Assistant en mode texte, sans relancer le microphone.',
+    direct: 'Ouvre le texte. Le micro reste coupé.',
+  },
   'agent.global.issueDenied': {
     pote: 'Bob n’a pas l’autorisation micro — active-la dans les réglages du téléphone.',
     pro: 'L’autorisation micro est refusée. Activez-la dans les réglages du téléphone.',
     direct: 'Micro refusé. Réglages téléphone → autoriser.',
   },
   'agent.global.issueUnavailable': {
-    pote: 'Le micro n’est pas dispo (absent ou déjà occupé par un autre flux Bob).',
-    pro: 'Le micro n’est pas disponible : absent de cet appareil ou déjà utilisé.',
-    direct: 'Micro indispo (absent ou occupé).',
+    pote: 'La dictée locale n’est pas disponible ici. Tu peux continuer en écrivant.',
+    pro: 'Le service de dictée locale est indisponible. Vous pouvez poursuivre par écrit.',
+    direct: 'Dictée locale indisponible. Continue par écrit.',
   },
   'agent.global.issueFailed': {
     pote: 'La dictée a raté — réessaie.',
     pro: 'La dictée a échoué. Veuillez réessayer.',
     direct: 'Dictée ratée. Réessaie.',
+  },
+  'agent.global.outputUnavailable': {
+    pote: 'La lecture audio ne répond pas. La réponse reste affichée — continue en écrivant.',
+    pro: 'La lecture audio est indisponible. La réponse reste affichée ; poursuivez par écrit.',
+    direct: 'Audio indisponible. Réponse affichée. Continue par écrit.',
   },
   'agent.global.liveFallback': {
     pote: 'Le temps réel décroche — on continue en mode classique, rien n’est perdu.',
@@ -3773,10 +3788,10 @@ const legacyFr = {
     pro: 'Mode diagnostic de test',
   },
   'agent.global.diagnosticTrace': {
-    pote: 'Mode test : la transcription de ta demande et la réponse de Bob sont chiffrées et conservées jusqu’à {retentionDays} jours pour diagnostiquer la qualité. Aucun audio n’est conservé.',
+    pote: 'Mode test : la transcription et la réponse sont chiffrées jusqu’à {retentionDays} jours. Bob ne garde pas le flux de ton micro. L’objet audio peut rester privé dans le fil 15 minutes, par URL signée de 30 secondes maximum ; métadonnées 30 jours et purge à certifier.',
     direct:
-      'Mode test : transcription et réponse de Bob chiffrées, conservées jusqu’à {retentionDays} jours pour le diagnostic qualité. Aucun audio conservé.',
-    pro: 'Mode test : la transcription de votre demande et la réponse de Bob sont chiffrées et conservées jusqu’à {retentionDays} jours pour diagnostiquer la qualité. Aucun audio n’est conservé.',
+      'Mode test : transcription/réponse chiffrées jusqu’à {retentionDays} jours. Flux micro non persisté par Bob. Objet audio privé dans le fil 15 min, URL signée 30 s max, métadonnées 30 j ; purge à certifier.',
+    pro: 'Mode test : la transcription et la réponse sont chiffrées jusqu’à {retentionDays} jours. Bob ne persiste pas le flux du microphone. L’objet audio peut rester privé dans le fil 15 minutes, par URL signée de 30 secondes maximum ; métadonnées 30 jours et purge à certifier.',
   },
   'agent.global.diagnosticTraceConfirm': {
     pote: 'Continuer',
@@ -9841,7 +9856,7 @@ const legacyFr = {
     direct: 'Abonnement injoignable. Réessaie.',
   },
 
-  // ── Audit stores 20260716 — footer légal + suppression de compte (Apple 5.1.1(v)) ─────────
+  // ── Footer légal + clôture d'accès (la suppression complète des données reste à livrer) ───
   'account.sectionLegal': { pote: 'Infos légales', pro: 'Informations légales', direct: 'Légal' },
   'account.appVersion': {
     pote: 'Version {version}',
@@ -9874,14 +9889,14 @@ const legacyFr = {
     direct: 'Zone dangereuse',
   },
   'account.deleteAccountRow': {
-    pote: 'Supprimer mon compte',
-    pro: 'Supprimer mon compte',
-    direct: 'Supprimer le compte',
+    pote: 'Clôturer mon compte',
+    pro: 'Clôturer mon compte',
+    direct: 'Clôturer le compte',
   },
   'account.deleteAccountRowSub': {
-    pote: 'Fermeture définitive de ton accès',
-    pro: 'Fermeture définitive de votre accès',
-    direct: 'Fermeture définitive',
+    pote: 'Accès fermé définitivement · données métier conservées',
+    pro: 'Accès fermé définitivement · données métier conservées',
+    direct: 'Accès fermé · données conservées',
   },
   'account.gdprNote': {
     pote: 'Tu peux aussi demander l’export de tes données — écris-nous à {email}.',
@@ -9889,34 +9904,34 @@ const legacyFr = {
     direct: 'Export de données : {email}.',
   },
   'account.deleteSheetTitle': {
-    pote: 'Supprimer ton compte ?',
-    pro: 'Supprimer votre compte ?',
-    direct: 'Supprimer le compte ?',
+    pote: 'Clôturer ton compte ?',
+    pro: 'Clôturer votre compte ?',
+    direct: 'Clôturer le compte ?',
   },
   'account.deleteSheetIntro': {
-    pote: 'C’est une action définitive, à froid — pas à la voix. Voici exactement ce qui se passe.',
-    pro: 'Cette action est définitive. Voici précisément ce qu’elle implique.',
-    direct: 'Action définitive et irréversible.',
+    pote: 'Cette action ferme définitivement ton accès. Elle ne supprime pas immédiatement toutes les données métier.',
+    pro: 'Cette action ferme définitivement votre accès. Elle ne supprime pas immédiatement toutes les données métier.',
+    direct: 'Accès fermé définitivement. Pas de purge immédiate des données métier.',
   },
   'account.deleteSheetGoesTitle': {
-    pote: 'Ce qui disparaît',
-    pro: 'Ce qui disparaît',
-    direct: 'Supprimé',
+    pote: 'Ce qui est coupé maintenant',
+    pro: 'Ce qui est coupé maintenant',
+    direct: 'Coupé maintenant',
   },
   'account.deleteSheetGoesBody': {
-    pote: 'Ton accès à l’appli et tes informations personnelles (nom, contact) sont supprimés.',
-    pro: 'Votre accès à l’application et vos informations personnelles (nom, contact) sont supprimés.',
-    direct: 'Accès + infos personnelles supprimés.',
+    pote: 'Ton accès, l’abonnement, les liens publics et les notifications sont coupés. La suppression de ton identifiant de connexion est ensuite tentée.',
+    pro: 'Votre accès, l’abonnement, les liens publics et les notifications sont coupés. La suppression de votre identifiant de connexion est ensuite tentée.',
+    direct: 'Accès et capacités actives coupés. Suppression de l’identifiant de connexion tentée ensuite.',
   },
   'account.deleteSheetStaysTitle': {
-    pote: 'Ce qui reste — obligation légale',
-    pro: 'Ce qui reste — obligation légale',
-    direct: 'Conservé — obligation légale',
+    pote: 'Ce qui reste dans le dossier',
+    pro: 'Ce qui reste dans le dossier',
+    direct: 'Données métier conservées',
   },
   'account.deleteSheetStaysBody': {
-    pote: 'Tes factures et devis déjà émis restent conservés 10 ans, comme l’exige la loi — même après la suppression de ton compte. Personne n’y touche.',
-    pro: 'Vos factures et devis déjà émis restent conservés 10 ans, comme l’exige la loi, même après la suppression de votre compte.',
-    direct: 'Factures/devis déjà émis conservés 10 ans (loi).',
+    pote: 'Entreprise, clients, brouillons, devis et documents restent actuellement conservés après la clôture. Les pièces comptables concernées restent 10 ans. Pour demander l’effacement du reste, contacte le support.',
+    pro: 'L’entreprise, les clients, brouillons, devis et documents restent actuellement conservés après la clôture. Les pièces comptables concernées restent 10 ans. L’effacement du reste doit être demandé au support.',
+    direct: 'Données métier conservées après clôture. Pièces comptables concernées : 10 ans. Effacement du reste sur demande au support.',
   },
   'account.deleteSheetConfirmLabel': {
     pote: 'Pour confirmer, écris le nom de ton entreprise :',
@@ -9939,15 +9954,15 @@ const legacyFr = {
     direct: 'Motif (facultatif)',
   },
   'account.deleteSheetSubmit': {
-    pote: 'Supprimer définitivement mon compte',
-    pro: 'Supprimer définitivement mon compte',
-    direct: 'Supprimer définitivement',
+    pote: 'Clôturer définitivement mon accès',
+    pro: 'Clôturer définitivement mon accès',
+    direct: 'Clôturer définitivement',
   },
   'account.deleteSheetCancel': { pote: 'Annuler', pro: 'Annuler', direct: 'Annuler' },
   'account.deleteSheetError': {
-    pote: 'Je n’arrive pas à supprimer ton compte, là. Réessaie.',
-    pro: 'Impossible de supprimer votre compte pour le moment. Veuillez réessayer.',
-    direct: 'Suppression impossible. Réessaie.',
+    pote: 'Je n’arrive pas à clôturer ton compte, là. Réessaie.',
+    pro: 'Impossible de clôturer votre compte pour le moment. Veuillez réessayer.',
+    direct: 'Clôture impossible. Réessaie.',
   },
 
   // ── C-EXP-UI1 — les moteurs d'expertise à l'écran ──────────────────────────

@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   advanceGlobalBobSessionStopFence,
+  deriveGlobalBobRecoveryAction,
+  deriveGlobalBobRecoveryPresentation,
   deriveGlobalBobSessionStopReason,
+  navigateGlobalBobTextRecovery,
   isBobEntryRoute,
   isGlobalBobSubscriptionVerified,
 } from './global-bob-access-session-policy';
+import { consumeAssistantTextRecoveryFocus } from '../assistant/text-recovery-focus';
 
 describe('GlobalBobAccess — session masquée fail-closed', () => {
   it('refuse comme autorité un payload en cache dont le refetch a échoué', () => {
@@ -100,5 +104,69 @@ describe('GlobalBobAccess — session masquée fail-closed', () => {
       sessionActive: true,
       stopReason: 'entitlement_unconfirmed',
     }).shouldStop).toBe(true);
+  });
+
+  it('propose le texte uniquement après une issue terminale inactive', () => {
+    for (const issue of ['denied', 'unavailable', 'failed'] as const) {
+      expect(deriveGlobalBobRecoveryAction({
+        active: false,
+        reviewRequired: false,
+        hasHandoff: false,
+        issue,
+      })).toBe('write_in_assistant');
+    }
+    expect(deriveGlobalBobRecoveryAction({
+      active: true,
+      reviewRequired: false,
+      hasHandoff: false,
+      issue: 'failed',
+    })).toBe('none');
+    expect(deriveGlobalBobRecoveryAction({
+      active: false,
+      reviewRequired: false,
+      hasHandoff: false,
+      issue: null,
+    })).toBe('none');
+  });
+
+  it('conserve le handoff scellé comme unique action prioritaire', () => {
+    expect(deriveGlobalBobRecoveryAction({
+      active: false,
+      reviewRequired: true,
+      hasHandoff: true,
+      issue: 'failed',
+    })).toBe('continue_in_assistant');
+    expect(deriveGlobalBobRecoveryAction({
+      active: false,
+      reviewRequired: true,
+      hasHandoff: false,
+      issue: 'failed',
+    })).toBe('write_in_assistant');
+  });
+
+  it('la sortie texte navigue vers l’Assistant sans autre capacité injectable', () => {
+    expect(consumeAssistantTextRecoveryFocus()).toBe(false);
+    const routes: string[] = [];
+    navigateGlobalBobTextRecovery((route) => routes.push(route));
+    expect(routes).toEqual(['/(tabs)/assistant']);
+    expect(consumeAssistantTextRecoveryFocus()).toBe(true);
+    expect(consumeAssistantTextRecoveryFocus()).toBe(false);
+  });
+
+  it('le dismiss démonte et désannonce atomiquement une récupération même si un état stale subsiste', () => {
+    expect(deriveGlobalBobRecoveryPresentation({
+      response: 'La dictée locale est indisponible.',
+      active: false,
+      reviewRequired: false,
+      hasHandoff: false,
+      issue: 'unavailable',
+    })).toEqual({ cardVisible: true, action: 'write_in_assistant' });
+    expect(deriveGlobalBobRecoveryPresentation({
+      response: null,
+      active: false,
+      reviewRequired: false,
+      hasHandoff: false,
+      issue: 'unavailable',
+    })).toEqual({ cardVisible: false, action: 'none' });
   });
 });

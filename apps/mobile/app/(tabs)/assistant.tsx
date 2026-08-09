@@ -40,6 +40,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   Animated,
+  AccessibilityInfo,
   Easing,
   KeyboardAvoidingView,
   Platform,
@@ -86,6 +87,11 @@ import {
   derivePendingPreview,
   type PendingPreviewState,
 } from '../../src/assistant/pending-preview';
+import {
+  useAssistantTextRecoveryFocus,
+  useAssistantVoiceErrorRecovery,
+} from '../../src/assistant/text-recovery-focus';
+import { composeGlobalBobSilentIssueAlert } from '../../src/components/global-bob-access-a11y';
 
 interface ChatItem {
   readonly id: string;
@@ -524,6 +530,10 @@ export default function Assistant() {
       };
     }, []),
   );
+  useAssistantTextRecoveryFocus(
+    assistantFocused && assistantEntitlement.verified && entitled,
+    inputRef,
+  );
 
   const toggleLive = (): void => {
     const plan = planAssistantRealtimeControl({
@@ -755,6 +765,22 @@ export default function Assistant() {
   const displayedLiveCopy = globalSession.response !== null && !responseAlreadyInConversation
     ? globalSession.response
     : t(displayedLiveStateKey, { personality });
+  const assistantVoiceErrorMessage = displayedLiveState === 'error' && showLiveStatus
+    ? composeGlobalBobSilentIssueAlert({
+        response: globalSession.response,
+        fallbackStateLabel: displayedLiveCopy,
+        recoveryActionLabel: t('agent.global.writeInAssistant', { personality }),
+      })
+    : null;
+  const announceAssistantVoiceError = useCallback((message: string): void => {
+    if (Platform.OS === 'ios') AccessibilityInfo.announceForAccessibility(message);
+  }, []);
+  useAssistantVoiceErrorRecovery({
+    ready: assistantFocused && assistantEntitlement.verified && entitled,
+    message: assistantVoiceErrorMessage,
+    inputRef,
+    announce: announceAssistantVoiceError,
+  });
 
   useEffect(() => {
     // Une sheet ouverte avant Bob Live ne reste jamais armée derrière l'overlay vocal.
@@ -878,7 +904,10 @@ export default function Assistant() {
           </View>
           <View style={{ flex: 1 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
-              <Text style={[font('section'), { fontSize: 18, color: colors.ink900 }]}>
+              <Text
+                accessibilityRole="header"
+                style={[font('section'), { fontSize: 18, color: colors.ink900 }]}
+              >
                 {t('assistant.title', { personality })}
               </Text>
               {reachable !== null ? <View
@@ -1098,9 +1127,9 @@ export default function Assistant() {
           ) : null}
           {showLiveStatus ? (
             <View
-              accessibilityRole="text"
-              accessibilityLiveRegion="polite"
-              accessibilityLabel={displayedLiveCopy}
+              accessibilityRole={displayedLiveState === 'error' ? 'alert' : 'text'}
+              accessibilityLiveRegion={displayedLiveState === 'error' ? 'assertive' : 'polite'}
+              accessibilityLabel={assistantVoiceErrorMessage ?? displayedLiveCopy}
               style={{
                 marginHorizontal: 16,
                 marginTop: 6,

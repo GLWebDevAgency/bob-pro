@@ -58,7 +58,9 @@ describe('Bob Live mobile — propriétaire Realtime unique', () => {
 
   it('le chrome Assistant rend la réponse terminale et son action de fermeture', () => {
     expect(assistant).toContain('responseAlreadyInConversation');
-    expect(assistant).toContain('accessibilityLabel={displayedLiveCopy}');
+    expect(assistant).toContain(
+      'accessibilityLabel={assistantVoiceErrorMessage ?? displayedLiveCopy}',
+    );
     expect(assistant).toContain('displayedLive ? globalSession.stop : globalSession.dismissResponse');
     expect(assistant).toContain("displayedLive ? 'agent.global.stop' : 'agent.global.dismiss'");
     expect(assistant).toContain("name={displayedLive ? 'stop' : 'pulse'}");

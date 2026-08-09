@@ -1,10 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import {
+  composeGlobalBobSilentIssueAlert,
   deriveGlobalBobAccessibilityAnnouncement,
   deriveGlobalBobAccessibilityLiveRegion,
 } from './global-bob-access-a11y';
 
 describe('GlobalBobAccess — annonces des lecteurs d’écran', () => {
+  it('annonce la cause précise avant la sortie texte, sans se limiter à « erreur »', () => {
+    expect(composeGlobalBobSilentIssueAlert({
+      response: 'La dictée locale est indisponible.',
+      fallbackStateLabel: 'La demande a échoué',
+      recoveryActionLabel: 'Écrire dans l’Assistant',
+    })).toBe('La dictée locale est indisponible. Écrire dans l’Assistant');
+    expect(composeGlobalBobSilentIssueAlert({
+      response: null,
+      fallbackStateLabel: 'La demande a échoué',
+      recoveryActionLabel: null,
+    })).toBe('La demande a échoué');
+  });
+
   it('reste silencieux lorsque Bob est masqué ou au repos', () => {
     expect(deriveGlobalBobAccessibilityAnnouncement({
       visible: false,

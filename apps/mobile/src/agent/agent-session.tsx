@@ -704,6 +704,21 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
         else setSessionPhase(terminalPhase);
         return;
       }
+      // Frontière semi-duplex autoritaire : `cancel()` ne résout positivement qu'après le terminal
+      // natif, la grâce et la libération du lease d'entrée. Sans cette preuve, Expo Speech recevrait
+      // `audio_busy` et la réponse serait perdue silencieusement.
+      const inputReleased = await voiceRef.current.cancel();
+      if (!inputReleased) {
+        const outputIssue = t('agent.global.outputUnavailable', { personality });
+        activeRef.current = false;
+        realtimeActiveRef.current = false;
+        driverRef.current = 'idle';
+        setActive(false);
+        setIssue('unavailable');
+        setResponse((current) => current === null ? outputIssue : `${current}\n\n${outputIssue}`);
+        setSessionPhase('error');
+        return;
+      }
       setSessionPhase('speaking');
       if (currentTraceRef.current && currentTraceRef.current.sayStartAt === undefined) {
         currentTraceRef.current.sayStartAt = Date.now();
@@ -721,8 +736,19 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
       // S6 : le texte est SANITIZÉ pour l'oreille (puces, tirets, montants) — l'écran garde
       // le gabarit intact (setResponse en amont) et l'echo-guard référence ce qui est DIT.
       const delivery = planSpokenDelivery(clean);
-      await speakSentences(delivery.sentences ?? [delivery.text]);
+      const speechOutcome = await speakSentences(delivery.sentences ?? [delivery.text]);
       lastSpokenRef.current = { text: delivery.text, endedAt: Date.now() };
+      if (speechOutcome.failed) {
+        const outputIssue = t('agent.global.outputUnavailable', { personality });
+        activeRef.current = false;
+        realtimeActiveRef.current = false;
+        driverRef.current = 'idle';
+        setActive(false);
+        setIssue('unavailable');
+        setResponse((current) => current === null ? outputIssue : `${current}\n\n${outputIssue}`);
+        setSessionPhase('error');
+        return;
+      }
       if (!continueListening || !activeRef.current) {
         setSessionPhase(terminalPhase);
         return;
@@ -730,7 +756,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
       await wait(500);
       await listen();
     },
-    [listen, setSessionPhase, speakSentences],
+    [listen, personality, setSessionPhase, speakSentences],
   );
 
   const spokenGreetingsRef = useRef<Set<string>>(new Set());
@@ -743,8 +769,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
       if (!current || current.key !== key) return;
       spokenGreetingsRef.current.add(key); // consommé au moment où on le PREND EN CHARGE
       pendingGreetingRef.current = null;
-      // Semi-duplex : jamais de TTS micro ouvert — l'oreille en cours est annulée d'abord.
-      await voiceRef.current.cancel();
+      // `say` porte l'unique frontière attendable entrée → sortie.
       await say(current.text, true);
     },
     [say],
@@ -882,7 +907,6 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
         );
         activeRef.current = false;
         setActive(false);
-        await voiceRef.current.cancel();
         // S4 — CONTINUITÉ MAINS-LIBRES : la consigne se PRONONCE avec la réponse AVANT la
         // mise en veille — sans regarder l'écran, l'utilisateur sait que ça se termine dans
         // l'Assistant. L'affichage garde body et consigne séparés (carte GlobalBobAccess).
@@ -1067,11 +1091,13 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
   const dismissResponse = useCallback((): void => {
     setResponse(null);
     setTranscript(null);
+    setIssue(null);
+    setSessionPhase('idle');
     setReviewRequired(false);
     setContextAtTurn(null);
     replaceHandoff(null);
     setDiagnosticTrace(null);
-  }, [replaceHandoff]);
+  }, [replaceHandoff, setSessionPhase]);
 
   const consumeHandoff = useCallback((id: string): void => {
     const consumed = consumeAgentSessionHandoff(handoffRef.current, id);
