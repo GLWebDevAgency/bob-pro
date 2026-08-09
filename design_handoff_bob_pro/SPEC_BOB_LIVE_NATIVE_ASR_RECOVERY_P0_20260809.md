@@ -5,7 +5,7 @@ Date : 9 août 2026
 Objectifs parents : O3 (repli classique compatible avec le chemin vocal de publication) et O7
 (release reproductible). O5 (Voice Trace corrélée/SLO) n'est pas livré par ce lot.
 
-Statut : `specified`
+Statut : `implemented`
 
 ## 1. Objectif
 
@@ -216,24 +216,29 @@ Le texte libre `message` du moteur n'est ni une autorité de classification, ni 
 - `released` : promotion selon `PR → staging validé → production`, sans changement silencieux de
   fournisseur ou activation de capacité Mission supplémentaire.
 
-Tant qu'une PR atomique/commit de preuve n'existe pas et que la revue adversariale conserve des
-critères ouverts, le lot reste `specified`, même si l'implémentation candidate et ses preuves
-logicielles existent dans le worktree. Les preuves appareils sont ensuite nécessaires pour passer
-à `certified` ; aucune réponse ne présente ce lot comme « 100 % certifié production ».
+Le code applicatif figé au commit `7d5720006305579b2abdfdb65c0d90197476bee4`, ses preuves locales
+reproductibles et la revue adversariale sans P0/P1 local satisfont le niveau `implemented`. Le
+commit documentaire qui consigne ces preuves ne change aucun runtime. Les preuves CI, artefact et
+appareils restent nécessaires pour passer à `certified` ; aucune réponse ne présente ce lot comme
+« 100 % certifié production ».
 
-## 8. Preuves de l'implémentation candidate — 9 août 2026
+## 8. Preuves de l'implémentation — 10 août 2026
 
-Preuves reproduites depuis ce checkout :
+Preuves reproduites depuis un worktree détaché propre au commit applicatif exact
+`7d5720006305579b2abdfdb65c0d90197476bee4` :
 
-- mobile : 208 fichiers / 2 236 tests, plus 16 tests de redirection d'authentification ; typecheck
+- mobile : 209 fichiers / 2 237 tests, plus 16 tests de redirection d'authentification ; typecheck
   et ESLint des fichiers modifiés verts ;
 - core : 241 fichiers / 3 180 tests et typecheck verts ;
 - UI : 56 fichiers / 508 tests et typecheck verts ; i18n : 113 tests et typecheck verts ;
 - sign-web : 4 tests de parité légale, typecheck et build Next de production verts ;
 - API clôture de compte : 4 tests ; typechecks API et api-client verts ;
-- dépendances : installation `--frozen-lockfile` verte et patchs pnpm appliqués ;
-- Android : `:app:compileDebugKotlin` et `:bob-live-audio:testDebugUnitTest`, 421 tâches, succès ;
-- iOS : build complet du dev client sur simulateur avec Xcode 26.6, succès ;
+- dépendances et build workspace : installation `--frozen-lockfile` verte, patchs pnpm appliqués et
+  build racine 10/10 vert ;
+- Android : `:app:compileDebugKotlin` et `:bob-live-audio:testDebugUnitTest` avec JDK 17 et la
+  configuration preview/staging, 421 tâches, succès ;
+- iOS : build complet du dev client arm64 sur simulateur avec Xcode 26.6, configuration
+  preview/staging et signature désactivée, succès ;
 - revue adversariale à trois voix : aucun P0/P1 restant dans le runtime local ASR/TTS classique,
   le lifecycle natif, le contrat Expo/TypeScript ou le parcours texte accessible.
 
