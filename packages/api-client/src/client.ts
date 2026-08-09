@@ -1268,13 +1268,15 @@ export interface BobClient {
   startCheckout(tier: PlanTier): Promise<Result<{ url: string }, AppError>>;
   billingPortal(): Promise<Result<{ url: string }, AppError>>;
   /**
-   * DELETE /account (Apple 5.1.1(v)) — clôture DÉFINITIVE du compte courant. JAMAIS un cascade
-   * delete : marque la company clôturée (accès révoqué), annule l'abonnement, révoque les liens
-   * de signature publics + les push tokens, PUIS supprime le user Supabase Auth (identité
-   * personnelle — email/téléphone/prénom, jamais stockée en Postgres). `confirmationText` DOIT
+   * DELETE /account — clôture DÉFINITIVE de l'accès courant. JAMAIS un cascade delete : marque la
+   * company clôturée (accès révoqué), annule l'abonnement, révoque les liens de signature publics
+   * + les push tokens, PUIS tente de supprimer le profil de connexion Supabase Auth. Les champs
+   * professionnels conservés en Postgres peuvent rester personnels pour un entrepreneur
+   * individuel ; ce flux ne constitue donc pas une suppression complète de compte au sens des
+   * stores. `confirmationText` DOIT
    * égaler exactement le nom de l'entreprise (anti-tap accidentel, revalidé serveur) — un texte
    * erroné renvoie une AppError 'validation', la company reste ouverte. AUCUNE parité vocale :
-   * la destruction de compte ne s'invoque jamais par la voix.
+   * la clôture d'accès ne s'invoque jamais par la voix.
    */
   closeAccount(input: {
     confirmationText: string;

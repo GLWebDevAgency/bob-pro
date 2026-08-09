@@ -1,14 +1,12 @@
 /**
- * CloseAccountSheet — confirmation À FROID de la suppression de compte (audit stores 20260716,
- * bloquant #1, Apple 5.1.1(v)). Explique en clair (papa-vocal, MAIS jamais à la voix — voir plus
- * bas) ce qui disparaît (accès + infos personnelles) et ce qui reste (factures/devis déjà émis,
- * 10 ans, obligation légale), puis exige de retaper le nom exact de l'entreprise avant d'activer
- * le bouton destructif — anti-tap accidentel, revalidé de toute façon côté serveur
- * (CloseAccount @bob/core).
+ * CloseAccountSheet — confirmation À FROID de la clôture de compte. Le runtime ne livre pas une
+ * purge complète : il ferme l'accès et les capacités actives, tente la suppression Auth et conserve
+ * actuellement le dossier métier. La feuille décrit exactement cette portée avant de demander le
+ * nom de l'entreprise — anti-tap accidentel, revalidé côté serveur (CloseAccount @bob/core).
  *
  * AUCUNE PARITÉ VOCALE — CHOIX DÉLIBÉRÉ : toutes les autres actions de Bob Pro visent la réussite
- * à la voix (philosophie « papa vocal »). Celle-ci fait EXCEPTION explicitement : la destruction
- * définitive d'un compte ne doit jamais pouvoir être déclenchée par une reconnaissance vocale
+ * à la voix (philosophie « papa vocal »). Celle-ci fait EXCEPTION explicitement : la clôture
+ * irréversible de l'accès ne doit jamais pouvoir être déclenchée par une reconnaissance vocale
  * imparfaite, un enfant qui joue avec le micro, ou un bruit de fond mal interprété. Ce composant
  * n'est donc JAMAIS publié dans un AgentContext (usePublishAgentContext) et ne définit aucune
  * affordance vocale — un tap déterministe + une saisie exacte du nom de l'entreprise, point.

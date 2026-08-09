@@ -123,7 +123,8 @@ export class TenantPersistenceInterceptor implements NestInterceptor {
     return from(
       runWithTenantPostCommitBoundary(
         () => this.persistence.runWithTenant(companyId, async () => {
-          // Clôture de compte (CloseAccount, Apple 5.1.1(v)) : DANS la transaction tenant (donc
+          // Clôture d'accès (CloseAccount, sans purge des données associées) : DANS la transaction
+          // tenant (donc
           // après pose du GUC RLS) pour que ce lookup voie le même row que la politique appliquera
           // — un findById hors transaction serait fail-closed sous FORCE RLS en prod (rôle
           // non-superuser) et laisserait ce garde silencieusement inopérant. La route DELETE

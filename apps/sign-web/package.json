@@ -7,6 +7,7 @@
     "build": "next build",
     "deploy:vercel:prod": "vercel pull --yes --environment=production && vercel build --prod && vercel deploy --prebuilt --prod",
     "start": "next start",
+    "test": "node --test app/legal/confidentialite/content.test.mjs app/legal/conditions-utilisation/content.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

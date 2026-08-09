@@ -11425,7 +11425,8 @@ export class BackendService {
   }
 
   /**
-   * DELETE /account (Apple 5.1.1(v)) — clôture DÉFINITIVE du compte courant. JAMAIS un cascade
+   * DELETE /account — clôture DÉFINITIVE de l'accès courant, pas suppression complète des données.
+   * JAMAIS un cascade
    * delete : cf. CloseAccount (@bob/core) pour l'architecture (closedAt additif, pièces
    * comptables INTACTES — rétention légale 10 ans, Code de commerce). Orchestration en DEUX temps
    * volontairement SÉPARÉS de la transaction HTTP auto-ouverte par TenantPersistenceInterceptor
@@ -11433,9 +11434,9 @@ export class BackendService {
    *  1) DANS runWithTenant, tout-ou-rien Postgres : le use case core (closedAt, abonnement
    *     canceled, liens de signature publics révoqués) PUIS la purge des push tokens (Device,
    *     hors @bob/core — le port core ne connaît pas cette table).
-   *  2) APRÈS COMMIT, hors transaction : suppression du user Supabase Auth. C'est LE point où
-   *     l'identité PERSONNELLE (prénom, email, téléphone — user_metadata) disparaît réellement :
-   *     Postgres n'en a jamais stocké la moindre trace (cf. commentaire CompanyProps.closedAt).
+   *  2) APRÈS COMMIT, hors transaction : suppression du profil de connexion Supabase Auth
+   *     (email/téléphone de login et user_metadata). Les coordonnées, identifiants et données
+   *     professionnelles de `Company` restent dans Postgres et peuvent être personnelles pour un EI.
    *     Best-effort et loggé, jamais bloquant : un échec Supabase (réseau, 5xx transitoire) laisse
    *     le compte DÉJÀ clôturé côté Bob Pro (closedAt posé, tenant inaccessible derrière le guard) —
    *     la reprise est un retry de CET appel Supabase seul (deleteUser sur un user déjà supprimé

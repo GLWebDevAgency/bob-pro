@@ -206,7 +206,9 @@ export function useBillingPortal() {
 }
 
 /**
- * DELETE /account (Apple 5.1.1(v)) — clôture DÉFINITIVE du compte courant. Aucun onSuccess ici :
+ * DELETE /account — clôture DÉFINITIVE de l'accès courant, pas suppression des données associées.
+ * Ce flux ne suffit donc pas, à lui seul, à satisfaire l'exigence de suppression de compte des
+ * stores. Aucun onSuccess ici :
  * la composition (signOut() + retour login automatique via le gate de session) vit dans l'appelant
  * (CloseAccountSheet), pour rester séquencée avec la confirmation locale AVANT toute navigation.
  * Aucun alertError générique non plus : l'écran affiche l'erreur inline (texte de confirmation

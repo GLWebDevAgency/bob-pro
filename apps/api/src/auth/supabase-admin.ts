@@ -29,9 +29,9 @@ export interface SupabaseAdminPort {
   /** Enrichissement d'affichage uniquement ; ne participe jamais au RBAC. */
   getUserIdentity?(userId: string): Promise<{ email: string | null; displayName: string | null }>;
   /**
-   * Clôture de compte (CloseAccount, Apple 5.1.1(v)) — supprime le user GoTrue : c'est LE point
-   * où l'identité personnelle (email, téléphone, user_metadata.first_name…) disparaît réellement,
-   * puisque Postgres ne stocke jamais ces données (cf. Company.closedAt). Idempotent côté appelant
+   * Clôture de compte — supprime le profil GoTrue (email/téléphone de login et user_metadata).
+   * Cette opération ne purge pas les coordonnées, identifiants ni données métier stockés dans
+   * Postgres, qui peuvent être personnels pour un entrepreneur individuel. Idempotent côté appelant
    * (BackendService.closeAccount) : un 404 GoTrue (déjà supprimé) est traité comme un succès.
    */
   deleteUser(userId: string): Promise<void>;

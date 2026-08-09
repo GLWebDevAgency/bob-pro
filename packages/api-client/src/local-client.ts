@@ -1235,9 +1235,10 @@ export class LocalBobClient implements BobClient {
   }
 
   /**
-   * DELETE /account (démo hors-ligne, Apple 5.1.1(v)) — MÊME use case @bob/core que le serveur
-   * (CloseAccount) : closedAt posé, liens de signature publics révoqués. Aucune identité
-   * Supabase à supprimer en local (pas de session réelle) — le signOut() mobile fait le reste.
+   * DELETE /account (démo hors-ligne) — MÊME use case @bob/core que le serveur (CloseAccount) :
+   * closedAt posé, liens de signature publics révoqués, sans purge des données associées. Aucun
+   * profil Supabase Auth à supprimer en local (pas de session réelle) — le signOut() mobile fait
+   * le reste. Ce flux est une clôture d'accès, pas une suppression complète de compte.
    */
   async closeAccount(input: {
     confirmationText: string;

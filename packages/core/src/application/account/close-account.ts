@@ -26,7 +26,8 @@ export interface CloseAccountView {
 }
 
 /**
- * CloseAccount (Apple App Store Review Guideline 5.1.1(v) — suppression de compte in-app).
+ * CloseAccount — clôture d'accès in-app actuellement livrée. Ce use case ne constitue pas, à lui
+ * seul, la suppression complète du compte et des données associées attendue pour une publication.
  *
  * ARCHITECTURE : CLÔTURE + RÉTENTION LÉGALE, JAMAIS UN CASCADE DELETE.
  * Deux raisons, l'une technique et l'une légale, convergent vers la même décision :
@@ -38,16 +39,16 @@ export interface CloseAccountView {
  * Cette use case ne touche donc JAMAIS aux factures/devis/écritures : elle marque la company
  * `closedAt` (le guard tenant API refuse ensuite toute requête sur ce tenant — 403 « compte
  * clôturé ») et coupe les capacités actives qui pourraient encore agir en son nom (abonnement,
- * liens de signature publics). Les push tokens (table `devices`, hors @bob/core) et la
- * suppression du user Supabase Auth (identité personnelle : prénom/email/téléphone — ENTIÈREMENT
- * hors Postgres, cf. commentaire CompanyProps.closedAt) sont orchestrés par l'appelant
- * (BackendService.closeAccount), pas ici : ce use case ne connaît que les ports @bob/core.
+ * liens de signature publics). Les push tokens (table `devices`, hors @bob/core) et la suppression
+ * du profil de connexion Supabase Auth (email/téléphone de login et `user_metadata`) sont orchestrés
+ * par l'appelant (BackendService.closeAccount), pas ici : ce use case ne connaît que les ports
+ * @bob/core.
  *
- * ANONYMISATION : cette company n'a AUCUN champ « identité personnelle de l'utilisateur » — name/
- * siret/address/iban/decennale sont l'identité LÉGALE DE L'ENTREPRISE, relue en direct par le
- * rendu des pièces déjà émises (ex. renderInvoicePdf) : les modifier après coup falsifierait
- * rétroactivement des documents légalement retenus. Rien n'est donc anonymisé ici — c'est le
- * point, documenté pour ne jamais être « corrigé » par erreur vers un cascade delete plus tard.
+ * ANONYMISATION : `Company` conserve name/SIRET/adresse/email/téléphone/IBAN et d'autres données
+ * professionnelles. Pour un entrepreneur individuel, plusieurs de ces champs sont aussi des
+ * données personnelles. Elles sont relues par le rendu des pièces émises ; ce use case ne les
+ * classifie, ne les dissocie et ne les anonymise pas. Une purge distincte doit préserver uniquement
+ * les données dont la conservation est réellement obligatoire, sans falsifier les pièces retenues.
  *
  * IDEMPOTENT : un second appel avec le MÊME confirmationText renvoie `alreadyClosed: true` sans
  * rejouer la clôture/l'annulation d'abonnement (closedAt conservé tel quel, revokeAllForCompany

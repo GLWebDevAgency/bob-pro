@@ -326,9 +326,11 @@ describe('CARVE-OUT compliance — pied légal, version, zone dangereuse INTOUCH
     expect(styleOf(version!)).toContain(`"color":"${neutrals.slate300}"`);
   });
 
-  it('la zone dangereuse (suppression de compte) est toujours là, inchangée', async () => {
+  it('la zone dangereuse décrit honnêtement la clôture, sans promettre une purge', async () => {
     const rendered = treeOf(await render());
-    expect(rendered).toContain('Supprimer mon compte');
+    expect(rendered).toContain('Clôturer mon compte');
+    expect(rendered).toContain('données métier conservées');
+    expect(rendered).not.toContain('Supprimer mon compte');
   });
 });
 

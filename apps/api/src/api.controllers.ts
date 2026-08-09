@@ -2310,7 +2310,9 @@ export class OnboardingController {
 }
 
 /**
- * DELETE /account (Apple 5.1.1(v)) — clôture DÉFINITIVE et IRRÉVERSIBLE du compte courant.
+ * DELETE /account — clôture DÉFINITIVE et IRRÉVERSIBLE de l'accès courant, sans purge des données
+ * associées. Ce flux ne suffit donc pas, à lui seul, à satisfaire l'exigence de suppression de
+ * compte des stores.
  * Controller MINCE : validation de forme + délégation (cf. BackendService.closeAccount pour
  * l'orchestration complète). `@WithoutTenantPersistenceTransaction` : la transaction tenant HTTP
  * automatique n'est PAS ouverte ici — closeAccount gère elle-même son runWithTenant COURT (DB

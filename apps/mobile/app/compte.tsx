@@ -217,7 +217,7 @@ export default function Compte() {
   const say = (key: I18nKey, params?: Record<string, string | number>) =>
     t(key, params ? { personality, params } : { personality });
 
-  // Audit stores 20260716 (bloquants #1 et #4) : suppression de compte + footer légal.
+  // Audit stores 20260716 : clôture d'accès + footer légal ; suppression complète encore à livrer.
   const [deleteSheetOpen, setDeleteSheetOpen] = useState(false);
   const appVersion = Constants.expoConfig?.version ?? '—';
   const openExternalUrl = (url: string): void => {
@@ -665,8 +665,8 @@ export default function Compte() {
               {say('account.appVersion', { version: appVersion })}
             </Text>
 
-            {/* Zone dangereuse — suppression de compte (Apple 5.1.1(v)), AUCUNE parité vocale
-                (choix délibéré, cf. CloseAccountSheet) : uniquement pour un compte réel authentifié. */}
+            {/* Zone dangereuse — clôture de l'accès, portée réelle explicitée par CloseAccountSheet.
+                AUCUNE parité vocale : uniquement pour un compte réel authentifié. */}
             {authEnabled ? (
               <>
                 <SectionHeader title={say('account.dangerZoneTitle')} />

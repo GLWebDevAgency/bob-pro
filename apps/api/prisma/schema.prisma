@@ -324,12 +324,14 @@ model Company {
   policyNo                                    String?
   coverage                                    String?
   policyExpiresAt                             DateTime?
-  // Clôture de compte (Apple 5.1.1(v), CloseAccount @bob/core) — additif, JAMAIS un cascade
-  // delete : présent = tenant clôturé (guard API : 403 « compte clôturé »). TOUS les autres
+  // Clôture d'accès Bob Pro (CloseAccount @bob/core) — additif, JAMAIS un cascade delete et
+  // insuffisant, à lui seul, pour satisfaire l'exigence de suppression de compte des stores :
+  // présent = tenant clôturé (guard API : 403 « compte clôturé »). TOUS les autres
   // champs de ce modèle restent INTACTS après clôture — ce sont la source live relue à chaque
   // régénération d'une pièce déjà émise (factures/devis), la rétention légale de 10 ans (Code de
-  // commerce) l'exige. L'identité PERSONNELLE de l'utilisateur (prénom, email, téléphone) ne vit
-  // jamais ici : elle est entièrement dans Supabase Auth, supprimée via l'admin API en parallèle.
+  // commerce) l'exige. Seul le profil de connexion (email/téléphone de login, user_metadata) vit
+  // dans Supabase Auth. Les champs professionnels ci-dessus peuvent aussi être des données
+  // personnelles pour un entrepreneur individuel et restent actuellement intacts après clôture.
   closedAt                                    DateTime?
   closureReason                               String?
   customers                                   Customer[]

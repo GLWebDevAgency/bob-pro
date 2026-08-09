@@ -56,7 +56,7 @@ async function seedDevice(p: InMemoryPersistence, companyId: string, token: stri
   });
 }
 
-describe('DELETE /account — BackendService.closeAccount (Apple 5.1.1(v))', () => {
+describe('DELETE /account — clôture d’accès, pas suppression des données associées', () => {
   it('confirmationText EXACT → clôture effective : closedAt posé, abonnement canceled, push purgé, Supabase deleteUser appelé APRÈS commit, audit loggé', async () => {
     const { service, p, admin, logger } = makeService();
     await seedCompanyAs(p, 'co-artisan-a');

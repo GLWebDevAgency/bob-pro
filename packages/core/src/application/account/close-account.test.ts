@@ -154,7 +154,7 @@ function buildDeps() {
   return { companies, subscriptions, publicAccessTokens, uow };
 }
 
-describe('CloseAccount — clôture de compte (Apple 5.1.1(v)), jamais un cascade delete', () => {
+describe('CloseAccount — clôture d’accès, jamais une suppression des données associées', () => {
   it('company introuvable → not_found, aucun effet de bord', async () => {
     const deps = buildDeps();
     const useCase = new CloseAccount(deps);

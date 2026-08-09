@@ -156,16 +156,17 @@ export interface CompanyProps extends CompanyRegistrationInput {
    *  décret n° 2022-424). Absent = jamais saisi, même doctrine que `email`. */
   phone?: string;
   /**
-   * Clôture de compte (Apple 5.1.1(v), CloseAccount @bob/core) — marqueur additif, JAMAIS un
-   * cascade delete : présent = la company est clôturée, le tenant n'est plus accessible (guard
+   * Clôture d'accès Bob Pro (CloseAccount @bob/core) — marqueur additif, JAMAIS un cascade
+   * delete et insuffisant, à lui seul, pour satisfaire l'exigence de suppression de compte des
+   * stores : présent = la company est clôturée, le tenant n'est plus accessible (guard
    * API), mais TOUT le reste de cet objet (name, siret, address, iban…) reste INTACT. C'est le
    * point : ces champs sont la source live lue à chaque régénération d'une pièce comptable déjà
    * émise (ex. renderInvoicePdf relit company.name/address/rcsOrRm), donc les MODIFIER après coup
    * falsifierait rétroactivement des factures/devis déjà émis — l'exact inverse de la rétention
-   * légale de 10 ans (Code de commerce). L'anonymisation du compte porte donc UNIQUEMENT sur
-   * l'identité personnelle de l'utilisateur (prénom, email, téléphone) : elle vit entièrement
-   * dans Supabase Auth (user_metadata), jamais ici — supprimée via l'admin API Supabase, en
-   * dehors de cet agrégat.
+   * légale de 10 ans (Code de commerce). Seul le profil de connexion (email/téléphone de login,
+   * user_metadata) vit dans Supabase Auth. Les champs professionnels de cet agrégat peuvent aussi
+   * constituer des données personnelles pour un entrepreneur individuel ; la clôture actuelle ne
+   * les anonymise pas et ne remplace pas un workflow de purge classifié.
    */
   closedAt?: Instant;
   /** Motif optionnel saisi par l'utilisateur à la clôture — jamais requis, jamais affiché ailleurs. */

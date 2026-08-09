@@ -161,16 +161,27 @@ pricing figé.]
 
 ---
 
-## Article 10 — Résiliation et clôture de compte
+## Article 10 — Résiliation et clôture de l'accès
 
-Vous pouvez supprimer votre compte à tout moment depuis les réglages de l'application. Nous pouvons
-également suspendre ou clôturer un compte en cas de violation de ces CGU, d'usage frauduleux, ou
-d'inactivité prolongée, après vous en avoir informé lorsque cela est possible.
+Vous pouvez **clôturer définitivement votre accès** depuis les réglages de l'application. Cette action
+n'est pas une suppression automatique de l'ensemble du compte et des données associées. Elle marque
+l'entreprise comme clôturée, annule l'abonnement, révoque les liens publics et supprime les appareils
+et diagnostics vocaux rattachés. La suppression de l'identifiant d'authentification est tentée, sans
+mécanisme de reprise durable actuellement livré en cas d'échec.
 
-La clôture de votre compte entraîne la suppression ou l'anonymisation de vos données, **à l'exception
-des pièces comptables (factures, écritures) que nous devons conserver 10 ans** en application d'une
-obligation légale (Code de commerce). Voir la section « Durée de conservation » de la
+Les pièces comptables concernées restent conservées pendant 10 ans en application du Code de commerce.
+Les autres données du dossier — notamment identité et coordonnées de l'entreprise, clients, contacts,
+brouillons, devis, documents et préférences — restent également conservées à ce jour : aucune purge ou
+anonymisation complète n'est livrée. Une demande distincte d'effacement peut être examinée selon les
+obligations légales applicables ; la clôture dans l'application ne vaut pas exécution de cette demande.
+Voir la section « Durée de conservation » de la
 [politique de confidentialité](./politique-confidentialite.md) pour le détail.
+
+**[BLOQUÉ FONDATEUR : classifier les données à conserver, livrer la purge/anonymisation des autres
+catégories et la reprise durable de la suppression Auth avant publication sur les stores.]**
+
+Nous pouvons également suspendre ou clôturer un accès en cas de violation de ces CGU, d'usage
+frauduleux ou d'inactivité prolongée, après vous en avoir informé lorsque cela est possible.
 
 ---
 
