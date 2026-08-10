@@ -379,6 +379,17 @@ que le volume rende ce coût excessif, une tranche séparée devra ajouter un au
 sur la baseline immuable et un scrub intégral planifié/checkpointé. Cette optimisation ne doit jamais
 remplacer le scrub périodique ni être présentée comme livrée tant qu’elle n’est pas certifiée.
 
+Le cutover et l'audit courant n'observent pas la même fenêtre opérationnelle :
+
+- au commit d'activation, aucun job non prouvé ne peut conserver une lease ni le sentinel ;
+- après activation, l'audit courant tolère uniquement un `pending` frais déjà dû, une lease `failed`
+  non vide dont l'échéance reste dans les 30 minutes, ou un retry `failed` sans lease planifié dans
+  les 24 heures ;
+- un scope métier invalide, une preuve/projection prématurée, un `pending` futur, le sentinel ou une
+  échéance au-delà de ces plafonds est une corruption immédiate, sans grâce SLO ;
+- un job dû depuis plus de 15 minutes est un P0. Cette grâce couvre trois cadences du scheduler
+  `*/5`, pas une suspension durable du worker.
+
 ## Preuves attendues
 
 - readiness train 0 : capability `documentArchiveB2cHttpFence = "v1"`, mono-SHA, zéro N-1 ;
@@ -388,7 +399,8 @@ remplacer le scrub périodique ni être présentée comme livrée tant qu’elle
 - après activation : `RUN_POSTGRES_DOCUMENT_ARCHIVE_CERT=true` ;
 - `activatedByReleaseSha` identique au SHA readiness du premier passage ;
 - zéro facture émise sans snapshot, zéro représentation/attestation invalide ;
-- zéro job non prouvé avec lease ou sentinel après activation ;
+- au cutover, zéro job non prouvé avec lease ou sentinel ; en régime courant, uniquement les leases
+  et retries bornés décrits ci-dessus, jamais le sentinel ;
 - zéro droit direct de mutation du runtime sur jobs, artefacts ou attestations ;
 - zéro privilège Data API (`anon`, `authenticated`, `service_role`) sur les preuves/tables privées,
   zéro mutation de singleton et zéro EXECUTE sur les 31 RPC archive internes ;

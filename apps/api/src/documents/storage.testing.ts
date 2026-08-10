@@ -1,5 +1,6 @@
 import { type DocumentStoragePort, type LoadedStoredObject, type StoredObject } from '@bob/core';
 import { documentSha256 } from './storage';
+import { parseStorageContentType } from './supabase-object-info';
 
 function copy(bytes: Uint8Array): Uint8Array {
   return new Uint8Array(bytes);
@@ -43,6 +44,7 @@ export class InMemoryDocumentStorage implements DocumentStoragePort {
     contentType: string;
   }): Promise<StoredObject> {
     assertTenantStorageKey(input.companyId, input.key);
+    const contentType = parseStorageContentType(input.contentType);
     const digest = documentSha256(input.bytes);
     const existing = this.objects.get(input.key);
     if (existing) {
@@ -50,7 +52,7 @@ export class InMemoryDocumentStorage implements DocumentStoragePort {
         existing.companyId === input.companyId
         && existing.sha256 === digest
         && existing.bytes.byteLength === input.bytes.byteLength
-        && normalizeContentType(existing.contentType) === normalizeContentType(input.contentType)
+        && normalizeContentType(existing.contentType) === normalizeContentType(contentType)
       ) {
         return {
           key: input.key,
@@ -65,14 +67,14 @@ export class InMemoryDocumentStorage implements DocumentStoragePort {
     this.objects.set(input.key, {
       companyId: input.companyId,
       bytes: copy(input.bytes),
-      contentType: input.contentType,
+      contentType,
       sha256: digest,
     });
     return {
       key: input.key,
       sizeBytes: input.bytes.byteLength,
       sha256: digest,
-      contentType: input.contentType,
+      contentType,
       created: true,
     };
   }
