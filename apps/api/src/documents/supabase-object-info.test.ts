@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { CompositeRequestDeadline, parseSupabaseObjectInfo } from './supabase-object-info';
+import {
+  CompositeRequestDeadline,
+  parseStorageContentType,
+  parseSupabaseObjectInfo,
+} from './supabase-object-info';
 
 describe('parseSupabaseObjectInfo', () => {
   it('conserve la métadonnée MIME autoritative et accepte ses paramètres', () => {
@@ -26,16 +30,41 @@ describe('parseSupabaseObjectInfo', () => {
     ['vide', { size: 1, content_type: '   ' }],
     ['sans type', { size: 1, content_type: '; charset=utf-8' }],
     ['sans sous-type', { size: 1, content_type: 'application' }],
+    ['wildcard complet', { size: 1, content_type: '*/*' }],
+    ['wildcard type', { size: 1, content_type: '*/xml' }],
+    ['wildcard sous-type', { size: 1, content_type: 'application/*' }],
     ['charset sans valeur', { size: 1, content_type: 'application/xml; charset' }],
+    ['charset vide', { size: 1, content_type: 'application/xml; charset=' }],
+    ['charset joker', { size: 1, content_type: 'application/xml; charset=*' }],
     ['paramètre non autorisé', { size: 1, content_type: 'application/xml; boundary=poison' }],
     [
       'charset dupliqué',
       { size: 1, content_type: 'application/xml; charset=utf-8; charset=latin1' },
     ],
     ['paramètre vide', { size: 1, content_type: 'application/xml;' }],
+    ['retour ligne avant paramètre', {
+      size: 1,
+      content_type: 'application/xml\r\n; charset=utf-8',
+    }],
+    ['retour ligne dans le paramètre', {
+      size: 1,
+      content_type: 'application/xml;\r\n charset=utf-8',
+    }],
+    ['tabulation', { size: 1, content_type: 'application/xml;\tcharset=utf-8' }],
+    ['octet nul', { size: 1, content_type: 'application/xml;\0charset=utf-8' }],
+    ['surdimensionné', { size: 1, content_type: `application/${'x'.repeat(256)}` }],
     ['non textuel', { size: 1, content_type: 42 }],
   ])('refuse un type MIME %s', (_label, payload) => {
     expect(() => parseSupabaseObjectInfo(payload)).toThrow('missing valid content type');
+  });
+
+  it('partage exactement la même validation avec la frontière d’écriture', () => {
+    expect(parseStorageContentType(' application/pdf; charset=binary ')).toBe(
+      'application/pdf; charset=binary',
+    );
+    expect(() => parseStorageContentType('application/pdf\r\nx-poison: 1')).toThrow(
+      'missing valid content type',
+    );
   });
 });
 

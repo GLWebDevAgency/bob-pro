@@ -3,6 +3,7 @@ import { type DocumentStoragePort, type LoadedStoredObject, type StoredObject } 
 import { loadEnv } from '../config/env';
 import {
   CompositeRequestDeadline,
+  parseStorageContentType,
   parseSupabaseObjectInfo,
   type RequestDeadlineRuntime,
 } from './supabase-object-info';
@@ -142,12 +143,15 @@ export class SupabaseDocumentStorage implements DocumentStoragePort {
     contentType: string;
   }): Promise<StoredObject> {
     assertTenantStorageKey(input.companyId, input.key);
+    // Refus AVANT le premier GET/POST : une métadonnée invalide ne doit jamais publier une clé
+    // immuable que le readback strict rendrait ensuite impossible à adopter.
+    const contentType = parseStorageContentType(input.contentType);
     const expectedSha256 = documentSha256(input.bytes);
     const isExact = (object: LoadedStoredObject | null): object is LoadedStoredObject =>
       object !== null
       && object.sizeBytes === input.bytes.byteLength
       && object.sha256 === expectedSha256
-      && normalizedContentType(object.contentType) === normalizedContentType(input.contentType);
+      && normalizedContentType(object.contentType) === normalizedContentType(contentType);
     const existing = await this.get(input.companyId, input.key);
     if (existing) {
       if (isExact(existing)) {
@@ -159,7 +163,7 @@ export class SupabaseDocumentStorage implements DocumentStoragePort {
     try {
       response = await fetch(this.objectUrl(input.key), {
         method: 'POST',
-        headers: { ...this.headers(input.contentType), 'x-upsert': 'false' },
+        headers: { ...this.headers(contentType), 'x-upsert': 'false' },
         body: Buffer.from(input.bytes),
         signal: this.requestDeadline().signal(),
       });
@@ -284,8 +288,11 @@ export class SupabaseDocumentStorage implements DocumentStoragePort {
     let info: unknown;
     try {
       info = await response.json();
-    } catch {
-      throw new Error('Supabase Storage object info response is not valid JSON.');
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        throw new Error('Supabase Storage object info response is not valid JSON.');
+      }
+      throw error;
     }
     // Une réponse Storage malformée ne doit jamais être présentée comme un vrai fichier vide.
     return parseSupabaseObjectInfo(info);

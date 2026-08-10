@@ -1211,8 +1211,11 @@ export class SupabaseArchiveAuditStorage implements ArchivePreactivationStorage 
     let rawInfo: unknown;
     try {
       rawInfo = await infoResponse.json();
-    } catch {
-      throw new Error('Supabase Storage object info response is not valid JSON.');
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        throw new Error('Supabase Storage object info response is not valid JSON.');
+      }
+      throw error;
     }
     const info = parseSupabaseObjectInfo(rawInfo);
     if (info.sizeBytes !== byteSize) {

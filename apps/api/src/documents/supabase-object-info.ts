@@ -2,7 +2,16 @@ import { performance } from 'node:perf_hooks';
 
 const MIME_TOKEN = "[!#$%&'*+.^_`|~0-9A-Za-z-]+";
 const MIME_TYPE_PATTERN = new RegExp(`^${MIME_TOKEN}/${MIME_TOKEN}$`, 'u');
-const MIME_CHARSET_PARAMETER_PATTERN = new RegExp(`^charset=${MIME_TOKEN}$`, 'iu');
+const MIME_CHARSET_PARAMETER_PATTERN = /^charset=([A-Za-z0-9][A-Za-z0-9._-]*)$/iu;
+const MIME_CONTENT_TYPE_MAX_LENGTH = 255;
+
+function containsControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit <= 31 || codeUnit === 127) return true;
+  }
+  return false;
+}
 
 export interface SupabaseObjectInfo {
   sizeBytes: number;
@@ -50,18 +59,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** Parse uniquement les champs autoritatifs de GET /storage/v1/object/info. */
-export function parseSupabaseObjectInfo(value: unknown): SupabaseObjectInfo {
-  if (!isRecord(value) || !Number.isSafeInteger(value.size) || (value.size as number) < 0) {
-    throw new Error('Supabase Storage object info response missing valid size.');
-  }
-  if (typeof value.content_type !== 'string') {
+/** Valide l'identité MIME fermée acceptée à l'écriture comme à la relecture Storage. */
+export function parseStorageContentType(value: unknown): string {
+  if (
+    typeof value !== 'string'
+    || value.length > MIME_CONTENT_TYPE_MAX_LENGTH
+    || containsControlCharacter(value)
+  ) {
     throw new Error('Supabase Storage object info response missing valid content type.');
   }
-  const contentType = value.content_type.trim();
+  const contentType = value.trim();
   const [rawMediaType = '', ...rawParameters] = contentType.split(';');
   const mediaType = rawMediaType.trim();
-  if (!MIME_TYPE_PATTERN.test(mediaType)) {
+  if (!MIME_TYPE_PATTERN.test(mediaType) || mediaType.includes('*')) {
     throw new Error('Supabase Storage object info response missing valid content type.');
   }
   // Les documents Bob ne déclarent qu'un éventuel charset. Accepter un suffixe arbitraire
@@ -73,5 +83,16 @@ export function parseSupabaseObjectInfo(value: unknown): SupabaseObjectInfo {
   ) {
     throw new Error('Supabase Storage object info response missing valid content type.');
   }
-  return { sizeBytes: value.size as number, contentType };
+  return contentType;
+}
+
+/** Parse uniquement les champs autoritatifs de GET /storage/v1/object/info. */
+export function parseSupabaseObjectInfo(value: unknown): SupabaseObjectInfo {
+  if (!isRecord(value) || !Number.isSafeInteger(value.size) || (value.size as number) < 0) {
+    throw new Error('Supabase Storage object info response missing valid size.');
+  }
+  return {
+    sizeBytes: value.size as number,
+    contentType: parseStorageContentType(value.content_type),
+  };
 }

@@ -222,10 +222,32 @@ test('release et CI maintiennent V2 pendant expand puis activent V3 avant postde
     /archive_activated_now[\s\S]*?document_archive_protocol_state[\s\S]*?document_archive_snapshot_protocol_state[\s\S]*?snapshot_state\."activeVersion" = 1[\s\S]*?document-archive-integrity\.postgres\.test\.ts/u,
     'Le postdeploy ne rejoue le certificat V2 que tant que le cutover snapshot terminal ne l’a pas retiré.',
   );
-  const archiveV2 = ci.indexOf('activate-document-archive-v2.sh');
-  const snapshotV2 = ci.indexOf('activate-document-archive-snapshot-v2.sh');
-  const postdeploy = ci.indexOf('BOB_RELEASE_PHASE=postdeploy', snapshotV2);
-  assert.ok(archiveV2 >= 0 && snapshotV2 > archiveV2 && postdeploy > snapshotV2);
+  const rlsJobStart = ci.indexOf('\n  rls-certification:\n');
+  const rlsJobEnd = ci.indexOf('\n  document-archive-quarantine-certification:\n');
+  assert.ok(rlsJobStart >= 0 && rlsJobEnd > rlsJobStart);
+  const rlsJob = ci.slice(rlsJobStart, rlsJobEnd);
+  const archiveCertificateBlock = `      - name: Certify document archive v2 relational integrity
+        run: |
+          DOCUMENT_ARCHIVE_CERT_WORKER_COUNT=4 \\
+          RUN_POSTGRES_DOCUMENT_ARCHIVE_CERT=true \\
+            pnpm --filter @bob/api exec vitest run --testTimeout=30000 \\
+              src/persistence/prisma/document-archive-integrity.postgres.test.ts`;
+  assert.equal(
+    rlsJob.split(archiveCertificateBlock).length - 1,
+    1,
+    'La CI RLS doit contenir une invocation unique et exacte du certificat relationnel V2.',
+  );
+  const archiveV2 = rlsJob.indexOf('activate-document-archive-v2.sh');
+  const archiveV2Certificate = rlsJob.indexOf(archiveCertificateBlock, archiveV2);
+  const snapshotV2 = rlsJob.indexOf('activate-document-archive-snapshot-v2.sh');
+  const postdeploy = rlsJob.indexOf('BOB_RELEASE_PHASE=postdeploy', snapshotV2);
+  assert.ok(
+    archiveV2 >= 0
+      && archiveV2Certificate > archiveV2
+      && snapshotV2 > archiveV2Certificate
+      && postdeploy > snapshotV2,
+    'La CI doit exécuter le certificat relationnel V2 après son activation et avant le cutover V3.',
+  );
   const railwayArchiveV2 = releaseActivation.indexOf('activate-document-archive-v2.sh');
   const railwaySnapshotV2 = releaseActivation.indexOf('activate-document-archive-snapshot-v2.sh');
   const railwaySettlementV2 = releaseActivation.indexOf('activate-invoice-settlement-v2.sh');

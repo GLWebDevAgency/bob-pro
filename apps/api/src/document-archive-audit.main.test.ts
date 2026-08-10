@@ -547,6 +547,29 @@ describe('SupabaseArchiveAuditStorage', () => {
     }
   });
 
+  it('préserve une coupure réseau pendant le décodage des métadonnées', async () => {
+    const payload = new TextEncoder().encode('archive');
+    const interruption = new DOMException('body aborted', 'AbortError');
+    const storage = new SupabaseArchiveAuditStorage(
+      'https://storage.invalid',
+      'secret',
+      'bob-documents',
+      1_024,
+      (async (url) => String(url).includes('/object/info/')
+        ? ({
+            ok: true,
+            json: async () => Promise.reject(interruption),
+          } as unknown as Response)
+        : new Response(payload)) as typeof globalThis.fetch,
+      async () => undefined,
+    );
+
+    await expect(storage.load(
+      'company-1',
+      'companies/company-1/documents/document-1/v1/a.pdf',
+    )).rejects.toBe(interruption);
+  });
+
   it('retourne absent sur 404 sans rejouer et refuse les clés hors tenant', async () => {
     let calls = 0;
     const fetchImpl: typeof globalThis.fetch = async () => {

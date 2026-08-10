@@ -51,6 +51,17 @@ describe('InMemoryDocumentStorage', () => {
       }),
     ).rejects.toThrow('outside tenant scope');
   });
+
+  it('refuse le même MIME invalide que l’adapter live', async () => {
+    const storage = new InMemoryDocumentStorage();
+
+    await expect(storage.put({
+      companyId: 'co-1',
+      key: `companies/co-1/documents/doc-1/v1/${SHA}.bin`,
+      bytes: BYTES,
+      contentType: '*/*',
+    })).rejects.toThrow('missing valid content type');
+  });
 });
 
 // ── SupabaseDocumentStorage : le « 400 not_found » de Supabase Storage (constaté en prod) ──
@@ -109,6 +120,25 @@ describe('SupabaseDocumentStorage — 400 not_found = absence, pas une erreur', 
       await expect(storage.get('co-1', KEY)).rejects.toMatchObject({ name: 'TimeoutError' });
     } finally {
       globalThis.fetch = original;
+    }
+  });
+
+  it('refuse un MIME sortant invalide avant tout appel réseau', async () => {
+    let fetchCalls = 0;
+    const storage = makeStorage((async () => {
+      fetchCalls += 1;
+      return new Response('{}');
+    }) as typeof fetch);
+    try {
+      await expect(storage.put({
+        companyId: 'co-1',
+        key: KEY,
+        bytes: BYTES,
+        contentType: 'application/xml; boundary=poison',
+      })).rejects.toThrow('missing valid content type');
+      expect(fetchCalls).toBe(0);
+    } finally {
+      (storage as unknown as { __restore: () => void }).__restore();
     }
   });
 
@@ -456,6 +486,19 @@ describe('SupabaseDocumentStorage — 400 not_found = absence, pas une erreur', 
     );
     try {
       await expect(storage.stat('co-1', KEY)).rejects.toThrow('missing valid content type');
+    } finally {
+      (storage as unknown as { __restore: () => void }).__restore();
+    }
+  });
+
+  it('préserve une coupure réseau pendant le décodage des métadonnées', async () => {
+    const interruption = new DOMException('body aborted', 'AbortError');
+    const storage = makeStorage((async () => ({
+      ok: true,
+      json: async () => Promise.reject(interruption),
+    })) as unknown as typeof fetch);
+    try {
+      await expect(storage.stat('co-1', KEY)).rejects.toBe(interruption);
     } finally {
       (storage as unknown as { __restore: () => void }).__restore();
     }

@@ -6,7 +6,12 @@ import {
   documentArchiveIntegrityProofSha256,
   type DocumentArchiveIntegrityProof,
 } from '../document-archive-jobs';
-import { DOCUMENT_ARCHIVE_INVALID_JOB_PREDICATE_SQL } from '../../documents/archive-v2-job-validity';
+import {
+  DOCUMENT_ARCHIVE_INVALID_JOB_PREDICATE_SQL,
+  DOCUMENT_ARCHIVE_JOB_MAX_LEASE_MINUTES,
+  DOCUMENT_ARCHIVE_JOB_MAX_RETRY_MINUTES,
+  DOCUMENT_ARCHIVE_JOB_OVERDUE_GRACE_MINUTES,
+} from '../../documents/archive-v2-job-validity';
 import { PrismaDocumentArchiveJobRepository } from './repositories';
 import { PrismaService } from './prisma.service';
 
@@ -195,17 +200,51 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       });
     }
 
-    async function auditTreatsJobAsInvalid(jobId: string): Promise<boolean> {
+    async function auditTreatsJobAsInvalid(
+      jobId: string,
+      reasonOverride: string | null = null,
+    ): Promise<boolean> {
       const [row] = await admin.$queryRawUnsafe<Array<{ invalid: boolean }>>(
         `
           SELECT (${DOCUMENT_ARCHIVE_INVALID_JOB_PREDICATE_SQL}) AS invalid
-            FROM public.document_archive_jobs AS job
-           WHERE job.id = $1::uuid
+            FROM (
+              SELECT source.id,
+                     source."companyId",
+                     source."invoiceId",
+                     coalesce($2::text, source.reason) AS reason,
+                     source.status,
+                     source."nextAttemptAt",
+                     source."leaseToken",
+                     source."integrityProof",
+                     source."integrityProofSha256",
+                     source."completedAt"
+                FROM public.document_archive_jobs AS source
+               WHERE source.id = $1::text
+            ) AS job
         `,
         jobId,
+        reasonOverride,
       );
       if (row === undefined) throw new Error(`job archive absent du certificat: ${jobId}`);
       return row.invalid;
+    }
+
+    async function setJobNextAttemptFromDatabaseClock(
+      jobId: string,
+      offsetMinutes: number,
+    ): Promise<void> {
+      const affected = await admin.$executeRawUnsafe(
+        `
+          UPDATE public.document_archive_jobs
+             SET "nextAttemptAt" = statement_timestamp() + make_interval(mins => $2::integer)
+           WHERE id = $1::text
+        `,
+        jobId,
+        offsetMinutes,
+      );
+      if (affected !== 1) {
+        throw new Error(`job archive absent du réglage horloge PostgreSQL: ${jobId}`);
+      }
     }
 
     async function attestInvoicePdf(
@@ -1461,7 +1500,18 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           now: '2099-01-01T00:00:00.000Z',
         }),
       );
+      // Un enqueue frais n'est pas un P0 : le worker asynchrone dispose de trois cadences cron.
+      await expect(auditTreatsJobAsInvalid(id)).resolves.toBe(false);
+      // La grâce ne couvre jamais une corruption structurelle du scope métier.
+      await expect(
+        auditTreatsJobAsInvalid(id, 'invoice-issued-pdf-only-b2c'),
+      ).resolves.toBe(true);
+      await admin.documentArchiveJob.update({
+        where: { id },
+        data: { nextAttemptAt: new Date('9999-12-31T23:59:59.999Z') },
+      });
       await expect(auditTreatsJobAsInvalid(id)).resolves.toBe(true);
+      await setJobNextAttemptFromDatabaseClock(id, 0);
       const candidate = await workers[0]!.withTenant(companyA, () =>
         repository.findByPiece(companyA, pieceId, 'invoice-issued'),
       );
@@ -1478,6 +1528,19 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         ),
       );
       expect(claimed.outcome).toBe('claimed');
+      // Le statut interne `failed` représente aussi une lease active ; son échéance future la
+      // distingue d'un job réellement abandonné.
+      await expect(auditTreatsJobAsInvalid(id)).resolves.toBe(false);
+      await setJobNextAttemptFromDatabaseClock(
+        id,
+        DOCUMENT_ARCHIVE_JOB_MAX_LEASE_MINUTES + 1,
+      );
+      await expect(auditTreatsJobAsInvalid(id)).resolves.toBe(true);
+      await setJobNextAttemptFromDatabaseClock(
+        id,
+        DOCUMENT_ARCHIVE_JOB_MAX_LEASE_MINUTES - 1,
+      );
+      await expect(auditTreatsJobAsInvalid(id)).resolves.toBe(false);
 
       const proof = invoiceProof(companyA, pieceId);
       const digest = documentArchiveIntegrityProofSha256(proof);
@@ -1559,6 +1622,39 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         ]),
       );
 
+      const xmlProjection = proof.artifacts.find((artifact) => artifact.kind === 'facturx_xml');
+      if (xmlProjection === undefined) throw new Error('projection XML de preuve absente');
+      await expect(admin.documentArchiveJobArtifact.deleteMany({
+        where: { jobId: id, companyId: companyA, kind: xmlProjection.kind },
+      })).resolves.toMatchObject({ count: 1 });
+      await expect(auditTreatsJobAsInvalid(id)).resolves.toBe(true);
+      await admin.documentArchiveJobArtifact.create({
+        data: {
+          jobId: id,
+          companyId: companyA,
+          kind: xmlProjection.kind,
+          contentProfile: xmlProjection.contentProfile,
+          documentId: xmlProjection.documentId,
+          versionId: xmlProjection.versionId,
+          versionNumber: xmlProjection.version,
+          storageKey: xmlProjection.storageKey,
+          mimeType: xmlProjection.mimeType,
+          byteSize: xmlProjection.byteSize,
+          sha256: xmlProjection.sha256,
+        },
+      });
+      await expect(auditTreatsJobAsInvalid(id)).resolves.toBe(false);
+      await admin.documentArchiveJobArtifact.update({
+        where: { document_archive_job_artifacts_pkey: { jobId: id, kind: xmlProjection.kind } },
+        data: { byteSize: xmlProjection.byteSize + 1 },
+      });
+      await expect(auditTreatsJobAsInvalid(id)).resolves.toBe(true);
+      await admin.documentArchiveJobArtifact.update({
+        where: { document_archive_job_artifacts_pkey: { jobId: id, kind: xmlProjection.kind } },
+        data: { byteSize: xmlProjection.byteSize },
+      });
+      await expect(auditTreatsJobAsInvalid(id)).resolves.toBe(false);
+
       const failedId = randomUUID();
       const failedPieceId = `db-proof-failed-${randomUUID()}`;
       await seedIssuedInvoice(companyA, failedPieceId);
@@ -1588,6 +1684,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           ),
         ),
       ).resolves.toMatchObject({ outcome: 'claimed' });
+      await expect(auditTreatsJobAsInvalid(failedId)).resolves.toBe(false);
       const failedAt = new Date();
       await expect(
         workers[0]!.withTenant(companyA, () =>
@@ -1601,6 +1698,21 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           ),
         ),
       ).resolves.toBe(true);
+      await expect(auditTreatsJobAsInvalid(failedId)).resolves.toBe(false);
+      await setJobNextAttemptFromDatabaseClock(
+        failedId,
+        DOCUMENT_ARCHIVE_JOB_MAX_RETRY_MINUTES + 1,
+      );
+      await expect(auditTreatsJobAsInvalid(failedId)).resolves.toBe(true);
+      await admin.documentArchiveJob.update({
+        where: { id: failedId },
+        data: { nextAttemptAt: new Date('9999-12-31T23:59:59.999Z') },
+      });
+      await expect(auditTreatsJobAsInvalid(failedId)).resolves.toBe(true);
+      await setJobNextAttemptFromDatabaseClock(
+        failedId,
+        -(DOCUMENT_ARCHIVE_JOB_OVERDUE_GRACE_MINUTES + 1),
+      );
       await expect(auditTreatsJobAsInvalid(failedId)).resolves.toBe(true);
     });
 
