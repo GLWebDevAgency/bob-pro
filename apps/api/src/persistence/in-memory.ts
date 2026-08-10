@@ -65,6 +65,8 @@ import {
   type EnqueueDocumentArchiveJobInput,
 } from './document-archive-jobs';
 import {
+  CLOSED_ACCOUNT_NOTIFICATION_RECIPIENT,
+  CLOSED_ACCOUNT_NOTIFICATION_SUBJECT,
   NotificationDedupeConflictError,
   notificationPayloadFingerprint,
   type DeliverableNotificationJob,
@@ -1188,6 +1190,38 @@ export class InMemoryNotificationJobRepository implements NotificationJobReposit
     return true;
   }
 
+  async cancelAndMinimizeForCompany(companyId: string, at: string): Promise<number> {
+    let changed = 0;
+    for (const [id, job] of this.map) {
+      if (job.companyId !== companyId) continue;
+      const deliverable = job.status === 'pending' || job.status === 'failed';
+      const needsMinimization =
+        deliverable ||
+        job.notification !== null ||
+        job.recipient !== CLOSED_ACCOUNT_NOTIFICATION_RECIPIENT ||
+        job.subject !== CLOSED_ACCOUNT_NOTIFICATION_SUBJECT ||
+        job.payloadFingerprint !== null ||
+        job.leaseToken !== null ||
+        job.lastError !== null;
+      if (!needsMinimization) continue;
+      this.map.set(id, {
+        ...job,
+        notification: null,
+        recipient: CLOSED_ACCOUNT_NOTIFICATION_RECIPIENT,
+        subject: CLOSED_ACCOUNT_NOTIFICATION_SUBJECT,
+        payloadFingerprint: null,
+        status: deliverable ? 'cancelled' : job.status,
+        leaseToken: null,
+        lastError: null,
+        // Un done legacy sans providerAttemptedAt replie sur updatedAt comme instant de livraison.
+        // Ne jamais falsifier ce reçu avec l'heure de clôture.
+        updatedAt: deliverable ? at : job.updatedAt,
+      });
+      changed += 1;
+    }
+    return changed;
+  }
+
   async listRecent(companyId: string, limit: number): Promise<NotificationJob[]> {
     return [...this.map.values()]
       .filter((job) => job.companyId === companyId)
@@ -1260,22 +1294,30 @@ export class InMemoryNotificationJobRepository implements NotificationJobReposit
     }
     return { updatedCount, readAt: at, cutoffAccepted: true };
   }
+
+  snapshot(): NotificationJob[] {
+    return [...this.map.values()].map((job) => this.clone(job));
+  }
+
+  restore(snapshot: readonly NotificationJob[]): void {
+    this.map.clear();
+    for (const job of snapshot) this.map.set(job.id, this.clone(job));
+  }
+}
+
+interface InMemoryInstallationState {
+  revocationSecretHash: string;
+  maxGeneration: number;
+  currentBindingId: string | null;
+  currentCompanyId: string | null;
+  currentUserId: string | null;
+  lastConfirmedAt: string | null;
 }
 
 /** Appareils push Expo (C25) — un token global, rebind atomique vers le dernier principal. */
 export class InMemoryDeviceRepository implements DeviceRepository {
   private readonly map = new Map<string, DeviceRecord>();
-  private readonly installations = new Map<
-    string,
-    {
-      revocationSecretHash: string;
-      maxGeneration: number;
-      currentBindingId: string | null;
-      currentCompanyId: string | null;
-      currentUserId: string | null;
-      lastConfirmedAt: string | null;
-    }
-  >();
+  private readonly installations = new Map<string, InMemoryInstallationState>();
 
   async register(input: RegisterDeviceInput): Promise<DeviceRegistrationResult> {
     const rows = [...this.map.values()];
@@ -1514,6 +1556,26 @@ export class InMemoryDeviceRepository implements DeviceRepository {
       this.map.delete(id);
     }
   }
+
+  snapshot(): {
+    devices: DeviceRecord[];
+    installations: Array<[string, InMemoryInstallationState]>;
+  } {
+    return {
+      devices: [...this.map.values()].map((device) => ({ ...device })),
+      installations: [...this.installations].map(([id, state]) => [id, { ...state }]),
+    };
+  }
+
+  restore(snapshot: {
+    devices: readonly DeviceRecord[];
+    installations: ReadonlyArray<readonly [string, InMemoryInstallationState]>;
+  }): void {
+    this.map.clear();
+    for (const device of snapshot.devices) this.map.set(device.id, { ...device });
+    this.installations.clear();
+    for (const [id, state] of snapshot.installations) this.installations.set(id, { ...state });
+  }
 }
 
 export class InMemoryPaymentRepository implements PaymentRepository {
@@ -1610,6 +1672,17 @@ export class InMemoryPublicAccessTokenRepository implements PublicAccessTokenRep
         this.rows.set(id, { ...row, revokedAt: input.at });
       }
     }
+  }
+
+  snapshot(): Array<PublicAccessGrant & { token: string; lastUsedAt: string | null }> {
+    return [...this.rows.values()].map((row) => ({ ...row }));
+  }
+
+  restore(
+    snapshot: ReadonlyArray<PublicAccessGrant & { token: string; lastUsedAt: string | null }>,
+  ): void {
+    this.rows.clear();
+    for (const row of snapshot) this.rows.set(row.id, { ...row });
   }
 }
 

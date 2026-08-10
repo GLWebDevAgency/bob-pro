@@ -127,6 +127,7 @@ import type {
   OpenAiNativeKeyVersionAuthorityPort,
   OpenAiNativeProofKeyRingAdmission,
 } from '../../voice/realtime/openai-native-proof-key-version';
+import { PrismaAuthUserDeletionJobRepository } from './auth-user-deletion-jobs.prisma';
 
 export class PrismaPersistence implements Persistence {
   readonly companies: PrismaCompanyRepository;
@@ -142,6 +143,7 @@ export class PrismaPersistence implements Persistence {
   readonly documentFolderDeletionPlans: PrismaDocumentFolderDeletionPlanStore;
   readonly documentArchiveJobs: PrismaDocumentArchiveJobRepository;
   readonly notificationJobs: PrismaNotificationJobRepository;
+  readonly authUserDeletionJobs: PrismaAuthUserDeletionJobRepository;
   readonly devices: PrismaDeviceRepository;
   readonly payments: PrismaPaymentRepository;
   readonly publicAccessTokens: PrismaPublicAccessTokenRepository;
@@ -342,6 +344,7 @@ export class PrismaPersistence implements Persistence {
     this.documentFolderDeletionPlans = new PrismaDocumentFolderDeletionPlanStore(prisma);
     this.documentArchiveJobs = new PrismaDocumentArchiveJobRepository(prisma);
     this.notificationJobs = new PrismaNotificationJobRepository(prisma);
+    this.authUserDeletionJobs = new PrismaAuthUserDeletionJobRepository(prisma);
     this.devices = new PrismaDeviceRepository(prisma);
     this.payments = new PrismaPaymentRepository(prisma);
     this.publicAccessTokens = new PrismaPublicAccessTokenRepository(prisma);

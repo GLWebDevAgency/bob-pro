@@ -116,6 +116,7 @@ export * from './application/ports/cabinet-invitation-token';
 export * from './application/ports/cabinet-invitation-dispatch';
 export * from './application/ports/release-flag-repository';
 export * from './application/ports/subscription-repository';
+export * from './application/ports/account-identity-deletion';
 export * from './application/ports/bank-balance-snapshot-repository';
 export * from './application/ports/cash-movement-projection';
 export * from './application/subscription/get-subscription-status';

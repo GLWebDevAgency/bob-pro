@@ -35,7 +35,7 @@ function customer(id: string, email: string | null, type: 'b2c' | 'b2b' | 'b2g' 
 
 async function makeService(setup: { invoices: Invoice[]; customers: Customer[] }) {
   const persistence = new InMemoryPersistence();
-  persistence.companies.seed({ id: 'co-1' } as Company);
+  persistence.companies.seed({ id: 'co-1', isClosed: () => false } as unknown as Company);
   persistence.customers.seed(setup.customers);
   for (const inv of setup.invoices) await persistence.invoices.save(inv);
   const notifier = { send: vi.fn<NotificationPort['send']>().mockResolvedValue(undefined) } satisfies NotificationPort;

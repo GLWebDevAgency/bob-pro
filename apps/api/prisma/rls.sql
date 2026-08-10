@@ -40,6 +40,7 @@ DECLARE
     'document_archive_jobs',
     'document_archive_job_artifacts',
     'notification_jobs',
+    'auth_user_deletion_jobs',
     'devices',
     'push_installations',
     'agent_journal_entries',
@@ -156,6 +157,28 @@ CREATE POLICY company_insert ON companies FOR INSERT
 CREATE POLICY company_update ON companies FOR UPDATE
   USING (id = current_setting('app.current_company_id', true))
   WITH CHECK (id = current_setting('app.current_company_id', true));
+DROP POLICY IF EXISTS company_auth_deletion_subject_select ON companies;
+DROP POLICY IF EXISTS company_auth_deletion_closed_claim_select ON companies;
+DROP POLICY IF EXISTS company_auth_deletion_subject_update ON companies;
+CREATE POLICY company_auth_deletion_subject_select ON companies FOR SELECT
+  TO bob_auth_user_deletion_authority
+  USING (
+    id = nullif(current_setting('app.auth_user_deletion_company_id', true), '')
+  );
+CREATE POLICY company_auth_deletion_closed_claim_select ON companies FOR SELECT
+  TO bob_auth_user_deletion_authority
+  USING (
+    "closedAt" IS NOT NULL
+    AND current_setting('app.auth_user_deletion_claim_mode', true) = 'closed-company-v1'
+  );
+CREATE POLICY company_auth_deletion_subject_update ON companies FOR UPDATE
+  TO bob_auth_user_deletion_authority
+  USING (
+    id = nullif(current_setting('app.auth_user_deletion_company_id', true), '')
+  )
+  WITH CHECK (
+    id = nullif(current_setting('app.auth_user_deletion_company_id', true), '')
+  );
 -- Aucune policy DELETE : une Company est clôturée de façon monotone, jamais hard-deleted par le
 -- runtime. release.sh retire aussi le privilège SQL pour que policy et GRANT se défendent ensemble.
 
@@ -1545,6 +1568,42 @@ BEGIN
 END;
 $$;
 
+DROP POLICY IF EXISTS notification_job_auth_deletion_subject_select ON notification_jobs;
+DROP POLICY IF EXISTS notification_job_auth_deletion_subject_update ON notification_jobs;
+CREATE POLICY notification_job_auth_deletion_subject_select ON notification_jobs FOR SELECT
+  TO bob_auth_user_deletion_authority
+  USING (
+    "companyId" = nullif(
+      current_setting('app.auth_user_deletion_company_id', true),
+      ''
+    )
+  );
+CREATE POLICY notification_job_auth_deletion_subject_update ON notification_jobs FOR UPDATE
+  TO bob_auth_user_deletion_authority
+  USING (
+    "companyId" = nullif(
+      current_setting('app.auth_user_deletion_company_id', true),
+      ''
+    )
+  )
+  WITH CHECK (
+    "companyId" = nullif(
+      current_setting('app.auth_user_deletion_company_id', true),
+      ''
+    )
+  );
+
+DROP POLICY IF EXISTS auth_user_deletion_authority_select ON auth_user_deletion_jobs;
+DROP POLICY IF EXISTS auth_user_deletion_authority_insert ON auth_user_deletion_jobs;
+DROP POLICY IF EXISTS auth_user_deletion_authority_update ON auth_user_deletion_jobs;
+CREATE POLICY auth_user_deletion_authority_select ON auth_user_deletion_jobs FOR SELECT
+  TO bob_auth_user_deletion_authority USING (TRUE);
+CREATE POLICY auth_user_deletion_authority_insert ON auth_user_deletion_jobs FOR INSERT
+  TO bob_auth_user_deletion_authority WITH CHECK (TRUE);
+CREATE POLICY auth_user_deletion_authority_update ON auth_user_deletion_jobs FOR UPDATE
+  TO bob_auth_user_deletion_authority USING (TRUE) WITH CHECK (TRUE);
+REVOKE ALL PRIVILEGES ON TABLE auth_user_deletion_jobs FROM PUBLIC;
+
 -- Le token push est une capacité à forte entropie remise par l'OS. Pendant le seul statement
 -- d'enregistrement, elle permet de voir puis transférer SON ancienne ligne cross-tenant. La
 -- contrainte UNIQUE globale sérialise deux rebinds concurrents. Toutes les autres opérations
@@ -2301,6 +2360,15 @@ CREATE POLICY cabinet_member_select ON cabinet_members FOR SELECT
         app_is_active_cabinet_member("cabinetId")
         OR app_has_valid_cabinet_invitation("cabinetId")
       )
+    )
+  );
+DROP POLICY IF EXISTS cabinet_member_auth_deletion_subject_select ON cabinet_members;
+CREATE POLICY cabinet_member_auth_deletion_subject_select ON cabinet_members FOR SELECT
+  TO bob_auth_user_deletion_authority
+  USING (
+    "userId" = nullif(
+      current_setting('app.auth_user_deletion_subject_id', true),
+      ''
     )
   );
 

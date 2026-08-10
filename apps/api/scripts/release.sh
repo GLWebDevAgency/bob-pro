@@ -669,6 +669,7 @@ SELECT pg_catalog.format(
    -- Cette autorité globale reste fermée jusqu'à son provisioner owner-aware. Même au premier
    -- déploiement, elle ne traverse jamais une fenêtre DML ouverte au runtime.
    AND relation.relname NOT IN (
+     'auth_user_deletion_jobs',
      'realtime_global_capacity',
      'realtime_voice_trace_events',
      'realtime_voice_trace_access_audits'
@@ -2466,6 +2467,24 @@ ensure_realtime_voice_trace_authority_roles() {
     -f apps/api/prisma/realtime-voice-trace-authority-role.sql
 }
 
+ensure_auth_user_deletion_authority_role() {
+  psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
+    -f apps/api/prisma/auth-user-deletion-authority-role.sql
+}
+
+provision_auth_user_deletion_authority() {
+  ensure_auth_user_deletion_authority_role
+  psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+    -v app_role="${APP_DATABASE_ROLE:-}" \
+    -f apps/api/prisma/auth-user-deletion-authority-provision.sql
+}
+
+certify_auth_user_deletion_release_acl() {
+  psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+    -v app_role="${APP_DATABASE_ROLE:-}" \
+    -f apps/api/prisma/auth-user-deletion-release-cert.sql
+}
+
 provision_realtime_voice_trace_authorities() {
   ensure_realtime_voice_trace_authority_roles
   # Le provisionneur possède son propre BEGIN/COMMIT : ne pas l'envelopper dans une seconde
@@ -2849,6 +2868,8 @@ run_nonproduction_mutating_certifications() {
     pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/company-billing-settings.postgres.test.ts
   RUN_POSTGRES_COMPANY_MUTATION_LIFECYCLE_CERT=true \
     pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/company-mutation-lifecycle.postgres.test.ts
+  RUN_POSTGRES_ACCOUNT_DELETION_LIFECYCLE_CERT=true \
+    pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/account-deletion-lifecycle.postgres.test.ts
   RUN_POSTGRES_QUOTE_SIGNATURE_CERT=true \
     pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/quote-signature-token-concurrency.postgres.test.ts
   RUN_POSTGRES_PUBLIC_CAPABILITY_CERT=true \
@@ -2995,6 +3016,7 @@ ensure_agent_mission_release_flag_authority_role
 ensure_agent_mission_fingerprint_readiness_authority_role
 ensure_catalogue_search_token_authority_role
 ensure_realtime_voice_trace_authority_roles
+ensure_auth_user_deletion_authority_role
 DIRECT_URL="$DIRECT_URL" sh apps/api/scripts/realtime-capacity-release.sh ensure
 if [ "$BOB_RELEASE_PHASE" = predeploy ]; then
   close_and_drain_realtime_before_cancellation_fence_expand
@@ -3016,6 +3038,8 @@ node apps/api/scripts/manage-mistral-conversation-key-version.mjs stage
 node apps/api/scripts/manage-bob-live-native-key-versions.mjs stage
 grant_app_role
 psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 -f apps/api/prisma/rls.sql
+provision_auth_user_deletion_authority
+certify_auth_user_deletion_release_acl
 provision_realtime_voice_trace_authorities
 certify_realtime_voice_trace_release
 provision_catalogue_search_token_authority

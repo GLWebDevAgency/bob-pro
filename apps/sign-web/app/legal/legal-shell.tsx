@@ -1,19 +1,16 @@
-import type { ReactNode } from 'react';
+import React, { type ReactNode } from 'react';
 import Link from 'next/link';
 import { palette, shell } from './styles';
 
-const NAV_LINKS: Array<{ id: 'cgu' | 'confidentialite'; href: string; label: string }> = [
+type LegalPageId = 'cgu' | 'confidentialite' | 'suppression';
+
+const NAV_LINKS: Array<{ id: LegalPageId; href: string; label: string }> = [
   { id: 'cgu', href: '/legal/conditions-utilisation', label: "Conditions d'utilisation" },
   { id: 'confidentialite', href: '/legal/confidentialite', label: 'Politique de confidentialité' },
+  { id: 'suppression', href: '/account-deletion', label: 'Suppression de compte' },
 ];
 
-export function LegalShell({
-  active,
-  children,
-}: {
-  active: 'cgu' | 'confidentialite';
-  children: ReactNode;
-}) {
+export function LegalShell({ active, children }: { active: LegalPageId; children: ReactNode }) {
   return (
     <main style={shell}>
       <Link href="/" style={{ fontSize: 13, color: palette.gray, textDecoration: 'none' }}>

@@ -794,6 +794,7 @@ export class LocalBobClient implements BobClient {
   }[] = [];
   private agent: BobAgent | null = null;
   private billingSettings: CompanyBillingSettings;
+  private localIdentityDeletionRequestId: string | null = null;
 
   constructor(opts?: LocalBobClientOptions) {
     const company = seedCompany();
@@ -1241,13 +1242,31 @@ export class LocalBobClient implements BobClient {
     confirmationText: string;
     reason?: string;
   }): Promise<Result<{ closedAt: string }, AppError>> {
+    const candidateRequestId = this.ids.newId();
     const r = await new CloseAccount({
       companies: this.companies,
       subscriptions: this.subscriptionRepository,
       publicAccessTokens: this.publicAccessTokens,
+      identityDeletionOutbox: {
+        ensureRequested: async () => {
+          const alreadyRequested = this.localIdentityDeletionRequestId !== null;
+          this.localIdentityDeletionRequestId ??= candidateRequestId;
+          return {
+            outcome: 'accepted' as const,
+            request: {
+              requestId: this.localIdentityDeletionRequestId,
+              // La démo n'a aucune identité fournisseur : l'effacement externe est déjà acquis.
+              status: 'done' as const,
+              alreadyRequested,
+            },
+          };
+        },
+      },
       uow: this.uow,
     }).execute({
       companyId: this.companyId,
+      userId: 'mercier',
+      identityDeletionRequestId: candidateRequestId,
       confirmationText: input.confirmationText,
       reason: input.reason?.trim() || null,
       now: this.clock.now(),

@@ -24,6 +24,7 @@ import { InMemoryQuoteDraftSlotRepository } from './quote-draft-slots.testing';
 import { InMemoryAgentMissionDraftFence } from './agent-mission-draft-fence.testing';
 import { InMemoryCompanyBillingSettingsRepository } from './billing-settings.testing';
 import { InMemoryDiagnosticAssessmentRepository } from './diagnostic-assessment.testing';
+import { InMemoryAuthUserDeletionJobRepository } from './auth-user-deletion-jobs.testing';
 import { InMemoryRealtimeAdmission } from '../voice/realtime/realtime-admission.testing';
 import {
   type RealtimeAdmissionPolicy,
@@ -125,6 +126,7 @@ export class InMemoryPersistence implements Persistence {
   readonly documentFolderDeletionPlans = new InMemoryDocumentFolderDeletionPlanStore();
   readonly documentArchiveJobs = new InMemoryDocumentArchiveJobRepository();
   readonly notificationJobs = new InMemoryNotificationJobRepository();
+  readonly authUserDeletionJobs = new InMemoryAuthUserDeletionJobRepository();
   readonly devices = new InMemoryDeviceRepository();
   readonly payments = new InMemoryPaymentRepository();
   readonly publicAccessTokens = new InMemoryPublicAccessTokenRepository();
@@ -275,6 +277,10 @@ export class InMemoryPersistence implements Persistence {
     const quoteSnapshot = this.quotes.snapshot();
     const invoiceSnapshot = this.invoices.snapshot();
     const documentArchiveJobSnapshot = this.documentArchiveJobs.snapshot();
+    const notificationJobSnapshot = this.notificationJobs.snapshot();
+    const authUserDeletionJobSnapshot = this.authUserDeletionJobs.snapshot();
+    const deviceSnapshot = this.devices.snapshot();
+    const publicAccessTokenSnapshot = this.publicAccessTokens.snapshot();
     const expenseSnapshot = this.expenses.snapshot();
     const catalogueSnapshot = this.catalogue.snapshot();
     const chantierSnapshot = this.chantiers.snapshot();
@@ -304,6 +310,10 @@ export class InMemoryPersistence implements Persistence {
       this.quotes.restore(quoteSnapshot);
       this.invoices.restore(invoiceSnapshot);
       this.documentArchiveJobs.restore(documentArchiveJobSnapshot);
+      this.notificationJobs.restore(notificationJobSnapshot);
+      this.authUserDeletionJobs.restore(authUserDeletionJobSnapshot);
+      this.devices.restore(deviceSnapshot);
+      this.publicAccessTokens.restore(publicAccessTokenSnapshot);
       this.expenses.restore(expenseSnapshot);
       this.catalogue.restore(catalogueSnapshot);
       this.chantiers.restore(chantierSnapshot);

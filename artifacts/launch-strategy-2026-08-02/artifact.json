@@ -1,0 +1,462 @@
+{
+  "surface": "report",
+  "manifest": {
+    "version": 1,
+    "surface": "report",
+    "title": "Bob Pro — stratégie de lancement réaliste",
+    "description": "Audit produit, mobile, stores, backend et opérations ; périmètres bêta/V1 ; pricing, budget et KPI pour un développeur solo avec 1 000 € maximum.",
+    "generatedAt": "2026-08-02T12:07:58Z",
+    "cards": [],
+    "charts": [
+      {
+        "id": "budget_chart",
+        "title": "Budget de lancement recommandé",
+        "subtitle": "Répartition du plafond total de 1 000 € ; aucune publicité avant preuve de rétention.",
+        "type": "bar",
+        "dataset": "launch_budget",
+        "sourceId": "launch_model",
+        "valueFormat": "number",
+        "encodings": {
+          "x": {
+            "field": "category",
+            "type": "nominal",
+            "label": "Poste"
+          },
+          "y": {
+            "field": "budget_eur",
+            "type": "quantitative",
+            "label": "Budget (€)"
+          },
+          "tooltip": [
+            {
+              "field": "budget_eur",
+              "type": "quantitative",
+              "label": "Budget (€)",
+              "format": "number"
+            },
+            {
+              "field": "rationale",
+              "type": "nominal",
+              "label": "Rôle"
+            }
+          ]
+        }
+      }
+    ],
+    "tables": [
+      {
+        "id": "objective_table",
+        "title": "État des objectifs de publication",
+        "subtitle": "Le code est riche, mais aucun objectif complet n’est released.",
+        "dataset": "objective_status",
+        "sourceId": "launch_model",
+        "columns": [
+          { "field": "objective_id", "label": "Objectif" },
+          { "field": "objective", "label": "Périmètre" },
+          { "field": "evidence_status", "label": "État de preuve" },
+          { "field": "remaining_gate", "label": "Gate restant" }
+        ]
+      },
+      {
+        "id": "versions_table",
+        "title": "Trajectoire de versions recommandée",
+        "subtitle": "La version store 1.0 est un lancement limité gratuit, techniquement borné ; la monétisation arrive après preuve de valeur.",
+        "dataset": "launch_versions",
+        "sourceId": "launch_model",
+        "columns": [
+          { "field": "version", "label": "Version" },
+          { "field": "phase", "label": "Phase" },
+          { "field": "distribution", "label": "Distribution" },
+          { "field": "timing", "label": "Fenêtre" },
+          { "field": "monthly_price_eur", "label": "Prix mensuel HT", "format": "number", "unit": "€" },
+          { "field": "audience", "label": "Audience" },
+          { "field": "included", "label": "Inclus" },
+          { "field": "excluded", "label": "Exclu" },
+          { "field": "exit_gate", "label": "Gate de sortie" }
+        ]
+      },
+      {
+        "id": "module_table",
+        "title": "Audit module par module",
+        "subtitle": "Décision par bloc : bêta 0.8, V1 store 1.0 ou après V1.",
+        "dataset": "module_audit",
+        "sourceId": "launch_model",
+        "columns": [
+          { "field": "module", "label": "Bloc" },
+          { "field": "current_state", "label": "État vérifié" },
+          { "field": "beta_08", "label": "Bêta 0.8" },
+          { "field": "store_v10", "label": "V1 store" },
+          { "field": "later", "label": "Plus tard" },
+          { "field": "launch_gate", "label": "Preuve exigée" }
+        ]
+      },
+      {
+        "id": "competitor_table",
+        "title": "Repères concurrentiels actuels",
+        "subtitle": "Les offres ne sont pas parfaitement comparables : promotions et facturation annuelle sont signalées.",
+        "dataset": "competitor_benchmark",
+        "sourceId": "launch_model",
+        "columns": [
+          { "field": "vendor", "label": "Acteur" },
+          { "field": "free_entry", "label": "Entrée gratuite" },
+          { "field": "paid_entry", "label": "Entrée payante affichée" },
+          { "field": "free_invoicing", "label": "Facturation gratuite" },
+          { "field": "pa_position", "label": "Position PA" },
+          { "field": "market_position", "label": "Positionnement" }
+        ]
+      },
+      {
+        "id": "pricing_table",
+        "title": "Évolution tarifaire conseillée",
+        "subtitle": "Un seul niveau commercial à la fois, activé uniquement quand sa promesse est certifiée.",
+        "dataset": "pricing_path",
+        "sourceId": "launch_model",
+        "columns": [
+          { "field": "stage", "label": "Étape" },
+          { "field": "monthly_price_eur", "label": "Prix mensuel HT", "format": "number", "unit": "€" },
+          { "field": "audience", "label": "Audience" },
+          { "field": "promise", "label": "Promesse vendue" },
+          { "field": "activation_condition", "label": "Condition d’activation" }
+        ]
+      },
+      {
+        "id": "budget_table",
+        "title": "Détail du budget de lancement",
+        "subtitle": "Enveloppe P0 + bêta + lancement limité sur trois mois, hors partenaire PA et conseil juridique complet.",
+        "dataset": "launch_budget",
+        "sourceId": "launch_model",
+        "defaultSort": { "field": "budget_eur", "direction": "desc" },
+        "columns": [
+          { "field": "category", "label": "Poste" },
+          { "field": "budget_eur", "label": "Budget", "format": "number", "unit": "€" },
+          { "field": "rationale", "label": "Justification" }
+        ]
+      },
+      {
+        "id": "gtm_table",
+        "title": "Plan de mise sur le marché",
+        "subtitle": "Recrutement fondateur, cohortes petites et zéro média payant avant rétention.",
+        "dataset": "go_to_market",
+        "sourceId": "launch_model",
+        "columns": [
+          { "field": "phase", "label": "Phase" },
+          { "field": "target", "label": "Cible" },
+          { "field": "channels", "label": "Canaux" },
+          { "field": "spend", "label": "Dépense" },
+          { "field": "operating_motion", "label": "Rituel" },
+          { "field": "scale_gate", "label": "Gate d’élargissement" }
+        ]
+      },
+      {
+        "id": "kpi_table",
+        "title": "Registre KPI de lancement",
+        "subtitle": "Trois métriques primaires, puis qualité, sécurité, économie et voix comme garde-fous.",
+        "dataset": "kpi_registry",
+        "sourceId": "launch_model",
+        "columns": [
+          { "field": "metric_group", "label": "Famille" },
+          { "field": "metric", "label": "Métrique" },
+          { "field": "formula", "label": "Formule" },
+          { "field": "beta_gate", "label": "Gate bêta" },
+          { "field": "v1_gate", "label": "Gate V1" },
+          { "field": "cadence", "label": "Cadence" }
+        ]
+      },
+      {
+        "id": "p0_table",
+        "title": "Plan P0 exécutable",
+        "subtitle": "Ordre de travail recommandé avant la première cohorte externe.",
+        "dataset": "p0_action_plan",
+        "sourceId": "launch_model",
+        "defaultSort": { "field": "priority", "direction": "asc" },
+        "columns": [
+          { "field": "priority", "label": "#", "format": "number" },
+          { "field": "action", "label": "Action" },
+          { "field": "owner", "label": "Responsable" },
+          { "field": "estimated_effort", "label": "Effort" },
+          { "field": "required_evidence", "label": "Preuve de fin" }
+        ]
+      }
+    ],
+    "sources": [
+      { "id": "launch_model", "label": "Modèle analytique revu de la stratégie", "path": "artifacts/launch-strategy-2026-08-02/launch_strategy_analysis.sql" },
+      { "id": "source_notes", "label": "Notes de sources et méthode", "path": "artifacts/launch-strategy-2026-08-02/source-notes.md" },
+      { "id": "canonical_publication", "label": "Objectifs, specs et DoD de publication", "path": "design_handoff_bob_pro/OBJECTIFS_SPECS_DOD_PUBLICATION.md" },
+      { "id": "store_listing", "label": "Fiche stores actuelle", "path": "design_handoff_bob_pro/STORE_LISTING.md" },
+      { "id": "pricing_catalog", "label": "Catalogue d’abonnements codé", "path": "packages/core/src/domain/subscription/plan.ts" },
+      { "id": "legal_privacy", "label": "Politique de confidentialité rendue", "path": "apps/sign-web/app/legal/confidentialite/content.ts" },
+      { "id": "deletion_spec", "label": "Spec et preuves de la demande de suppression web", "path": "design_handoff_bob_pro/SPEC_STORE_ACCOUNT_DELETION_WEB.md" },
+      { "id": "deletion_lifecycle_spec", "label": "Spec et preuves du lifecycle de suppression Auth", "path": "design_handoff_bob_pro/SPEC_ACCOUNT_DELETION_LIFECYCLE.md" },
+      { "id": "eas_config", "label": "Profils EAS mobile", "path": "apps/mobile/eas.json" },
+      { "id": "ci_main", "label": "CI origin/main verte au SHA 8b4301a0", "href": "https://github.com/GLWebDevAgency/bob-pro/actions/runs/30740861687" },
+      { "id": "dgfip_pa", "label": "DGFiP — plateformes agréées", "href": "https://www.impots.gouv.fr/facturation-electronique-et-plateformes-agreees" },
+      { "id": "france_calendar", "label": "Économie.gouv — calendrier facturation électronique", "href": "https://www.economie.gouv.fr/tout-savoir-sur-la-facturation-electronique-pour-les-entreprises" },
+      { "id": "apple_program", "label": "Apple Developer Program", "href": "https://developer.apple.com/programs/enroll/" },
+      { "id": "apple_delete", "label": "Apple — suppression de compte", "href": "https://developer.apple.com/support/offering-account-deletion-in-your-app/" },
+      { "id": "apple_review", "label": "Apple — App Review Guidelines", "href": "https://developer.apple.com/app-store/review/guidelines/" },
+      { "id": "google_delete", "label": "Google Play — suppression de compte", "href": "https://support.google.com/googleplay/android-developer/answer/13327111?hl=en-EN" },
+      { "id": "google_test", "label": "Google Play — exigences de test des nouveaux comptes personnels", "href": "https://support.google.com/googleplay/android-developer/answer/14151465?hl=en" },
+      { "id": "expo_pricing", "label": "Expo EAS pricing", "href": "https://expo.dev/pricing" },
+      { "id": "supabase_pricing", "label": "Supabase pricing", "href": "https://supabase.com/pricing" },
+      { "id": "railway_pricing", "label": "Railway pricing", "href": "https://docs.railway.com/pricing" },
+      { "id": "vercel_pricing", "label": "Vercel pricing", "href": "https://vercel.com/pricing" },
+      { "id": "abby_pricing", "label": "Abby tarifs", "href": "https://abby.fr/tarifs" },
+      { "id": "tiime_pricing", "label": "Tiime tarifs", "href": "https://www.tiime.fr/tarifs" },
+      { "id": "indy_pricing", "label": "Indy tarifs", "href": "https://www.indy.fr/prix/" },
+      { "id": "obat_pricing", "label": "Obat tarifs", "href": "https://www.obat.fr/tarifs/" }
+    ],
+    "blocks": [
+      {
+        "id": "title",
+        "type": "markdown",
+        "body": "# Bob Pro — stratégie de lancement réaliste\n\nAudit produit, mobile, stores, backend et opérations — 2 août 2026. Cadre : un développeur solo, 1 000 € maximum, aucune confusion entre code présent et fonction certifiée."
+      },
+      {
+        "id": "executive_summary",
+        "type": "markdown",
+        "sourceId": "launch_model",
+        "body": "## Executive Summary\n\n- **Verdict : NO-GO pour une V1 publique aujourd’hui ; GO conditionnel pour une bêta 0.8 fermée.** Commencer par 5 artisans BTP solo, monter au maximum à 15, puis viser une soumission 1.0 après au moins 6–8 semaines et uniquement sur preuves.\n- **Cœur à lancer :** compte → client → catalogue simple → devis → signature → facture/avoir simple → envoi → paiement manuel. OCR, dépenses, pré-compta, chantiers, facturation avancée et Bob texte restent sous flags canary.\n- **Décision bloquante :** le cap canonique fait de Bob Live le différenciateur V1. La 1.0 doit donc le certifier sur deux OS ; une V1 frugale sans voix exige une décision fondateur, la mise à jour de l’objectif/spec/flags et la contre-signature prévue.\n- **Économie :** 0 € sans carte pour la bêta et le lancement limité plafonné ; hypothèses 19 € Founder, 29 € Solo, 49 € Pro et 79 € Business. Les 1 000 € couvrent les P0 et environ trois mois, avec 0 € de publicité avant rétention."
+      },
+      {
+        "id": "positioning",
+        "type": "markdown",
+        "sourceId": "launch_model",
+        "body": "## Décision produit\n\nLa cible recommandée est **l’artisan BTP en solo**, une société, un utilisateur, 5 à 100 clients : ce segment correspond au cœur devis-facture sans exiger les équipements, contrats et interventions offline encore nécessaires à une vraie verticale maintenance. La promesse reste courte : *créer, faire signer, envoyer et encaisser ses devis/factures depuis le terrain, avec des chiffres honnêtes et une confirmation avant tout envoi*. Les autres métiers sont masqués. Bob Live reste un canary de bêta, mais le cap canonique l’exige dans la V1 publique ; le retirer n’est pas une optimisation implicite, c’est un changement de cap fondateur."
+      },
+      { "id": "objective_table_block", "type": "table", "tableId": "objective_table" },
+      {
+        "id": "objective_readout",
+        "type": "markdown",
+        "body": "## Ce que dit réellement le registre\n\nLe dépôt a une excellente profondeur défensive — RLS, migrations, Factur-X, idempotence, missions — mais la publication se décide au niveau des preuves. Les états autorisés sont seulement `specified`, `implemented`, `certified` et `released` : les nuances restent dans le gate. O7 est globalement `implemented`; sa nouvelle candidate lifecycle suppression est elle aussi implémentée et verte localement, mais n’est ni sur `main`, ni en CI d’un SHA publiable, ni rejouée sur Supabase staging. O8 reste `specified`, Bob Live public est OFF et aucun binaire exact n’est prouvé sur les deux appareils."
+      },
+      { "id": "versions_table_block", "type": "table", "tableId": "versions_table" },
+      {
+        "id": "versions_readout",
+        "type": "markdown",
+        "sourceId": "launch_model",
+        "body": "## Pourquoi cette séquence\n\nLa 0.8 sert à apprendre dans TestFlight/Play closed, là où une bêta appartient. La 1.0 App Store/Play doit être présentée comme un produit complet mais distribué progressivement, jamais comme une « bêta » publique. **Six à huit semaines est une cible de soumission après fermeture des P0, pas une promesse de disponibilité.** Le chemin canonique exige Bob Live certifié en 1.0 ; l’alternative sans voix reste `[BLOQUÉ FONDATEUR : changement de cap]`. La 1.1 monétise ensuite seulement le cœur dont support et coût sont prouvés."
+      },
+      { "id": "module_table_block", "type": "table", "tableId": "module_table" },
+      {
+        "id": "module_readout",
+        "type": "markdown",
+        "sourceId": "launch_model",
+        "body": "## Coupe de scope V1\n\nLe cœur obligatoire est volontairement petit : **compte réel → client → catalogue simple → devis → signature → facture/avoir simple → envoi → paiement manuel**. Factur-X reste un format généré, sans promesse de réforme résolue. OCR/documents, dépenses, pré-compta, trésorerie, chantiers, facturation avancée et Bob texte ne rejoignent la bêta que sous flags canary et QA exacte ; ils restent OFF par défaut en V1. Interventions offline, maintenance, open banking, équipe/cabinet, Stripe/IAP et PA automatisée restent fermés. Bob Live suit son gate canonique séparé."
+      },
+      { "id": "competitor_table_block", "type": "table", "tableId": "competitor_table" },
+      {
+        "id": "competitor_readout",
+        "type": "markdown",
+        "body": "## Lecture concurrentielle\n\nAbby, Tiime et Indy rendent déjà la facturation — souvent la PA — gratuite. Tolteck est installé sur le BTP ; Obat propose désormais le devis vocal en option. **« Conforme 2026 gratuitement » n’est donc ni différenciant ni défendable pour Bob aujourd’hui.** La défense possible est l’expérience terrain et l’encaissement, prouvés sur une verticale étroite. Les prix concurrents ont été vérifiés sur leurs pages officielles le 2 août 2026 ; certains sont promotionnels ou annuels."
+      },
+      { "id": "pricing_table_block", "type": "table", "tableId": "pricing_table" },
+      {
+        "id": "pricing_readout",
+        "type": "markdown",
+        "sourceId": "launch_model",
+        "body": "## Politique tarifaire\n\nNe pas publier la grille codée actuelle : ses droits ne sont ni tous certifiés ni tous exécutoires. Les montants du rapport sont des **hypothèses à tester**, pas une décision de catalogue : gratuité bornée sans carte ; 19 € Founder pour les 50 premiers pendant 12 mois ; 29 € Solo standard ; 49 € Pro quand PA/automatisations créent une valeur mesurable ; 79 € Business après multi-rôles. Le passage payant exige au moins 5 dépôts, précommandes ou paiements réels — une intention déclarée ne suffit pas — ainsi qu’un support public ≤10 min par compte et par mois."
+      },
+      { "id": "budget_chart_block", "type": "chart", "chartId": "budget_chart" },
+      {
+        "id": "budget_chart_readout",
+        "type": "markdown",
+        "sourceId": "launch_model",
+        "body": "## Arbitrage budgétaire\n\nLe meilleur euro évite un rejet store, une politique RGPD fausse ou un incident financier. Les 1 000 € couvrent les P0, la bêta, le lancement limité et environ trois mois d’infrastructure ; les 200 € juridiques financent une revue ciblée, pas un accompagnement complet. L’enveloppe appareil suppose un iPhone possédé ou emprunté. Si les comptes stores sont déjà payés, la somme libérée va d’abord à la revue juridique ou à l’Android de test, jamais à la publicité."
+      },
+      { "id": "budget_table_block", "type": "table", "tableId": "budget_table" },
+      {
+        "id": "budget_table_readout",
+        "type": "markdown",
+        "sourceId": "launch_model",
+        "body": "## Limite économique\n\nL’enveloppe exclut le contrat PA, un conseil juridique complet, l’achat d’un iPhone et les opérations après M3. Après M3, prévoir **70–140 € par mois** selon modèles et trafic. Arrêter l’élargissement si ce burn n’est pas financé, si le coût variable dépasse 30 % du prix ou si le support dépasse 10 min/compte/mois sans concierge payant. L’entitlement `early_access`, l’allowlist et le cap serveur doivent exister avant le public : aujourd’hui un nouveau tenant reçoit encore Business gratuitement et sans échéance."
+      },
+      { "id": "gtm_table_block", "type": "table", "tableId": "gtm_table" },
+      {
+        "id": "gtm_readout",
+        "type": "markdown",
+        "sourceId": "launch_model",
+        "body": "## Acquisition frugale\n\nCommencer par 5 artisans BTP solo observables, puis monter au maximum à 15 ; le Play closed track passe à 12 testeurs pendant 14 jours si le compte est concerné. Recruter via réseau direct, experts-comptables, négoces et associations locales. Chaque testeur reçoit un onboarding de 30 minutes et un point hebdomadaire. Le passage à 50 n’est permis qu’avec cap serveur/allowlist et ≥6/10 activés encore actifs à S4. Aucune publicité avant rétention payante."
+      },
+      { "id": "kpi_table_block", "type": "table", "tableId": "kpi_table" },
+      {
+        "id": "kpi_readout",
+        "type": "markdown",
+        "sourceId": "launch_model",
+        "body": "## Règle de décision\n\nLe lancement se juge à un premier document réel vite envoyé, un retour au workflow cœur et des paiements observés. Les seuils de fiabilité ne valent qu’avec leur minimum d’observations : 98 % sur ≥100 workflows en bêta, 99,5 % sur ≥1 000 en V1 ; 99 % sur ≥500 sessions puis 99,5 % sur ≥2 000. **Une fuite tenant, un faux succès financier ou un double envoi arrête le rollout**, quels que soient activation et rétention."
+      },
+      { "id": "p0_table_block", "type": "table", "tableId": "p0_table" },
+      {
+        "id": "p0_readout",
+        "type": "markdown",
+        "sourceId": "launch_model",
+        "body": "## Premier lot d’exécution\n\nLe lifecycle suppression local possède désormais atomicité, outbox, retry, `404` idempotent, fences notifications, garde Cabinet et ACL/RLS ; ses certificats locaux sont verts. L’action n’est pourtant pas terminée : la production répond encore 404, la candidate est sur un worktree non committé, et il manque CI du SHA, replay Supabase staging, audit des bindings legacy, runbook opérateur/email, confirmation finale et matrice RGPD. En parallèle, l’accès gratuit doit devenir un entitlement `early_access` expirant, avec allowlist et cap serveur, avant toute cohorte publique."
+      },
+      {
+        "id": "store_copy",
+        "type": "markdown",
+        "body": "## Promesse store autorisée\n\n**Sous-titre provisoire :** « Devis, factures et encaissements pour artisans ».\n\n**Description courte provisoire :** « Créez, faites signer, envoyez et relancez vos devis et factures depuis le terrain. Vos chiffres restent explicites ; Bob propose, vous confirmez. »\n\nÀ supprimer de la fiche actuelle tant que les gates ne sont pas passés : « Conforme facturation électronique 2026 », « réforme réglée », « tout à la voix », relances ou paiements automatiques, essai Pro 14 jours, plans/prix, hébergement France garanti, export/comptabilité universels. Sans PA, seuls « Factur-X généré » et « PA à connecter » sont des formulations sûres. Cette copy reste provisoire jusqu’à la décision Bob Pro/Nico."
+      },
+      {
+        "id": "recommended_next_steps",
+        "type": "markdown",
+        "sourceId": "launch_model",
+        "body": "## Recommended Next Steps\n\n1. **Sous 24 h :** acter Bob Pro/Nico, identité légale, BTP solo et choisir : Bob Live certifié en V1, ou `[BLOQUÉ FONDATEUR : changement de cap]` avec objectif/spec/flags mis à jour et contre-signés.\n2. **Semaine 1 :** légal live exact ; promouvoir la candidate suppression sur une branche propre, CI, replay Supabase staging non-superuser ; exercer mail, identité, runbook, confirmation et matrice RGPD.\n3. **Semaine 1–2 :** créer `early_access`, allowlist, cap 50 et expiration ; masquer plans/paywalls ; profil bêta store-signé vers staging, Sentry par environnement et smoke deux OS.\n4. **Semaines 3–6 :** vague de 5, puis maximum 15 ; revue KPI chaque vendredi ; uniquement P0/P1 et apprentissages du cœur.\n5. **Gate de soumission :** ≥6/10 retenus S4, seuils qualité avec volumes minimums, 0 incident, support soutenable et Bob Live device/SLO si cap maintenu. Soumettre alors une 1.0 présentée comme complète, pas comme bêta.\n6. **Après 1.0 :** obtenir ≥5 paiements/dépôts, puis ouvrir Founder Solo 19 € ; passer à 29/49/79 seulement sur rétention, coût et nouvelles capacités certifiées."
+      },
+      {
+        "id": "caveats",
+        "type": "markdown",
+        "sourceId": "source_notes",
+        "body": "## Caveats et hypothèses\n\nL’audit combine code, docs, CI, endpoints live et sources officielles, sans accès aux consoles stores, factures cloud, contrats DPA, appareils physiques, données clients ni devis PA. Le compte Google peut imposer 12 testeurs pendant 14 jours. Le budget est une enveloppe trois mois, pas un devis. La candidate suppression O7 est locale et non committée : malgré ses preuves vertes, elle n’est pas `certified`. `subjectHash` et `companyId` restent pseudonymes ; la matrice Storage/logs/backups/sous-traitants manque ; un appel email/push autorisé avant la clôture peut finir après le commit. Staging sert un ancien SHA et production ne publie pas son SHA."
+      },
+      {
+        "id": "further_questions",
+        "type": "markdown",
+        "body": "## Further Questions\n\n- Le nom légal/public est-il définitivement **Bob Pro** ou **Nico**, avec quel SIREN, adresse et support ?\n- Le fondateur valide-t-il **BTP solo** comme seul beachhead initial ?\n- Le cap canonique Bob Live est-il maintenu pour V1, ou le fondateur ordonne-t-il formellement une V1 frugale sans voix avec mise à jour atomique objectif/spec/flags ?\n- Les comptes Apple/Google sont-ils individuels ou organisation, créés quand et déjà payés ?\n- Quels DPA, régions d’hébergement et contrats fournisseurs sont réellement signés ?\n- Quels iPhone/Android sont disponibles, et existe-t-il un devis de plateforme agréée ?"
+      }
+    ]
+  },
+  "snapshot": {
+    "version": 1,
+    "generatedAt": "2026-08-02T12:07:58Z",
+    "status": "partial",
+    "datasets": {
+      "objective_status": [
+        { "objective_id": "O1", "objective": "Vérité Git", "evidence_status": "specified", "remaining_gate": "Aucune preuve de publication exacte depuis main sur les deux appareils" },
+        { "objective_id": "O2", "objective": "Facturation / Factur-X", "evidence_status": "implemented", "remaining_gate": "CI actuelle verte ; preuve runtime production et corpus terrain encore dus" },
+        { "objective_id": "O3", "objective": "GPT Realtime", "evidence_status": "implemented", "remaining_gate": "Runtime public fermé ; round-trip natif, iPhone/Android et SLO absents" },
+        { "objective_id": "O4", "objective": "Mission continue", "evidence_status": "implemented", "remaining_gate": "M1-B certifié staging ; autres missions et preuve appareil incomplètes" },
+        { "objective_id": "O5", "objective": "Voice Trace", "evidence_status": "implemented", "remaining_gate": "Trace public OFF ; drill, SLO et preuve appareil dus" },
+        { "objective_id": "O6", "objective": "Données réelles, zéro fiction", "evidence_status": "implemented", "remaining_gate": "Correctif fail-closed fusionné et CI verte ; preuves appareil encore dues" },
+        { "objective_id": "O7", "objective": "Release reproductible", "evidence_status": "implemented", "remaining_gate": "Lifecycle suppression local vert ; pas sur main/CI publié, pas de replay Supabase staging ni de déploiement exact-SHA" },
+        { "objective_id": "O8", "objective": "Plateforme Agréée", "evidence_status": "specified", "remaining_gate": "Aucun partenaire, contrat, sandbox ou flux légal réconcilié" }
+      ],
+      "launch_versions": [
+        { "version": "v0.8", "phase": "Bêta fermée", "distribution": "TestFlight + Play closed", "timing": "4 semaines après P0", "monthly_price_eur": 0, "audience": "vague 1 : 5 ; maximum 15, dont 12 Play/14 j si requis", "included": "Compte réel ; client ; catalogue simple ; devis → signature → facture/avoir simple → envoi → paiement manuel ; Bob Live canary allowlist", "excluded": "OCR, dépenses, pré-compta, chantiers, facturation avancée et Bob texte restent sous flags canary ; PA, paiement en ligne, équipe et offline fermés", "exit_gate": "0 P0 sécurité/finance ; activation ≥60 % ; rétention S4 ≥6/10 ; 0 double envoi/faux succès" },
+        { "version": "v1.0", "phase": "Lancement limité", "distribution": "App Store + Play production, rollout progressif", "timing": "cible de soumission : ≥6–8 semaines après P0 ; disponibilité non garantie", "monthly_price_eur": 0, "audience": "maximum 50 sociétés, cap serveur + allowlist + entitlement early_access", "included": "Cœur minimal certifié ; support/suppression certifiés ; Bob Live certifié selon le cap canonique O3–O5", "excluded": "PA/e-reporting, paiements en ligne, équipe/cabinet et tous les canaries non certifiés", "exit_gate": "CI + staging exact-SHA ; deux OS ; légal final ; suppression AC9–AC10 ; cap réellement exécutoire ; Bob Live device/SLO, sauf changement de cap fondateur" },
+        { "version": "v1.1", "phase": "Founder Solo", "distribution": "Vente web, app de connexion", "timing": "après preuve de valeur 1.0", "monthly_price_eur": 19, "audience": "50 premiers artisans solo, prix garanti 12 mois", "included": "Cœur 1.0 certifié + quotas exécutoires + support standard", "excluded": "PA, équipe et automatisations non certifiées", "exit_gate": "≥5 dépôts/précommandes payés ; support ≤10 min/compte/mois ; coût variable ≤5 €" },
+        { "version": "v1.1+", "phase": "Solo standard", "distribution": "Vente web, app de connexion", "timing": "après deux cohortes payantes", "monthly_price_eur": 29, "audience": "artisans solo hors cohorte fondateur", "included": "Même promesse Solo, onboarding self-serve et support documenté", "excluded": "PA et équipe", "exit_gate": "Rétention payante M2 ≥70 % sur ≥20 clients ; marge brute et support soutenables" },
+        { "version": "v1.2", "phase": "Pro", "distribution": "Vente web puis politique stores validée", "timing": "après PA et automatisations certifiées", "monthly_price_eur": 49, "audience": "artisans à fort volume administratif", "included": "Connecteur PA réel ; Bob Live certifié ; relances/automatisations gouvernées ; trésorerie prouvée", "excluded": "Multi-sociétés et cabinet si non certifiés", "exit_gate": "Contrat/DPA/sandbox PA ; SLO voix ; coût variable ≤8 € ; zéro incident financier" },
+        { "version": "v2.0", "phase": "Business", "distribution": "Web + mobile", "timing": "après traction et support soutenable", "monthly_price_eur": 79, "audience": "petites équipes", "included": "Rôles/équipe ; contrôle comptable ; multi-sociétés/cabinet selon certification", "excluded": "Aucune fonction seulement maquettée ou spécifiée", "exit_gate": "Rétention payante et usage équipe prouvés ; sécurité multi-rôles certifiée" }
+      ],
+      "module_audit": [
+        { "module": "Identité, compte et accès", "current_state": "Page web et lifecycle backend implemented localement ; production 404 ; opérateur/rétention non certifiés ; identité Bob Pro/Nico contradictoire", "beta_08": "Après commit, CI et replay staging", "store_v10": "Indispensable après certification production", "later": "—", "launch_gate": "Nom/support décidés ; URL 200 exact-SHA ; demande, effacement et confirmation prouvés" },
+        { "module": "CGU, confidentialité, RGPD", "current_state": "Pages live avec placeholders ; matrice de rétention incomplète", "beta_08": "Non externe avant correction", "store_v10": "P0 absolu", "later": "Revue juridique continue", "launch_gate": "Identité légale, DPA, transferts, Storage/logs/backups, rétentions et fournisseurs exacts" },
+        { "module": "Onboarding métiers", "current_state": "Codé mais promet des verticales non livrées", "beta_08": "BTP solo seulement", "store_v10": "BTP solo seulement", "later": "Maintenance après équipements/interventions certifiés", "launch_gate": "Masquer les métiers et bénéfices non prouvés ; choix fondateur enregistré" },
+        { "module": "CRM clients et recherche", "current_state": "Câblé aux données réelles", "beta_08": "Oui", "store_v10": "Cœur V1", "later": "Enrichissement CRM", "launch_gate": "États vide/erreur + tenant vierge/peuplé certifiés" },
+        { "module": "Catalogue", "current_state": "Domaine et mobile réels", "beta_08": "Simple après QA", "store_v10": "Cœur V1", "later": "Mutations avancées", "launch_gate": "Zéro donnée locale trompeuse et états réseau certifiés" },
+        { "module": "Devis et signature", "current_state": "Socle large, signature web et archives présents", "beta_08": "Oui, cas bornés", "store_v10": "Cœur V1", "later": "Variantes non certifiées", "launch_gate": "Email/signature/archive sur appareils et production" },
+        { "module": "Factures, avoirs, paiements manuels", "current_state": "Socle large, tests CI verts ; certification publication incomplète", "beta_08": "Oui, cas simples", "store_v10": "Cœur V1", "later": "Cas avancés non prouvés", "launch_gate": "Facture finale toujours atteignable ; PDF/Factur-X/TVA exacts" },
+        { "module": "Facturation avancée", "current_state": "Facture directe, remises, échéances, situations et BC codés à divers niveaux", "beta_08": "Flag canary par cas", "store_v10": "OFF par défaut", "later": "Après matrice exhaustive", "launch_gate": "Résultat visible E2E pour chaque sémantique" },
+        { "module": "Factur-X", "current_state": "O2 implemented ; CI FNFE/Mustang/veraPDF verte", "beta_08": "Oui comme génération", "store_v10": "Oui avec wording factuel", "later": "Certification terrain continue", "launch_gate": "Dire « Factur-X généré », jamais « réforme réglée » sans PA" },
+        { "module": "Plateforme Agréée", "current_state": "O8 specified seulement ; guide manuel", "beta_08": "PA externe explicitée", "store_v10": "Pas d’automatisation annoncée", "later": "V1.2", "launch_gate": "Partenaire agréé, contrat, DPA, sandbox, annuaire, rejets et réconciliation" },
+        { "module": "Envoi, relances, notifications", "current_state": "Lifecycle local annule/minimise les jobs et ferme email/push ; exploitation production à prouver", "beta_08": "Oui après replay staging", "store_v10": "Cœur V1 après certification", "later": "Autonomie gouvernée", "launch_gate": "Brevo réel, anti-doublon, cron/alerting et clôture tenant certifiés" },
+        { "module": "Trésorerie / argent", "current_state": "O6 fusionné ; certification appareil à faire", "beta_08": "Flag canary, lecture prudente", "store_v10": "OFF par défaut sauf preuve exacte", "later": "Open banking/forecast avancé", "launch_gate": "États absent/périmé/erreur visibles et tests tenant" },
+        { "module": "Dépenses, documents, OCR", "current_state": "Intake/OCR présents ; droit OCR non appliqué avant appel fournisseur", "beta_08": "Flag canary avec revue humaine", "store_v10": "OFF par défaut", "later": "Après cœur stable", "launch_gate": "DPA, quota/entitlement et correction avant écriture financière" },
+        { "module": "Pré-compta, clôture, FEC", "current_state": "Écrans/use cases présents", "beta_08": "Flag canary", "store_v10": "OFF par défaut", "later": "Après export prouvé", "launch_gate": "Golden files + test de partage sur appareils" },
+        { "module": "Chantiers, notes, photos", "current_state": "Câblé au réel", "beta_08": "Flag canary BTP", "store_v10": "OFF par défaut", "later": "V1.1 selon signal terrain", "launch_gate": "Upload, permissions et états réseau certifiés" },
+        { "module": "Équipements et contrats", "current_state": "Domaine/API/écrans présents, non certifiés publication", "beta_08": "Non dans le pilote BTP", "store_v10": "Non", "later": "Verticale maintenance", "launch_gate": "Polish, preuve terrain et support soutenable" },
+        { "module": "Interventions / offline", "current_state": "Domaine/API sans parcours mobile public complet", "beta_08": "Test technique seulement", "store_v10": "Non", "later": "Post-V1", "launch_gate": "UI, outbox offline, conflits, signature et synchronisation terrain" },
+        { "module": "Bob texte", "current_state": "Assistant branché aux mêmes use cases ; quota mensuel backend TODO", "beta_08": "Flag canary, fournisseur unique", "store_v10": "OFF par défaut tant que quota absent", "later": "Après quota et coût prouvés", "launch_gate": "DPA, coût, confirmations et absence de faux succès" },
+        { "module": "Bob Live / voix", "current_state": "O3/O4/O5 implemented mais production OFF et non certifiés appareils", "beta_08": "Canary allowlist", "store_v10": "Requis par le cap canonique ; sinon [BLOQUÉ FONDATEUR : changement de cap]", "later": "Améliorations post-V1", "launch_gate": "iPhone+Android, SLO, barge-in, Trace, coût et rollback" },
+        { "module": "Abonnements / Stripe / IAP", "current_state": "Paiement différé ; nouveau tenant reçoit actuellement Business gratuit sans échéance", "beta_08": "early_access explicite, allowlist et cap serveur avant cohorte", "store_v10": "Gratuit borné, sans carte ni débit automatique", "later": "V1.1 web", "launch_gate": "Droits/quotas/cap exécutoires avant V1 ; webhooks et remboursements avant vente" },
+        { "module": "Équipe, multi-sociétés, cabinet", "current_state": "Promis par le catalogue Business mais non certifié", "beta_08": "Non", "store_v10": "Non", "later": "V2", "launch_gate": "Rôles, RLS, audit, UX et support multi-utilisateur" },
+        { "module": "Ops, jobs et release", "current_state": "CI main verte ; plusieurs schedulers restent pilotés par liste ; SHA prod absent", "beta_08": "Pilotage manuel documenté", "store_v10": "Bloquant self-serve", "later": "Automatisation continue", "launch_gate": "Nouvelle société couverte, exact-SHA, staging, migrations bornées et runbook" }
+      ],
+      "competitor_benchmark": [
+        { "vendor": "Abby", "free_entry": "0 €", "paid_entry": "7,20 € HT/mois, annuel promo", "free_invoicing": "Oui", "pa_position": "Oui", "market_position": "Micro-entreprise généraliste ; devis/factures illimités" },
+        { "vendor": "Tiime", "free_entry": "0 €", "paid_entry": "17,99 € HT/mois, annuel", "free_invoicing": "Oui", "pa_position": "Oui", "market_position": "Facturation + pré-compta + banque" },
+        { "vendor": "Indy", "free_entry": "0 €", "paid_entry": "à partir de 9 € HT/mois, annuel", "free_invoicing": "Oui", "pa_position": "Oui", "market_position": "Comptabilité/facturation indépendants" },
+        { "vendor": "Shine Facture", "free_entry": "0 €", "paid_entry": "11 € mensuel ou 9 € annuel", "free_invoicing": "Oui", "pa_position": "À vérifier par offre", "market_position": "Facturation intégrée à l’écosystème Shine" },
+        { "vendor": "Tolteck", "free_entry": "—", "paid_entry": "25 € mensuel ou 19 € annuel", "free_invoicing": "Non", "pa_position": "À vérifier", "market_position": "Devis/factures BTP, offline" },
+        { "vendor": "Obat", "free_entry": "—", "paid_entry": "à partir de 49 € HT/mois affiché", "free_invoicing": "Non", "pa_position": "Via partenaire", "market_position": "BTP complet ; devis vocal proposé en option" }
+      ],
+      "pricing_path": [
+        { "stage": "Bêta 0.8", "monthly_price_eur": 0, "audience": "vague 1 : 5 ; maximum 15", "promise": "Recherche produit, aucune carte, aucune reconduction", "activation_condition": "P0 légal + lifecycle staging + build fermé" },
+        { "stage": "V1.0 lancement limité", "monthly_price_eur": 0, "audience": "maximum 50 sociétés", "promise": "Cœur certifié, accès invitation/early_access à échéance explicite", "activation_condition": "Cap serveur, allowlist, droits et gates stores" },
+        { "stage": "V1.1 Founder Solo", "monthly_price_eur": 19, "audience": "50 premiers, 12 mois", "promise": "Cœur certifié + quotas ; hypothèse tarifaire fondateur", "activation_condition": "≥5 dépôts/précommandes réels + support ≤10 min/mois" },
+        { "stage": "V1.1+ Solo standard", "monthly_price_eur": 29, "audience": "artisans solo", "promise": "Même cœur self-serve ; hypothèse après apprentissage", "activation_condition": "Rétention payante M2 ≥70 % sur ≥20 clients" },
+        { "stage": "V1.2 Pro", "monthly_price_eur": 49, "audience": "fort usage administratif", "promise": "PA réelle + Bob Live + automatisations gouvernées", "activation_condition": "Certification PA/voix et coût variable ≤8 €" },
+        { "stage": "V2 Business", "monthly_price_eur": 79, "audience": "petites équipes", "promise": "Équipe, contrôle, multi-sociétés/cabinet certifiés", "activation_condition": "Traction, rôles/RLS et support prouvés" }
+      ],
+      "launch_budget": [
+        { "category": "Comptes Apple + Google", "budget_eur": 120, "rationale": "Apple 99 USD/an + Google 25 USD une fois ; réallouer si déjà payés" },
+        { "category": "Revue juridique/RGPD ciblée", "budget_eur": 200, "rationale": "Revue ciblée seulement, pas un accompagnement juridique complet" },
+        { "category": "Infrastructure, 3 mois", "budget_eur": 210, "rationale": "Supabase + Railway + Vercel commercial ; enveloppe TVA/FX" },
+        { "category": "Crédits IA/voix/OCR", "budget_eur": 150, "rationale": "Plafond dur et alertes ; mesurer coût par compte" },
+        { "category": "Domaine + email professionnel", "budget_eur": 50, "rationale": "Support et confiance ; remplacer l’adresse personnelle" },
+        { "category": "Appareils / incentives testeurs", "budget_eur": 120, "rationale": "Suppose un iPhone possédé/emprunté ; Android modeste ou incentives" },
+        { "category": "Contingence", "budget_eur": 150, "rationale": "Rebuild, incident, taxe, certificat ou dépassement contrôlé" }
+      ],
+      "go_to_market": [
+        { "phase": "Recrutement bêta", "target": "BTP solo : 5 en vague 1, maximum 15", "channels": "Réseau direct, experts-comptables locaux, négoces et associations métier", "spend": "0 € média ; 120 € device/incentives", "operating_motion": "Entretien initial 30 min + point hebdo 15 min", "scale_gate": "≥6/10 activés encore actifs à S4 ; 0 incident" },
+        { "phase": "Lancement limité stores", "target": "50 sociétés maximum, invitation contrôlée", "channels": "Waitlist, parrainage, 2 études de cas et démo courte", "spend": "0 € publicité", "operating_motion": "Onboarding assisté léger + centre d’aide minimal", "scale_gate": "Cap/allowlist exécutoires ; activation ≥70 % ; support ≤10 min/compte/mois" },
+        { "phase": "Commercial Solo", "target": "Artisans ressemblant aux cohortes retenues", "channels": "SEO problème, partenaires comptables/métier et bouche-à-oreille", "spend": "Test média ≤50 € seulement après rétention payante", "operating_motion": "Checkout web mesuré", "scale_gate": "≥50 % de conversion sur ≥20 essais qualifiés ; rétention M2 ≥70 %" }
+      ],
+      "kpi_registry": [
+        { "metric_group": "Primaire", "metric": "Activation J7", "formula": "Sociétés ayant envoyé un premier devis ou une facture réelle sous 7 j / sociétés invitées éligibles", "beta_gate": "≥60 %, minimum 10 invitées", "v1_gate": "≥70 %, minimum 20 invitées", "cadence": "Hebdomadaire" },
+        { "metric_group": "Primaire", "metric": "Rétention cœur S4", "formula": "Sociétés activées ayant terminé ≥2 workflows cœur sur ≥2 semaines distinctes à J28 / sociétés activées", "beta_gate": "≥6/10 activées", "v1_gate": "≥50 %, minimum 20 activées", "cadence": "Hebdomadaire par cohorte" },
+        { "metric_group": "Primaire", "metric": "Temps vers première valeur", "formula": "Médiane entre création du compte et premier document réel envoyé", "beta_gate": "≤20 min", "v1_gate": "≤10 min", "cadence": "Hebdomadaire" },
+        { "metric_group": "Qualité", "metric": "Succès des workflows cœur", "formula": "Terminaisons exactes / tentatives devis-signature-facture-envoi-paiement", "beta_gate": "≥98 % sur ≥100 tentatives", "v1_gate": "≥99,5 % sur ≥1 000 tentatives", "cadence": "Quotidien" },
+        { "metric_group": "Qualité", "metric": "Sessions sans crash", "formula": "Sessions sans crash / sessions totales", "beta_gate": "≥99 % sur ≥500 sessions", "v1_gate": "≥99,5 % sur ≥2 000 sessions", "cadence": "Quotidien" },
+        { "metric_group": "Garde-fou", "metric": "Incidents financiers/sécurité", "formula": "Cross-tenant + double envoi + double écriture + faux succès", "beta_gate": "0", "v1_gate": "0", "cadence": "Temps réel / revue hebdo" },
+        { "metric_group": "Économie", "metric": "Charge support", "formula": "Minutes fondateur consacrées au support / société active / mois", "beta_gate": "≤45 min", "v1_gate": "≤10 min, sinon concierge payant", "cadence": "Mensuel" },
+        { "metric_group": "Économie", "metric": "Coût variable", "formula": "IA + OCR + email + stockage/egress variables / société active / mois", "beta_gate": "Mesuré", "v1_gate": "≤5 € Solo ; ≤8 € Pro et ≤30 % du prix", "cadence": "Mensuel" },
+        { "metric_group": "Monétisation", "metric": "Preuve de paiement", "formula": "Dépôts, précommandes ou premiers paiements encaissés / testeurs activés éligibles", "beta_gate": "≥5 paiements sur ≥10 activés", "v1_gate": "≥50 % sur ≥20 essais qualifiés", "cadence": "Fin de cohorte" },
+        { "metric_group": "Voix", "metric": "Latence et sûreté Bob Live", "formula": "Fin de parole → premier audio ; erreurs fantômes/doubles confirmations", "beta_gate": "p95 ≤1 800 ms ; 0 erreur critique", "v1_gate": "Même seuil sur iPhone et Android", "cadence": "Chaque build voix" }
+      ],
+      "p0_action_plan": [
+        { "priority": 1, "action": "Décider Bob Pro ou Nico, fournir l’identité légale et choisir BTP solo", "owner": "Fondateur", "estimated_effort": "0,5 j décision", "required_evidence": "Spec/ADR datée ; nom, segment, SIREN, adresse, email et vendeur stores cohérents" },
+        { "priority": 2, "action": "Réécrire CGU/confidentialité et signer/archiver les DPA nécessaires", "owner": "Fondateur + conseil", "estimated_effort": "2–3 j", "required_evidence": "Pages live sans placeholder ; runtime, transferts et rétentions exacts" },
+        { "priority": 3, "action": "Promouvoir et certifier le lifecycle de suppression local", "owner": "Produit/tech + ops", "estimated_effort": "2–4 j ops", "required_evidence": "Commit propre ; CI ; replay Supabase staging non-superuser ; audit bindings legacy ; URL 200 ; mail/runbook/confirmation ; matrice RGPD ; déploiement exact-SHA" },
+        { "priority": 4, "action": "Créer entitlement early_access, allowlist et cap serveur", "owner": "Backend/produit", "estimated_effort": "1–2 j", "required_evidence": "Le 51e tenant est refusé ; expiration explicite ; aucun Business gratuit implicite ; paywalls masqués" },
+        { "priority": 5, "action": "Aligner la fiche store et trancher le cap Bob Live", "owner": "Fondateur + produit", "estimated_effort": "1 j décision/copy", "required_evidence": "Bob Live certifié dans V1 ou [BLOQUÉ FONDATEUR : changement de cap] avec objectifs/spec/flags atomiques ; screenshots réels" },
+        { "priority": 6, "action": "Ajouter un profil bêta store-signé et les identifiants de soumission", "owner": "Mobile/ops", "estimated_effort": "1 j", "required_evidence": "AAB closed track + TestFlight vers staging/candidat contrôlé ; binaire public vers production" },
+        { "priority": 7, "action": "Corriger ou désactiver la biométrie iOS sans configuration Face ID", "owner": "Mobile", "estimated_effort": "0,5 j", "required_evidence": "Plugin/usage description + test, ou fonctionnalité fermée" },
+        { "priority": 8, "action": "Séparer les environnements/release Sentry et prouver les source maps", "owner": "Mobile/ops", "estimated_effort": "1 j", "required_evidence": "Événement de test attribué au bon environnement, release et SHA" },
+        { "priority": 9, "action": "Terminer la certification appareil du lot O6 fail-closed", "owner": "GPT writer + fondateur", "estimated_effort": "0,5–1 j QA", "required_evidence": "CI verte + revue appareil + aucune donnée périmée présentée comme vraie" },
+        { "priority": 10, "action": "Rendre les jobs multi-tenant self-serve ou limiter explicitement l’accès", "owner": "Backend/ops", "estimated_effort": "1–2 j", "required_evidence": "Nouvelle société automatiquement couverte ; test onboarding → jobs" },
+        { "priority": 11, "action": "Borner les migrations restantes et certifier exact-SHA staging/prod", "owner": "Backend/ops", "estimated_effort": "1–2 j", "required_evidence": "Timeouts ; readiness SHA/env ; rollback/runbook" },
+        { "priority": 12, "action": "Certifier le cœur et Bob Live sur iPhone et Android modestes", "owner": "Fondateur + testeurs", "estimated_effort": "2–4 j", "required_evidence": "Cold install, auth, devis, signature, facture, envoi, paiement et gate voix O3–O5" },
+        { "priority": 13, "action": "Lancer la cohorte fermée et instrumenter le registre KPI", "owner": "Produit", "estimated_effort": "4 semaines", "required_evidence": "Registre hebdo ; verbatims ; décisions stop/continue tracées" }
+      ]
+    },
+    "accessIssues": [
+      { "id": "store_accounts_unknown", "dataset": "store_accounts", "message": "Type, date de création, identité vendeur et paiement des comptes Apple/Google non accessibles." },
+      { "id": "vendor_bills_unknown", "dataset": "vendor_bills", "message": "Factures et consommation réelles Supabase, Railway, Vercel, OpenAI/Mistral, Brevo et Sentry non accessibles." },
+      { "id": "device_proofs_missing", "dataset": "device_tests", "message": "Aucun artefact signé exact n’a été exécuté pendant cet audit sur iPhone et Android physiques." },
+      { "id": "pa_quotes_missing", "dataset": "pa_quotes", "message": "Aucun devis, contrat, DPA ou sandbox de plateforme agréée disponible." },
+      { "id": "founder_cap_pending", "dataset": "founder_decisions", "message": "Le maintien de Bob Live dans la V1 canonique ou un changement de cap frugal sans voix n’a pas été acté et contre-signé." }
+    ]
+  },
+  "sources": [
+    { "id": "launch_model", "label": "Modèle analytique revu de la stratégie", "path": "artifacts/launch-strategy-2026-08-02/launch_strategy_analysis.sql" },
+    { "id": "source_notes", "label": "Notes de sources et méthode", "path": "artifacts/launch-strategy-2026-08-02/source-notes.md" },
+    { "id": "canonical_publication", "label": "Objectifs, specs et DoD de publication", "path": "design_handoff_bob_pro/OBJECTIFS_SPECS_DOD_PUBLICATION.md" },
+    { "id": "store_listing", "label": "Fiche stores actuelle", "path": "design_handoff_bob_pro/STORE_LISTING.md" },
+    { "id": "pricing_catalog", "label": "Catalogue d’abonnements codé", "path": "packages/core/src/domain/subscription/plan.ts" },
+    { "id": "legal_privacy", "label": "Politique de confidentialité rendue", "path": "apps/sign-web/app/legal/confidentialite/content.ts" },
+    { "id": "deletion_spec", "label": "Spec et preuves de la demande de suppression web", "path": "design_handoff_bob_pro/SPEC_STORE_ACCOUNT_DELETION_WEB.md" },
+    { "id": "deletion_lifecycle_spec", "label": "Spec et preuves du lifecycle de suppression Auth", "path": "design_handoff_bob_pro/SPEC_ACCOUNT_DELETION_LIFECYCLE.md" },
+    { "id": "eas_config", "label": "Profils EAS mobile", "path": "apps/mobile/eas.json" },
+    { "id": "ci_main", "label": "CI origin/main verte au SHA 8b4301a0", "href": "https://github.com/GLWebDevAgency/bob-pro/actions/runs/30740861687" },
+    { "id": "dgfip_pa", "label": "DGFiP — plateformes agréées", "href": "https://www.impots.gouv.fr/facturation-electronique-et-plateformes-agreees" },
+    { "id": "france_calendar", "label": "Économie.gouv — calendrier facturation électronique", "href": "https://www.economie.gouv.fr/tout-savoir-sur-la-facturation-electronique-pour-les-entreprises" },
+    { "id": "apple_program", "label": "Apple Developer Program", "href": "https://developer.apple.com/programs/enroll/" },
+    { "id": "apple_delete", "label": "Apple — suppression de compte", "href": "https://developer.apple.com/support/offering-account-deletion-in-your-app/" },
+    { "id": "apple_review", "label": "Apple — App Review Guidelines", "href": "https://developer.apple.com/app-store/review/guidelines/" },
+    { "id": "google_delete", "label": "Google Play — suppression de compte", "href": "https://support.google.com/googleplay/android-developer/answer/13327111?hl=en-EN" },
+    { "id": "google_test", "label": "Google Play — exigences de test des nouveaux comptes personnels", "href": "https://support.google.com/googleplay/android-developer/answer/14151465?hl=en" },
+    { "id": "expo_pricing", "label": "Expo EAS pricing", "href": "https://expo.dev/pricing" },
+    { "id": "supabase_pricing", "label": "Supabase pricing", "href": "https://supabase.com/pricing" },
+    { "id": "railway_pricing", "label": "Railway pricing", "href": "https://docs.railway.com/pricing" },
+    { "id": "vercel_pricing", "label": "Vercel pricing", "href": "https://vercel.com/pricing" },
+    { "id": "abby_pricing", "label": "Abby tarifs", "href": "https://abby.fr/tarifs" },
+    { "id": "tiime_pricing", "label": "Tiime tarifs", "href": "https://www.tiime.fr/tarifs" },
+    { "id": "indy_pricing", "label": "Indy tarifs", "href": "https://www.indy.fr/prix/" },
+    { "id": "obat_pricing", "label": "Obat tarifs", "href": "https://www.obat.fr/tarifs/" }
+  ],
+  "package_info": {
+    "originUrl": "artifact://bob-pro-launch-strategy-2026-08-02",
+    "controls": { "edit": false, "refresh": false }
+  }
+}

@@ -1,0 +1,106 @@
+{
+ "direction": "L'ATELIER PREMIUM — le luxe artisan. La nuit d'atelier pour écrin, l'or en filet pour l'argent, le papier ivoire sous la lampe pour les pièces. Le niveau Revolut Metal / Amex, mais pensé pour des mains qui fabriquent : matières mates, lumière chaude, mécanique horlogère. Fondé sur le kit 1.x : la rampe sombre certifiée AA existait déjà dans packages/tokens/src/index.ts (surfaceTint.dark, jamais activée) — je l'active, je la descends d'un cran (d0 nuit) et j'y pose deux métaux.",
+ "manifeste": "L'artisan français fabrique de la valeur avec ses mains ; son application doit la lui rendre : ouvrir Bob Pro, c'est ouvrir un écrin, pas un tableur.\nLa nuit d'atelier n'est pas une mode sombre : c'est la scène qui fait exister la lumière — et dans cette lumière, une seule vedette, son argent.\nL'or ne décore pas : il désigne. Un filet d'un point, jamais un aplat — le poinçon d'un maître, discret et incontestable, jamais un statut.\nLe papier reste papier : la facture est un objet clair sous une lampe, parce que c'est elle que le client signe et que la loi lit.\nEt quand Bob parle, tout s'immobilise : le vrai luxe, comme en horlogerie, c'est le silence après le réglage.",
+ "palette": [
+  {
+   "role": "nuit900 (d0) — fond d'écrin",
+   "hex": "#081426",
+   "usage": "NOUVEAU. Fond des 6 écrans phares, un cran sous d1 #0C2340. Étend BrandTheme (d0 par thème : marine #081426, forêt #06231A, graphite #0D1016, indigo #191542) — les 4 thèmes de marque survivent. Le fond clair #EFF2F7 reste celui des écrans de saisie et de lecture longue."
+  },
+  {
+   "role": "encre riche — carte sur nuit",
+   "hex": "#0C2340",
+   "usage": "EXISTANT recyclé (ink900/d1 = surfaceTint.dark.neutral.flat) : sur nuit, une carte est une encre posée, bord #1E3D66 existant. Zéro nouvelle surface à certifier, les encres AA du kit dark s'appliquent telles quelles."
+  },
+  {
+   "role": "ivoire display",
+   "hex": "#F7F2E9",
+   "usage": "NOUVEAU. Les MOTS display sur nuit (Bonjour Karim, titres d'écran phare) — 16,54:1 mesuré sur nuit900. Le corps garde l'encre froide existante #F1F5FA (16,85:1), le muted garde #A9BBD4 (9,44:1) — y compris les « — » honnêtes."
+  },
+  {
+   "role": "champagne — capitales et ticks",
+   "hex": "#F2E3B3",
+   "usage": "NOUVEAU. Petites capitales espacées (sur-titres, dates), graduations de dataviz, tête du dégradé métal. 14,42:1 sur nuit, 12,34:1 sur carte encre. Jamais un état, jamais sur surface claire."
+  },
+  {
+   "role": "or — LE filet",
+   "hex": "#D9B45B",
+   "usage": "NOUVEAU, la signature. Hairline 1 dp en tête de carte, soulignement tracé sous le montant héros, aiguille du cadran DSO, anneau du poinçon (avatar). 9,34:1 sur nuit, 7,99:1 sur carte. Doctrine nonContent.decorative du kit : l'or est une MATIÈRE, il ne porte JAMAIS une information seul — le warning ambre (#C77A12/#8A5A12) garde son territoire pastel intact."
+  },
+  {
+   "role": "or profond — pied du métal",
+   "hex": "#8A6B2F",
+   "usage": "NOUVEAU. Pied du dégradé filet (champagne → or → or profond, 90°) : la lumière qui accroche un chant puis s'éteint. 3,71:1 sur nuit — décoratif, au-dessus du seuil 3:1 des composants d'UI."
+  },
+  {
+   "role": "cuivre",
+   "hex": "#D98B5F",
+   "usage": "NOUVEAU. Deuxième métal : série secondaire de dataviz (dépenses au Pilotage), état pressed du filet. 6,86:1 sur nuit. Jamais en concurrence avec le rouge d'état."
+  },
+  {
+   "role": "papier ivoire — la pièce",
+   "hex": "#FCF9F2",
+   "usage": "NOUVEAU. La carte trésorerie flottante et le corps des factures/devis : du papier sous la lampe, pas une carte blanche sur gris. Chiffre héros navy #0C2340 dessus : 15,02:1. Encres existantes re-mesurées : success 4,93:1, slate500 5,21:1 — entrent dans index.test.ts."
+  },
+  {
+   "role": "lampe — halo chaud",
+   "hex": "rgba(217,180,91,.16)",
+   "usage": "NOUVEAU. Le seul halo des phares : lumière de lampe d'atelier en haut d'écran, statique après l'allumage. Remplace les halos froids décoratifs — SAUF haloIndigo, canal exclusif de Bob, intouchable."
+  },
+  {
+   "role": "argent encaissé sur nuit",
+   "hex": "#6EE7B7",
+   "usage": "EXISTANT (successOnDark), 12,10:1 sur nuit : le vert reste la couleur du positif et de la voix de Bob (« te verser »), l'or ne la remplace jamais. Série 1 de dataviz encaissements."
+  },
+  {
+   "role": "retard sur nuit",
+   "hex": "#F0968B",
+   "usage": "NOUVEAU cran on-dark du retard : dangerVivid #E5544B ne fait que 5,01:1 sur nuit (badge ok, petit texte limite) — ce cran monte à 8,29:1. La sémantique danger du kit reste inchangée partout ailleurs."
+  },
+  {
+   "role": "acier clair — série dataviz",
+   "hex": "#AECFFB",
+   "usage": "EXISTANT (themes.marine.accent, certifié ≥3:1 sur d3) : 11,52:1 sur nuit. Troisième série du Pilotage. La dataviz n'invente aucune couleur : or, cuivre, menthe, acier — quatre séries distinctes daltonisme-compatibles car doublées de formes et libellés."
+  },
+  {
+   "role": "Bob — indigo exclusif",
+   "hex": "#4338CA",
+   "usage": "INTOUCHÉ. Sur nuit, la présence de Bob passe par surfaceTint.dark.ai existant (#221D45/#2C2560, encre #E9E4FB) et l'accent #B7AEFB (9,19:1 sur nuit). Aucun métal ne s'approche du canal de Bob."
+  }
+ ],
+ "typographies": "Trois voix, une règle : « les mots en Fraunces, les chiffres en Schibsted, jamais l'inverse ». 1) AJOUT — Fraunces variable (SIL, un seul fichier, axe optique) 560–640 : uniquement les MOTS display sur nuit — heroWord 34 (« Bonjour Karim », « Ton argent »), titres de phare 27–30. Chaleureuse et artisanale, pas une Didone de banque : c'est le fort-contraste demandé sans froideur City. 2) CONSERVÉ — Schibsted Grotesk 700/800 : 100 % des chiffres, tabular-nums partout (doctrine « le chiffre est le héros » du kit, intacte) ; le montant héros de l'Accueil passe de 42 à nuitHeroNum 56/800/tracking −1,5 — le chiffre devient monumental ; moneyHero 27 → 30 au Pilotage. 3) CONSERVÉ — Hanken Grotesk 500/600/700 : corps 14,5, sub 13,5, boutons 16 inchangés (lisibilité chantier prouvée). MUTATION signature : eyebrow (12/700/tracking 0,4) devient sectionCap — petites capitales champagne espacées à tracking +2,4, le code typographique Amex/horlogerie ; c'est le sur-titre de toutes les sections des phares. Échelle nuit complète : sectionCap 12 · sub 13,5 · body 14,5 · cardTitle 16 · sheetTitle 20 · bigNum 21 · moneyHero 30 · heroWord 34 · nuitHeroNum 56.",
+ "matiere": "Trois matières, une hiérarchie stricte. 1) LA NUIT (d0 #081426) : mate, opaque, sans alpha — la doctrine « surfaces teintées opaques, jamais la transparence iOS » du kit est conservée au pixel. Dégradé héros 168° d0→d2 (l'actuel header d1→d3 descendu d'un cran : plus dramatique, même recette gradients()). Aucune texture bitmap — le grain, c'est du banding et des kilo-octets ; la matité vient des aplats et de la lumière. 2) L'ENCRE : cartes #0C2340/#122E52 posées sur nuit, bord #1E3D66 (tout existe dans surfaceTint.dark). Le relief sur nuit ne vient PAS des ombres (illisibles sur sombre) mais de la LUMIÈRE DE CHANT : filet métal 1 dp en tête de carte, dégradé 90° champagne #F2E3B3 → or #D9B45B → or profond #8A6B2F — la lampe accroche le chant de l'objet. C'est LE relief marqué de la direction. 3) LE PAPIER (#FCF9F2) : réservé à l'argent et aux pièces — la carte trésorerie flottante et le corps de facture/devis. Seule matière qui garde l'ombre e3 existante (elle se lit, elle, car le papier flotte sur la nuit). Interdits tenus : zéro blur (doctrine edgeFalloff defaultLayers: 0 conservée — un draw call, zéro échantillon) ; la retombée de bord et le fondu de tab bar passent par surfaceVeil.dark.canvas déjà livré. Le poinçon : anneau or 1 dp autour de l'Avatar sur nuit — le hallmark du maître artisan.",
+ "motion": "Le langage : LA MÉCANIQUE HORLOGÈRE. Une seule courbe, cubic-bezier(0.2, 0.8, 0.2, 1) — l'aiguille qui se pose — et le spring existant motionSemantic.spring (damping 26, stiffness 300) ; jamais de rebond, jamais de spongieux. Les registres du kit sont CONSERVÉS tels quels (fast 200, base 220, content 360, ambient 1500 ; feedback 80/160, enter 240, replace 280) ; un seul ajout : rideau 420 ms. CE QUI BOUGE — une fois, à l'entrée, transform/opacity uniquement : le RIDEAU (transition d'écran : entrant +24 dp translationY + fondu, 360–420 ms — SEUL chantier sous flag build-time fail-closed EXPO_PUBLIC, patron tab bar, accès statique + garde source, posé par les options d'écran de chaque phare, JAMAIS le _layout racine) ; le COMPTAGE du montant héros (600 ms, tabular-nums donc zéro reflow, toujours depuis la dernière valeur RÉELLE connue vers la valeur réelle — jamais un chiffre fabriqué affiché comme vrai) ; le FILET qui s'allume (tracé gauche→droite 420 ms sous le montant) ; la dataviz qui pousse depuis sa ligne de base (360 ms, cascade 40 ms/série) ; l'aiguille du cadran DSO (600 ms). CE QUI NE BOUGE JAMAIS : un montant une fois posé (aucun pulse d'argent) ; les LegalHint au point de décision ; les cibles tactiles ; et RIEN pendant que Bob parle — les respirations ambient sont suspendues en session vocale, extension papa vocal de la règle reduce-motion : l'écran reste lisible et actionnable pendant la voix. Reduce-motion fail-closed sur chaque mouvement nouveau : équivalence d'information immédiate (valeur finale, filet plein, dataviz complète, rideau coupé) via useReduceMotion @bob/ui.",
+ "momentSignature": "L'OUVERTURE DE L'ÉCRIN — Accueil, 7 h 12, parking du chantier, gants encore aux mains. 0,0 s : tap sur l'icône. Aucun flash blanc — la coque des phares est nuit dès le premier frame (fond racine des écrans phares posé à d0). 0,0–0,3 s : la nuit d'atelier est nue une fraction de seconde, puis LA LAMPE S'ALLUME : le halo or 16 % monte en haut de l'écran (fondu 240 ms ; reduce-motion : déjà allumée). 0,2–0,5 s : « Bonjour Karim » se pose en Fraunces ivoire 34, la date en petites capitales champagne espacées ; le poinçon — son avatar serti d'or — est déjà là, immobile. 0,4–0,9 s : la carte de trésorerie, papier ivoire, monte de 24 dp et SE POSE avec la courbe d'aiguille, ombre e3 — le chèque dans l'écrin ; le montant compte en Schibsted 56 tabular depuis la dernière valeur connue vers le solde réel, 600 ms, pas un pixel ne se décale. 0,9–1,3 s : le filet d'or SE TRACE sous le montant, de gauche à droite, 420 ms — c'est L'INSTANT : la lumière accroche le chant d'un objet fabriqué, et Karim comprend que cette app n'est pas un logiciel de gestion, c'est l'écrin de son travail. 1,1–1,5 s : la ligne verte de Bob apparaît d'un bloc — « tu peux te verser ~2 000 € sans te mettre dans le rouge » — puis les priorités du jour tombent en cascade, 40 ms d'écart. 1,5 s : SILENCE TOTAL. Plus rien ne bouge, plus rien ne bougera — et s'il lance Bob à la voix, l'écran restera exactement aussi immobile et lisible pendant que Bob répond. Le luxe horloger, c'est l'immobilité après le réglage.",
+ "risques": [
+  {
+   "risque": "Lisibilité plein soleil : un fond sombre se lit objectivement moins bien qu'un fond clair en extérieur — c'est LE risque assumé de la direction pour des artisans de chantier.",
+   "mitigation": "Contrastes massifs MESURÉS (corps 16,85:1, héros >15:1, plancher interne 9:1 sur nuit contre 4,5 requis) ; chiffres monumentaux (56 dp) ; la nuit est réservée aux écrans de CONSULTATION courte (regarder un solde), le papier clair reste la matière de toute lecture longue (pièce, formulaires, légal, pédagogie) ; protocole terrain AVANT merge du lot 1 : 3 artisans, plein soleil, tâches chronométrées ; si échec mesuré, repli à un cran — d0 #081426 → d1 #0C2340 — un seul token change, tout le système tient."
+  },
+  {
+   "risque": "Confusion or / ambre warning : deux jaunes-bruns dans le même produit peuvent brouiller la sémantique d'état (échéance, en attente).",
+   "mitigation": "L'or est une MATIÈRE, jamais une information — doctrine nonContent.decorative déjà écrite dans le kit : interdit sur surfaces claires, interdit comme couleur d'état, jamais seul porteur de sens (toujours doublé d'un libellé ou d'une forme) ; le warning garde intégralement son couple pastel + encre (#FBF0DF/#8A5A12) et ses tints dark certifiés ; un test de tokens (patron index.test.ts) interdit mécaniquement l'or hors surfaces nuit."
+  },
+  {
+   "risque": "Batterie et performance RN : plus de mouvement, plus de dégradés, sur des téléphones d'artisans pas toujours récents.",
+   "mitigation": "Sur OLED la nuit ÉCONOMISE la batterie ; zéro blur (doctrine defaultLayers 0 conservée — un draw call par retombée), zéro gyroscope/parallaxe, transform/opacity uniquement (UI thread Reanimated), chaque animation joue UNE fois à l'entrée, aucune boucle nouvelle ; le comptage est une seule valeur animée sur texte tabular ; budget PERF-CALIBRATION existant appliqué aux phares."
+  },
+  {
+   "risque": "Le luxe qui intimide : un plombier peut lire « app de banquier » et se sentir déguisé — le brief dit chantier, pas la City.",
+   "mitigation": "La voix de Bob reste le premier plan et elle est intacte : tutoiement, « te verser », ligne verte, pédagogie légale au point de décision ; Fraunces est chaude et artisanale, pas une Didone de trading ; la lumière est une lampe d'atelier, pas un néon de salle de marché ; le récit assumé : « ton travail vaut de l'or » — l'écrin honore le métier, il ne déguise personne."
+  },
+  {
+   "risque": "Coût d'implémentation et régression sur 45 écrans fraîchement systématisés ; tentation du double thème que le cadre interdit.",
+   "mitigation": "PAS de double thème : la nuit est L'identité des 6 phares, le clair reste l'identité du papier et de la saisie — c'est une répartition par rôle d'écran, pas un toggle ; chaque phare = un lot = un merge unique revertable (revert à blanc prouvé avant merge), ordre = le regard fondateur (Accueil → Argent → Pilotage → Client → Pièce → Compte) ; les composants @bob/ui résolvent l'apparence via surfaceTint 'dark' DÉJÀ livré et testé — zéro fork de composant ; APK précédente toujours installable ; flag fail-closed uniquement sur le rideau (transitions), patron tab bar."
+  },
+  {
+   "risque": "Accessibilité : nouvelles paires de couleurs, nouveaux mouvements, Increase Contrast.",
+   "mitigation": "Toutes les paires nouvelles entrent dans index.test.ts (mesure automatique, comme successInk/warningInk aujourd'hui — les ratios ci-dessus sont déjà calculés) ; reduce-motion fail-closed avec équivalence d'information sur CHAQUE mouvement (valeur finale immédiate, filet plein, dataviz complète) ; aucune cible ne descend sous 44 dp ; Increase Contrast monte le filet or → champagne #F2E3B3 (14,42:1) comme le kit renforce déjà ses liserés."
+  },
+  {
+   "risque": "Chemins interdits : les transitions d'écran touchent naturellement les layouts, et le _layout racine est lane GPT.",
+   "mitigation": "Le rideau se pose par les options de navigation DE CHAQUE écran phare (Stack.Screen options dans le fichier de l'écran), jamais dans le _layout racine ; aucun lot ne touche assistant/voix/devis-new/catalogue/onboarding, ni documents/dossiers (chantier GPT en vol — le coffre restera clair jusqu'à sa libération), ni le pied légal/clôture ; l'indigo reste le canal exclusif de Bob, y compris sur nuit, via les tints ai dark existants."
+  }
+ ],
+ "compatibiliteKit": "LE KIT 1.x N'EST PAS JETÉ, IL EST RÉVÉLÉ : il contenait déjà la nuit (surfaceTint.dark et surfaceVeil.dark certifiés AA dans packages/tokens/src/index.ts, en attente d'UX-ADR-004) — L'Atelier Premium est une RÉSOLUTION plus profonde des mêmes contrats, pas un second système. SE GARDE À L'IDENTIQUE : toute la sémantique d'état (success/warning/danger, encres AA, tints dark), l'indigo canal exclusif de Bob (+ ai dark existant), les registres motion/motionSemantic et leur table d'équivalence reduce-motion, spacing/radius/shadow, les patterns (bottomTabBar recolorisé via surfaceVeil.dark.canvas déjà écrit, edgeFalloff et sa doctrine zéro-blur), Schibsted tabular pour 100 % des chiffres, Hanken pour le corps, l'honnêteté des « — » (muted 9,44:1 sur nuit), les états premier rang (skeletons fidèles, ErrorRetry, vides invitants) et la composition 100 % @bob/ui des écrans (argent.tsx : zéro hex local — la mutation passe par les tokens, pas par les écrans). MUTE (même contrat, résolution nouvelle) : BrandTheme gagne d0 — la nuit par thème (marine #081426, forêt #06231A, graphite #0D1016, indigo #191542), les 4 thèmes de marque survivent ; gradients.header/hero descendent d'un cran (d0→d2) ; le geste signature floatingBalanceCard SURVIT INTENSIFIÉ — même overlap −30, même chiffre navy 800 tabular, la carte devient papier ivoire #FCF9F2, le monde autour devient nuit, un filet d'or en tête : le kit avait fait flotter la carte, l'Atelier la met sous la lampe ; innerScreenHeader des phares passe en nuit avec petites capitales champagne (tracking 0,4 → 2,4) ; heroNum 42 → 56 ; halos froids → lampe or (haloIndigo de Bob excepté) ; le relief passe de l'ombre au filet de chant sur les surfaces nuit, e3 restant l'ombre du papier. N'EXISTE PLUS SUR LES PHARES : le gris-bleu #EFF2F7 comme décor des moments d'argent (il reste le fond des écrans de saisie et de lecture longue) et la carte blanche posée sur fond clair — sur un phare, une carte est une encre sur la nuit ou un papier sous la lampe, jamais du blanc sur du gris."
+}

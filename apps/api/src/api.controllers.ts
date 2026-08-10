@@ -2313,9 +2313,9 @@ export class OnboardingController {
  * DELETE /account (Apple 5.1.1(v)) — clôture DÉFINITIVE et IRRÉVERSIBLE du compte courant.
  * Controller MINCE : validation de forme + délégation (cf. BackendService.closeAccount pour
  * l'orchestration complète). `@WithoutTenantPersistenceTransaction` : la transaction tenant HTTP
- * automatique n'est PAS ouverte ici — closeAccount gère elle-même son runWithTenant COURT (DB
- * only) puis appelle Supabase Admin (I/O externe) APRÈS commit, hors transaction (même posture
- * que l'upload/intake documents).
+ * automatique n'est PAS ouverte ici — closeAccount gère elle-même une transaction tenant qui
+ * clôture le tenant et inscrit l'intention Auth durable. Le worker dédié appelle ensuite Supabase
+ * Admin hors transaction et rejoue jusqu'à acquittement idempotent.
  */
 @Controller('account')
 export class AccountController {

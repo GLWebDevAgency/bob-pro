@@ -8,7 +8,8 @@ import { PrismaPersistence } from './prisma-persistence';
 import { PrismaService } from './prisma.service';
 
 const RUN_POSTGRES_CERT = process.env.RUN_POSTGRES_INVOICE_ISSUE_LIFECYCLE_CERT === 'true';
-const CERT_COMPANY_ID_PREFIX = 'invoice-lifecycle-company-';
+const CERT_USER_ID_PREFIX = 'invoice-lifecycle-';
+const CERT_COMPANY_ID_PREFIX = `company-${CERT_USER_ID_PREFIX}`;
 // Identité explicitement non réelle, dédiée à cette suite. Le certificat écrit directement via
 // Prisma : il n'a pas à emprunter le SIREN d'une entreprise française réelle pour éprouver les
 // verrous PostgreSQL. Les tvaIntracom/rcsOrRm restent cohérents avec ce SIREN de test.
@@ -31,6 +32,7 @@ const clock: ClockPort = {
 
 interface Fixture {
   readonly companyId: string;
+  readonly userId: string;
   readonly companyName: string;
   readonly customerId: string;
   readonly baselineInvoiceId: string;
@@ -303,9 +305,17 @@ async function runCloseAccount(input: {
       companies: input.companies ?? input.persistence.companies,
       subscriptions: input.persistence.subscriptions,
       publicAccessTokens: input.persistence.publicAccessTokens,
+      identityDeletionOutbox: {
+        ensureRequested: async ({ requestId }) => ({
+          outcome: 'accepted' as const,
+          request: { requestId, status: 'pending' as const, alreadyRequested: false },
+        }),
+      },
       uow: input.persistence,
     }).execute({
       companyId: input.fixture.companyId,
+      userId: input.fixture.userId,
+      identityDeletionRequestId: randomUUID(),
       confirmationText: input.fixture.companyName,
       reason: 'certification concurrence émission facture',
       now: CLOSE_NOW,
@@ -335,6 +345,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       // réservés à cette suite, puis réactive explicitement tous les triggers/FK AVANT les DELETE
       // finaux : toute future dépendance oubliée doit faire échouer le gate.
       await admin.$transaction(async (tx) => {
+        await tx.authUserDeletionJob.deleteMany({ where: { companyId: { in: ids } } });
         await tx.accountingEntryLine.deleteMany({
           where: { companyId: { in: ids } },
         });
@@ -366,8 +377,10 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       defaultInvoicePaymentTermsDays?: number | null,
     ): Promise<Fixture> {
       const id = randomUUID();
+      const userId = `${CERT_USER_ID_PREFIX}${id}`;
       const fixture: Fixture = {
-        companyId: `${CERT_COMPANY_ID_PREFIX}${id}`,
+        companyId: `company-${userId}`,
+        userId,
         companyName: `Certification facture ${label} ${id.slice(0, 8)}`,
         customerId: `invoice-lifecycle-customer-${id}`,
         baselineInvoiceId: `invoice-lifecycle-baseline-${id}`,

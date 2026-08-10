@@ -42,6 +42,7 @@ type CapabilityKind = 'quote_signature' | 'quote_view' | 'invoice_view';
 
 interface Fixture {
   companyId: string;
+  userId: string;
   companyName: string;
   customerId: string;
   quoteId: string;
@@ -348,9 +349,17 @@ async function closeAccount(input: {
     companies: input.companies ?? input.persistence.companies,
     subscriptions: input.persistence.subscriptions,
     publicAccessTokens: input.persistence.publicAccessTokens,
+    identityDeletionOutbox: {
+      ensureRequested: async ({ requestId }) => ({
+        outcome: 'accepted' as const,
+        request: { requestId, status: 'pending' as const, alreadyRequested: false },
+      }),
+    },
     uow: tenantUow(input.worker, input.fixture.companyId, input.onStart),
   }).execute({
     companyId: input.fixture.companyId,
+    userId: input.fixture.userId,
+    identityDeletionRequestId: randomUUID(),
     confirmationText: input.fixture.companyName,
     reason: 'certification concurrence capacités publiques',
     now: CLOSE_NOW,
@@ -374,7 +383,8 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
 
     async function seedFixture(label: string): Promise<Fixture> {
       const id = randomUUID();
-      const companyId = `public-lifecycle-company-${id}`;
+      const userId = `public-lifecycle-${id}`;
+      const companyId = `company-${userId}`;
       const customerId = `public-lifecycle-customer-${id}`;
       const quoteId = `public-lifecycle-quote-${id}`;
       const invoiceId = `public-lifecycle-invoice-${id}`;
@@ -439,7 +449,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           updatedAt: new Date(CERT_NOW),
         },
       });
-      return { companyId, companyName, customerId, quoteId, invoiceId };
+      return { companyId, userId, companyName, customerId, quoteId, invoiceId };
     }
 
     async function assertClosedWithoutActiveGrant(fixture: Fixture): Promise<void> {
@@ -510,6 +520,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         if (admin && companyIds.length > 0) {
           const where = { companyId: { in: companyIds } };
           await admin.$transaction(async (tx) => {
+            await tx.authUserDeletionJob.deleteMany({ where });
             // La plupart des fixtures ont été clôturées par CloseAccount : les triggers légaux
             // interdisent alors réouverture (companies_closure_monotonicity) comme hard-delete
             // (companies_closed_delete_fence). Réouverture technique locale des seules fixtures :

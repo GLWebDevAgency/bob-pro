@@ -30,7 +30,10 @@ export interface AutoDunningEntitlements {
     plan: import('@bob/core').PlanTier | null;
   }>;
 }
-import { NotificationDeliveryService } from './notification-delivery.service';
+import {
+  NotificationCompanyClosedError,
+  NotificationDeliveryService,
+} from './notification-delivery.service';
 import { ScheduledTenantDirectory } from './tenant-directory';
 
 /**
@@ -68,7 +71,11 @@ export class RelanceService {
 
   @Cron(CronExpression.EVERY_DAY_AT_6AM)
   scheduled(): void {
-    void this.runRelances();
+    void this.runRelances().catch(() => {
+      // Un cron Nest ne doit jamais produire un rejet de promesse non observé. Le détail reste
+      // fermé : runRelances journalise déjà le tenant en échec sans contenu de notification.
+      this.logger.warn('Sweep de relances indisponible.', 'relances');
+    });
   }
 
   /** Projections agrégats → moteur core (mêmes champs que les vues api-client du mobile).
@@ -361,15 +368,28 @@ export class RelanceService {
     let queued = 0;
     let sent = 0;
     let deduplicated = 0;
+    let failedCompanies = 0;
     for (const companyId of companyIds) {
-      const result = await this.runRelancesForCompany(companyId);
-      scanned += result.scanned;
-      queued += result.queued;
-      sent += result.sent;
-      deduplicated += result.deduplicated;
+      try {
+        const result = await this.runRelancesForCompany(companyId);
+        scanned += result.scanned;
+        queued += result.queued;
+        sent += result.sent;
+        deduplicated += result.deduplicated;
+      } catch (cause) {
+        // Une Company clôturée entre le directory et l'enqueue est une extinction attendue.
+        // Toute autre panne reste également isolée : un tenant ne bloque jamais le reste du lot.
+        failedCompanies += 1;
+        if (cause instanceof NotificationCompanyClosedError) {
+          this.logger.audit('relances.skipped_closed', { companyId });
+        } else {
+          this.logger.warn(`Relances indisponibles pour ${companyId}.`, 'relances');
+        }
+      }
     }
     this.logger.audit('relances.run_all', {
       companies: companyIds.length,
+      failedCompanies,
       scanned,
       queued,
       sent,

@@ -60,6 +60,8 @@ import {
   type EnqueueDocumentArchiveJobInput,
 } from '../document-archive-jobs';
 import {
+  CLOSED_ACCOUNT_NOTIFICATION_RECIPIENT,
+  CLOSED_ACCOUNT_NOTIFICATION_SUBJECT,
   NotificationDedupeConflictError,
   notificationPayloadFingerprint,
   type DeliverableNotificationJob,
@@ -1923,6 +1925,39 @@ export class PrismaNotificationJobRepository implements NotificationJobRepositor
          AND status IN ('pending', 'failed')
     `;
     return count === 1;
+  }
+
+  async cancelAndMinimizeForCompany(companyId: string, at: string): Promise<number> {
+    void at; // Horloge PostgreSQL pour les seules transitions pending|failed.
+    const count = await this.prisma.client().$executeRaw`
+      UPDATE "notification_jobs"
+         SET status = CASE
+               WHEN status IN ('pending', 'failed')
+                 THEN 'cancelled'::"NotificationJobStatus"
+               ELSE status
+             END,
+             payload = NULL,
+             recipient = ${CLOSED_ACCOUNT_NOTIFICATION_RECIPIENT},
+             subject = ${CLOSED_ACCOUNT_NOTIFICATION_SUBJECT},
+             "payloadFingerprint" = NULL,
+             "leaseToken" = NULL,
+             "lastError" = NULL,
+             "updatedAt" = CASE
+               WHEN status IN ('pending', 'failed') THEN statement_timestamp()
+               ELSE "updatedAt"
+             END
+       WHERE "companyId" = ${companyId}
+         AND (
+           status IN ('pending', 'failed')
+           OR payload IS NOT NULL
+           OR recipient <> ${CLOSED_ACCOUNT_NOTIFICATION_RECIPIENT}
+           OR subject <> ${CLOSED_ACCOUNT_NOTIFICATION_SUBJECT}
+           OR "payloadFingerprint" IS NOT NULL
+           OR "leaseToken" IS NOT NULL
+           OR "lastError" IS NOT NULL
+         )
+    `;
+    return count;
   }
 
   async listRecent(companyId: string, limit: number): Promise<NotificationJob[]> {

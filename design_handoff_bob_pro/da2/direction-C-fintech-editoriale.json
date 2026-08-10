@@ -1,0 +1,111 @@
+{
+ "direction": "LA FINTECH ÉDITORIALE — la clarté magistrale. Chaque écran de Bob Pro devient une page de presse quotidienne : un titre display serré, un chapô à la voix de Bob, UN chiffre héros narratif, la dataviz intégrée à la phrase, un seul accent chromatique par page, et des transitions de continuité où le chiffre — et lui seul — voyage d'un écran à l'autre. Le spectaculaire par la maîtrise, pas par l'ornement : la confiance de Stripe, la netteté de N26, la discipline de Linear — au registre du fourgon, pas de la City. Ce n'est pas une rupture avec le socle 1.x : c'est son accomplissement. Le principe fondateur des tokens dit déjà « la voix de Bob EST la DA » — ma direction aligne enfin l'œil sur cette voix.",
+ "manifeste": "Pour un homme qui travaille dans le bruit, la poussière et l'urgence, le luxe c'est le silence : une app qui dit UNE chose à la fois, en français, en grand — pas un dashboard qui crie.\nBob parle déjà comme un quotidien : « tu peux te verser 2 000 € sans te mettre dans le rouge » ; la Fintech Éditoriale fait du visuel la même phrase — le chiffre devient titre, la voix devient chapô.\nLa hiérarchie de magazine — titre, chapô, corps, filet — est la seule grammaire visuelle que tout artisan français sait lire sans apprentissage : zéro tutoriel, zéro jargon, la une de SA journée.\nLe spectaculaire ne crie pas : un montant de 56 points posé dans l'air, un trait de trésorerie qui se dessine une fois puis se tait, une page qui se tourne en emportant ton chiffre — c'est ce que Revolut ne fera jamais, parce qu'il faut une voix pour le porter.\nOn ne consultera plus son administratif : on le lira — et un artisan qui LIT sa situation en 3 secondes au lieu de la déchiffrer, c'est la promesse produit entière tenue par le design.",
+ "palette": [
+  {
+   "role": "encre-editoriale ink950 — NOUVEAU",
+   "hex": "#081426",
+   "usage": "Le « noir de titre » du magazine : display >= 20 pt et chiffres héros sur papier (contraste ~18:1 sur le fond). ink900 #0C2340 reste l'encre des CTA, de la navigation et des aplats — ink950 est une encre de LECTURE, jamais un fond."
+  },
+  {
+   "role": "papier bg — MUTATION (#EFF2F7 -> #F5F7FB)",
+   "hex": "#F5F7FB",
+   "usage": "Fond d'app éclairci : lumière de page imprimée, meilleure luminance plein soleil, même famille froide. Toutes les encres AA existantes GAGNENT en contraste (slate500 passe de ~5,0:1 à ~5,3:1) ; les 3 stops canvas pré-composés du veil et de la tab bar sont régénérés mécaniquement dans le même lot."
+  },
+  {
+   "role": "surface carte-papier — GARDÉ",
+   "hex": "#FFFFFF",
+   "usage": "Cartes de contenu, désormais « papier bordé » : blanc + hairline + ombre e0 maximum. L'ombre se retire du contenu — elle redevient le privilège de ce qui flotte."
+  },
+  {
+   "role": "hairline line — GARDÉ",
+   "hex": "#E0E6EE",
+   "usage": "Le trait remplace l'ombre comme délimiteur de contenu : bordures de cartes-papier, filets de tableaux, grilles de dataviz allégées."
+  },
+  {
+   "role": "filet-editorial — NOUVEAU RÔLE (primitive ink900)",
+   "hex": "#0C2340",
+   "usage": "Règle horizontale 2 dp, largeur 28 dp, sous les eyebrows de section : le geste typographique signature de la maison. Purement décoratif, jamais porteur d'information, jamais animé."
+  },
+  {
+   "role": "page-sombre d1/d2/d3 — GARDÉ (rampe du thème actif)",
+   "hex": "#0C2340",
+   "usage": "Ouvertures pleine page (héros Argent, revue Pilotage) sur la rampe marine d1 #0C2340 -> d2 #122E52 -> d3 #163763 + halos tokenisés existants. Suit automatiquement Forêt/Graphite/Indigo ; consomme surfaceTint.dark DÉJÀ écrit et certifié dans les tokens — activation par écran, sans dark mode global."
+  },
+  {
+   "role": "texte courant ink800 / slate500 — GARDÉ",
+   "hex": "#0F2235",
+   "usage": "Corps de lecture Hanken inchangé ; #5B6B7B reste le secondaire. La hiérarchie de lecture 1.x est saine — on ne touche pas à ce qui lit bien."
+  },
+  {
+   "role": "accent-argent success — GARDÉ, DISCIPLINE NOUVELLE",
+   "hex": "#0E7C5A",
+   "usage": "Le SEUL accent chromatique autorisé dans une page de lecture : l'argent qui rentre, la phrase « tu peux te verser ». Règle éditoriale absolue : une page, un accent. Tout vert décoratif hors argent est banni."
+  },
+  {
+   "role": "accent-argent on-dark successOnDark — GARDÉ",
+   "hex": "#6EE7B7",
+   "usage": "La phrase de Bob et les valeurs positives sur pages sombres (certifié on-dark dans le kit). C'est la couleur de la ligne qui se dessine sous le chiffre héros de l'ouverture Argent."
+  },
+  {
+   "role": "alerte dangerVivid — GARDÉ",
+   "hex": "#E5544B",
+   "usage": "Retards et impayés — l'unique rouge, jamais décoratif. En dataviz : la seule barre colorée d'une série est celle en dépassement ; le reste demeure encre."
+  },
+  {
+   "role": "attente warningInk — GARDÉ",
+   "hex": "#8A5A12",
+   "usage": "Petits textes d'état ambre AA sur pastels (5,25:1 certifié). Inchangé — les états pastel 1.x restent la langue des statuts."
+  },
+  {
+   "role": "indigo Bob ai — GARDÉ, EXCLUSIF, INTOUCHABLE",
+   "hex": "#4338CA",
+   "usage": "Canal réservé de Bob (orbe, suggestions, IA). La DA 2.0 n'y prélève RIEN : aucun indigo décoratif nulle part, c'est ce qui rend Bob immédiatement identifiable dans une page monochrome. Sur pages sombres : accent #B7AEFB existant."
+  },
+  {
+   "role": "data.primary — NOUVEAU RÔLE (primitive ink600)",
+   "hex": "#1B3A63",
+   "usage": "Le trait et les barres de la dataviz éditoriale monochrome : facturé, série mensuelle, cascade SIG. La couleur ne code jamais seule — étiquettes directes posées sur les marques, jamais de légende déportée."
+  },
+  {
+   "role": "data.muted — NOUVEAU RÔLE (primitive slate300)",
+   "hex": "#A9B4C0",
+   "usage": "Les séries de comparaison : le passé est gris, le présent est encre, le danger est rouge. Trois valeurs, c'est toute la grammaire dataviz — un artisan compare des hauteurs, pas des teintes."
+  }
+ ],
+ "typographies": "PAS DE NOUVELLE FONTE — c'est une position, pas une économie : Schibsted Grotesk (display) et Hanken Grotesk (texte) sont déjà excellentes, et la radicalité éditoriale vient de l'ÉCHELLE et de la composition, pas d'un caractère exotique (un serif ferait notaire, pas artisan ; une fonte de plus = un risque de rendu RN et des Ko de plus pour rien).\n\nL'échelle magazine (mutations sur `type`) :\n- displayXL 56/800, tracking -1.5, interligne 1.02 — NOUVEAU cran, LE chiffre d'ouverture de page (un seul par écran, jamais deux). Composant DisplayNumber : tabular-nums, adjustsFontSizeToFit plancher 0.7 pour les montants à 6 chiffres.\n- heroNum 42/800 -1 — gardé, rétrogradé en héros de carte.\n- pageTitle 30/700 -0.5 — gardé, titre courant.\n- standfirst (chapô) 18/500 Hanken, interligne 1.5, slate500 — NOUVEAU cran : la phrase de Bob sous chaque titre d'écran (« Il te reste 4 320 € après charges »). C'est le cran qui PORTE la direction : chaque écran s'ouvre par une phrase, pas par un widget.\n- corps 14.5/500/1.45 Hanken — inchangé. On ne touche pas à ce qui se lit avec des lunettes de chantier rayées.\n- eyebrow 12/700 uppercase : tracking porté de +0.4 à +1.2 — les petites capitales de rubrique du magazine (TRÉSORERIE, CE MOIS, CLIENTS) ; accessibilityLabel conservé en casse normale pour les lecteurs d'écran.\n\nRègles dures : tracking négatif INTERDIT sous 17 pt ; chiffres d'argent TOUJOURS tabulaires (déjà la loi MoneyText) ; jamais plus de trois crans typographiques visibles dans un même viewport — si un écran en réclame quatre, c'est le layout qui est faux.",
+ "matiere": "LE PAPIER ET L'ENCRE — la matière s'inverse par rapport au 1.x : moins d'ombre, plus de trait.\n\n1. Cartes de contenu = « papier bordé » : blanc #FFFFFF + hairline #E0E6EE + e0 maximum. Les ombres portées e1/e2 quittent le contenu courant : une page de magazine ne projette pas d'ombre sur elle-même. Bénéfice collatéral mesurable : moins de calques d'ombre = du GPU rendu.\n2. L'ombre redevient un PRIVILÈGE : e2/e3 bleutées (#0D2644, jamais grises — doctrine gardée) réservées aux objets réellement flottants AU-DESSUS de la page : tab bar pill, FAB, sheets, et l'unique carte signature de l'accueil (FloatingBalanceCard, qui garde son chevauchement -30 sur la couture navy -> clair : c'est le geste fondateur, il reste).\n3. Pages sombres = les MOMENTS : ouverture d'Argent et revue Pilotage passent en navy pleine page sur la rampe d1->d3 du thème actif, halos radiaux tokenisés existants, texte >= white80 (doctrine AA on-dark déjà certifiée). Le sombre n'est jamais un mode : c'est une scène — surfaceTint.dark, déjà écrit dans les tokens, activé écran par écran.\n4. Grain papier 2 % : PNG tile 64x64 statique, UNIQUEMENT sur les pages sombres, jamais animé, retirable par le flag perf. C'est le seul « bruit » autorisé de tout le système.\n5. Duotone chantier : les photos (chantiers, fiches de passage) reçoivent un voile d1 à 55 % + désaturation — toute photo devient matière de marque au lieu d'un confetti aléatoire. Un overlay, zéro shader.\n6. Dégradés : RÉDUITS à l'existant (header accueil, hero, cta, fab). Aucun nouveau dégradé décoratif — l'éditorial vit de l'aplat. Le veil / edgeFalloff / ProgressiveBlurBob existants sont conservés tels quels : la dissolution du contenu sous le chrome est déjà un geste éditorial.",
+ "motion": "LE LANGAGE : « LA CONTINUITÉ DE LECTURE » — rien ne bouge pour décorer ; tout mouvement est la continuité d'une lecture commencée. Durées 100 % héritées des registres existants (motion + motionSemantic) : aucun nouveau nombre magique.\n\nCE QUI BOUGE :\n- Appui : PressableScale 0.98, feedbackIn 80 ms / feedbackOut 160 ms (existant) — la carte répond sous le gant.\n- Le voyage du chiffre (transition signature) : LE montant — et lui seul — est élément partagé entre écrans. Course 360 ms (motion.content), Easing.inOut, transform/opacity uniquement, interruptible (un tap saute à l'état final). Règle d'honnêteté absolue : un chiffre ne se transforme JAMAIS en un autre chiffre en vol — si la donnée d'arrivée diffère de celle de départ, la transition dégrade en fade-through 240 ms. Implémentation niveau 1 garantie : clone overlay maison (MoneyText mesuré, porté dans un portal, animé en transform pur — Reanimated mainline, zéro API expérimentale) ; niveau 2 (vraies shared element transitions) derrière le flag build-time fail-closed patron tab bar.\n- Pages : fade-through 240 ms sortie / 360 ms entrée pour les écrans sans chiffre partagé.\n- Dataviz : les barres montent depuis la ligne de base en 240 ms, le trait se dessine gauche -> droite en 400 ms — UNE fois par focus d'écran, puis immobilité totale. Jamais en boucle.\n- Listes : StaggeredList existant, cadence 40 ms, plafond 6 éléments.\n\nCE QUI NE BOUGE JAMAIS (la moitié la plus importante du langage) :\n- Les montants : AUCUN count-up, jamais — un chiffre d'argent apparaît PLEIN ou n'apparaît pas. Un compteur qui égrène fabrique des valeurs intermédiaires fausses : contraire à l'honnêteté des données réelles.\n- L'écran pendant que Bob parle : stabilité totale — l'artisan doit pouvoir lire ET écouter (philosophie papa vocal).\n- Les états d'erreur, le pied légal, les LegalHint : l'autorité ne s'anime pas.\n- Rien en boucle hors l'orbe Bob (ambient 1500 existant, seul battement de cœur autorisé).\n\nREDUCE-MOTION : fail-closed, doctrine motionSemantic conservée — coupe sèche, page complète posée immédiatement, équivalence d'information stricte, jamais une info portée par le seul mouvement.",
+ "momentSignature": "« LA PAGE QUI SE TOURNE » — mardi, 7 h 02, dans le fourgon, gants encore aux mains. L'accueil est ouvert, la FloatingBalanceCard affiche 4 320 €.\n\n- 0,00 s — Le pouce se pose sur la carte. Elle s'enfonce à 98 % en 80 ms (feedbackIn) : elle répond sous le gant, physique, immédiate.\n- 0,08 s — Relâche. Tout l'accueil s'efface en fondu descendant (240 ms) — priorités, tuiles, header — SAUF le montant. 4 320 € reste seul, suspendu sur le papier. Une demi-seconde de scène rien que pour lui.\n- 0,16 s — Le chiffre part : il glisse vers le haut et GRANDIT, 31 pt -> 56 pt, une seule trajectoire courbe (360 ms, inOut), pendant que le fond bascule du papier #F5F7FB au navy d1 #0C2340 sous sa course. Rien d'autre ne bouge à l'écran : un seul objet à suivre des yeux, comme un titre qu'on emporte en tournant la page.\n- 0,52 s — Le chiffre se pose en tête de la page Argent, blanc, Schibsted 800, 56 pt. Haptique : un impact léger, exactement à la pose — le retour que les gants sentent.\n- 0,60 s — Sous lui, le chapô se dépose en fondu (200 ms), émeraude #6EE7B7 sur navy : « Il te reste 4 320 € après charges. » La phrase que Bob dirait — écrite.\n- 0,60 -> 1,00 s — Le trait de trésorerie des 6 derniers mois se dessine de gauche à droite sous la phrase (400 ms), encre claire sur navy, une seule fois.\n- 1,00 s — Immobilité totale. Silence visuel. La une est là : un chiffre, une phrase, une courbe. L'artisan a LU sa situation — il n'a rien déchiffré. Si Bob parle maintenant, plus rien ne bougera.\n\nVersion reduce-motion : coupe sèche — la page Argent complète se pose immédiatement, chiffre, phrase et courbe posés. Même information, zéro perte. C'est CE moment — le chiffre qui ne te quitte pas pendant que la page se tourne — qui fait dire « cette app est d'un autre niveau » : aucune app d'artisan ne l'a, et même les fintechs qui l'ont ne le mettent pas au service d'une phrase en français.",
+ "risques": [
+  {
+   "risque": "Lisibilité plein soleil des pages sombres : un navy pleine page en extérieur, écran plein de reflets, peut lire moins bien que le papier clair.",
+   "mitigation": "Les pages sombres sont des scènes de LECTURE COURTE (ouverture Argent, revue Pilotage), jamais des écrans de saisie ni de listes longues ; corps on-dark >= white80 (doctrine AA déjà certifiée par index.test.ts), montants blancs 800. Protocole de merge : test terrain APK luminosité max en extérieur AVANT chaque lot sombre ; si échec mesuré, la scène bascule en claire via le flag build-time — le layout éditorial (chiffre 56 + chapô + trait) survit intégralement sur papier."
+  },
+  {
+   "risque": "Shared element transitions encore expérimentales dans l'écosystème RN/Expo Router : la transition signature pourrait être instable ou casser à une mise à jour d'Expo.",
+   "mitigation": "Architecture à deux niveaux : niveau 1 GARANTI livré d'abord — clone overlay maison (MoneyText mesuré, porté en portal, animé en transform/opacity pur, Reanimated mainline uniquement, interruptible) ; niveau 2 (API shared transitions) uniquement derrière le flag build-time fail-closed patron tab bar (accès statique process.env.EXPO_PUBLIC_*, garde source). Chaque niveau = un lot mergeable, revert à blanc prouvé avant merge, APK précédente installable."
+  },
+  {
+   "risque": "Batterie et GPU : traits qui se dessinent, grain, pages sombres — le chantier finit à 8 % de batterie.",
+   "mitigation": "Budget motion strict : ZÉRO animation permanente hors l'orbe Bob existante ; tous les dessins de dataviz sont one-shot par focus d'écran (native driver, transform/strokeDashoffset) ; grain = PNG statique 2 % limité aux pages sombres, retirable par flag ; et le retrait des ombres portées des cartes de contenu (e1/e2 -> hairline + e0) REND du GPU sur chaque liste. Mesure Perf Monitor avant/après imposée à chaque lot."
+  },
+  {
+   "risque": "« Beaucoup d'air » contre la densité terrain : l'artisan pressé veut tout voir, le magazine aère — conflit frontal avec l'usage Cockpit.",
+   "mitigation": "L'air vit dans le TIERS D'OUVERTURE (chiffre + chapô), jamais dans les listes, qui gardent la densité 1.x (itemGap 12, rangées compactes). Le réglage existant Cockpit/Zen devient le contrat : Cockpit rabat displayXL d'un cran (56 -> 42) et resserre l'ouverture ; Zen déploie la pleine scène. Deux densités déjà tokenisées, zéro double thème."
+  },
+  {
+   "risque": "Display 56/800 tracking -1.5 : montants longs (124 500,00 €) qui débordent, et lisibilité basse vision / dyslexie du serré.",
+   "mitigation": "Composant DisplayNumber unique : tabular-nums, adjustsFontSizeToFit plancher 0.7, tests de rendu sur montants 6 chiffres + centimes ; tracking négatif interdit sous 17 pt (règle dure) ; le corps de lecture reste Hanken 14.5/1.45 intouché ; AA mesuré dans les tests tokens comme aujourd'hui ; cibles 44 dp inchangées ; eyebrows uppercase avec accessibilityLabel en casse normale."
+  },
+  {
+   "risque": "La mutation du fond (#EFF2F7 -> #F5F7FB) casse les pré-compositions : stops canvas du veil, fade de la tab bar, tests de parité.",
+   "mitigation": "Les stops sont DÉRIVÉS du token bg (transparent -> .92 -> opaque, même recette) : régénération mécanique des 3 stops canvas + re-calcul des tests tokens-parity/surface-veil dans LE MÊME lot que le changement de token — jamais deux vérités de fond en vol. Aucune opacité runtime ajoutée (doctrine hex pré-composés conservée). Et l'éclaircissement AUGMENTE tous les contrastes d'encre existants : zéro régression AA possible par construction."
+  },
+  {
+   "risque": "Coût d'implémentation : 6 écrans phares re-layoutés en RN, risque d'effet tunnel et de merge géant impossible à revert.",
+   "mitigation": "Primitives d'abord, écrans ensuite : lot A = 5 primitives (DisplayNumber, Standfirst, FiletSection, PageSombreHeader, transition niveau 1) + mutation tokens — mergeable seul et invisible tant qu'aucun écran ne les consomme ; puis 1 écran = 1 lot revertable proprement (revert à blanc prouvé), dans l'ordre du regard fondateur (Accueil, Argent, Pilotage, Client, Facture, Compte). Les 39 autres écrans héritent mécaniquement des primitives (InnerScreenHeader -> EditorialHeader) sans re-layout dédié. Chemins interdits (lane GPT, documents/dossiers, pied légal) : intouchés par construction, aucune primitive ne les importe."
+  }
+ ],
+ "compatibiliteKit": "LE KIT 1.x N'EST PAS JETÉ : IL EST PROMU FONDATION. Ce qui se GARDE tel quel : les primitives neutres et sémantiques (toutes les encres, pastels, successOnDark, warningInk certifiés AA), les 4 thèmes de marque et leurs rampes d1/d2/d3 (mes pages sombres les consomment — Forêt/Graphite/Indigo héritent de la scène sombre gratuitement), surfaceTint.dark DÉJÀ écrit et certifié (je l'active par écran, sans dark mode global ni double thème), les registres motion + motionSemantic (toutes mes durées y puisent : 80/160/240/360, spring 26/300), MoneyText et la loi tabular-nums, StatusBadge et la langue des états pastel, ProgressiveBlurBob/veil/edgeFalloff, spacing/radius, l'appareil d'états (Skeleton, ErrorRetry, EmptyState, honnêteté des « — »), l'a11y fail-closed (reduce-motion, AA mesuré, cibles 44), l'indigo exclusif de Bob, et le geste FloatingBalanceCard — qui devient l'ORIGINE de la transition signature au lieu d'une carte terminale.\n\nCe qui MUTE (7 mutations, toutes localisées dans @bob/tokens + @bob/ui, zéro logique métier) : 1) type — ajout displayXL 56/800/-1.5, standfirst 18/500/1.5, eyebrow tracking +1.2 ; 2) neutrals — ajout ink950 #081426, bg #EFF2F7 -> #F5F7FB (avec régénération des stops canvas dérivés) ; 3) shadow — doctrine d'usage inversée : contenu = hairline + e0, e2/e3 réservés au flottant (les valeurs d'ombre elles-mêmes ne changent pas) ; 4) patterns — ajout editorialOpening (chiffre + chapô + filet) et sectionRule 2x28 dp ; 5) dataviz — rôles data.primary/data.muted pointant des primitives existantes (ink600/slate300), grammaire trois valeurs : encre = présent, gris = passé, rouge = dépassement ; 6) InnerScreenHeader -> EditorialHeader (eyebrow tracké + titre + standfirst à la voix de Bob) — les 39 écrans non phares héritent par ce seul composant ; 7) photos — voile duotone d1 55 %. Ce qui est RETIRÉ : les dégradés décoratifs candidats (aucun nouveau), les ombres portées du contenu courant, et toute tentation d'accent multiple — une page, un accent, c'est la discipline qui rend l'indigo de Bob et le rouge du danger instantanément lisibles au premier regard."
+}

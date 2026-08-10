@@ -83,6 +83,7 @@ import type { NotificationJobRepository } from './notification-jobs';
 import type { QuoteCreationRequestStore } from './quote-creation-requests';
 import type { SupplierMemoryRepository } from './supplier-memory';
 import type { VoiceTraceRepository } from './voice-traces';
+import type { AuthUserDeletionJobRepository } from './auth-user-deletion-jobs';
 
 export { PERSISTENCE } from './persistence-token';
 
@@ -135,6 +136,8 @@ export interface Persistence {
   documentFolderDeletionPlans: DocumentFolderDeletionPlanStore;
   documentArchiveJobs: DocumentArchiveJobRepository;
   notificationJobs: NotificationJobRepository;
+  /** Outbox durable de suppression de l'identité Auth du propriétaire. */
+  authUserDeletionJobs: AuthUserDeletionJobRepository;
   devices: DeviceRepository;
   payments: ServerPaymentRepository;
   publicAccessTokens: ServerPublicAccessTokenRepository;

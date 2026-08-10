@@ -5,6 +5,10 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import test from 'node:test';
 
+// Le gate owner/membership est déjà appelé par `pnpm test` et `test:release-flags` : rattacher ici
+// les invariants O7 évite qu'un nouveau safety test reste vert localement mais absent de la CI.
+await import('./account-deletion-release-safety.test.mjs');
+
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const [
   release,
@@ -152,7 +156,7 @@ test('le rejeu des grants runtime laisse chaque objet transféré à son provisi
   );
   assert.match(
     grantBlock,
-    /relation\.relname NOT IN \(\s*'realtime_global_capacity',\s*'realtime_voice_trace_events',\s*'realtime_voice_trace_access_audits'\s*\)[\s\S]*?relation\.relowner = \(/u,
+    /relation\.relname NOT IN \(\s*'auth_user_deletion_jobs',\s*'realtime_global_capacity',\s*'realtime_voice_trace_events',\s*'realtime_voice_trace_access_audits'\s*\)[\s\S]*?relation\.relowner = \(/u,
   );
   assert.match(
     grantBlock,

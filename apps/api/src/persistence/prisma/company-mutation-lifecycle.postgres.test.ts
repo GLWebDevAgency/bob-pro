@@ -32,6 +32,7 @@ const UPDATED_BIC = 'AGRIFRPP';
 
 interface Fixture {
   readonly companyId: string;
+  readonly userId: string;
   readonly companyName: string;
   readonly siren: string;
   readonly siret: string;
@@ -386,9 +387,17 @@ async function runCloseAccount(input: {
       companies: input.companies ?? input.persistence.companies,
       subscriptions: input.persistence.subscriptions,
       publicAccessTokens: input.persistence.publicAccessTokens,
+      identityDeletionOutbox: {
+        ensureRequested: async ({ requestId }) => ({
+          outcome: 'accepted' as const,
+          request: { requestId, status: 'pending' as const, alreadyRequested: false },
+        }),
+      },
       uow: input.persistence,
     }).execute({
       companyId: input.fixture.companyId,
+      userId: input.fixture.userId,
+      identityDeletionRequestId: randomUUID(),
       confirmationText: input.fixture.companyName,
       reason: CLOSE_REASON,
       now: CLOSE_NOW,
@@ -494,8 +503,10 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       withDependencies = true,
     ): Promise<Fixture> {
       const suffix = randomUUID();
+      const companyId = explicitCompanyId ?? `company-company-mutation-${suffix}`;
       const fixture: Fixture = {
-        companyId: explicitCompanyId ?? `company-mutation-lifecycle-${suffix}`,
+        companyId,
+        userId: companyId.slice('company-'.length),
         companyName: `Certification Company ${label} ${suffix.slice(0, 8)}`,
         siren: SIREN,
         siret: validSiret(SIREN, fixtureSequence),
@@ -615,6 +626,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         if (admin && companyIds.length > 0) {
           const where = { companyId: { in: companyIds } };
           await admin.$transaction(async (tx) => {
+            await tx.authUserDeletionJob.deleteMany({ where });
             // Réouverture technique locale des seules fixtures : neutralise le trigger de cycle
             // de vie, puis réactive immédiatement tous les triggers/FK AVANT les DELETE. Ainsi,
             // une future dépendance oubliée fait échouer le cleanup au lieu de devenir orpheline.
@@ -1091,6 +1103,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       companyIds.push(companyId);
       const fixture: Fixture = {
         companyId,
+        userId,
         companyName: 'Certification rollback dossiers',
         siren: SIREN,
         siret: validSiret(SIREN, fixtureSequence),

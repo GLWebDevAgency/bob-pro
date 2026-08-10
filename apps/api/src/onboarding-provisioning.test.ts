@@ -139,15 +139,31 @@ describe('registerCompany — provisioning tenant (C24b)', () => {
   it('principal AVEC tenant : crée si absente puis un retry ne réécrit jamais la fiche, admin jamais appelé', async () => {
     const { service, p, admin } = makeService();
 
-    const r = await asPrincipal({ userId: 'demo', companyId: 'co-existant' }, () => service.registerCompany(INPUT));
-    const retry = await asPrincipal({ userId: 'demo', companyId: 'co-existant' }, () =>
+    const r = await asPrincipal({ userId: 'demo', companyId: 'company-demo' }, () => service.registerCompany(INPUT));
+    const retry = await asPrincipal({ userId: 'demo', companyId: 'company-demo' }, () =>
       service.registerCompany({ ...INPUT, name: 'Nom forgé au retry' }),
     );
 
     expect(r.ok && retry.ok).toBe(true);
     if (!r.ok || !retry.ok) return;
-    expect(r.value.companyId).toBe('co-existant');
-    expect((await p.companies.findById('co-existant'))?.name).toBe('Durand Élec');
+    expect(r.value.companyId).toBe('company-demo');
+    expect((await p.companies.findById('company-demo'))?.name).toBe('Durand Élec');
+    expect(admin.setUserCompanyId).not.toHaveBeenCalled();
+  });
+
+  it('principal AVEC tenant non canonique : refus owner avant toute création', async () => {
+    const { service, p, admin } = makeService();
+
+    const result = await asPrincipal({ userId: 'demo', companyId: 'co-existant' }, () =>
+      service.registerCompany(INPUT),
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      error: { kind: 'forbidden', reason: 'COMPANY_OWNER_BINDING_MISMATCH' },
+    });
+    expect(await p.companies.findById('co-existant')).toBeNull();
+    expect(await p.companies.findById('company-demo')).toBeNull();
     expect(admin.setUserCompanyId).not.toHaveBeenCalled();
   });
 

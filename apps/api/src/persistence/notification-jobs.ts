@@ -5,6 +5,10 @@ import { type Notification } from '@bob/core';
  *  reçu…) — le job ne sera JAMAIS livré ni relivré, et ne compte plus dans le fil/les non-lus. */
 export type NotificationJobStatus = 'pending' | 'done' | 'failed' | 'cancelled';
 
+/** Sentinelles non personnelles compatibles avec les colonnes historiques NOT NULL. */
+export const CLOSED_ACCOUNT_NOTIFICATION_RECIPIENT = '[redacted]';
+export const CLOSED_ACCOUNT_NOTIFICATION_SUBJECT = '[redacted]';
+
 /** Clé de déduplication du job « encaissement programmé » (embargo L221-10) — SOURCE UNIQUE
  *  partagée entre la programmation (scheduleEmbargoPayment), l'annulation (rétractation) et la
  *  garde de livraison : jamais trois recettes qui dérivent. */
@@ -191,6 +195,11 @@ export interface NotificationJobRepository {
    * payload purgé. Même discipline de fence que markDone/markFailed.
    */
   cancelClaimed(id: string, companyId: string, leaseToken: string, at: string): Promise<boolean>;
+  /**
+   * Clôture de compte : pending|failed deviennent cancelled et tous les statuts perdent le
+   * contenu personnel résiduel. Idempotent ; retourne le nombre de lignes effectivement mutées.
+   */
+  cancelAndMinimizeForCompany(companyId: string, at: string): Promise<number>;
   // —— Fil de notifications (C25) : le mobile lit ce que les jobs produisent ——
   /** Dernières notifications du tenant (tous statuts), les plus récentes d'abord. */
   listRecent(companyId: string, limit: number): Promise<NotificationJob[]>;

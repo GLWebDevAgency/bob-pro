@@ -66,7 +66,10 @@ function customer(id: string, channelType: 'email' | 'chorus' | 'portail' | null
 
 async function makeService(setup: { invoices: Invoice[]; customers: Customer[] }) {
   const persistence = new InMemoryPersistence();
-  persistence.companies.seed({ id: 'company-user1' } as Company);
+  persistence.companies.seed({
+    id: 'company-user1',
+    isClosed: () => false,
+  } as unknown as Company);
   persistence.customers.seed(setup.customers);
   for (const inv of setup.invoices) await persistence.invoices.save(inv);
   const notifier = {

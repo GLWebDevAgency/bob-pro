@@ -6,9 +6,26 @@ export const SUPABASE_ADMIN = Symbol('SUPABASE_ADMIN');
 
 type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 
+export type SupabaseUserDeletionFailureCode =
+  | 'network'
+  | 'timeout'
+  | 'http_408'
+  | 'http_429'
+  | 'http_4xx'
+  | 'http_5xx'
+  | 'misconfigured'
+  | 'unknown';
+
+export class SupabaseUserDeletionError extends Error {
+  constructor(readonly code: SupabaseUserDeletionFailureCode) {
+    super(`Suppression Supabase Auth indisponible (${code}).`);
+    this.name = 'SupabaseUserDeletionError';
+  }
+}
+
 /**
- * Port d'administration Supabase Auth (C24b — provisioning tenant).
- * Une seule capacité, volontairement étroite : rattacher un user à SON tenant fraîchement créé.
+ * Port d'administration Supabase Auth : capacités serveur étroites de provisioning, identité
+ * vérifiée et suppression durable, sans exposer la clé service_role au domaine.
  */
 export interface SupabaseAdminPort {
   /** Écrit app_metadata.company_id sur le user (les autres clés d'app_metadata sont préservées). */
@@ -31,8 +48,8 @@ export interface SupabaseAdminPort {
   /**
    * Clôture de compte (CloseAccount, Apple 5.1.1(v)) — supprime le user GoTrue : c'est LE point
    * où l'identité personnelle (email, téléphone, user_metadata.first_name…) disparaît réellement,
-   * puisque Postgres ne stocke jamais ces données (cf. Company.closedAt). Idempotent côté appelant
-   * (BackendService.closeAccount) : un 404 GoTrue (déjà supprimé) est traité comme un succès.
+   * puisque Postgres ne stocke jamais ces données (cf. Company.closedAt). Le worker durable
+   * AccountAuthDeletionService traite un 404 GoTrue (déjà supprimé) comme un succès idempotent.
    */
   deleteUser(userId: string): Promise<void>;
 }
@@ -135,21 +152,41 @@ export class HttpSupabaseAdmin implements SupabaseAdminPort {
     };
   }
 
-  /** DELETE /auth/v1/admin/users/{id} — best-effort côté appelant : un 404 (déjà supprimé, retry
-   *  de provisioning idempotent) n'est PAS une erreur, tout le reste (401/403/5xx…) en est une. */
+  /** DELETE /auth/v1/admin/users/{id} — 404 est un succès idempotent ; toute autre panne produit
+   *  uniquement une classe fermée exploitable par l'outbox, jamais le corps fournisseur. */
   async deleteUser(userId: string): Promise<void> {
     const base = this.opts.url.replace(/\/$/, '');
-    const res = await this.fetchFn(`${base}/auth/v1/admin/users/${encodeURIComponent(userId)}`, {
-      method: 'DELETE',
-      headers: {
-        apikey: this.opts.serviceRoleKey,
-        authorization: `Bearer ${this.opts.serviceRoleKey}`,
-        'content-type': 'application/json',
-      },
-      signal: AbortSignal.timeout(12_000),
-    });
-    if (!res.ok && res.status !== 404) throw new Error(`Supabase admin HTTP ${res.status} (DELETE user)`);
-    this.logger.audit('auth.user_deleted', { userId, alreadyGone: res.status === 404 });
+    let res: Response;
+    try {
+      res = await this.fetchFn(`${base}/auth/v1/admin/users/${encodeURIComponent(userId)}`, {
+        method: 'DELETE',
+        headers: {
+          apikey: this.opts.serviceRoleKey,
+          authorization: `Bearer ${this.opts.serviceRoleKey}`,
+          'content-type': 'application/json',
+        },
+        signal: AbortSignal.timeout(12_000),
+      });
+    } catch (cause) {
+      const name = cause instanceof Error ? cause.name : '';
+      throw new SupabaseUserDeletionError(
+        name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'network',
+      );
+    }
+    if (!res.ok && res.status !== 404) {
+      const code: SupabaseUserDeletionFailureCode =
+        res.status === 408
+          ? 'http_408'
+          : res.status === 429
+            ? 'http_429'
+            : res.status >= 500
+              ? 'http_5xx'
+              : res.status >= 400
+                ? 'http_4xx'
+                : 'unknown';
+      throw new SupabaseUserDeletionError(code);
+    }
+    this.logger.audit('auth.user_deleted', { alreadyGone: res.status === 404 });
   }
 
   private async getAdminUser(userId: string): Promise<{
@@ -194,7 +231,7 @@ export class MisconfiguredSupabaseAdmin implements SupabaseAdminPort {
     throw new Error('Supabase Admin non configuré — annuaire des identités indisponible.');
   }
   async deleteUser(): Promise<void> {
-    throw new Error('SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY manquants — suppression du user impossible.');
+    throw new SupabaseUserDeletionError('misconfigured');
   }
 }
 

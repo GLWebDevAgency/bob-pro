@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import type { NotificationPort } from '@bob/core';
-import { NotificationDeliveryService } from './notification-delivery.service';
+import { Company, type NotificationPort } from '@bob/core';
+import { MERCIER_PROPS } from '@bob/core/testing';
+import {
+  NotificationCompanyClosedError,
+  NotificationDeliveryService,
+} from './notification-delivery.service';
 import { ScheduledTenantDirectory } from './tenant-directory';
 import type { AppLogger } from '../observability/logger';
 import { InMemoryPersistence } from '../persistence/persistence.testing';
@@ -10,6 +14,22 @@ import type { ExpoPushService } from '../notifications/expo-push';
 
 function makeLogger(): AppLogger {
   return { audit: vi.fn(), warn: vi.fn() } as unknown as AppLogger;
+}
+
+function notificationCompany(closedAt?: string): Company {
+  const company = Company.of({
+    ...MERCIER_PROPS,
+    id: 'co-1',
+    ...(closedAt === undefined ? {} : { closedAt }),
+  });
+  if (!company.ok) throw new Error('fixture Company notification invalide');
+  return company.value;
+}
+
+function openNotificationPersistence(): InMemoryPersistence {
+  const persistence = new InMemoryPersistence();
+  persistence.companies.seed(notificationCompany());
+  return persistence;
 }
 
 const RELANCE_INPUT = {
@@ -45,8 +65,116 @@ async function registerDevice(
 }
 
 describe('NotificationDeliveryService — canal push Expo (C25)', () => {
-  it("MIROIR de l'envoi réussi : payload générique vers l'inbox, sans contenu ni identifiant métier", async () => {
+  it('refuse toute nouvelle intention pour une Company clôturée, sans job ni fournisseur', async () => {
     const persistence = new InMemoryPersistence();
+    persistence.companies.seed(notificationCompany('2026-08-02T09:00:00.000Z'));
+    const logger = makeLogger();
+    const notifier = { send: vi.fn<NotificationPort['send']>() } satisfies NotificationPort;
+    const push = { send: vi.fn() } as unknown as ExpoPushService;
+    const service = new NotificationDeliveryService(
+      persistence,
+      notifier,
+      new ScheduledTenantDirectory(persistence, logger),
+      logger,
+      push,
+    );
+
+    await expect(service.enqueue(RELANCE_INPUT)).rejects.toBeInstanceOf(
+      NotificationCompanyClosedError,
+    );
+    expect(await persistence.notificationJobs.listRecent('co-1', 10)).toHaveLength(0);
+    expect(notifier.send).not.toHaveBeenCalled();
+    expect(push.send).not.toHaveBeenCalled();
+  });
+
+  it('ne scanne ni ne livre un job historique quand la Company est déjà clôturée', async () => {
+    const persistence = openNotificationPersistence();
+    const logger = makeLogger();
+    const notifier = { send: vi.fn<NotificationPort['send']>() } satisfies NotificationPort;
+    const push = { send: vi.fn() } as unknown as ExpoPushService;
+    const service = new NotificationDeliveryService(
+      persistence,
+      notifier,
+      new ScheduledTenantDirectory(persistence, logger),
+      logger,
+      push,
+    );
+    const job = await service.enqueue(RELANCE_INPUT);
+    persistence.companies.seed(notificationCompany('2026-08-02T09:00:00.000Z'));
+
+    await expect(service.runForCompany('co-1', 10)).resolves.toEqual({
+      scanned: 0,
+      sent: 0,
+      failed: 0,
+    });
+    expect(await persistence.notificationJobs.findById('co-1', job.id)).toMatchObject({
+      status: 'pending',
+    });
+    expect(notifier.send).not.toHaveBeenCalled();
+    expect(push.send).not.toHaveBeenCalled();
+  });
+
+  it('une clôture gagnant entre le claim et le dernier fence interdit email et push', async () => {
+    const persistence = openNotificationPersistence();
+    const logger = makeLogger();
+    const notifier = { send: vi.fn<NotificationPort['send']>() } satisfies NotificationPort;
+    const push = { send: vi.fn() } as unknown as ExpoPushService;
+    const service = new NotificationDeliveryService(
+      persistence,
+      notifier,
+      new ScheduledTenantDirectory(persistence, logger),
+      logger,
+      push,
+    );
+    const job = await service.enqueue(RELANCE_INPUT);
+    const companyAtClaim = notificationCompany();
+    const companyAtFinalFence = notificationCompany('2026-08-02T09:00:00.000Z');
+    vi.spyOn(persistence.companies, 'lockForShareById')
+      .mockResolvedValueOnce(companyAtClaim)
+      .mockResolvedValueOnce(companyAtFinalFence);
+
+    await expect(
+      service.tryDeliver('co-1', { ...job, notification: job.notification! }),
+    ).resolves.toBe('skipped');
+    expect(notifier.send).not.toHaveBeenCalled();
+    expect(push.send).not.toHaveBeenCalled();
+    expect(logger.audit).toHaveBeenCalledWith(
+      'notification.job.delivery_not_authorized',
+      expect.objectContaining({ companyId: 'co-1', jobId: job.id }),
+    );
+  });
+
+  it('une panne du dernier verrou Company reste fail-closed avant email et push', async () => {
+    const persistence = openNotificationPersistence();
+    const logger = makeLogger();
+    const notifier = { send: vi.fn<NotificationPort['send']>() } satisfies NotificationPort;
+    const push = { send: vi.fn() } as unknown as ExpoPushService;
+    const service = new NotificationDeliveryService(
+      persistence,
+      notifier,
+      new ScheduledTenantDirectory(persistence, logger),
+      logger,
+      push,
+    );
+    const job = await service.enqueue(RELANCE_INPUT);
+    const companyAtClaim = notificationCompany();
+    vi.spyOn(persistence.companies, 'lockForShareById')
+      .mockResolvedValueOnce(companyAtClaim)
+      .mockRejectedValueOnce(new Error('company lifecycle lock unavailable'));
+
+    await expect(
+      service.tryDeliver('co-1', { ...job, notification: job.notification! }),
+    ).resolves.toBe('failed');
+    expect(notifier.send).not.toHaveBeenCalled();
+    expect(push.send).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('Autorisation notification impossible'),
+      'notifications',
+    );
+  });
+
+  it("MIROIR de l'envoi réussi : payload générique vers l'inbox, sans contenu ni identifiant métier", async () => {
+    const persistence = openNotificationPersistence();
     const logger = makeLogger();
     await registerDevice(persistence, 'ExponentPushToken[a]');
     const notifier = { send: vi.fn<NotificationPort['send']>().mockResolvedValue(undefined) } satisfies NotificationPort;
@@ -98,7 +226,7 @@ describe('NotificationDeliveryService — canal push Expo (C25)', () => {
   });
 
   it('rejoue la même clé provider si le worker tombe après envoi mais avant markDone', async () => {
-    const persistence = new InMemoryPersistence();
+    const persistence = openNotificationPersistence();
     const logger = makeLogger();
     const seenKeys: (string | undefined)[] = [];
     const notifier = {
@@ -132,7 +260,7 @@ describe('NotificationDeliveryService — canal push Expo (C25)', () => {
   });
 
   it("email en ÉCHEC : le job passe failed, AUCUN push (on ne notifie pas « Bob a relancé » à tort)", async () => {
-    const persistence = new InMemoryPersistence();
+    const persistence = openNotificationPersistence();
     const logger = makeLogger();
     await registerDevice(persistence, 'ExponentPushToken[a]');
     const notifier = { send: vi.fn<NotificationPort['send']>().mockRejectedValue(new Error('brevo down')) } satisfies NotificationPort;
@@ -148,7 +276,7 @@ describe('NotificationDeliveryService — canal push Expo (C25)', () => {
   });
 
   it("push en échec après commit : l'email reste done et n'est jamais remis en retry", async () => {
-    const persistence = new InMemoryPersistence();
+    const persistence = openNotificationPersistence();
     const logger = makeLogger();
     await registerDevice(persistence, 'ExponentPushToken[a]');
     const notifier = {
@@ -173,7 +301,7 @@ describe('NotificationDeliveryService — canal push Expo (C25)', () => {
   });
 
   it('aucun device : envoi email OK, absence de push TRACÉE (jamais silencieuse)', async () => {
-    const persistence = new InMemoryPersistence();
+    const persistence = openNotificationPersistence();
     const logger = makeLogger();
     const notifier = { send: vi.fn<NotificationPort['send']>().mockResolvedValue(undefined) } satisfies NotificationPort;
     const push = { send: vi.fn() } as unknown as ExpoPushService;
@@ -191,7 +319,7 @@ describe('NotificationDeliveryService — canal push Expo (C25)', () => {
   });
 
   it('deux workers sur le même job : un seul obtient le lease, un seul email et un seul push', async () => {
-    const persistence = new InMemoryPersistence();
+    const persistence = openNotificationPersistence();
     const logger = makeLogger();
     await registerDevice(persistence, 'ExponentPushToken[a]');
     const notifier = {
@@ -217,7 +345,7 @@ describe('NotificationDeliveryService — canal push Expo (C25)', () => {
     vi.useFakeTimers();
     try {
       vi.setSystemTime(new Date('2026-07-13T10:00:00.000Z'));
-      const persistence = new InMemoryPersistence();
+      const persistence = openNotificationPersistence();
       const logger = makeLogger();
       const notifier = { send: vi.fn<NotificationPort['send']>().mockResolvedValue(undefined) } satisfies NotificationPort;
       const service = new NotificationDeliveryService(
@@ -245,7 +373,7 @@ describe('NotificationDeliveryService — canal push Expo (C25)', () => {
     vi.useFakeTimers();
     try {
       vi.setSystemTime(new Date('2026-07-13T10:00:00.000Z'));
-      const persistence = new InMemoryPersistence();
+      const persistence = openNotificationPersistence();
       const logger = makeLogger();
       const notifier = { send: vi.fn<NotificationPort['send']>().mockResolvedValue(undefined) } satisfies NotificationPort;
       const service = new NotificationDeliveryService(
@@ -274,7 +402,7 @@ describe('NotificationDeliveryService — canal push Expo (C25)', () => {
     vi.useFakeTimers();
     try {
       vi.setSystemTime(new Date('2026-07-13T10:00:00.000Z'));
-      const persistence = new InMemoryPersistence();
+      const persistence = openNotificationPersistence();
       const logger = makeLogger();
       const notifier = { send: vi.fn<NotificationPort['send']>() } satisfies NotificationPort;
       const push = { send: vi.fn() } as unknown as ExpoPushService;
@@ -319,7 +447,7 @@ describe('NotificationDeliveryService — canal push Expo (C25)', () => {
     vi.useFakeTimers();
     try {
       vi.setSystemTime(new Date('2026-07-13T10:00:00.000Z'));
-      const persistence = new InMemoryPersistence();
+      const persistence = openNotificationPersistence();
       const logger = makeLogger();
       const notifier = {
         send: vi.fn<NotificationPort['send']>().mockRejectedValue(new Error('timeout outcome unknown')),
@@ -354,7 +482,7 @@ describe('NotificationDeliveryService — canal push Expo (C25)', () => {
   });
 
   it('refuse un job présenté sous le mauvais tenant avant tout appel fournisseur', async () => {
-    const persistence = new InMemoryPersistence();
+    const persistence = openNotificationPersistence();
     const logger = makeLogger();
     const notifier = { send: vi.fn<NotificationPort['send']>() } satisfies NotificationPort;
     const service = new NotificationDeliveryService(
@@ -370,7 +498,7 @@ describe('NotificationDeliveryService — canal push Expo (C25)', () => {
   });
 
   it("fail-closed si le fence DB pré-provider est indisponible, sans interrompre par exception", async () => {
-    const persistence = new InMemoryPersistence();
+    const persistence = openNotificationPersistence();
     const logger = makeLogger();
     const notifier = { send: vi.fn<NotificationPort['send']>() } satisfies NotificationPort;
     const service = new NotificationDeliveryService(
@@ -393,7 +521,7 @@ describe('NotificationDeliveryService — canal push Expo (C25)', () => {
   });
 
   it('DeviceNotRegistered : le token invalidé est PURGÉ de la table devices', async () => {
-    const persistence = new InMemoryPersistence();
+    const persistence = openNotificationPersistence();
     const logger = makeLogger();
     await registerDevice(persistence, 'ExponentPushToken[dead]');
     await registerDevice(persistence, 'ExponentPushToken[alive]');
@@ -420,7 +548,7 @@ describe('NotificationDeliveryService — canal push Expo (C25)', () => {
     vi.useFakeTimers();
     try {
       vi.setSystemTime(new Date('2026-08-03T10:00:00.001Z'));
-      const persistence = new InMemoryPersistence();
+      const persistence = openNotificationPersistence();
       const logger = makeLogger();
       // Enregistré le 03/07 10:00, présent gelé le 03/08 10:00:00.001 : 31 j + 1 ms — le seuil
       // des 30 j (cutoff = présent − PUSH_BINDING_TTL_MS = 04/07 10:00:00.001) est dépassé.
@@ -452,7 +580,7 @@ describe('NotificationDeliveryService — canal push Expo (C25)', () => {
 
 describe('mailer via env — clé absente = échec propre par job, jamais silencieux (C25)', () => {
   it('MisconfiguredEmailNotifier fait échouer le job avec une cause explicite', async () => {
-    const persistence = new InMemoryPersistence();
+    const persistence = openNotificationPersistence();
     const logger = makeLogger();
     const service = new NotificationDeliveryService(
       persistence,

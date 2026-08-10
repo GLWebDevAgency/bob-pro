@@ -49,7 +49,10 @@ function quote(
 
 async function makeService(quotes: Quote[]) {
   const persistence = new InMemoryPersistence();
-  persistence.companies.seed({ id: 'company-user1' } as Company);
+  persistence.companies.seed({
+    id: 'company-user1',
+    isClosed: () => false,
+  } as unknown as Company);
   persistence.customers.seed([
     { id: 'cu-1', companyId: 'company-user1', name: 'RATP CAP', type: 'b2g' } as unknown as Customer,
   ]);

@@ -1,0 +1,133 @@
+{
+ "presentationDirections": [
+  {
+   "direction": "A — L'ATELIER PREMIUM : le luxe artisan (nuit d'atelier, or en filet, papier sous la lampe)",
+   "resume": "L'écrin. La nuit d'atelier devient le visage des 6 écrans phares — pas un dark mode, une scène qui fait exister la lumière : halo de lampe, montants ivoire monumentaux (56 dp), filet d'or 1 dp qui se trace, et le papier clair conservé pour tout ce qui se lit longtemps ou se signe (pièces, formulaires, légal). La direction est fondée sur du réel vérifié : la rampe sombre certifiée du kit (surfaceTint.dark) existe déjà dans les tokens et n'a jamais été branchée — elle l'active, la descend d'un cran (d0 nuit) et y pose deux métaux plus une display chaude (Fraunces, à charger hors _layout racine). Moment signature : l'ouverture de l'écrin — la lampe s'allume, le montant se pose et compte, le filet d'or se trace, puis silence total, y compris pendant que Bob parle. Risque assumé et instrumenté : la lisibilité plein soleil (contrastes massifs mesurés 15-16:1, nuit réservée à la consultation courte, gate terrain 3 artisans, repli d0→d1 à un seul token). Wow le plus frontal des trois ; coût le plus lourd (pipeline police nouveau, variantes onDark de 8 composants, lot 1 XL).",
+   "pourQui": "Pour le fondateur qui veut la rupture d'image maximale dès la première ouverture et assume un pari physiologique sérieusement instrumenté ; pour l'artisan à qui l'app dit « ton travail vaut de l'or » — à condition que la lampe reste une lampe d'atelier et jamais un guichet de banque privée (la voix de Bob, intacte et tutoyante, est la garantie)."
+  },
+  {
+   "direction": "B — LE CHANTIER VIVANT : l'énergie du terrain tenue par un système (orange = toi, indigo = Bob, vert = l'argent)",
+   "resume": "L'outil franc. Plein jour conservé et réchauffé (canvas #F7F4EE), trois canaux jamais mélangés et lintés, chiffres-compteurs en Black qui se posent net, pictos métier dessinés maison, ressorts joyeux — la joie indexée exclusivement sur des issues réelles (encaissement, devis signé) : zéro streak, zéro mascotte, jamais de compteur sur donnée non qualifiée. Deuxième frappe : Pilotage passe des rangées de chiffres (vérifié : zéro graphe rendu aujourd'hui, react-native-svg 15.15.4 déjà installé) à une dataviz vivante iso-données. C'est la meilleure lisibilité chantier des trois par construction. Contrainte réelle identifiée honnêtement : le Black 900 exige le _layout racine (lane GPT) → livraison en 800 d'abord, le token portant 900 avec repli fail-closed. Risques principaux : la frontière orange action / ambre warning (test de non-cooccurrence prévu au niveau des tokens) et la perception gadget, mitigée par l'indexation stricte de la joie sur le réel.",
+   "pourQui": "Pour le fondateur qui met la fidélité au persona au-dessus du jamais-vu : l'artisan s'y reconnaît immédiatement (gilet, bleu de travail, lumière du matin sur le plâtre) et rien ne menace jamais la lecture en plein soleil. C'est la direction la plus sûre et la plus chaleureuse — et la moins différenciante face à Monzo/Lydia/Duolingo dont elle partage le registre visuel."
+  },
+  {
+   "direction": "C — LA FINTECH ÉDITORIALE : la clarté magistrale (chaque écran est une une — titre, chapô, UN chiffre héros)",
+   "resume": "La une. Grammaire de presse quotidienne sur chaque écran : eyebrow, filet éditorial, titre display, chapô à la voix de Bob, UN SEUL chiffre héros 56 tabular, dataviz intégrée à la phrase, un seul accent chromatique par page. Deux scènes sombres seulement — l'ouverture d'Argent et la revue Pilotage — des scènes de lecture courte, jamais un mode. Moment signature : la page qui se tourne — le chiffre, et lui seul, voyage d'un écran à l'autre (NumberFlight niveau 1 garanti en overlay maison transform/opacity ; API shared transitions plus tard sous le même flag), avec l'honnêteté comme défaut mécanique : un chiffre ne se transforme jamais en un autre en vol. Se revendique l'accomplissement du socle — le principe fondateur des tokens dit déjà « la voix de Bob EST la DA » — et corrige au passage une infraction indigo existante et vérifiée (le teaser Parrainage de compte.tsx vit en aiBg, hors canal Bob). Risque a11y le plus bas (l'éclaircissement du papier augmente mécaniquement tous les contrastes existants), coût le mieux amorti (primitives d'abord, 39 écrans héritent sans re-layout). Risque principal : le spectaculaire par la maîtrise peut paraître sobre à qui attend un feu d'artifice — son wow se révèle au premier GESTE plus qu'au premier regard.",
+   "pourQui": "Pour le fondateur qui veut que le spectaculaire serve la promesse produit entière — « on ne consulte plus son administratif, on le LIT en 3 secondes » — et une différenciation que Revolut ne peut pas copier, parce qu'il faut une voix pour porter la une. Pour l'artisan qui veut comprendre sans déchiffrer, gants aux mains, entre deux urgences."
+  }
+ ],
+ "tableauComparatif": [
+  {
+   "critere": "Wow immédiat (« spectaculaire au premier regard »)",
+   "atelierPremium": "Le plus fort et le plus frontal : écrin nuit + lampe + filet d'or qui se trace = rupture d'image totale en 1,5 s dès la première ouverture.",
+   "chantierVivant": "Fort mais familier : chaleur, compteurs Black, springs — registre Monzo/Duolingo déjà vu ailleurs ; le wow vient de la finition et de la justesse, pas d'une image inédite.",
+   "fintechEditoriale": "Fort mais différé : la une (chiffre 56 + chapô) impressionne par la maîtrise ; le vrai jamais-vu (le chiffre qui voyage entre écrans) se révèle au premier geste, pas au premier regard."
+  },
+  {
+   "critere": "Lisibilité chantier (plein soleil, gants, urgence)",
+   "atelierPremium": "Le risque n°1, assumé : nuit sur les 6 phares. Mitigation sérieuse (corps 16,85:1, chiffres 56 dp, nuit = consultation courte, papier pour toute lecture longue, gate terrain, repli d0→d1 à un token) mais cela reste le pari physiologique le plus lourd des trois.",
+   "chantierVivant": "La meilleure par construction : plein jour conservé, encre orange dédiée au texte (#9C3B00 ≈ 6,9:1 certifiée), montants navy jamais orange ; vigilance limitée au signal #E8590C réservé aux gros corps (≥ 3:1).",
+   "fintechEditoriale": "Bonne : papier ÉCLAIRCI (#F5F7FB — tous les contrastes d'encre montent par construction) ; 2 scènes sombres seulement, en lecture courte, gate terrain avant chaque lot sombre + bascule claire par flag si échec mesuré."
+  },
+  {
+   "critere": "Coût d'implémentation",
+   "atelierPremium": "Le plus lourd : pipeline police nouveau (Fraunces à charger hors _layout — lane GPT), variantes onDark de 8 composants, 6 composants de matière neufs, lot 1 XL + 3 lots L sur 6.",
+   "chantierVivant": "Moyen-lourd : commit tokens à recalage mécanique de toutes les recettes pré-composées (canvas chaud), 5 pictos maison, compteurs setNativeProps ; allégé par un fait vérifié — Reanimated 4.5.0 est désormais une dépendance déclarée, son plan « RN Animated seulement » était trop pessimiste.",
+   "fintechEditoriale": "Le mieux amorti : 2 lots kit (T tokens + M matière) puis écrans en S/M/L (Compte = S, quasi trivial) ; 39 écrans héritent des primitives sans re-layout ; le seul chantier délicat (NumberFlight) est isolé derrière flag."
+  },
+  {
+   "critere": "Risque a11y (contrastes, motion, Increase Contrast)",
+   "atelierPremium": "Le plus haut volume de preuve : toutes les paires nuit/métaux à certifier dans index.test.ts, doctrine « l'or jamais porteur d'information » à verrouiller par test, Increase Contrast prévu (champagne 14,42:1). Maîtrisable, mais coût de certification maximal.",
+   "chantierVivant": "Moyen : 2 encres nouvelles à certifier seulement, mais la plus grande surface motion des trois (springs, étincelles, compteurs) — chaque geste doit livrer sa ligne d'équivalence d'information — et la frontière orange/ambre à tenir par test de non-cooccurrence.",
+   "fintechEditoriale": "Le plus bas : l'éclaircissement du fond rend toute régression AA impossible par construction, peu de paires nouvelles (ink950 ≈ 18:1), motion la plus sobre (jamais de count-up, nulle part), règles dures déjà écrites (tracking négatif interdit sous 17 pt, eyebrows avec label en casse normale)."
+  },
+  {
+   "critere": "Compatibilité kit 1.x (tokens, composants, tests)",
+   "atelierPremium": "Forte sur la mécanique — elle active surfaceTint.dark, vérifié livré dans les tokens et jamais branché par aucun écran, zéro fork de composant — mais c'est une EXTENSION réelle du kit : 2e famille display, famille métal, doctrine nouvelle à écrire et à tester.",
+   "chantierVivant": "Forte avec une opération à cœur ouvert : la mutation du canvas oblige à régénérer fade tab bar + surfaceVeil + canvas dans le même commit (recettes pré-composées — les tests existants re-certifient) ; les 3 canaux étendent proprement la sémantique en place.",
+   "fintechEditoriale": "La plus forte : mutations de crans plutôt que familles nouvelles, se définit comme l'accomplissement du principe fondateur des tokens (« la voix de Bob EST la DA »), et corrige une infraction existante du kit (Parrainage en aiBg — vérifié compte.tsx ligne 534)."
+  },
+  {
+   "critere": "Perf / batterie (téléphones d'artisans, fin de chantier à 8 %)",
+   "atelierPremium": "Favorable : la nuit économise sur OLED, zéro blur (defaultLayers 0 conservé — vérifié dans les tokens), transform/opacity uniquement, comptage = une seule valeur animée sur texte tabular.",
+   "chantierVivant": "Le plus chargé en cinétique (springs, particules plafonnées 8/450 ms, compteurs) mais tout one-shot et UI-thread ; budget 60 fps mesuré sur device témoin avant chaque merge.",
+   "fintechEditoriale": "Le plus économe : le retrait des ombres portées du contenu (e1/e2 → hairline) REND du GPU sur chaque liste, zéro animation permanente hors l'orbe Bob existante, grain statique retirable par flag."
+  },
+  {
+   "critere": "Exposition lane GPT / chemins interdits",
+   "atelierPremium": "Deux points de vigilance : le rideau (conçu posé par écran, jamais le _layout racine — conforme) et Fraunces, dont le chargement doit se faire hors _layout (vérifié : les polices vivent aujourd'hui dans app/_layout.tsx, lane GPT) — faisable par écran mais à valider techniquement au lot 0.",
+   "chantierVivant": "Un point identifié honnêtement par la direction elle-même : Schibsted Black 900 indisponible sans toucher _layout → livraison en 800 d'abord (vérifié : seules 700 et 800 sont chargées), upgrade à négocier avec GPT ; le reste hors chemins interdits par construction.",
+   "fintechEditoriale": "Aucune dépendance : les primitives n'importent aucun chemin interdit par construction, NumberFlight est un portal maison, le flag se pose par écran. La plus étanche des trois."
+  },
+  {
+   "critere": "Réversibilité / rollback réel",
+   "atelierPremium": "Conforme au cadre (6 merges revertables, revert à blanc prouvé) mais son lot 1 — fondation + Accueil ensemble — est le plus gros revert unitaire des trois plans.",
+   "chantierVivant": "Excellent : lot A = un commit tokens isolé, revert = 1 fichier et l'app 1.x est rendue au pixel près ; la granularité de preuve la plus fine.",
+   "fintechEditoriale": "Le plus propre : lots T/M invisibles tant qu'aucun écran ne consomme (revert sans trace), puis un écran = un merge ; le seul lot risqué (transitions) est en plus débrayable au build par flag."
+  },
+  {
+   "critere": "Différenciation (« le chantier, pas la City »)",
+   "atelierPremium": "L'image la plus singulière du marché artisan — personne n'a d'écrin — avec un risque de lecture « banque privée » mitigé par la voix de Bob intacte et le récit lampe d'atelier ; c'est un pari d'image, gagnable, spectaculaire.",
+   "chantierVivant": "La plus proche du persona et la plus chaleureuse, mais la moins défendable comme jamais-vu : son registre appartient déjà à Monzo/Lydia — on gagnerait un excellent niveau, pas une signature.",
+   "fintechEditoriale": "La plus défendable en produit : « on LIT sa situation » + un geste signature (le chiffre qui voyage au service d'une phrase en français) que même les grandes fintechs n'ont pas — et qui exige la voix de Bob, donc incopiable sans elle."
+  }
+ ],
+ "avisDirecteurCreation": "LE VRAI SUJET. La commande contient deux exigences qui se contredisent frontalement : « spectaculaire au premier regard » et « lisible par des mains sales en plein soleil ». Les trois directions sont trois réponses honnêtes à cette contradiction : A la résout par la matière et assume le risque physiologique ; B la résout par la chaleur et sacrifie le jamais-vu ; C la résout par la maîtrise et diffère le wow au premier geste. Mon métier est de dire laquelle produit le plus grand souvenir pour le plus petit risque produit.\n\nMES VERDICTS. Le Chantier Vivant (B) est la direction la plus juste sociologiquement et la plus sûre physiologiquement — c'est aussi celle dont le registre (Monzo, Lydia, Duolingo) est déjà occupé : nous gagnerions une très belle app, pas une identité. Je retiens d'elle deux lois pour tout le programme, quel que soit le choix : le protocole terrain comme gate de merge, et la discipline des canaux (un composant, un canal). L'Atelier Premium (A) est le wow le plus violent et le récit le plus fort — « ton travail vaut de l'or » est exactement ce que ce produit doit faire sentir — mais il fait porter le pari plein soleil par 100 % des moments d'usage quand 20 % suffisent à produire le même souvenir : la nuit sur les 6 phares est un risque de trop, pas un défaut de goût. La Fintech Éditoriale (C) est la seule structurellement alignée avec l'ADN du produit : le principe fondateur des tokens dit déjà « la voix de Bob EST la DA », et cette direction la rend enfin visible ; risque a11y le plus bas, coût le mieux amorti, zéro contact avec la lane GPT, et le geste le plus inédit du lot. Sa faiblesse est réelle et unique : son premier REGARD est le moins spectaculaire des trois.\n\nMA RECOMMANDATION : LE MIX « L'ATELIER ÉDITORIAL » (la une sous la lampe). Colonne vertébrale : la Fintech Éditoriale intégrale — grammaire une/chapô/chiffre héros, papier éclairci, honnêteté mécanique, NumberFlight niveau 1. Greffe : la matière d'atelier de A exactement là où C prévoit déjà ses deux scènes sombres — l'ouverture d'Argent et la revue Pilotage prennent la rampe de nuit, le halo de lampe et le filet qui se trace (l'or strictement matière, jamais information, jamais sur papier : la doctrine de A est déjà écrite pour ça). Le moment signature du mix dépasse chacune des directions seules : la page se tourne, le chiffre voyage, et il atterrit dans l'écrin. Le pari plein soleil tombe de six écrans à deux scènes de consultation courte, gateées terrain, avec double repli déjà spécifié (cran de rampe côté matière, bascule claire par flag côté scène). Ce que le mix refuse : Fraunces en deuxième display généralisée (une seule display, Schibsted ; si la chaleur de Fraunces manque, on la teste en lot dédié sur les seuls MOTS des deux scènes sombres) et le count-up généralisé — la règle d'honnêteté de C prime sur le compteur de A, parce qu'un chiffre qui bouge est une promesse.\n\nSI LE FONDATEUR VEUT UNE DIRECTION PURE : C si la sécurité de lecture prime, A si le pari est pleinement assumé — mais alors le gate terrain du lot 1 est ÉLIMINATOIRE, pas consultatif. B devient dans tous les cas notre assurance-vie : si le terrain disqualifie toute surface sombre, la grammaire éditoriale survit intégralement sur papier (c'est écrit dans sa propre mitigation) et B fournit le supplément de chaleur en un commit tokens.\n\nDEUX FAITS VÉRIFIÉS DANS LE CODE QUI CHANGENT LES PLANS. (1) Le constat « Reanimated dépendance fantôme » gravé dans PieceDetailView (lignes 14 et 251) est périmé : react-native-reanimated 4.5.0 est déclaré dans apps/mobile/package.json et mainline via la tab bar — le plancher motion des trois directions est plus haut et moins risqué qu'annoncé, et le plan B « RN Animated natif » du Chantier Vivant n'est plus une contrainte, juste une option. (2) L'infraction indigo du teaser Parrainage (compte.tsx ligne 534, aiBg hors canal Bob) est réelle : quelle que soit la direction retenue, elle se corrige au lot Compte — l'indigo est le canal exclusif de Bob, non négociable.\n\nCONDITIONS DU GO, quel que soit le choix : gate terrain avant merge de tout écran ou scène sombre ; iso-information absolue (les « — » restent des « — », magnifiés, jamais des zéros) ; immobilité totale de l'écran pendant que Bob parle ; reduce-motion fail-closed avec équivalence d'information sur chaque geste ; cibles 44 dp intactes ; APK locale de validation par lot et jamais de build EAS cloud sans ton GO explicite.",
+ "planLots": [
+  {
+   "lot": "Lot 0 — Fondation invisible (tokens + primitives + preuves)",
+   "contenu": "Mutation @bob/tokens de la direction choisie (crans typo, familles/encres nouvelles, canvas si concerné) avec régénération MÉCANIQUE, dans le même merge, de toutes les recettes pré-composées dérivées du fond (surfaceVeil.canvas, bottomTabBar.fade, veilLocations — vérifiées aux lignes 338 et 652 des tokens) ; chaque paire de couleurs nouvelle entre dans index.test.ts avec son ratio mesuré ; primitives @bob/ui de la direction (scaffold de scène, cartes, display/compteur, filets, squelettes onDark…) livrées NON consommées ; chargement de police éventuel hors _layout racine (lane GPT), fail-closed sur les faces déjà chargées (Schibsted 700/800).",
+   "rollback": "Revert du merge unique = retour 1.x au pixel près, PROUVÉ avant merge sur branche blanche (git revert + build + comparaison de captures + suites tokens/parity/veil vertes). Lot invisible par construction : aucun risque visuel en production."
+  },
+  {
+   "lot": "Lot 1 — Accueil / Aujourd'hui (le moment signature)",
+   "contenu": "(tabs)/index.tsx consomme les primitives : header, carte solde signature (géométrie overlap conservée), hiérarchie héros, états loading/vide/erreur recalibrés, honnêteté des « — » intacte ; iso-structure et iso-information stricts (logique data intouchée, ~1 400 lignes) ; a11y re-mesurée (paires, cibles 44, labels) ; perf mesurée sur device témoin. Si la direction pose une matière sombre sur cet écran : GATE terrain plein soleil (3 artisans, tâches chronométrées) AVANT merge, repli tokenisé déjà nommé (d0→d1).",
+   "rollback": "Merge unique ; revert à blanc prouvé avant merge = Accueil 1.x restauré, les primitives du lot 0 restent en place non consommées ; APK locale de validation archivée, l'APK précédente reste installable."
+  },
+  {
+   "lot": "Lot 2 — Argent",
+   "contenu": "(tabs)/argent.tsx : héros ou scène d'ouverture selon la direction (si scène sombre : scaffold + SkeletonOnDark, et les trois états — confirmation, bienvenue, erreur — la prennent) ; recomposition des zones sur les briques du lot 0 ; la logique de qualification solde/cashflow (~600 lignes) intouchée ; les feuilles de SAISIE restent claires (doctrine « le fond clair est celui de la saisie ») ; la cible du geste signature est enregistrée, le vol lui-même reste au lot 8.",
+   "rollback": "Merge unique revertable à blanc prouvé ; si scène sombre : gate terrain éliminatoire avant merge + double repli spécifié (cran de rampe côté tokens, bascule claire par flag côté scène) ; APK locale archivée."
+  },
+  {
+   "lot": "Lot 3 — Pilotage (la dataviz vivante)",
+   "contenu": "pilotage.tsx (825 lignes) : la revue passe des rangées de chiffres à la dataviz de la direction (barres, anneau, trait — react-native-svg 15.15.4 déjà installé, zéro graphe rendu aujourd'hui, vérifié : tout est gain net) ; entrée UNE fois par focus puis immobilité, étiquettes directes sur les marques, mêmes chiffres, même deriveBusinessReview, aucune donnée inventée ; états paywall/vide/erreur prennent la nouvelle matière.",
+   "rollback": "Merge unique revertable ; la dataviz est additive — les rangées existantes sont le fallback naturel du revert ; APK locale archivée."
+  },
+  {
+   "lot": "Lot 4 — Fiche client",
+   "contenu": "client/[id].tsx (1 816 lignes, l'écran le plus dense) : recomposition de l'en-tête/portrait + carte maîtresse encours + squelette recalibré ; les formulaires et sheets (600+ lignes) restent clairs et INTOUCHÉS ; tous les états de standing préservés ; revue de non-régression état par état obligatoire.",
+   "rollback": "Merge unique revertable à blanc prouvé ; périmètre chirurgical (zones de rendu seulement) = revert sans effet de bord sur la logique ; APK locale archivée."
+  },
+  {
+   "lot": "Lot 5 — Pièce (facture ET devis d'un coup)",
+   "contenu": "Mutation concentrée dans PieceDetailView (1 002 lignes, composant partagé) : bloc totaux, rubriques, matière papier ; facture/[id].tsx (920 lignes) ne change que ses cartes propres ; devis/[id] hérite mécaniquement ; devis/new.tsx (lane GPT) strictement intouché ; la pédagogie légale (LegalHint) ne s'anime jamais et ne passe jamais en matière sombre.",
+   "rollback": "Merge unique revertable ; le partage du composant fait qu'UN revert restaure les deux routes d'un coup ; APK locale archivée."
+  },
+  {
+   "lot": "Lot 6 — Compte (hors compliance)",
+   "contenu": "compte.tsx (1 050 lignes) : passes de matière/typo sur rangées existantes + correction de la discipline indigo — le teaser Parrainage quitte aiBg (infraction vérifiée ligne 534), l'indigo redevient le canal exclusif de Bob ; ZÉRO diff dans le pied légal et la clôture de compte (chemins interdits) — revue de PR ligne à ligne exigée sur ce fichier.",
+   "rollback": "Merge unique revertable ; le périmètre compliance étant intouché par construction, le revert est sans risque légal ; APK locale archivée."
+  },
+  {
+   "lot": "Lot 7 — Généralisation aux 39 écrans restants",
+   "contenu": "Héritage mécanique des primitives (header interne → header de la direction, matières de cartes, crans typo) par petits trains d'écrans regroupés par gabarit ; aucun re-layout dédié ; chemins interdits exclus par construction : assistant, voix, devis/new, catalogue, onboarding, _layout racine, src/audio|realtime|agent, packages/ai, apps/api/src/voice, documents/dossiers (chantier GPT en vol).",
+   "rollback": "Chaque train = un merge revertable indépendant ; l'héritage se faisant par consommation de primitives, un revert de train ne touche jamais le kit ni les autres écrans."
+  },
+  {
+   "lot": "Lot 8 — Transitions d'écran (SEUL lot sous flag)",
+   "contenu": "Le geste de continuité de la direction (rideau / morph / NumberFlight + fade-through) derrière UN flag build-time fail-closed EXPO_PUBLIC_* au patron tab bar exact (accès statique process.env, TRUTHY {'1','true'}, garde source testée — patron vérifié : bob-tab-bar-flag.ts + test) ; posé par les options de navigation DE CHAQUE écran phare, jamais le _layout racine ; niveau 1 garanti en overlay maison transform/opacity (Reanimated 4.5.0 déclaré et mainline, vérifié) ; niveau 2 (API shared transitions) plus tard sous le même flag ; reduce-motion = coupe sèche avec page posée pleine.",
+   "rollback": "TROIS niveaux : flag absent = navigation stock sans aucun revert (rollback au build) ; revert du merge = disparition du code ; APK précédente installable. Pas de double thème — le flag ne couvre QUE les transitions."
+  },
+  {
+   "lot": "Lot transverse — Train de publication (pas un merge, le dispositif de preuve)",
+   "contenu": "Cadence : chaque lot = APK LOCALE de validation (JAMAIS de build EAS cloud sans GO explicite fondateur — règle Starter, 1 build cloud par train complet) ; chaque train : PR → staging validé → prod (loi des environnements) ; captures avant/après versionnées ; registre des reverts à blanc prouvés ; gate terrain plein soleil systématique avant merge de tout lot comportant une surface sombre.",
+   "rollback": "C'est le rollback lui-même : APK n-1 toujours installable, chaque merge revertable individuellement et prouvé d'avance, le lot 8 débrayable au build par flag. Trois niveaux garantis à tout instant du programme."
+  }
+ ],
+ "questionsValidation": [
+  "LA DIRECTION — Laquelle fait foi : A L'Atelier Premium, B Le Chantier Vivant, C La Fintech Éditoriale, ou le mix recommandé « L'Atelier Éditorial » (colonne vertébrale C + scènes nuit d'A sur les deux moments d'argent : ouverture Argent et revue Pilotage) ? Chaque choix engage son risque assumé : A = pari plein soleil sur les 6 phares (gate terrain éliminatoire), B = renoncement au jamais-vu frontal, C = wow au premier geste plutôt qu'au premier regard, mix = deux matières à tenir sous une seule grammaire.",
+  "LE PREMIER LOT — Quel périmètre pour le premier train : Lot 0 seul (fondation invisible, zéro risque visuel, mais rien à montrer) ou Lot 0 + Accueil (le moment signature en main dès la première APK locale) ? Et confirmes-tu le protocole terrain — 3 artisans, plein soleil, tâches chronométrées — comme gate ÉLIMINATOIRE de merge de tout écran ou scène sombre, avec repli déjà tokenisé (cran de rampe d0→d1, ou bascule claire par flag) si échec mesuré ?",
+  "LE NIVEAU DE MOTION — Jusqu'où va le mouvement au lancement : M0 statique magistral (poses immédiates, zéro cinétique), M1 entrées one-shot (traits qui se dessinent, cascades, poses nettes — ma recommandation), ou M2 continuité (M1 + transitions d'écran sous flag build-time fail-closed, niveau 1 overlay garanti, niveau 2 expérimental plus tard sous le même flag) ? Invariants quel que soit le niveau : reduce-motion fail-closed avec équivalence d'information, immobilité totale pendant que Bob parle, jamais d'animation en boucle, jamais de mouvement sur donnée non qualifiée."
+ ]
+}

@@ -328,8 +328,10 @@ model Company {
   // delete : présent = tenant clôturé (guard API : 403 « compte clôturé »). TOUS les autres
   // champs de ce modèle restent INTACTS après clôture — ce sont la source live relue à chaque
   // régénération d'une pièce déjà émise (factures/devis), la rétention légale de 10 ans (Code de
-  // commerce) l'exige. L'identité PERSONNELLE de l'utilisateur (prénom, email, téléphone) ne vit
-  // jamais ici : elle est entièrement dans Supabase Auth, supprimée via l'admin API en parallèle.
+  // commerce) l'exige. Le profil du COMPTE Supabase n'est pas stocké ici ; les coordonnées et
+  // l'identité légale d'une EI peuvent néanmoins rester des données personnelles et relèvent de la
+  // matrice de rétention. L'outbox Auth conserve seulement le sujet Supabase transitoire nécessaire
+  // au retry, puis le remplace par un reçu pseudonyme minimisé au succès.
   closedAt                                    DateTime?
   closureReason                               String?
   customers                                   Customer[]
@@ -350,6 +352,7 @@ model Company {
   folderDeletionPlans                         DocumentFolderDeletionPlan[]
   documentArchiveJobs                         DocumentArchiveJob[]
   notificationJobs                            NotificationJob[]
+  authUserDeletionJobs                        AuthUserDeletionJob[]
   devices                                     Device[]
   agentJournalEntries                         AgentJournalEntry[]
   accountingAccounts                          AccountingAccount[]
@@ -1701,6 +1704,30 @@ model NotificationJob {
   // Index partiel due+payload défini dans la migration leaseToken : Prisma 6 ne sait pas
   // représenter son prédicat WHERE sans perdre la certification SQL PostgreSQL.
   @@map("notification_jobs")
+}
+
+/// Outbox de suppression Supabase Auth. Aucun email/téléphone/metadata ou message provider.
+/// Le userId brut devient NULL dès l'ack ; subjectHash reste un reçu pseudonyme et une fence
+/// empêchant la restauration ultérieure d'une membership Cabinet pour une identité supprimée.
+model AuthUserDeletionJob {
+  id            String   @id @db.Uuid
+  companyId     String   @unique(map: "auth_user_deletion_jobs_company_key")
+  company       Company  @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  provider      String   @default("supabase")
+  userId        String?
+  subjectHash   String   @db.Char(64)
+  status        String   @default("pending")
+  attempts      Int      @default(0)
+  nextAttemptAt DateTime @default(now()) @db.Timestamptz(6)
+  leaseToken    String?  @db.Uuid
+  lastErrorCode String?
+  completedAt   DateTime? @db.Timestamptz(6)
+  createdAt     DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([provider, subjectHash], name: "auth_user_deletion_jobs_provider_subject_key")
+  // Index partiel global des jobs dus défini en SQL ; Prisma ne représente pas le prédicat WHERE.
+  @@map("auth_user_deletion_jobs")
 }
 
 // Appareils enregistrés pour le push Expo (C25) — un token appartient à une seule session

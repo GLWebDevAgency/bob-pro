@@ -1,0 +1,91 @@
+{
+ "direction": "LE CHANTIER VIVANT — l'énergie du terrain tenue par la discipline d'un système. Couleurs franches et chaudes sur plein jour, chiffres-compteurs en Black 900, pictos métier dessinés maison, ressorts joyeux qui se posent net. Trois canaux jamais mélangés : orange = l'artisan agit, indigo = Bob parle, vert = l'argent rentre. Le niveau de finition Monzo/Lydia/Duolingo, mais pour ceux qui construisent — pas pour la City.",
+ "manifeste": "Un plombier n'ouvre pas une app de banquier à 7h sur le hayon du fourgon ; il ouvre un OUTIL — et un bon outil est franc, chaud, immédiat.\nLE CHANTIER VIVANT prend ce que le terrain a de beau — l'orange du gilet, le bleu de travail, la lumière du matin sur le plâtre — et en fait un système, pas un décor.\nTrois canaux, jamais mélangés : l'orange c'est TOI (l'action), l'indigo c'est BOB (la voix), le vert c'est L'ARGENT (le résultat) — on sait toujours qui parle.\nLe chiffre reste le héros, plus gros et plus noir (900) : il monte comme un compteur et se pose net ; quand la donnée n'existe pas, rien ne bouge — la joie ne ment jamais.\nRevolut habille la City ; nous habillons ceux qui la construisent : la même exigence de finition, avec la fierté du geste à la place du costume.",
+ "palette": [
+  {
+   "role": "Plein jour (canvas)",
+   "hex": "#F7F4EE",
+   "usage": "Fond d'app réchauffé — blanc de chaux, lumière de 7h. Remplace neutrals.bg #EFF2F7 (gris-bleu froid de banque), seul fond neutre MODIFIÉ ; les cartes blanches flottent dessus, le fondu de la tab bar est recalé sur cette teinte."
+  },
+  {
+   "role": "Surface (carte)",
+   "hex": "#FFFFFF",
+   "usage": "Inchangé — la carte blanche reste l'unité de contenu ; bordures neutres réchauffées d'un cran dans le même commit (line #E0E6EE → #E2DFD6, lineSoft → #F2EFE8) pour tuer la couture froide."
+  },
+  {
+   "role": "Bleu de travail (encre)",
+   "hex": "#0C2340",
+   "usage": "ink900 INCHANGÉ mais re-raconté : ce navy n'est pas le banquier, c'est le bleu de travail. Titres, montants héros, CTA primaire, traits des pictos métier. Le squelette AA du système ne bouge pas."
+  },
+  {
+   "role": "Orange chantier (signal action)",
+   "hex": "#E8590C",
+   "usage": "LE geste neuf — l'orange du gilet et du cône : FAB terrain, anneaux de progression, barres « à encaisser » de la dataviz, liseré d'aube du héros, étincelles d'encaissement. ≈3,6:1 sur blanc → graphique et gros corps UNIQUEMENT, jamais du petit texte, jamais un état système."
+  },
+  {
+   "role": "Orange chantier — encre",
+   "hex": "#9C3B00",
+   "usage": "Le petit texte du canal action (≈6,9:1 sur blanc, ≈6:1 sur son pastel) : labels de graphe, légendes, chips « à toi de jouer ». À certifier dans index.test.ts comme les encres existantes."
+  },
+  {
+   "role": "Orange chantier — pastel",
+   "hex": "#FDEDE2",
+   "usage": "Fond de chips/tuiles du canal action (encre #9C3B00 dessus). Complète la logique pastel+encre du kit (successBg/warningBg…) sans en détourner aucune."
+  },
+  {
+   "role": "Vert argent",
+   "hex": "#0E7C5A",
+   "usage": "INCHANGÉ avec toute sa famille certifiée (successBg, successInk, successOnDark) : l'argent encaissé, la phrase de Bob « tu peux te verser ~2 000 € ». Règle dure : l'orange ne touche JAMAIS un montant acquis — l'énergie n'est pas le résultat."
+  },
+  {
+   "role": "Terracotta tuile (dataviz sorties)",
+   "hex": "#B8552F",
+   "usage": "Deuxième teinte matière du terrain (tuile, cuivre, brique) : dépenses et sorties dans les graphes, accents d'illustration. ≈4,8:1 sur blanc — texte petit autorisé après certification."
+  },
+  {
+   "role": "Indigo Bob",
+   "hex": "#4338CA",
+   "usage": "VERROUILLÉ — canal exclusif de la voix (orbe, halos, chips IA, navigation.assistantActive). L'orange s'en tient à distance sur tout écran : qui parle reste lisible d'un coup d'œil."
+  },
+  {
+   "role": "États (warning/danger)",
+   "hex": "#C77A12 / #C8463C",
+   "usage": "INCHANGÉS avec leurs pastels et encres surfaceTint certifiés. L'ambre reste un ÉTAT (échéance), jamais un décor ; la frontière orange-signal / ambre-état est tokenisée et lintée — jamais les deux canaux dans un même composant."
+  }
+ ],
+ "typographies": "AUCUNE famille nouvelle — le spectaculaire vient du POIDS et de l'ÉCHELLE, pas d'une police gadget (discipline Duolingo). Display : Schibsted Grotesk conservée mais poussée au Black 900 (disponible dans la variable Google Fonts, un seul fichier à charger dans _layout — hors lane GPT via config fonts partagée, sinon reporté au lot transitions). Nouveau cran type.displayMural : 56/900, tracking −1,5, tabular-nums, réservé au solde d'Accueil et au héros d'Argent, auto-rétréci à partir de 7 chiffres pour ne jamais casser la ligne. heroNum 42/800, moneyHero 27/800, wizardTitle, sheetTitle, section : INCHANGÉS — la hiérarchie existante devient l'étage intermédiaire. Texte : Hanken Grotesk 500/600/700 inchangée (corps, boutons, labels). Eyebrows élargis (tracking 0,4 → 0,8) pour l'effet affiche des en-têtes d'écran. Doctrine chiffres intacte : tabular-nums partout, montants navy sur blanc — le 900 ajoute la masse, pas la couleur.",
+ "matiere": "Surfaces : cartes blanches sur plein jour #F7F4EE — le contraste chaud/blanc rend la flottaison plus évidente qu'aujourd'hui sans toucher aux ombres. Ombres : INCHANGÉES, basses/larges/bleutées #0D2644 — c'est la signature de profondeur du kit, on ne la négocie pas. Reliefs : PressableScale généralisé (appui = scale 0,97 + ombre qui tombe d'un cran — l'outil répond sous le gant). Formes : radius existants conservés + un cran additif radius.hero 28 pour les cartes murales des 6 écrans phares — plus généreux, jamais mou. Dégradé « lever de chantier » : 135°, #FF8A3D → #E8590C, réservé aux remplissages NON-texte (FAB, anneau de progression, fonds de célébration) — le seul dégradé chaud du système, face aux rampes navy conservées. Liseré d'aube : filet 3dp orange → transparent sur l'arête haute de la carte solde flottante — le soleil se lève exactement sur la couture navy→jour du pattern signature. Pictos métier : grammaire dessinée MAISON — trait navy 2,5dp arrondi + UN accent orange par picto (casque, truelle, clé de 12, gaine ICTA, niveau à bulle) — jamais un pack acheté. Hachures chantier 45° en navy 6 % d'opacité : UNIQUEMENT décoratives (états vides, fond de célébration), jamais porteuses d'information. INTERDITS tenus : pas de texture bruitée plein écran (banding + batterie), pas de flou temps réel — edgeFalloff reste à defaultLayers 0, le voile teinté du kit fait le travail.",
+ "motion": "Le langage : « le geste juste » — tout part du doigt, tout est interruptible, tout se pose net. Registres 200/220/360/1500 et motionSemantic CONSERVÉS ; le spring standard 26/300 reste la norme des layout transitions. Additifs : springJoyful (damping 18, stiffness 260, mass 0,9 — UN dépassement ~3 %, jamais deux rebonds) pour la pose des cartes héros et du FAB ; compteur 600 ms easing out-expo pour les montants héros (tabular-nums, zéro reflow, arrêt NET) ; stagger de liste 40 ms/item plafonné à 6 (StaggeredList existant) ; morph de badge via replace 280 existant ; étincelle de meuleuse — 8 particules orange, 450 ms, une seule fois, UNIQUEMENT sur un encaissement réel. Transitions d'écran : la carte touchée devient l'en-tête de l'écran suivant (360 ms, transform/opacity uniquement), DERRIÈRE le flag build-time fail-closed patron tab bar (accès statique EXPO_PUBLIC_*, garde source), implémentées écran par écran — jamais dans le _layout racine. Ce qui ne bouge JAMAIS : un montant une fois posé ; les mentions légales et LegalHint ; l'écran pendant que Bob parle — l'orbe indigo garde le monopole de l'ambient 1500, silence visuel autour de la voix (philosophie papa vocal) ; aucune boucle hors orbe. Reduce-motion fail-closed par construction : compteur → valeur posée d'emblée, étincelles → badge statique, transition partagée → fondu simple — chaque geste livre sa ligne de table d'équivalence d'information, testée.",
+ "momentSignature": "7h02, hayon du fourgon, gants pas encore enfilés. 0,00 s : tap sur l'icône — le plein jour est déjà là, l'en-tête navy porte son liseré d'aube orange sur la couture navy→clair. 0,15 s : la carte solde flottante descend de 12 dp et se POSE en springJoyful — un seul dépassement, comme un niveau à bulle qui se cale. 0,25 → 0,85 s : le solde compte en Schibsted 900, chiffres tabulaires, 0 → 8 240 € en 600 ms out-expo ; le compteur s'arrête NET, et sous l'arrêt exact la phrase verte s'écrit d'un trait : « Tu peux te verser ~2 000 € sans te mettre dans le rouge. » 0,90 s : les trois priorités du jour montent en escalier, 40 ms d'écart, chacune avec son picto métier navy/orange. 1,20 s : l'orbe indigo de Bob pulse UNE fois — « je suis là » — puis se tait. 1,50 s : plus rien ne bouge ; l'écran est calme, gros, lisible en plein soleil, trois cibles de 44 dp sous le pouce. Et l'honnêteté est DANS le moment : si le solde n'est pas qualifié, aucun compteur — le « — » se pose immédiatement avec sa phrase d'explication ; la joie ne s'exécute que sur du vrai, et c'est exactement pour ça qu'on y croit. En une ouverture, l'utilisateur a compris : cette app se lève avec lui. Deuxième frappe du même marteau sur Pilotage : les rangées de chiffres actuelles (zéro graphe rendu aujourd'hui, react-native-svg déjà installé) deviennent une dataviz vivante — barres mensuelles facturé/encaissé qui poussent une seule fois à l'entrée, DSO en anneau orange→vert, top clients en pastilles — mêmes chiffres, même deriveBusinessReview, aucune donnée inventée.",
+ "risques": [
+  {
+   "risque": "Lisibilité plein soleil : l'orange chantier #E8590C ne fait que ≈3,6:1 sur blanc — sous le seuil AA du petit texte.",
+   "mitigation": "Doctrine deux-tons dès le token : #E8590C réservé au graphique et aux gros corps (seuil ≥3:1 tenu et mesuré), #9C3B00 (≈6,9:1) pour tout texte courant du canal — certifiés dans index.test.ts exactement comme successInk/warningInk ; les montants restent navy, jamais orange."
+  },
+  {
+   "risque": "Collision sémantique entre l'orange action et l'ambre warning #C77A12 : l'écran pourrait sembler « tout en alerte ».",
+   "mitigation": "Frontière tokenisée et lintée : l'orange n'exprime JAMAIS un état, l'ambre garde exclusivement ses pastels/encres existants, interdiction des deux canaux dans un même composant ; l'ambre n'apparaît jamais en aplat plein — toujours pastel + encre, comme aujourd'hui."
+  },
+  {
+   "risque": "Batterie et perf RN sur Android bas de gamme : compteurs, springs, SVG, particules.",
+   "mitigation": "Tout en Reanimated worklets UI-thread, transform/opacity uniquement ; entrées jouées UNE fois (jamais au scroll) ; particules plafonnées 8/450 ms ; aucun flou temps réel (edgeFalloff defaultLayers 0 conservé) ; budget 60 fps mesuré sur device témoin avant merge de chaque lot."
+  },
+  {
+   "risque": "Accessibilité motion (vestibulaire) : plus de mouvement = plus de surface de risque.",
+   "mitigation": "Fail-closed par construction, doctrine motionSemantic étendue : chaque geste nouveau livre sa ligne de table d'équivalence d'information (valeur posée, badge statique, fondu simple) + test unitaire ; aucune information n'est portée par le mouvement seul."
+  },
+  {
+   "risque": "« Duolingo-isation » : la joie perçue comme gadget par l'artisan sérieux, ou pire, comme malhonnête.",
+   "mitigation": "La joie est indexée sur des ISSUES RÉELLES uniquement (encaissement, devis signé) — zéro streak, zéro mascotte, zéro badge fabriqué ; densité Cockpit reste stricte ; le canal légal (LegalHint) et les états d'erreur restent hors motion ; pas de count-up sur donnée non qualifiée."
+  },
+  {
+   "risque": "Couture chaud/froid : le canvas chaud #F7F4EE contre les pastels froids certifiés (b2bBg, aiBg…).",
+   "mitigation": "Les pastels d'état certifiés ne bougent pas (ils vivent SUR les cartes blanches, pas sur le canvas) ; seuls les neutres de liaison sont réchauffés d'un cran dans le même commit (line, lineSoft, fondu tab bar recalé) ; vérification écran par écran sur les 6 phares avant généralisation."
+  },
+  {
+   "risque": "Coût d'implémentation RN et réversibilité de la refonte.",
+   "mitigation": "Rollback 3 niveaux intégré : chaque écran phare = un lot-merge unique avec revert à blanc prouvé avant merge ; la palette = un commit tokens isolé re-certifié par les tests de contraste existants (revert = 1 fichier) ; SEULES les transitions d'écran passent derrière le flag build-time fail-closed patron tab bar — pas de double thème généralisé ; APK précédente toujours installable."
+  }
+ ],
+ "compatibiliteKit": "SE GARDE (la fondation 1.x est dépassée, pas jetée) : toutes les encres et la sémantique d'état certifiées (surfaceTint light/dark, successInk/warningInk, journal, expenseCategory) ; l'indigo #4338CA canal exclusif de Bob ; Schibsted/Hanken ; les registres motion + motionSemantic avec le spring 26/300 en standard ; les ombres bleutées #0D2644 ; les patterns signature (floatingBalanceCard et sa couture, innerScreenHeader, fondu bottomTabBar recalé sur le nouveau canvas, edgeFalloff nominal sans flou) ; spacing, radius, cibles 44 ; honnêteté des null (« — » expliqué) ; pédagogie légale au point de décision ; les 4 thèmes de marque survivent — l'orange signal est trans-thème, exactement comme l'indigo. MUTE (additif ou 1 token) : neutrals.bg → #F7F4EE plus line/lineSoft réchauffées (seuls neutres modifiés, un commit tokens isolé) ; famille signal orange-chantier (3 tokens additifs : vif #E8590C, encre #9C3B00, pastel #FDEDE2) ; type.displayMural 56/900 avec chargement du Black ; radius.hero 28 ; gradient leverDeChantier ; springJoyful + durée compteur dans motionSemantic ; grammaire de pictos métier interne (navy/orange) ; composant dataviz SVG (barres, anneaux, pastilles) branché sur deriveBusinessReview existant — Pilotage passe des rangées chiffrées à la dataviz vivante SANS donnée nouvelle. RIEN n'est supprimé ; chemins interdits intouchés (lane GPT : assistant/voix/devis new/catalogue/onboarding/_layout racine/audio-realtime-agent, chantiers documents/dossiers, pied légal et clôture) ; pas de double thème — un seul système, le flag ne couvre que les transitions d'écran."
+}

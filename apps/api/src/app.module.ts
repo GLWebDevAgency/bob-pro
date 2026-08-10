@@ -24,6 +24,7 @@ import { ContractRenewalService } from './jobs/contract-renewal.service';
 import { DigestService } from './jobs/digest.service';
 import { DocumentArchiveService } from './jobs/document-archive.service';
 import { NotificationDeliveryService } from './jobs/notification-delivery.service';
+import { AccountAuthDeletionService } from './jobs/account-auth-deletion.service';
 import { ScheduledTenantDirectory } from './jobs/tenant-directory';
 import { VoiceTracePurgeService } from './jobs/voice-trace-purge.service';
 import { VoiceTraceRecorder, voiceTraceRecorderProvider } from './voice/voice-trace.recorder';
@@ -142,6 +143,7 @@ import {
     DigestService,
     DocumentArchiveService,
     NotificationDeliveryService,
+    AccountAuthDeletionService,
     ScheduledTenantDirectory,
     // Traçage du comportement vocal (bêta-test) : l'enregistreur est injecté dans
     // BackendService (chemin vocal réel) et la purge honore la rétention de 30 jours.

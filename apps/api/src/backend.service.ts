@@ -379,6 +379,10 @@ import { CompanyScopedJournalStore } from './persistence/agent-journal';
 import { Metrics } from './observability/metrics';
 import { AppLogger, getPrincipal, requireTenant } from './observability/logger';
 import { SUPABASE_ADMIN, type SupabaseAdminPort } from './auth/supabase-admin';
+import {
+  canonicalCompanyIdForUser,
+  isCanonicalCompanyOwnerBinding,
+} from './auth/company-owner-binding';
 import { PAYMENT_GATEWAY } from './payments/payment-gateway';
 import { StripeBillingService } from './payments/stripe-billing.service';
 import { PDF_RENDERER } from './documents/pdf-renderer';
@@ -10716,8 +10720,15 @@ export class BackendService {
         'registerCompany sans Principal — le guard doit authentifier avant ce point.',
       );
     }
+    const canonicalCompanyId = canonicalCompanyIdForUser(principal.userId);
+    if (canonicalCompanyId === null) {
+      return err(appForbidden('Identité propriétaire invalide pour le provisioning.'));
+    }
+    if (principal.companyId !== null && principal.companyId !== canonicalCompanyId) {
+      return err(appForbidden('COMPANY_OWNER_BINDING_MISMATCH'));
+    }
     const assignsTenantMetadata = principal.companyId === null;
-    const companyId = principal.companyId ?? `company-${principal.userId}`;
+    const companyId = canonicalCompanyId;
     // Le guard garantit normalement ces formats ; on re-vérifie avant toute utilisation en GUC RLS.
     if (principal.userId === '' || !/^[A-Za-z0-9-]{1,64}$/.test(companyId)) {
       throw new Error(
@@ -10866,16 +10877,10 @@ export class BackendService {
    * comptables INTACTES — rétention légale 10 ans, Code de commerce). Orchestration en DEUX temps
    * volontairement SÉPARÉS de la transaction HTTP auto-ouverte par TenantPersistenceInterceptor
    * (le controller porte `@WithoutTenantPersistenceTransaction`, comme l'upload/intake documents) :
-   *  1) DANS runWithTenant, tout-ou-rien Postgres : le use case core (closedAt, abonnement
-   *     canceled, liens de signature publics révoqués) PUIS la purge des push tokens (Device,
-   *     hors @bob/core — le port core ne connaît pas cette table).
-   *  2) APRÈS COMMIT, hors transaction : suppression du user Supabase Auth. C'est LE point où
-   *     l'identité PERSONNELLE (prénom, email, téléphone — user_metadata) disparaît réellement :
-   *     Postgres n'en a jamais stocké la moindre trace (cf. commentaire CompanyProps.closedAt).
-   *     Best-effort et loggé, jamais bloquant : un échec Supabase (réseau, 5xx transitoire) laisse
-   *     le compte DÉJÀ clôturé côté Bob Pro (closedAt posé, tenant inaccessible derrière le guard) —
-   *     la reprise est un retry de CET appel Supabase seul (deleteUser sur un user déjà supprimé
-   *     répond 404, traité comme un succès idempotent), jamais un nouveau tour du use case.
+   *  DANS runWithTenant, tout-ou-rien PostgreSQL : garde owner/Cabinet + outbox Auth, closedAt,
+   *  abonnement, liens publics, notifications, traces et push. La suppression Supabase Auth est
+   *  ensuite exécutée par un worker durable : aucun réseau fournisseur ne vit dans la transaction
+   *  HTTP et aucun crash post-commit ne peut perdre l'intention.
    */
   async closeAccount(input: {
     confirmationText: string;
@@ -10886,18 +10891,28 @@ export class BackendService {
       // Bug d'ordonnancement : le guard pose TOUJOURS un principal AVEC tenant sur cette route.
       throw new Error('closeAccount sans Principal — le guard doit authentifier avant ce point.');
     }
-    const companyId = this.companyId();
+    if (
+      principal.companyId === null ||
+      !isCanonicalCompanyOwnerBinding(principal.userId, principal.companyId)
+    ) {
+      return err(appForbidden('COMPANY_OWNER_BINDING_MISMATCH'));
+    }
+    const companyId = principal.companyId;
     const now = this.clock.now();
+    const identityDeletionRequestId = this.ids.newId();
 
-    const closed = await this.p.runWithTenant(companyId, async () => {
+    const closed = await this.p.runWithTenant(companyId, () => this.p.runInTransaction(async () => {
       const useCase = new CloseAccount({
         companies: this.p.companies,
         subscriptions: this.p.subscriptions,
         publicAccessTokens: this.p.publicAccessTokens,
+        identityDeletionOutbox: this.p.authUserDeletionJobs,
         uow: this.p,
       });
       const r = await useCase.execute({
         companyId,
+        userId: principal.userId,
+        identityDeletionRequestId,
         confirmationText: input.confirmationText,
         reason: input.reason ?? null,
         now,
@@ -10914,27 +10929,18 @@ export class BackendService {
           reason: 'account_closure',
         });
       }
+      await this.p.notificationJobs.cancelAndMinimizeForCompany(companyId, now);
       await this.p.devices.deleteAllForCompany(companyId);
       return r;
-    });
+    }));
     if (!closed.ok) return closed;
 
     this.logger.audit('account.closed', {
       companyId,
-      userId: principal.userId,
       alreadyClosed: closed.value.alreadyClosed,
+      identityDeletionRequestId: closed.value.identityDeletion.requestId,
+      identityDeletionStatus: closed.value.identityDeletion.status,
     });
-
-    try {
-      await this.supabaseAdmin.deleteUser(principal.userId);
-    } catch (e) {
-      const cause = e instanceof Error ? e.message : 'supabase-admin';
-      this.logger.error(
-        `clôture ${companyId} : suppression du user Supabase Auth échouée (${cause}) — compte DÉJÀ clôturé côté Bob Pro, retry manuel possible côté auth seul`,
-        undefined,
-        'BackendService',
-      );
-    }
 
     return ok({ closedAt: closed.value.closedAt });
   }

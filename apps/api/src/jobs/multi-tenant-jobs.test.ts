@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Company, Customer, Invoice, NotificationPort } from '@bob/core';
-import { NotificationDeliveryService } from './notification-delivery.service';
+import {
+  NotificationCompanyClosedError,
+  NotificationDeliveryService,
+} from './notification-delivery.service';
 import { RelanceService } from './relance.service';
 import { DocumentArchiveService } from './document-archive.service';
 import { ScheduledTenantDirectory } from './tenant-directory';
@@ -14,7 +17,7 @@ const logger = {
 } as unknown as AppLogger;
 
 function fakeCompany(id: string): Company {
-  return { id } as Company;
+  return { id, isClosed: () => false } as unknown as Company;
 }
 
 function fakeCustomer(id: string, companyId: string, email: string): Customer {
@@ -119,6 +122,42 @@ describe('scheduled jobs multi-tenant', () => {
     );
     expect(subjects[0]).toContain('relance'); // neutre : « — relance »
     expect(subjects[1]).toContain('relance ferme');
+  });
+
+  it('isole une société clôturée et poursuit le sweep de relances des autres tenants', async () => {
+    const persistence = new InMemoryPersistence();
+    persistence.companies.seed(fakeCompany('co-1'));
+    persistence.companies.seed(fakeCompany('co-2'));
+    const delivery = {
+      enqueue: vi.fn(),
+      tryDeliver: vi.fn(),
+    } as unknown as NotificationDeliveryService;
+    const service = new RelanceService(
+      persistence,
+      delivery,
+      new ScheduledTenantDirectory(persistence, logger),
+      logger,
+      { autoDunningEntitlement: async () => ({ allowed: true as const, plan: 'business' as const }) },
+    );
+    const run = vi
+      .spyOn(service, 'runRelancesForCompany')
+      .mockRejectedValueOnce(new NotificationCompanyClosedError('co-1'))
+      .mockResolvedValueOnce({ scanned: 2, queued: 1, sent: 0, deduplicated: 1 });
+
+    await expect(service.runRelances()).resolves.toEqual({
+      companies: 2,
+      scanned: 2,
+      queued: 1,
+      sent: 0,
+      deduplicated: 1,
+    });
+    expect(run).toHaveBeenNthCalledWith(1, 'co-1');
+    expect(run).toHaveBeenNthCalledWith(2, 'co-2');
+    expect(logger.audit).toHaveBeenCalledWith('relances.skipped_closed', { companyId: 'co-1' });
+    expect(logger.audit).toHaveBeenCalledWith(
+      'relances.run_all',
+      expect.objectContaining({ failedCompanies: 1, companies: 2 }),
+    );
   });
 
   it("auto_dunning non inclus au plan → le cron SAUTE le tenant sans erreur (relance manuelle non concernée)", async () => {

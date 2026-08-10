@@ -127,7 +127,7 @@ function coveringInvoice(id: string, contractId: string, start: string, end: str
 
 async function makeService(setup: { contracts: MaintenanceContract[]; invoices?: Invoice[] }) {
   const persistence = new InMemoryPersistence();
-  persistence.companies.seed({ id: COMPANY } as Company);
+  persistence.companies.seed({ id: COMPANY, isClosed: () => false } as unknown as Company);
   for (const c of setup.contracts) await persistence.maintenanceContracts.save(c);
   for (const inv of setup.invoices ?? []) await persistence.invoices.save(inv);
   const notifier = {

@@ -50,6 +50,13 @@ function activeBindingCutoff(now: string): string {
 
 type DeliveryAttemptOutcome = 'sent' | 'skipped' | 'failed';
 
+export class NotificationCompanyClosedError extends Error {
+  constructor(readonly companyId: string) {
+    super('Notification refusée : compte clôturé ou introuvable.');
+    this.name = 'NotificationCompanyClosedError';
+  }
+}
+
 @Injectable()
 export class NotificationDeliveryService {
   private readonly clock = new SystemClock();
@@ -94,14 +101,20 @@ export class NotificationDeliveryService {
       input.notification.channel === 'email'
         ? { ...input.notification, idempotencyKey: id }
         : { ...input.notification };
-    return this.p.notificationJobs.enqueue({
-      id,
-      companyId: input.companyId,
-      kind: input.kind,
-      dedupeKey: input.dedupeKey,
-      notification,
-      now,
-      ...(input.notBefore !== undefined ? { notBefore: input.notBefore } : {}),
+    return this.p.runWithTenant(input.companyId, async () => {
+      // Ordre lifecycle unique : Company SHARE avant NotificationJob. Une clôture déjà commise
+      // refuse l'intention ; une intention gagnante commit avant que CloseAccount ne l'annule.
+      const company = await this.p.companies.lockForShareById(input.companyId);
+      if (!company || company.isClosed()) throw new NotificationCompanyClosedError(input.companyId);
+      return this.p.notificationJobs.enqueue({
+        id,
+        companyId: input.companyId,
+        kind: input.kind,
+        dedupeKey: input.dedupeKey,
+        notification,
+        now,
+        ...(input.notBefore !== undefined ? { notBefore: input.notBefore } : {}),
+      });
     });
   }
 
@@ -114,16 +127,18 @@ export class NotificationDeliveryService {
     const leaseToken = randomUUID();
     let claimedJob: DeliverableNotificationJob;
     try {
-      const claim = await this.p.runWithTenant(companyId, () =>
-        this.p.notificationJobs.claimForDelivery(
+      const claim = await this.p.runWithTenant(companyId, async () => {
+        const company = await this.p.companies.lockForShareById(companyId);
+        if (!company || company.isClosed()) return { outcome: 'skipped' as const };
+        return this.p.notificationJobs.claimForDelivery(
           job.id,
           companyId,
           job.updatedAt,
           claimAt,
           leaseUntil,
           leaseToken,
-        ),
-      );
+        );
+      });
       if (claim.outcome === 'quarantined') {
         this.logger.warn(
           `Notification en revue manuelle (${job.kind}): résultat provider incertain`,
@@ -154,35 +169,7 @@ export class NotificationDeliveryService {
       return 'failed';
     }
 
-    let authorized: boolean;
-    try {
-      authorized = await this.p.runWithTenant(companyId, () =>
-        this.p.notificationJobs.authorizeDeliveryAttempt(
-          claimedJob.id,
-          companyId,
-          leaseToken,
-          this.clock.now(),
-        ),
-      );
-    } catch (e) {
-      // Une indisponibilité DB au dernier fence ne doit ni déclencher l'I/O provider, ni
-      // interrompre tout le sweep. Le lease expirera et un prochain worker arbitrera avec
-      // l'horloge DB entre reprise encore sûre et quarantaine.
-      this.logger.warn(
-        `Autorisation notification impossible (${claimedJob.kind}): ${e instanceof Error ? e.message : String(e)}`,
-        'notifications',
-      );
-      return 'failed';
-    }
-    if (!authorized) {
-      this.logger.audit('notification.job.delivery_not_authorized', {
-        companyId,
-        kind: claimedJob.kind,
-        jobId: claimedJob.id,
-      });
-      return 'skipped';
-    }
-    // REVALIDATION MÉTIER par kind, juste avant l'I/O provider : un job planifié (J+7) est un
+    // REVALIDATION MÉTIER avant le DERNIER fence DB : un job planifié (J+7) est un
     // payload FIGÉ — le monde a pu changer entre la programmation et l'échéance. Fail-closed :
     // toute invalidation ANNULE le job (cancelClaimed, par le détenteur du lease) au lieu de
     // livrer aveuglément. Aucun contenu n'est jamais réécrit (payload immuable).
@@ -214,6 +201,37 @@ export class NotificationDeliveryService {
         'notifications',
       );
       return 'failed';
+    }
+
+    let authorized: boolean;
+    try {
+      authorized = await this.p.runWithTenant(companyId, async () => {
+        // Dernier point de linéarisation avant Brevo : Company SHARE est toujours pris avant job.
+        const company = await this.p.companies.lockForShareById(companyId);
+        if (!company || company.isClosed()) return false;
+        return this.p.notificationJobs.authorizeDeliveryAttempt(
+          claimedJob.id,
+          companyId,
+          leaseToken,
+          this.clock.now(),
+        );
+      });
+    } catch (e) {
+      // Une indisponibilité DB au dernier fence ne doit ni déclencher l'I/O provider, ni
+      // interrompre tout le sweep. Le lease expirera et un prochain worker arbitrera.
+      this.logger.warn(
+        `Autorisation notification impossible (${claimedJob.kind}): ${e instanceof Error ? e.message : String(e)}`,
+        'notifications',
+      );
+      return 'failed';
+    }
+    if (!authorized) {
+      this.logger.audit('notification.job.delivery_not_authorized', {
+        companyId,
+        kind: claimedJob.kind,
+        jobId: claimedJob.id,
+      });
+      return 'skipped';
     }
     try {
       // Appel réseau hors transaction : le job/outbox est déjà commité et porte une clé
@@ -387,9 +405,29 @@ export class NotificationDeliveryService {
       });
       return;
     }
-    const devices = await this.p.runWithTenant(companyId, () =>
-      this.p.devices.listDeliveryTargetsByCompany(companyId, activeBindingCutoff(this.clock.now())),
-    );
+    const authorization = await this.p.runWithTenant(companyId, async () => {
+      // Le push possède sa propre autorisation : l'email done ne vaut pas autorisation Expo.
+      const company = await this.p.companies.lockForShareById(companyId);
+      if (!company || company.isClosed()) {
+        return { authorized: false as const, devices: [] as const };
+      }
+      return {
+        authorized: true as const,
+        devices: await this.p.devices.listDeliveryTargetsByCompany(
+          companyId,
+          activeBindingCutoff(this.clock.now()),
+        ),
+      };
+    });
+    if (!authorization.authorized) {
+      this.logger.audit('notification.push.skipped', {
+        companyId,
+        jobId: job.id,
+        reason: 'account_closed',
+      });
+      return;
+    }
+    const devices = authorization.devices;
     if (devices.length === 0) {
       this.logger.audit('notification.push.skipped', {
         companyId,
@@ -446,9 +484,11 @@ export class NotificationDeliveryService {
     limit = 25,
   ): Promise<{ scanned: number; sent: number; failed: number }> {
     const safeLimit = Math.max(1, Math.min(limit, 100));
-    const jobs = await this.p.runWithTenant(companyId, () =>
-      this.p.notificationJobs.listDue(companyId, this.clock.now(), safeLimit),
-    );
+    const jobs = await this.p.runWithTenant(companyId, async () => {
+      const company = await this.p.companies.lockForShareById(companyId);
+      if (!company || company.isClosed()) return [];
+      return this.p.notificationJobs.listDue(companyId, this.clock.now(), safeLimit);
+    });
     let sent = 0;
     let failed = 0;
     for (const job of jobs) {

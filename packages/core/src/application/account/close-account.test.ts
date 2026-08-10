@@ -13,6 +13,10 @@ import {
   type PublicAccessScope,
 } from '../ports/public-access-token';
 import { MERCIER_PROPS } from '../fixtures';
+import type {
+  AccountIdentityDeletionOutboxPort,
+  AccountIdentityDeletionRequestResult,
+} from '../ports/account-identity-deletion';
 
 class FakeCompanyRepository implements CompanyRepository {
   private readonly byId = new Map<string, Company>();
@@ -137,8 +141,43 @@ class FakePublicAccessTokenRepository implements PublicAccessTokenRepository {
   }
 }
 
+class FakeAccountIdentityDeletionOutbox implements AccountIdentityDeletionOutboxPort {
+  readonly calls: Array<{
+    requestId: string;
+    companyId: string;
+    userId: string;
+    requestedAt: string;
+  }> = [];
+  result: AccountIdentityDeletionRequestResult | null = null;
+  private readonly byUserId = new Map<string, string>();
+
+  async ensureRequested(input: {
+    requestId: string;
+    companyId: string;
+    userId: string;
+    requestedAt: string;
+  }): Promise<AccountIdentityDeletionRequestResult> {
+    this.calls.push(input);
+    if (this.result) return this.result;
+    const existing = this.byUserId.get(input.userId);
+    if (existing) {
+      return {
+        outcome: 'accepted',
+        request: { requestId: existing, status: 'pending', alreadyRequested: true },
+      };
+    }
+    this.byUserId.set(input.userId, input.requestId);
+    return {
+      outcome: 'accepted',
+      request: { requestId: input.requestId, status: 'pending', alreadyRequested: false },
+    };
+  }
+}
+
 const T0 = '2026-07-16T09:00:00.000Z';
 const T1 = '2026-07-16T09:05:00.000Z';
+const USER_ID = 'a1b2c3d4-0000-4000-8000-1234567890ab';
+const REQUEST_ID = '11111111-1111-4111-8111-111111111111';
 
 function seededCompany(overrides: Partial<CompanyProps> = {}): Company {
   const r = Company.of({ ...MERCIER_PROPS, ...overrides });
@@ -150,8 +189,9 @@ function buildDeps() {
   const companies = new FakeCompanyRepository();
   const subscriptions = new FakeSubscriptionRepository();
   const publicAccessTokens = new FakePublicAccessTokenRepository();
+  const identityDeletionOutbox = new FakeAccountIdentityDeletionOutbox();
   const uow = { runInTransaction: <T>(fn: () => Promise<T>) => fn() };
-  return { companies, subscriptions, publicAccessTokens, uow };
+  return { companies, subscriptions, publicAccessTokens, identityDeletionOutbox, uow };
 }
 
 describe('CloseAccount — clôture de compte (Apple 5.1.1(v)), jamais un cascade delete', () => {
@@ -161,6 +201,8 @@ describe('CloseAccount — clôture de compte (Apple 5.1.1(v)), jamais un cascad
 
     const r = await useCase.execute({
       companyId: 'nope',
+      userId: USER_ID,
+      identityDeletionRequestId: REQUEST_ID,
       confirmationText: 'peu importe',
       reason: null,
       now: T0,
@@ -178,6 +220,8 @@ describe('CloseAccount — clôture de compte (Apple 5.1.1(v)), jamais un cascad
 
     const r = await useCase.execute({
       companyId: company.id,
+      userId: USER_ID,
+      identityDeletionRequestId: REQUEST_ID,
       confirmationText: 'Mauvais Nom SARL',
       reason: null,
       now: T0,
@@ -197,13 +241,24 @@ describe('CloseAccount — clôture de compte (Apple 5.1.1(v)), jamais un cascad
 
     const r = await useCase.execute({
       companyId: company.id,
+      userId: USER_ID,
+      identityDeletionRequestId: REQUEST_ID,
       confirmationText: MERCIER_PROPS.name,
       reason: 'je change de métier',
       now: T0,
     });
 
     expect(r.ok).toBe(true);
-    expect(r.ok && r.value).toEqual({ companyId: company.id, closedAt: T0, alreadyClosed: false });
+    expect(r.ok && r.value).toEqual({
+      companyId: company.id,
+      closedAt: T0,
+      alreadyClosed: false,
+      identityDeletion: {
+        requestId: REQUEST_ID,
+        status: 'pending',
+        alreadyRequested: false,
+      },
+    });
 
     const closed = await deps.companies.findById(company.id);
     expect(closed?.isClosed()).toBe(true);
@@ -237,6 +292,8 @@ describe('CloseAccount — clôture de compte (Apple 5.1.1(v)), jamais un cascad
 
     await useCase.execute({
       companyId: company.id,
+      userId: USER_ID,
+      identityDeletionRequestId: REQUEST_ID,
       confirmationText: MERCIER_PROPS.name,
       reason: null,
       now: T0,
@@ -254,6 +311,8 @@ describe('CloseAccount — clôture de compte (Apple 5.1.1(v)), jamais un cascad
 
     const r = await useCase.execute({
       companyId: company.id,
+      userId: USER_ID,
+      identityDeletionRequestId: REQUEST_ID,
       confirmationText: MERCIER_PROPS.name,
       reason: null,
       now: T0,
@@ -285,6 +344,8 @@ describe('CloseAccount — clôture de compte (Apple 5.1.1(v)), jamais un cascad
 
     await useCase.execute({
       companyId: company.id,
+      userId: USER_ID,
+      identityDeletionRequestId: REQUEST_ID,
       confirmationText: MERCIER_PROPS.name,
       reason: null,
       now: T0,
@@ -328,6 +389,8 @@ describe('CloseAccount — clôture de compte (Apple 5.1.1(v)), jamais un cascad
 
     await useCase.execute({
       companyId: company.id,
+      userId: USER_ID,
+      identityDeletionRequestId: REQUEST_ID,
       confirmationText: MERCIER_PROPS.name,
       reason: null,
       now: T0,
@@ -344,6 +407,8 @@ describe('CloseAccount — clôture de compte (Apple 5.1.1(v)), jamais un cascad
 
     const first = await useCase.execute({
       companyId: company.id,
+      userId: USER_ID,
+      identityDeletionRequestId: REQUEST_ID,
       confirmationText: MERCIER_PROPS.name,
       reason: null,
       now: T0,
@@ -352,6 +417,8 @@ describe('CloseAccount — clôture de compte (Apple 5.1.1(v)), jamais un cascad
 
     const second = await useCase.execute({
       companyId: company.id,
+      userId: USER_ID,
+      identityDeletionRequestId: '22222222-2222-4222-8222-222222222222',
       confirmationText: MERCIER_PROPS.name,
       reason: null,
       now: T1,
@@ -362,6 +429,11 @@ describe('CloseAccount — clôture de compte (Apple 5.1.1(v)), jamais un cascad
       companyId: company.id,
       closedAt: T0,
       alreadyClosed: true,
+      identityDeletion: {
+        requestId: REQUEST_ID,
+        status: 'pending',
+        alreadyRequested: true,
+      },
     });
   });
 
@@ -372,6 +444,8 @@ describe('CloseAccount — clôture de compte (Apple 5.1.1(v)), jamais un cascad
     const useCase = new CloseAccount(deps);
     await useCase.execute({
       companyId: company.id,
+      userId: USER_ID,
+      identityDeletionRequestId: REQUEST_ID,
       confirmationText: MERCIER_PROPS.name,
       reason: null,
       now: T0,
@@ -379,6 +453,8 @@ describe('CloseAccount — clôture de compte (Apple 5.1.1(v)), jamais un cascad
 
     const r = await useCase.execute({
       companyId: company.id,
+      userId: USER_ID,
+      identityDeletionRequestId: REQUEST_ID,
       confirmationText: 'faux nom',
       reason: null,
       now: T1,
@@ -386,5 +462,33 @@ describe('CloseAccount — clôture de compte (Apple 5.1.1(v)), jamais un cascad
 
     expect(r.ok).toBe(false);
     expect(!r.ok && r.error.kind).toBe('validation');
+  });
+
+  it('refuse une identité non propriétaire AVANT de fermer la company', async () => {
+    const deps = buildDeps();
+    const company = seededCompany();
+    deps.companies.seed(company);
+    deps.identityDeletionOutbox.result = {
+      outcome: 'rejected',
+      reason: 'company_owner_binding_mismatch',
+    };
+
+    const r = await new CloseAccount(deps).execute({
+      companyId: company.id,
+      userId: USER_ID,
+      identityDeletionRequestId: REQUEST_ID,
+      confirmationText: MERCIER_PROPS.name,
+      reason: null,
+      now: T0,
+    });
+
+    expect(r).toEqual({
+      ok: false,
+      error: {
+        kind: 'forbidden',
+        reason: 'company_owner_binding_mismatch',
+      },
+    });
+    expect((await deps.companies.findById(company.id))?.isClosed()).toBe(false);
   });
 });

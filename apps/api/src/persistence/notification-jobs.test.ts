@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { NotificationPort } from '@bob/core';
+import type { Company, NotificationPort } from '@bob/core';
 import { NotificationDeliveryService } from '../jobs/notification-delivery.service';
 import { ScheduledTenantDirectory } from '../jobs/tenant-directory';
 import type { AppLogger } from '../observability/logger';
 import { InMemoryNotificationJobRepository } from './in-memory';
 import {
+  CLOSED_ACCOUNT_NOTIFICATION_RECIPIENT,
+  CLOSED_ACCOUNT_NOTIFICATION_SUBJECT,
   embargoScheduledPaymentDedupeKey,
   quoteIdOfEmbargoScheduledPaymentDedupeKey,
 } from './notification-jobs';
@@ -14,6 +16,10 @@ const logger = {
   audit: vi.fn(),
   warn: vi.fn(),
 } as unknown as AppLogger;
+
+function openCompany(id: string): Company {
+  return { id, isClosed: () => false } as unknown as Company;
+}
 
 describe('InMemoryNotificationJobRepository', () => {
   it('enqueue de façon idempotente et liste les jobs dus par tenant', async () => {
@@ -436,11 +442,156 @@ describe('InMemoryNotificationJobRepository', () => {
       }),
     ]);
   });
+
+  it('clôture un tenant, purge chaque statut, fence les leases et laisse les autres tenants intacts', async () => {
+    const repo = new InMemoryNotificationJobRepository();
+    const now = '2026-07-01T10:00:00.000Z';
+    const closingAt = '2026-07-01T10:30:00.000Z';
+    const notification = (subject: string) => ({
+      channel: 'email' as const,
+      to: 'client@example.com',
+      subject,
+      body: `Contenu personnel ${subject}`,
+    });
+
+    await repo.enqueue({
+      id: 'job-pending-leased',
+      companyId: 'co-1',
+      kind: 'invoice-relance',
+      dedupeKey: 'invoice:pending:relance:v1',
+      notification: notification('Pending'),
+      now,
+    });
+    const pendingClaim = await repo.claimForDelivery(
+      'job-pending-leased',
+      'co-1',
+      now,
+      now,
+      '2026-07-01T10:35:00.000Z',
+      'pending-lease',
+    );
+    expect(pendingClaim).toMatchObject({ outcome: 'claimed' });
+
+    await repo.enqueue({
+      id: 'job-failed',
+      companyId: 'co-1',
+      kind: 'invoice-relance',
+      dedupeKey: 'invoice:failed:relance:v1',
+      notification: notification('Failed'),
+      now,
+    });
+    expect(
+      await repo.claimForDelivery(
+        'job-failed',
+        'co-1',
+        now,
+        now,
+        '2026-07-01T10:05:00.000Z',
+        'failed-lease',
+      ),
+    ).toMatchObject({ outcome: 'claimed' });
+    expect(
+      await repo.markFailed(
+        'job-failed',
+        'co-1',
+        'failed-lease',
+        '2026-07-01T10:01:00.000Z',
+        60_000,
+        'adresse personnelle indisponible',
+      ),
+    ).toBe(true);
+    expect(
+      await repo.claimForDelivery(
+        'job-failed',
+        'co-1',
+        '2026-07-01T10:01:00.000Z',
+        '2026-07-01T10:26:00.000Z',
+        '2026-07-01T10:31:00.000Z',
+        'quarantine-lease',
+      ),
+    ).toEqual({ outcome: 'quarantined', reason: 'provider-window-expired' });
+
+    await repo.enqueue({
+      id: 'job-done',
+      companyId: 'co-1',
+      kind: 'invoice-delivery',
+      dedupeKey: 'invoice:done:delivery:v1',
+      notification: notification('Done'),
+      now,
+    });
+    expect(
+      await repo.claimForDelivery(
+        'job-done',
+        'co-1',
+        now,
+        now,
+        '2026-07-01T10:05:00.000Z',
+        'done-lease',
+      ),
+    ).toMatchObject({ outcome: 'claimed' });
+    const deliveredAt = '2026-07-01T10:02:00.000Z';
+    expect(await repo.markDone('job-done', 'co-1', 'done-lease', deliveredAt)).toBe(true);
+
+    await repo.enqueue({
+      id: 'job-other-tenant',
+      companyId: 'co-2',
+      kind: 'invoice-relance',
+      dedupeKey: 'invoice:other:relance:v1',
+      notification: notification('Other tenant'),
+      now,
+    });
+
+    await expect(repo.cancelAndMinimizeForCompany('co-1', closingAt)).resolves.toBe(3);
+
+    for (const id of ['job-pending-leased', 'job-failed'] as const) {
+      await expect(repo.findById('co-1', id)).resolves.toMatchObject({
+        status: 'cancelled',
+        notification: null,
+        recipient: CLOSED_ACCOUNT_NOTIFICATION_RECIPIENT,
+        subject: CLOSED_ACCOUNT_NOTIFICATION_SUBJECT,
+        payloadFingerprint: null,
+        leaseToken: null,
+        lastError: null,
+        updatedAt: closingAt,
+      });
+    }
+    await expect(repo.findById('co-1', 'job-done')).resolves.toMatchObject({
+      status: 'done',
+      notification: null,
+      recipient: CLOSED_ACCOUNT_NOTIFICATION_RECIPIENT,
+      subject: CLOSED_ACCOUNT_NOTIFICATION_SUBJECT,
+      payloadFingerprint: null,
+      leaseToken: null,
+      lastError: null,
+      updatedAt: deliveredAt,
+    });
+    await expect(repo.findById('co-2', 'job-other-tenant')).resolves.toMatchObject({
+      status: 'pending',
+      recipient: 'client@example.com',
+      subject: 'Other tenant',
+      notification: notification('Other tenant'),
+    });
+    await expect(
+      repo.markDone('job-pending-leased', 'co-1', 'pending-lease', closingAt),
+    ).resolves.toBe(false);
+    await expect(
+      repo.markFailed(
+        'job-pending-leased',
+        'co-1',
+        'pending-lease',
+        closingAt,
+        60_000,
+        'worker obsolète',
+      ),
+    ).resolves.toBe(false);
+    await expect(repo.cancelAndMinimizeForCompany('co-1', closingAt)).resolves.toBe(0);
+  });
 });
 
 describe('NotificationDeliveryService', () => {
   it('garde le même UUID provider et refuse un payload différent sous la même dedupeKey', async () => {
     const persistence = new InMemoryPersistence();
+    persistence.companies.seed(openCompany('co-1'));
     const notifier = { send: vi.fn<NotificationPort['send']>() } satisfies NotificationPort;
     const service = new NotificationDeliveryService(
       persistence,
@@ -470,6 +621,7 @@ describe('NotificationDeliveryService', () => {
 
   it('marque failed puis retry avant de passer done', async () => {
     const persistence = new InMemoryPersistence();
+    persistence.companies.seed(openCompany('co-1'));
     const notifier = {
       send: vi.fn<NotificationPort['send']>().mockRejectedValueOnce(new Error('brevo down')).mockResolvedValueOnce(undefined),
     } satisfies NotificationPort;

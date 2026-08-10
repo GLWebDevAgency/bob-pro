@@ -13,7 +13,7 @@ const logger = {
 } as unknown as AppLogger;
 
 function fakeCompany(id: string): Company {
-  return { id } as Company;
+  return { id, isClosed: () => false } as unknown as Company;
 }
 
 function fakePayment(id: string, companyId: string, invoiceId: string, amount: number, receivedAt: string): Payment {
