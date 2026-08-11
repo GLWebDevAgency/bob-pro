@@ -602,6 +602,7 @@ DECLARE
     'document_archive_artifact_intents_list_v1',
     'document_archive_artifact_intents_prepare_v1',
     'document_archive_protocol_v2_is_active',
+    'document_version_parent_belongs_to_current_tenant_v1',
     'enforce_document_archive_audit_evidence_immutable',
     'enforce_document_archive_protocol_monotonicity',
     'enforce_document_archive_snapshot_protocol_monotonicity',
@@ -1121,6 +1122,52 @@ SELECT ("activeVersion" = 1)::text AS document_archive_expand
     TEXT, TEXT, TEXT, JSONB, TEXT
   ) FROM :"app_role";
 \endif
+RESET ROLE;
+-- Ce prédicat lit `documents`, table historique dont l'owner peut être distinct de l'autorité
+-- Archive. Reconstruire son ACL sous son owner effectif et réduire l'inventaire au seul rôle
+-- runtime ; les grants provisoires préservés atomiquement par la migration ne survivent pas au
+-- predeploy complet.
+DO $document_version_parent_fence_acl_owner$
+DECLARE
+  function_owner_oid OID;
+  function_owner_name TEXT;
+BEGIN
+  SELECT function.proowner, pg_catalog.pg_get_userbyid(function.proowner)
+    INTO STRICT function_owner_oid, function_owner_name
+    FROM pg_catalog.pg_proc AS function
+   WHERE function.oid =
+     'public.document_version_parent_belongs_to_current_tenant_v1(text)'::pg_catalog.regprocedure;
+  IF current_user::pg_catalog.regrole <> function_owner_oid THEN
+    IF function_owner_name IS NULL
+       OR NOT pg_catalog.pg_has_role(session_user, function_owner_oid, 'SET') THEN
+      RAISE EXCEPTION 'document version parent fence owner is unavailable';
+    END IF;
+    EXECUTE pg_catalog.format('SET LOCAL ROLE %I', function_owner_name);
+  END IF;
+  IF current_user::pg_catalog.regrole <> function_owner_oid THEN
+    RAISE EXCEPTION 'document version parent fence owner was not assumed';
+  END IF;
+END;
+$document_version_parent_fence_acl_owner$;
+SELECT DISTINCT pg_catalog.format(
+         'REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %s CASCADE',
+         function.oid::pg_catalog.regprocedure,
+         CASE
+           WHEN privilege.grantee = 0 THEN 'PUBLIC'
+           ELSE pg_catalog.quote_ident(grantee_role.rolname)
+         END
+       )
+  FROM pg_catalog.pg_proc AS function
+ CROSS JOIN LATERAL pg_catalog.aclexplode(
+   coalesce(function.proacl, pg_catalog.acldefault('f', function.proowner))
+ ) AS privilege
+  LEFT JOIN pg_catalog.pg_roles AS grantee_role ON grantee_role.oid = privilege.grantee
+ WHERE function.oid =
+       'public.document_version_parent_belongs_to_current_tenant_v1(text)'::pg_catalog.regprocedure
+   AND privilege.grantee <> function.proowner
+\gexec
+GRANT EXECUTE ON FUNCTION public.document_version_parent_belongs_to_current_tenant_v1(TEXT)
+  TO :"app_role";
 RESET ROLE;
 -- Une société se clôture, elle ne se supprime jamais depuis le runtime : son identité légale
 -- reste nécessaire aux pièces conservées et un DELETE suivi d'un INSERT la ressusciterait.

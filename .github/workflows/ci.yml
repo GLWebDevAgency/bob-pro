@@ -251,6 +251,10 @@ jobs:
       - name: Expand schema, spool outbox and certify the mixed-version phase
         id: release_schema
         run: BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED=false BOB_RELEASE_PHASE=predeploy sh apps/api/scripts/release.sh
+      - name: Certify the document-version writer N-1 before ACL reconstruction
+        env:
+          DOCUMENT_VERSION_INSERT_FENCE_INTERMEDIATE_CERT_DATABASE_KIND: ephemeral
+        run: sh apps/api/scripts/certify-document-version-insert-fence-intermediate.sh
       - name: Activate document archive v2
         run: |
           DOCUMENT_ARCHIVE_V2_ACTIVATION_RELEASE_SHA="$GITHUB_SHA" \
