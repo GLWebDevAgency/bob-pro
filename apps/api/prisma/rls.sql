@@ -2038,7 +2038,7 @@ CREATE POLICY tenant_document_version_select ON document_versions FOR SELECT
   );
 CREATE POLICY tenant_document_version_insert ON document_versions FOR INSERT
   WITH CHECK (
-    EXISTS (SELECT 1 FROM documents d WHERE d.id = document_versions."documentId" AND d."companyId" = current_setting('app.current_company_id', true))
+    public.document_version_parent_belongs_to_current_tenant_v1("documentId")
   );
 -- Compatibilité N-1 strictement temporaire : son UPSERT confirme un retry par un UPDATE no-op.
 -- Le trigger `document_versions_immutable` refuse toute différence ; le protocole V1 ferme en
