@@ -42,8 +42,8 @@ describe.skipIf(!RUN_CERT)('Document version insert fence — état intermédiai
     ) {
       throw new Error('Intermediate document version certificate requires ephemeral development.');
     }
-    admin = new PrismaService({ datasourceUrl: directUrl });
-    runtime = new PrismaService({ datasourceUrl: runtimeUrl });
+    admin = new PrismaService({ datasourceUrl: directUrl, errorFormat: 'minimal' });
+    runtime = new PrismaService({ datasourceUrl: runtimeUrl, errorFormat: 'minimal' });
     await Promise.all([admin.$connect(), runtime.$connect()]);
   });
 

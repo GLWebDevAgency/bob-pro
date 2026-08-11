@@ -1422,7 +1422,9 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
             }],
           });
         }),
-      ).rejects.toThrow();
+      ).rejects.toThrow(
+        'new row violates row-level security policy for table \\"document_versions\\"',
+      );
       await expect(
         admin.storedDocumentVersion.findUnique({
           where: { id: `${documentId}-cross-tenant-v2` },
