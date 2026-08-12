@@ -220,6 +220,7 @@ export class RealtimeSessionController {
     RealtimeAgentMissionProtocolVersion | null = null;
   private agentMissionContextConfirmed = false;
   private missionReadyWaiter: {
+    readonly generation: number;
     readonly promise: Promise<boolean>;
     readonly resolve: (ready: boolean) => void;
   } | null = null;
@@ -304,7 +305,7 @@ export class RealtimeSessionController {
     this.requiredMissionProtocolVersion = requiredMissionProtocolVersion;
     this.observedAgentMissionProtocolVersion = null;
     this.agentMissionContextConfirmed = false;
-    this.prepareMissionReadyWaiter(missionRequired);
+    this.prepareMissionReadyWaiter(missionRequired, gen);
     this.fallbackTaken = false;
     this.failedClosedNotified = false;
     this.pendingTerminalDecision = null;
@@ -317,11 +318,27 @@ export class RealtimeSessionController {
     try {
       negotiation = await this.deps.negotiate();
     } catch {
-      this.resolveMissionReady(false);
+      if (gen !== this.generation) {
+        this.resolveMissionReady(false, gen);
+        return 'cancelled';
+      }
+      this.resolveMissionReady(false, gen);
       return missionRequired ? 'failed_closed' : 'unavailable';
     }
+    if (gen !== this.generation) {
+      // negotiate() n'est pas abortable : une réponse tardive après stop/background ne doit
+      // jamais ressusciter une erreur UI, une capability ou un transport de l'ancienne génération.
+      this.resolveMissionReady(false, gen);
+      return 'cancelled';
+    }
     if (!negotiation?.available) {
-      this.resolveMissionReady(false);
+      this.resolveMissionReady(false, gen);
+      if (negotiation?.speechDelivery === 'openai-native-webrtc-v1') {
+        // Le discriminant du rail, déjà compris par N-1, suffit : toute indisponibilité native
+        // ferme le nouveau client. On ne casse pas le wire v4 avec un nouvel enum de diagnostic.
+        this.notifyFailedClosed('agent_mission_negotiation_failed');
+        return 'failed_closed';
+      }
       return missionRequired ? 'failed_closed' : 'unavailable';
     }
     if (negotiation.diagnosticTrace !== undefined) {
@@ -334,28 +351,24 @@ export class RealtimeSessionController {
         accepted = false;
       }
       if (gen !== this.generation) {
-        this.resolveMissionReady(false);
+        this.resolveMissionReady(false, gen);
         return 'cancelled';
       }
       if (!accepted) {
-        this.resolveMissionReady(false);
+        this.resolveMissionReady(false, gen);
         return 'cancelled';
       }
     }
     if (
       missionRequired
-      && (
-        negotiation.transport !== 'webrtc'
-        || negotiation.speechDelivery !== 'audited-signed-url-v1'
-      )
+      && negotiation.transport !== 'webrtc'
     ) {
-      this.resolveMissionReady(false);
+      this.resolveMissionReady(false, gen);
       return 'failed_closed';
     }
     const requestedAgentMissionProtocolVersion:
       RealtimeAgentMissionProtocolVersion | null =
         negotiation.transport === 'webrtc'
-          && negotiation.speechDelivery === 'audited-signed-url-v1'
           ? (
               requiredMissionProtocolVersion
               ?? REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
@@ -373,11 +386,11 @@ export class RealtimeSessionController {
         timeZoneConfirmed = false;
       }
       if (gen !== this.generation) {
-        this.resolveMissionReady(false);
+        this.resolveMissionReady(false, gen);
         return missionRequired ? 'failed_closed' : 'unavailable';
       }
       if (!timeZoneConfirmed) {
-        this.resolveMissionReady(false);
+        this.resolveMissionReady(false, gen);
         return 'cancelled';
       }
     }
@@ -385,13 +398,13 @@ export class RealtimeSessionController {
       requestedAgentMissionProtocolVersion !== null
       && this.deps.agentMissionRuntime === undefined
     ) {
-      this.resolveMissionReady(false);
+      this.resolveMissionReady(false, gen);
       return 'failed_closed';
     }
     this.requestedAgentMissionProtocolVersion =
       requestedAgentMissionProtocolVersion;
     if (gen !== this.generation) {
-      this.resolveMissionReady(false);
+      this.resolveMissionReady(false, gen);
       return missionRequired ? 'failed_closed' : 'unavailable';
     }
     this.contextPublished = false;
@@ -405,7 +418,7 @@ export class RealtimeSessionController {
         this.generation += 1;
         this.activeFlag = false;
         this.fallbackTaken = true;
-        this.resolveMissionReady(false);
+        this.resolveMissionReady(false, gen);
         this.publisher?.close();
         this.publisher = null;
         this.controlGate?.close?.();
@@ -443,7 +456,7 @@ export class RealtimeSessionController {
         : 'fallback';
     }
     if (gen !== this.generation) {
-      this.resolveMissionReady(false);
+      this.resolveMissionReady(false, gen);
       return missionRequired ? 'failed_closed' : 'unavailable';
     }
     if (state.phase === 'failed' || state.phase === 'stopped' || state.phase === 'legacy') {
@@ -930,7 +943,7 @@ export class RealtimeSessionController {
       && this.agentMissionContextConfirmed
       && this.agentMissionProtocolVersion === this.requiredMissionProtocolVersion
     ) {
-      this.resolveMissionReady(true);
+      this.resolveMissionReady(true, controllerGeneration);
     }
     return true;
   }
@@ -1235,7 +1248,7 @@ export class RealtimeSessionController {
     return false;
   }
 
-  private prepareMissionReadyWaiter(required: boolean): void {
+  private prepareMissionReadyWaiter(required: boolean, generation: number): void {
     this.resolveMissionReady(false);
     if (!required) {
       this.missionReadyWaiter = null;
@@ -1245,11 +1258,12 @@ export class RealtimeSessionController {
     const promise = new Promise<boolean>((done) => {
       resolve = done;
     });
-    this.missionReadyWaiter = { promise, resolve };
+    this.missionReadyWaiter = { generation, promise, resolve };
   }
 
-  private resolveMissionReady(ready: boolean): void {
+  private resolveMissionReady(ready: boolean, generation?: number): void {
     const waiter = this.missionReadyWaiter;
+    if (generation !== undefined && waiter?.generation !== generation) return;
     this.missionReadyWaiter = null;
     waiter?.resolve(ready);
   }
@@ -1263,11 +1277,11 @@ export class RealtimeSessionController {
       && this.agentMissionContextConfirmed
       && this.agentMissionProtocolVersion === requiredProtocolVersion
     ) {
-      this.resolveMissionReady(true);
+      this.resolveMissionReady(true, generation);
       return true;
     }
     const waiter = this.missionReadyWaiter;
-    if (waiter === null) return false;
+    if (waiter === null || waiter.generation !== generation) return false;
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const ready = await Promise.race([
       waiter.promise,

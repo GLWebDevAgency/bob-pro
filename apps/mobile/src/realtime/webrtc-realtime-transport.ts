@@ -1,4 +1,5 @@
 import {
+  REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
   type BobClient,
   type RealtimeAgentMissionProtocolVersion,
   type RealtimeAgentMissionSession,
@@ -174,8 +175,8 @@ export interface RealtimeWebRtcTransportOptions {
   /** Injection reservee aux tests deterministes ; le runtime de production reste charge paresseusement. */
   loadRuntime?: () => WebRtcRuntime | null;
   /**
-   * Protocole prouvé avant le bootstrap. `null` est obligatoire pour le downlink OpenAI natif
-   * tant que sa frontière AgentMission n'est pas certifiée.
+   * Protocole prouvé avant le bootstrap. Le downlink OpenAI natif exige M2-A/V2 : sa session
+   * duplex n'existe jamais sans l'autorité Jarvis qui porte le contexte et les actions.
    */
   agentMissionProtocolVersion: RealtimeAgentMissionProtocolVersion | null;
 }
@@ -381,7 +382,8 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
       throw new RealtimeTransportError('bootstrap_failed');
     }
     if (
-      (this.nativeDownlink && this.options.agentMissionProtocolVersion !== null)
+      (this.nativeDownlink && this.options.agentMissionProtocolVersion
+        !== REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION)
       || (!this.nativeDownlink && this.options.agentMissionProtocolVersion === null)
     ) {
       throw new RealtimeTransportError('agent_mission_negotiation_failed');

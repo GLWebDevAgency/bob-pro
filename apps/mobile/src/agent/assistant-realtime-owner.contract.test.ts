@@ -74,6 +74,15 @@ describe('Bob Live mobile — propriétaire Realtime unique', () => {
     expect(agentSession).toContain('realtimeRef.current?.stopForPolicy(policyReason)');
   });
 
+  it('le provider attend le bootstrap sous une autorité de génération, jamais avec un stop brut', () => {
+    expect(agentSession).toContain('settleAgentSessionRealtimeBootstrap({');
+    expect(agentSession).toContain('currentGeneration: () => sessionGenerationRef.current');
+    expect(agentSession).toContain("stopOwnedController: () => { void controller.stop('user'); }");
+    expect(agentSession).not.toMatch(
+      /sessionGeneration\s*!==\s*sessionGenerationRef\.current[\s\S]{0,300}controller\.stop\('user'\)/u,
+    );
+  });
+
   it('le droit Live est identique sur les deux surfaces et un cache en erreur ferme le micro', () => {
     expect(globalAccess).toContain("features.includes('voice_live')");
     expect(globalAccess).toContain('isGlobalBobSubscriptionVerified({');

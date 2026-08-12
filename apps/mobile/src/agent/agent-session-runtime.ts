@@ -55,6 +55,41 @@ export function realtimeOwnsAgentSession(driver: AgentSessionDriver): boolean {
   return driver === 'live_bootstrap' || driver === 'live';
 }
 
+export interface AgentSessionRealtimeBootstrapOwnershipInput<T> {
+  readonly generation: number;
+  readonly currentGeneration: () => number;
+  readonly isActive: () => boolean;
+  readonly currentDriver: () => AgentSessionDriver;
+  readonly currentAppState: () => string;
+  readonly start: () => Promise<T>;
+  readonly stopOwnedController: () => void;
+}
+
+export interface AgentSessionRealtimeBootstrapOwnership<T> {
+  readonly outcome: T;
+  readonly owned: boolean;
+}
+
+/**
+ * Attend un bootstrap non annulable sans laisser une ancienne ouverture fermer la suivante.
+ *
+ * Une génération encore courante mais devenue inactive doit nettoyer SON contrôleur. Une
+ * génération remplacée ne le possède plus : appeler `stop()` ici tuerait la nouvelle session B
+ * lorsque la promesse de A se résout tardivement.
+ */
+export async function settleAgentSessionRealtimeBootstrap<T>(
+  input: AgentSessionRealtimeBootstrapOwnershipInput<T>,
+): Promise<AgentSessionRealtimeBootstrapOwnership<T>> {
+  const outcome = await input.start();
+  const currentGeneration = input.currentGeneration();
+  const owned = input.generation === currentGeneration
+    && input.isActive()
+    && realtimeOwnsAgentSession(input.currentDriver())
+    && input.currentAppState() === 'active';
+  if (!owned && input.generation === currentGeneration) input.stopOwnedController();
+  return Object.freeze({ outcome, owned });
+}
+
 /**
  * Une mission M2-A possède sa reprise durable. La recréer via l'orchestrateur générique
  * dupliquerait la capability puis masquerait la première cause terminale derrière un 429.

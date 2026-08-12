@@ -37,6 +37,16 @@ export type RealtimeAgentMissionAdmissionPreparation =
     };
 
 export interface RealtimeAgentMissionAdmissionGate {
+  available(input: {
+    readonly protocolVersion: AgentMissionProtocolVersion;
+    readonly companyId: string;
+    readonly userId: string;
+    readonly providerId: RealtimeProviderId;
+    readonly transport: 'webrtc' | 'mistral-pcm';
+    readonly speechDelivery:
+      | 'openai-native-webrtc-v1'
+      | 'audited-signed-url-v1';
+  }): Promise<boolean>;
   prepare(input: {
     readonly negotiation: RealtimeAgentMissionNegotiationRequest;
     readonly companyId: string;
@@ -86,14 +96,18 @@ function runtimeAllowsAgentMission(input: {
 }): boolean {
   return input.providerId === 'openai'
     && input.transport === 'webrtc'
-    // Le natif V1 ne dispose pas encore d'un basculement audité par tour. Or tout fait tenanté,
-    // choix et contrôle M1-C exige une parole exacte avant l'effet UI. Refuser ici évite une
-    // capability mensongère qui ne casserait qu'après la première commande métier.
-    && input.speechDelivery === 'audited-signed-url-v1';
+    && (
+      input.speechDelivery === 'audited-signed-url-v1'
+      || input.speechDelivery === 'openai-native-webrtc-v1'
+    );
 }
 
 export class DisabledRealtimeAgentMissionAdmissionGate
 implements RealtimeAgentMissionAdmissionGate {
+  async available(): Promise<boolean> {
+    return false;
+  }
+
   async prepare(
     _input: Parameters<RealtimeAgentMissionAdmissionGate['prepare']>[0],
   ): Promise<RealtimeAgentMissionAdmissionPreparation> {
@@ -115,6 +129,12 @@ implements RealtimeAgentMissionAdmissionGate {
     this.evaluateFlag = new EvaluateReleaseFlag(persistence.cabinet.flags);
   }
 
+  async available(
+    input: Parameters<RealtimeAgentMissionAdmissionGate['available']>[0],
+  ): Promise<boolean> {
+    return (await this.evaluateRuntimeDecision(input)) !== null;
+  }
+
   async prepare(
     input: Parameters<RealtimeAgentMissionAdmissionGate['prepare']>[0],
   ): Promise<RealtimeAgentMissionAdmissionPreparation> {
@@ -122,41 +142,17 @@ implements RealtimeAgentMissionAdmissionGate {
       input.negotiation.requested === 'v1' || input.negotiation.requested === 'v2'
         ? input.negotiation.protocolVersion
         : null;
-    if (
-      protocolVersion === null
-      || !this.allowedProtocolVersions.includes(protocolVersion)
-      || !runtimeAllowsAgentMission(input)
-    ) return NO_AGENT_MISSION;
-
-    const releaseFlagKey: RealtimeAgentMissionQuoteReleaseFlagKey =
-      protocolVersion === AGENT_MISSION_PROTOCOL_VERSION
-        ? REALTIME_AGENT_MISSION_QUOTE_RELEASE_FLAG_KEY
-        : REALTIME_AGENT_MISSION_QUOTE_M2A_RELEASE_FLAG_KEY;
-    const principalBindingHash = agentMissionPrincipalBindingHash(
-      input.companyId,
-      input.userId,
-    );
-    let decision: Awaited<ReturnType<EvaluateReleaseFlag['execute']>>;
-    try {
-      decision = await this.persistence.runWithIdentity(
-        input.userId,
-        () => this.evaluateFlag.execute({
-          environment: this.releaseEnvironment,
-          key: releaseFlagKey,
-          userId: input.userId,
-        }),
-      );
-    } catch {
-      return NO_AGENT_MISSION;
-    }
-    if (!decision.ok || !decision.value.enabled) return NO_AGENT_MISSION;
-    if (
-      !Number.isSafeInteger(decision.value.flagVersion)
-      || (decision.value.flagVersion ?? 0) < 1
-      || (decision.value.flagVersion ?? 0) > 2_147_483_647
-    ) {
-      throw new Error('AgentMission release flag returned an invalid enabled decision.');
-    }
+    if (protocolVersion === null) return NO_AGENT_MISSION;
+    const runtimeDecision = await this.evaluateRuntimeDecision({
+      protocolVersion,
+      companyId: input.companyId,
+      userId: input.userId,
+      providerId: input.providerId,
+      transport: input.transport,
+      speechDelivery: input.speechDelivery,
+    });
+    if (runtimeDecision === null) return NO_AGENT_MISSION;
+    const { flagVersion, principalBindingHash } = runtimeDecision;
 
     const issued = this.capabilityEntropy === undefined
       ? issueRealtimeAgentMissionCapability(protocolVersion)
@@ -168,7 +164,7 @@ implements RealtimeAgentMissionAdmissionGate {
             capabilityHash: issued.capabilityHash,
             releaseFlagKey: REALTIME_AGENT_MISSION_QUOTE_RELEASE_FLAG_KEY,
             releaseEnvironment: this.releaseEnvironment,
-            releaseFlagVersion: decision.value.flagVersion as number,
+            releaseFlagVersion: flagVersion,
             principalBindingHash,
           })
         : Object.freeze({
@@ -176,12 +172,67 @@ implements RealtimeAgentMissionAdmissionGate {
             capabilityHash: issued.capabilityHash,
             releaseFlagKey: REALTIME_AGENT_MISSION_QUOTE_M2A_RELEASE_FLAG_KEY,
             releaseEnvironment: this.releaseEnvironment,
-            releaseFlagVersion: decision.value.flagVersion as number,
+            releaseFlagVersion: flagVersion,
             principalBindingHash,
           });
     return Object.freeze({
       capability: issued.capability,
       binding,
+    });
+  }
+
+  private async evaluateRuntimeDecision(input: {
+    readonly protocolVersion: AgentMissionProtocolVersion;
+    readonly companyId: string;
+    readonly userId: string;
+    readonly providerId: RealtimeProviderId;
+    readonly transport: 'webrtc' | 'mistral-pcm';
+    readonly speechDelivery: 'openai-native-webrtc-v1' | 'audited-signed-url-v1';
+  }): Promise<{
+    readonly releaseFlagKey: RealtimeAgentMissionQuoteReleaseFlagKey;
+    readonly flagVersion: number;
+    readonly principalBindingHash: string;
+  } | null> {
+    if (
+      !this.allowedProtocolVersions.includes(input.protocolVersion)
+      || !runtimeAllowsAgentMission(input)
+    ) return null;
+    let principalBindingHash: string;
+    try {
+      principalBindingHash = agentMissionPrincipalBindingHash(input.companyId, input.userId);
+    } catch {
+      return null;
+    }
+    const releaseFlagKey: RealtimeAgentMissionQuoteReleaseFlagKey =
+      input.protocolVersion === AGENT_MISSION_PROTOCOL_VERSION
+        ? REALTIME_AGENT_MISSION_QUOTE_RELEASE_FLAG_KEY
+        : REALTIME_AGENT_MISSION_QUOTE_M2A_RELEASE_FLAG_KEY;
+    let decision: Awaited<ReturnType<EvaluateReleaseFlag['execute']>>;
+    try {
+      decision = await this.persistence.runWithIdentity(
+        input.userId,
+        () => this.evaluateFlag.execute({
+          environment: this.releaseEnvironment,
+          key: releaseFlagKey,
+          userId: input.userId,
+        }),
+      );
+    } catch {
+      return null;
+    }
+    if (!decision.ok || !decision.value.enabled) return null;
+    const flagVersion = decision.value.flagVersion;
+    if (
+      !Number.isSafeInteger(flagVersion)
+      || (flagVersion ?? 0) < 1
+      || (flagVersion ?? 0) > 2_147_483_647
+    ) {
+      throw new Error('AgentMission release flag returned an invalid enabled decision.');
+    }
+    return Object.freeze({
+      releaseFlagKey,
+      flagVersion: flagVersion as number,
+      principalBindingHash,
     });
   }
 }

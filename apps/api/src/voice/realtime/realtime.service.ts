@@ -17,6 +17,7 @@ import { AppLogger, getPrincipal } from '../../observability/logger';
 import {
   isRealtimeSessionId,
   prepareRealtimeContext,
+  REALTIME_AGENT_MISSION_QUOTE_M2A_RELEASE_FLAG_KEY,
   REALTIME_CONTEXT_SCHEMA_VERSION,
   type RealtimeAdmissionLease,
   type RealtimeAdmissionPort,
@@ -38,6 +39,7 @@ import {
   REALTIME_ADMISSION,
   REALTIME_AGENT_MISSION_ADMISSION,
   REALTIME_AGENT_TURN,
+  BOB_LIVE_RUNTIME_READINESS,
   REALTIME_ENTITLEMENT,
   REALTIME_DURABLE_CONTROLS,
   REALTIME_PROVIDER_TERMINATION_REGISTRY,
@@ -104,6 +106,7 @@ import {
   hashRealtimeAgentMissionCapability,
   isRealtimeAgentMissionCapability,
   parseRealtimeAgentMissionNegotiation,
+  AGENT_MISSION_PROTOCOL_M2A_VERSION,
   realtimeAgentMissionCapabilityProtocolVersion,
   realtimeAgentMissionBootstrapBinding,
   type RealtimeAgentMissionNegotiationRequest,
@@ -117,6 +120,10 @@ import {
 import { realtimeSubjectBindings } from './realtime-principal-binding';
 import { RealtimeVoiceTraceFactory } from './realtime-voice-trace';
 import type { RealtimeVoiceTraceFailureClass, RealtimeVoiceTraceStage } from '@bob/core';
+import type {
+  BobLiveRuntimeReadiness,
+  BobLiveRuntimeReadinessPort,
+} from './realtime-readiness';
 
 export { admissionSubjectHash } from './realtime-principal-binding';
 
@@ -783,6 +790,9 @@ export class RealtimeVoiceService {
     @Optional()
     @Inject(REALTIME_VOICE_TRACE_V2)
     private readonly voiceTrace: RealtimeVoiceTraceFactory | null = null,
+    @Optional()
+    @Inject(BOB_LIVE_RUNTIME_READINESS)
+    private readonly runtimeReadiness: BobLiveRuntimeReadinessPort | null = null,
   ) {
     // Les tests unitaires et les compositions historiques construisent encore le service
     // directement. Le fallback doit capturer le paramètre `provider` déjà initialisé : une
@@ -798,28 +808,83 @@ export class RealtimeVoiceService {
   async publicConfig(): Promise<RealtimeVoicePublicConfig> {
     const mistralV2LiveAvailable = this.settings.mistralV2InitialBootstrapEnabled
       && this.conversationRuntime?.liveTurnsAvailable === true;
-    const technicallyAvailable = this.settings.enabled
+    // Le rail historique audité possède sa propre admission bornée. Le sonder ici déclencherait
+    // la preuve TTS→Whisper longue sur le GET de config et déplacerait le cold-start avant même
+    // le bootstrap. Le nouveau préflight ne concerne donc que le rail natif de publication : sa
+    // readiness est boot-vérifiée et ne dépend d'aucune sonde acoustique synchrone.
+    let runtimeAvailable = true;
+    if (
+      this.settings.enabled
+      && this.settings.speechDelivery === 'openai-native-webrtc-v1'
+    ) {
+      let runtime: BobLiveRuntimeReadiness | null = null;
+      try {
+        runtime = await this.runtimeReadiness?.check() ?? null;
+      } catch {
+        runtime = null;
+      }
+      runtimeAvailable = runtime?.ready === true && runtime.mode === 'native';
+    }
+    const baseConfigured = this.settings.enabled
       && Boolean(this.settings.apiKey)
       && Boolean(this.settings.safetySecret);
+    const technicallyAvailable = baseConfigured && runtimeAvailable;
     let available = false;
-    let availabilityReason: RealtimeVoicePublicConfig['availabilityReason'] = technicallyAvailable
-      ? 'entitlement_unavailable'
-      : 'disabled';
+    let availabilityReason: RealtimeVoicePublicConfig['availabilityReason'] = !baseConfigured
+      ? 'disabled'
+      : !runtimeAvailable
+        ? 'disabled'
+        : 'entitlement_unavailable';
     const principal = getPrincipal();
     if (technicallyAvailable && principal?.userId && principal.companyId) {
+      let entitlement: Awaited<ReturnType<RealtimeEntitlementPort['check']>> | null = null;
       try {
-        const entitlement = await this.entitlements.check({
+        entitlement = await this.entitlements.check({
           userId: principal.userId,
           companyId: principal.companyId,
         });
-        available = entitlement.allowed;
-        availabilityReason = entitlement.allowed ? undefined : 'not_entitled';
+      } catch {
+        this.metrics.bobLiveEntitlementChecks.inc({ outcome: 'preflight_error', plan: 'unknown' });
+      }
+      if (entitlement !== null) {
         this.metrics.bobLiveEntitlementChecks.inc({
           outcome: entitlement.allowed ? 'preflight_allowed' : 'preflight_denied',
           plan: entitlement.plan,
         });
-      } catch {
-        this.metrics.bobLiveEntitlementChecks.inc({ outcome: 'preflight_error', plan: 'unknown' });
+        if (!entitlement.allowed) {
+          availabilityReason = 'not_entitled';
+        } else if (
+          this.settings.provider === 'openai'
+          && this.settings.speechDelivery === 'openai-native-webrtc-v1'
+        ) {
+          // Cette nouvelle autorité ne s'applique qu'au futur rail natif. L'étendre au rail
+          // audité déjà publié casserait le contrat wire des APK N-1 avant le cutover.
+          let missionAvailable = false;
+          try {
+            missionAvailable = await this.agentMissionAdmission.available({
+              protocolVersion: AGENT_MISSION_PROTOCOL_M2A_VERSION,
+              companyId: principal.companyId,
+              userId: principal.userId,
+              providerId: 'openai',
+              transport: 'webrtc',
+              speechDelivery: this.settings.speechDelivery,
+            });
+          } catch {
+            // Une panne Mission n'est pas une panne d'entitlement : elle ne doit jamais
+            // incrémenter la métrique abonnement. Le détail rejoint la capacité readiness
+            // versionnée du prochain lot ; le wire v4 garde ici son enum historique.
+            missionAvailable = false;
+          }
+          available = missionAvailable;
+          // Le wire v4 reste strictement rétrocompatible : le détail runtime/Mission sera exposé
+          // par une capacité versionnée dans le lot readiness, pas par un enum ajouté en douce.
+          availabilityReason = missionAvailable ? undefined : 'disabled';
+        } else {
+          // Compatibilité du rail audité/Mistral existant : le lot est dormant et ne modifie pas
+          // leur admission publique avant le train d'activation atomique.
+          available = true;
+          availabilityReason = undefined;
+        }
       }
     }
     const diagnosticTrace =
@@ -968,6 +1033,21 @@ export class RealtimeVoiceService {
         issues: [{ field: 'speechDelivery', message: 'Contrat audio différent du config négocié.' }],
       });
     }
+    const nativeDelivery = parsed.value.speechDelivery === 'openai-native-webrtc-v1';
+    if (
+      nativeDelivery
+      && parsed.value.agentMissionNegotiation.requested !== 'v2'
+    ) {
+      // Une APK N-1 ou un client direct ne doit jamais consommer une session native dégradée.
+      // Le rejet précède identité, entitlement, lease et tout egress OpenAI.
+      return this.finishError('validation', startedAt, {
+        kind: 'validation',
+        issues: [{
+          field: 'agentMissionProtocolVersion',
+          message: 'Bob Live natif exige le protocole Mission V2.',
+        }],
+      });
+    }
 
     const principal = getPrincipal();
     if (!principal?.userId || !principal.companyId) {
@@ -1093,6 +1173,36 @@ export class RealtimeVoiceService {
         startedAt,
         appUnavailable('bob-live-agent-mission-admission', 5),
       );
+    }
+    if (nativeDelivery) {
+      const binding = preparedAgentMission.binding;
+      let exactNativeMission = false;
+      try {
+        exactNativeMission = preparedAgentMission.capability !== null
+          && binding !== null
+          && binding.protocolVersion === AGENT_MISSION_PROTOCOL_M2A_VERSION
+          && binding.releaseFlagKey === REALTIME_AGENT_MISSION_QUOTE_M2A_RELEASE_FLAG_KEY
+          && binding.principalBindingHash === principalBindingHash
+          && realtimeAgentMissionCapabilityProtocolVersion(preparedAgentMission.capability)
+            === AGENT_MISSION_PROTOCOL_M2A_VERSION
+          && binding.capabilityHash
+            === hashRealtimeAgentMissionCapability(preparedAgentMission.capability);
+      } catch {
+        exactNativeMission = false;
+      }
+      if (!exactNativeMission) {
+        trace?.record({
+          eventKind: 'session_bootstrap_failed',
+          stage: 'admission',
+          outcome: 'unavailable',
+          failureClass: 'admission_rejected',
+        });
+        return this.finishError(
+          'admission_unavailable',
+          startedAt,
+          appUnavailable('bob-live-agent-mission-admission', 5),
+        );
+      }
     }
     const reserveInput: RealtimeAdmissionReserveInput = {
       companyId: principal.companyId,
