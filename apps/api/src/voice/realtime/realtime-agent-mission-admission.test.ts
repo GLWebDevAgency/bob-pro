@@ -155,12 +155,6 @@ describe('RealtimeAgentMissionAdmissionGate', () => {
         speechDelivery: 'audited-signed-url-v1' as const,
       },
     },
-    {
-      label: 'OpenAI natif sans protocole hybride audité',
-      patch: {
-        speechDelivery: 'openai-native-webrtc-v1' as const,
-      },
-    },
   ])('ne consulte ni flag ni entropy pour $label', async ({ patch }) => {
     const store = persistence(releaseFlag(true));
     const entropy = vi.fn(() => new Uint8Array(32));
@@ -176,6 +170,40 @@ describe('RealtimeAgentMissionAdmissionGate', () => {
     });
     expect(store.runWithIdentity).not.toHaveBeenCalled();
     expect(entropy).not.toHaveBeenCalled();
+  });
+
+  it('accorde la même Mission au rail OpenAI natif et expose un préflight sans capability jetable', async () => {
+    const store = persistence(releaseFlag(true, 'bob.agent_missions.quote.m2a'));
+    const entropy = vi.fn(() => Buffer.alloc(32, 24));
+    const gate = new DurableRealtimeAgentMissionAdmissionGate(
+      store.value,
+      'staging',
+      entropy,
+      [1, 2],
+    );
+    const native = {
+      ...v2Input(),
+      speechDelivery: 'openai-native-webrtc-v1' as const,
+    };
+
+    await expect(gate.available({
+      protocolVersion: 2,
+      companyId: native.companyId,
+      userId: native.userId,
+      providerId: native.providerId,
+      transport: native.transport,
+      speechDelivery: native.speechDelivery,
+    })).resolves.toBe(true);
+    expect(entropy).not.toHaveBeenCalled();
+
+    const prepared = await gate.prepare(native);
+    expect(prepared.capability).toMatch(/^bam2_[A-Za-z0-9_-]{43}$/u);
+    expect(prepared.binding).toMatchObject({
+      protocolVersion: 2,
+      releaseFlagKey: 'bob.agent_missions.quote.m2a',
+      releaseFlagVersion: 7,
+    });
+    expect(entropy).toHaveBeenCalledOnce();
   });
 
   it('ferme sans capability lorsque le flag manque, est OFF ou devient indisponible', async () => {
@@ -216,6 +244,14 @@ describe('RealtimeAgentMissionAdmissionGate', () => {
       } as Env,
     );
     expect(gate).toBeInstanceOf(DisabledRealtimeAgentMissionAdmissionGate);
+    await expect(gate.available({
+      protocolVersion: 2,
+      companyId: COMPANY_ID,
+      userId: USER_ID,
+      providerId: 'openai',
+      transport: 'webrtc',
+      speechDelivery: 'openai-native-webrtc-v1',
+    })).resolves.toBe(false);
     await expect(gate.prepare(v1Input())).resolves.toEqual({
       capability: null,
       binding: null,

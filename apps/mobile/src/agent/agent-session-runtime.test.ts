@@ -12,8 +12,10 @@ import {
   revalidateAgentSessionBackgroundAfterPermission,
   realtimeGenericReconnectBudget,
   realtimeOwnsAgentSession,
+  settleAgentSessionRealtimeBootstrap,
   shouldRecoverLegacyListeningSilence,
   shouldStopAgentSessionForAppState,
+  type AgentSessionDriver,
 } from './agent-session-runtime';
 
 const context = (): AgentContext => ({
@@ -51,6 +53,55 @@ describe('agent session runtime fences', () => {
     expect(shouldStopAgentSessionForAppState('active')).toBe(false);
     expect(shouldStopAgentSessionForAppState('background')).toBe(true);
     expect(shouldStopAgentSessionForAppState('background', true)).toBe(false);
+  });
+
+  it('une ouverture A tardive ne peut jamais arrêter la nouvelle session B', async () => {
+    let resolveA!: (value: 'cancelled') => void;
+    const a = new Promise<'cancelled'>((resolve) => { resolveA = resolve; });
+    let generation = 1;
+    const active = true;
+    const driver: AgentSessionDriver = 'live_bootstrap';
+    let stops = 0;
+    const settle = (
+      ownedGeneration: number,
+      start: () => Promise<'cancelled' | 'resumed'>,
+    ) => settleAgentSessionRealtimeBootstrap({
+      generation: ownedGeneration,
+      currentGeneration: () => generation,
+      isActive: () => active,
+      currentDriver: () => driver,
+      currentAppState: () => 'active',
+      start,
+      stopOwnedController: () => { stops += 1; },
+    });
+
+    const staleA = settle(1, () => a);
+    generation = 2;
+    const currentB = await settle(2, async () => 'resumed');
+    expect(currentB).toEqual({ outcome: 'resumed', owned: true });
+
+    resolveA('cancelled');
+    await expect(staleA).resolves.toEqual({ outcome: 'cancelled', owned: false });
+    expect(stops).toBe(0);
+    expect({ generation, active, driver }).toEqual({
+      generation: 2,
+      active: true,
+      driver: 'live_bootstrap',
+    });
+  });
+
+  it('nettoie encore un bootstrap courant devenu inactif', async () => {
+    let stops = 0;
+    await expect(settleAgentSessionRealtimeBootstrap({
+      generation: 4,
+      currentGeneration: () => 4,
+      isActive: () => false,
+      currentDriver: () => 'live_bootstrap',
+      currentAppState: () => 'active',
+      start: async () => 'cancelled' as const,
+      stopOwnedController: () => { stops += 1; },
+    })).resolves.toEqual({ outcome: 'cancelled', owned: false });
+    expect(stops).toBe(1);
   });
 
   it('interdit la reconnexion générique à toute mission M2-A, quel que soit le provider', () => {

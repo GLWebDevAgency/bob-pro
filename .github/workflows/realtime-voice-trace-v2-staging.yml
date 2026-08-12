@@ -77,6 +77,7 @@ jobs:
       cleanup_final_events: ${{ steps.drill.outputs.cleanup_final_events }}
       cleanup_final_audits: ${{ steps.drill.outputs.cleanup_final_audits }}
     env:
+      TARGET_ENVIRONMENT_NAME: staging
       API_BASE_URL: ${{ vars.API_BASE_URL }}
       SUPABASE_URL: https://${{ vars.BOB_M1B_STAGING_SUPABASE_PROJECT_REF }}.supabase.co
       RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
@@ -196,7 +197,7 @@ jobs:
           status_file="$(mktemp)"
           timeout 20s railway status --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENVIRONMENT_ID" --json > "$status_file"
           node apps/api/scripts/certify-railway-single-replica.mjs staging "$RAILWAY_API_SERVICE_ID" < "$status_file"
-          served_id="$(node apps/api/scripts/agent-mission-m1b-staging-railway.mjs serving-deployment-id < "$status_file")"
+          served_id="$(node apps/api/scripts/railway-release-deployment.mjs serving-deployment-id < "$status_file")"
           test -n "$served_id"
           BOB_AGENT_MISSION_STAGING_PROFILE=m2a3-preview \
             node apps/api/scripts/agent-mission-m1b-staging-smoke.mjs voice-trace-v2-off
@@ -241,9 +242,9 @@ jobs:
             deployment_id="$(
               railway up --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
                 --environment "$RAILWAY_ENVIRONMENT_ID" --detach --json \
-                | node apps/api/scripts/agent-mission-m1b-staging-railway.mjs deployment-id
+                | node apps/api/scripts/railway-release-deployment.mjs deployment-id
             )"
-            node apps/api/scripts/agent-mission-m1b-staging-railway.mjs wait-deployment "$deployment_id" >&2
+            node apps/api/scripts/railway-release-deployment.mjs wait-deployment "$deployment_id" >&2
             local status_file serving_id
             status_file="$(mktemp)"
             serving_id=''
@@ -252,7 +253,7 @@ jobs:
                 --environment "$RAILWAY_ENVIRONMENT_ID" --json > "$status_file" \
                 && node apps/api/scripts/certify-railway-single-replica.mjs \
                   staging "$RAILWAY_API_SERVICE_ID" < "$status_file" >&2 \
-                && serving_id="$(node apps/api/scripts/agent-mission-m1b-staging-railway.mjs serving-deployment-id < "$status_file")" \
+                && serving_id="$(node apps/api/scripts/railway-release-deployment.mjs serving-deployment-id < "$status_file")" \
                 && test "$serving_id" = "$deployment_id"
               then
                 break
@@ -412,6 +413,7 @@ jobs:
     timeout-minutes: 90
     environment: staging
     env:
+      TARGET_ENVIRONMENT_NAME: staging
       API_BASE_URL: ${{ vars.API_BASE_URL }}
       SUPABASE_URL: https://${{ vars.BOB_M1B_STAGING_SUPABASE_PROJECT_REF }}.supabase.co
       RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
@@ -484,9 +486,9 @@ jobs:
           deployment_id="$(
             railway up --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
               --environment "$RAILWAY_ENVIRONMENT_ID" --detach --json \
-              | node apps/api/scripts/agent-mission-m1b-staging-railway.mjs deployment-id
+              | node apps/api/scripts/railway-release-deployment.mjs deployment-id
           )"
-          node apps/api/scripts/agent-mission-m1b-staging-railway.mjs wait-deployment "$deployment_id"
+          node apps/api/scripts/railway-release-deployment.mjs wait-deployment "$deployment_id"
           status_file="$(mktemp)"
           serving_id=''
           for attempt in $(seq 1 12); do
@@ -494,7 +496,7 @@ jobs:
               --environment "$RAILWAY_ENVIRONMENT_ID" --json > "$status_file" \
               && node apps/api/scripts/certify-railway-single-replica.mjs \
                 staging "$RAILWAY_API_SERVICE_ID" < "$status_file" \
-              && serving_id="$(node apps/api/scripts/agent-mission-m1b-staging-railway.mjs serving-deployment-id < "$status_file")" \
+              && serving_id="$(node apps/api/scripts/railway-release-deployment.mjs serving-deployment-id < "$status_file")" \
               && test "$serving_id" = "$deployment_id"
             then
               break

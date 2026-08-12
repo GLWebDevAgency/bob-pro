@@ -53,6 +53,7 @@ import {
   agentMissionPrincipalBindingHash,
   type RealtimeAgentMissionAdmissionGate,
 } from './realtime-agent-mission-admission';
+import type { BobLiveRuntimeReadinessPort } from './realtime-readiness';
 
 const OFFER_SDP = 'v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n';
 const AUDITED_BOOTSTRAP_BINDING = {
@@ -63,6 +64,20 @@ const NATIVE_BOOTSTRAP_BINDING = {
   configVersion: BOB_REALTIME_CONFIG_VERSION,
   speechDelivery: 'openai-native-webrtc-v1',
 } as const;
+const AUDITED_RUNTIME_READY: BobLiveRuntimeReadinessPort = {
+  check: vi.fn(async () => ({
+    ready: true as const,
+    mode: 'audited' as const,
+    speechAudit: 'ready' as const,
+  })),
+};
+const NATIVE_RUNTIME_READY: BobLiveRuntimeReadinessPort = {
+  check: vi.fn(async () => ({
+    ready: true as const,
+    mode: 'native' as const,
+    speechAudit: 'not_applicable' as const,
+  })),
+};
 const SETTINGS: RealtimeVoiceSettings = {
   enabled: true,
   provider: 'openai',
@@ -270,25 +285,66 @@ function missionGate(
   requested: RealtimeAgentMissionNegotiationRequest['requested'] = 'v1',
 ): RealtimeAgentMissionAdmissionGate {
   return {
+    available: vi.fn(async () => true),
     prepare: vi.fn(async (input) => {
       if (input.negotiation.requested !== requested) {
         return { capability: null, binding: null } as const;
       }
+      if (requested !== 'v1' && requested !== 'v2') {
+        return { capability: null, binding: null } as const;
+      }
+      const common = {
+        capabilityHash: hashRealtimeAgentMissionCapability(capability),
+        releaseEnvironment: 'staging' as const,
+        releaseFlagVersion: 7,
+        principalBindingHash: agentMissionPrincipalBindingHash(
+          input.companyId,
+          input.userId,
+        ),
+      };
+      if (requested === 'v2') {
+        return {
+          capability,
+          binding: {
+            ...common,
+            protocolVersion: 2,
+            releaseFlagKey: 'bob.agent_missions.quote.m2a',
+          },
+        } as const;
+      }
       return {
         capability,
         binding: {
+          ...common,
           protocolVersion: 1,
-          capabilityHash: hashRealtimeAgentMissionCapability(capability),
           releaseFlagKey: 'bob.agent_missions.quote.v1',
-          releaseEnvironment: 'staging',
-          releaseFlagVersion: 7,
-          principalBindingHash: agentMissionPrincipalBindingHash(
-            input.companyId,
-            input.userId,
-          ),
         },
       } as const;
     }),
+  };
+}
+
+function faultyMissionGate(
+  capability: string,
+): RealtimeAgentMissionAdmissionGate {
+  return {
+    available: vi.fn(async () => true),
+    // Double volontairement fautif : il attache V1 même lorsque le client a omis/refusé Mission.
+    // Ce fixture prouve que le service libère encore la lease face à un adapter corrompu.
+    prepare: vi.fn(async (input) => ({
+      capability,
+      binding: {
+        protocolVersion: 1 as const,
+        capabilityHash: hashRealtimeAgentMissionCapability(capability),
+        releaseFlagKey: 'bob.agent_missions.quote.v1' as const,
+        releaseEnvironment: 'staging' as const,
+        releaseFlagVersion: 7,
+        principalBindingHash: agentMissionPrincipalBindingHash(
+          input.companyId,
+          input.userId,
+        ),
+      },
+    })),
   };
 }
 
@@ -950,7 +1006,6 @@ describe('RealtimeVoiceService', () => {
     {
       label: 'négociation omise',
       body: { ...AUDITED_BOOTSTRAP_BINDING, sdp: OFFER_SDP },
-      requested: 'omitted' as const,
     },
     {
       label: 'négociation null',
@@ -959,14 +1014,10 @@ describe('RealtimeVoiceService', () => {
         agentMissionProtocolVersion: null,
         sdp: OFFER_SDP,
       },
-      requested: 'null' as const,
     },
-  ])('libère la lease si un gate fautif injecte une capability sur $label', async ({
-    body,
-    requested,
-  }) => {
+  ])('libère la lease si un gate fautif injecte une capability sur $label', async ({ body }) => {
     const capability = `bam1_${Buffer.alloc(32, 74).toString('base64url')}`;
-    const gate = missionGate(capability, requested);
+    const gate = faultyMissionGate(capability);
     const base = admission();
     const provider: OpenAiRealtimeCallProvider = {
       createCall: vi.fn(),
@@ -1463,6 +1514,12 @@ describe('RealtimeVoiceService', () => {
       undefined,
       undefined,
       TEST_SPEECH_SOURCE_POLICY,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      AUDITED_RUNTIME_READY,
     );
     const context = {
       version: 1,
@@ -1910,10 +1967,12 @@ describe('RealtimeVoiceService', () => {
       throw new Error('la policy signée ne doit pas être appelée');
     });
     const sideband = sidebandStub();
+    const capability = `bam2_${Buffer.alloc(32, 81).toString('base64url')}`;
+    const gate = missionGate(capability, 'v2');
     const service = new RealtimeVoiceService(
       { ...SETTINGS, speechDelivery: 'openai-native-webrtc-v1' },
       provider,
-      admission(),
+      missionCapableAdmission(admission()),
       sideband,
       new Metrics(),
       loggerStub(),
@@ -1923,16 +1982,23 @@ describe('RealtimeVoiceService', () => {
       undefined,
       undefined,
       { policyForSession },
+      undefined,
+      undefined,
+      undefined,
+      gate,
+      undefined,
+      NATIVE_RUNTIME_READY,
     );
 
     await expect(runAsPrincipal(() => service.publicConfig())).resolves.toMatchObject({
+      available: true,
       transport: 'webrtc',
       speechDelivery: 'openai-native-webrtc-v1',
     });
     const result = await runAsPrincipal(() => service.createCall({
       ...NATIVE_BOOTSTRAP_BINDING,
       sdp: OFFER_SDP,
-      agentMissionProtocolVersion: 1,
+      agentMissionProtocolVersion: 2,
       sessionHandle: '00000000-0000-4000-8000-000000000002',
     }));
 
@@ -1941,8 +2007,8 @@ describe('RealtimeVoiceService', () => {
       value: {
         transport: 'webrtc',
         speechDelivery: 'openai-native-webrtc-v1',
-        agentMissionProtocolVersion: null,
-        agentMissionCapability: null,
+        agentMissionProtocolVersion: 2,
+        agentMissionCapability: capability,
       },
     });
     if (result.ok) expect(result.value).not.toHaveProperty('speechSourcePolicy');
@@ -1968,6 +2034,240 @@ describe('RealtimeVoiceService', () => {
         },
       },
     });
+  });
+
+  it.each([
+    { label: 'omis', mission: {} },
+    { label: 'null', mission: { agentMissionProtocolVersion: null } },
+    { label: 'V1', mission: { agentMissionProtocolVersion: 1 } },
+  ] as const)(
+    'refuse le bootstrap natif Mission $label avant entitlement, lease et egress',
+    async ({ mission }) => {
+      const provider: OpenAiRealtimeCallProvider = {
+        createCall: vi.fn(),
+        hangupCall: vi.fn(async () => undefined),
+      };
+      const durable = admission();
+      const reserve = vi.spyOn(durable, 'reserve');
+      const entitlements = entitled();
+      const gate = missionGate(`bam2_${Buffer.alloc(32, 82).toString('base64url')}`, 'v2');
+      const service = new RealtimeVoiceService(
+        { ...SETTINGS, speechDelivery: 'openai-native-webrtc-v1' },
+        provider,
+        missionCapableAdmission(durable),
+        sidebandStub(),
+        new Metrics(),
+        loggerStub(),
+        undefined,
+        entitlements,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        gate,
+        undefined,
+        NATIVE_RUNTIME_READY,
+      );
+
+      await expect(runAsPrincipal(() => service.createCall({
+        ...NATIVE_BOOTSTRAP_BINDING,
+        ...mission,
+        sdp: OFFER_SDP,
+      }))).resolves.toMatchObject({
+        ok: false,
+        error: {
+          kind: 'validation',
+          issues: [{ field: 'agentMissionProtocolVersion' }],
+        },
+      });
+      expect(entitlements.check).not.toHaveBeenCalled();
+      expect(gate.prepare).not.toHaveBeenCalled();
+      expect(reserve).not.toHaveBeenCalled();
+      expect(provider.createCall).not.toHaveBeenCalled();
+    },
+  );
+
+  it('refuse Mission V2 native désactivée avant lease et egress même après un config précédent', async () => {
+    const provider: OpenAiRealtimeCallProvider = {
+      createCall: vi.fn(),
+      hangupCall: vi.fn(async () => undefined),
+    };
+    const durable = admission();
+    const reserve = vi.spyOn(durable, 'reserve');
+    const service = new RealtimeVoiceService(
+      { ...SETTINGS, speechDelivery: 'openai-native-webrtc-v1' },
+      provider,
+      missionCapableAdmission(durable),
+      sidebandStub(),
+      new Metrics(),
+      loggerStub(),
+      undefined,
+      entitled(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      NATIVE_RUNTIME_READY,
+    );
+
+    await expect(runAsPrincipal(() => service.createCall({
+      ...NATIVE_BOOTSTRAP_BINDING,
+      agentMissionProtocolVersion: 2,
+      sdp: OFFER_SDP,
+    }))).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'unavailable', service: 'bob-live-agent-mission-admission' },
+    });
+    expect(reserve).not.toHaveBeenCalled();
+    expect(provider.createCall).not.toHaveBeenCalled();
+  });
+
+  it('n’annonce jamais Bob Live disponible si le runtime natif n’est pas prouvé prêt', async () => {
+    const entitlements = entitled();
+    const service = new RealtimeVoiceService(
+      { ...SETTINGS, speechDelivery: 'openai-native-webrtc-v1' },
+      { createCall: vi.fn(), hangupCall: vi.fn(async () => undefined) },
+      admission(),
+      sidebandStub(),
+      new Metrics(),
+      loggerStub(),
+      undefined,
+      entitlements,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { check: vi.fn(async () => { throw new Error('native_runtime_unavailable'); }) },
+    );
+
+    await expect(runAsPrincipal(() => service.publicConfig())).resolves.toMatchObject({
+      available: false,
+      availabilityReason: 'disabled',
+    });
+    expect(entitlements.check).not.toHaveBeenCalled();
+  });
+
+  it('n’annonce jamais Bob Live disponible si l’autorité Mission V2 est fermée', async () => {
+    const metrics = new Metrics();
+    const service = new RealtimeVoiceService(
+      { ...SETTINGS, speechDelivery: 'openai-native-webrtc-v1' },
+      { createCall: vi.fn(), hangupCall: vi.fn(async () => undefined) },
+      admission(),
+      sidebandStub(),
+      metrics,
+      loggerStub(),
+      undefined,
+      entitled(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      NATIVE_RUNTIME_READY,
+    );
+
+    await expect(runAsPrincipal(() => service.publicConfig())).resolves.toMatchObject({
+      available: false,
+      availabilityReason: 'disabled',
+    });
+    const metricText = await metrics.registry.metrics();
+    expect(metricText).toContain(
+      'bob_live_entitlement_checks_total{outcome="preflight_allowed",plan="business"} 1',
+    );
+    expect(metricText).not.toContain('outcome="preflight_error"');
+  });
+
+  it('sépare une panne Mission native de la métrique entitlement', async () => {
+    const metrics = new Metrics();
+    const gate: RealtimeAgentMissionAdmissionGate = {
+      available: vi.fn(async () => { throw new Error('flag_backend_unavailable'); }),
+      prepare: vi.fn(async () => ({ capability: null, binding: null })),
+    };
+    const service = new RealtimeVoiceService(
+      { ...SETTINGS, speechDelivery: 'openai-native-webrtc-v1' },
+      { createCall: vi.fn(), hangupCall: vi.fn(async () => undefined) },
+      admission(),
+      sidebandStub(),
+      metrics,
+      loggerStub(),
+      undefined,
+      entitled(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      gate,
+      undefined,
+      NATIVE_RUNTIME_READY,
+    );
+
+    await expect(runAsPrincipal(() => service.publicConfig())).resolves.toMatchObject({
+      available: false,
+      availabilityReason: 'disabled',
+    });
+    const metricText = await metrics.registry.metrics();
+    expect(metricText).toContain(
+      'bob_live_entitlement_checks_total{outcome="preflight_allowed",plan="business"} 1',
+    );
+    expect(metricText).not.toContain('outcome="preflight_error"');
+  });
+
+  it('préserve le config audited N-1 sans sonder runtime ni Mission native', async () => {
+    const runtimeReadiness: BobLiveRuntimeReadinessPort = {
+      check: vi.fn(async () => { throw new Error('must_not_probe_audited'); }),
+    };
+    const gate: RealtimeAgentMissionAdmissionGate = {
+      available: vi.fn(async () => { throw new Error('must_not_probe_mission'); }),
+      prepare: vi.fn(async () => ({ capability: null, binding: null })),
+    };
+    const service = new RealtimeVoiceService(
+      SETTINGS,
+      { createCall: vi.fn(), hangupCall: vi.fn(async () => undefined) },
+      admission(),
+      sidebandStub(),
+      new Metrics(),
+      loggerStub(),
+      undefined,
+      entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
+      undefined,
+      undefined,
+      undefined,
+      gate,
+      undefined,
+      runtimeReadiness,
+    );
+
+    await expect(runAsPrincipal(() => service.publicConfig())).resolves.toMatchObject({
+      available: true,
+      transport: 'webrtc',
+      speechDelivery: 'audited-signed-url-v1',
+    });
+    expect(runtimeReadiness.check).not.toHaveBeenCalled();
+    expect(gate.available).not.toHaveBeenCalled();
   });
 
   it('refuse un bootstrap dont delivery/version ne correspondent pas au config négocié', async () => {
@@ -2089,6 +2389,16 @@ describe('RealtimeVoiceService', () => {
       loggerStub(),
       undefined,
       entitlement,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      AUDITED_RUNTIME_READY,
     );
 
     const config = await runAsPrincipal(() => service.publicConfig());

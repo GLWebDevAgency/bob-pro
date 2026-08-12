@@ -47,7 +47,7 @@ import {
   planAgentSessionFailedClosed,
   revalidateAgentSessionBackgroundAfterPermission,
   realtimeGenericReconnectBudget,
-  realtimeOwnsAgentSession,
+  settleAgentSessionRealtimeBootstrap,
   shouldRecoverLegacyListeningSilence,
   shouldStopAgentSessionForAppState,
   type AgentSessionDriver,
@@ -996,28 +996,28 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     // TEMPS RÉEL d'abord — le serveur décide (plan voice_live + rollout). Une reprise durable
     // interdit structurellement le repli historique et tout changement silencieux de protocole.
     const controller = getRealtimeController();
-    const outcome =
-      requiredMissionProtocolVersion === REALTIME_AGENT_MISSION_PROTOCOL_VERSION
-        ? await controller.resumeMissionV1()
-        : requiredMissionProtocolVersion === REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
-          ? await controller.resumeMissionV2()
-          : await controller.start();
-      if (
-        !activeRef.current
-        || sessionGeneration !== sessionGenerationRef.current
-        || !realtimeOwnsAgentSession(driverRef.current)
-        || appStateRef.current !== 'active'
-      ) {
-        // stop() est passé pendant le bootstrap : le contrôleur est déjà invalidé par
-        // génération — ceinture ET bretelles, on ne laisse RIEN d'ouvert derrière soi.
-        void controller.stop('user');
-        return false;
-      }
-      if (outcome === 'realtime' || outcome === 'resumed') {
-        driverRef.current = 'live';
-        realtimeActiveRef.current = true;
-        return true; // EXCLUSIVITÉ : aucune oreille/bouche legacy tant que le temps réel vit.
-      }
+    const settled = await settleAgentSessionRealtimeBootstrap({
+      generation: sessionGeneration,
+      currentGeneration: () => sessionGenerationRef.current,
+      isActive: () => activeRef.current,
+      currentDriver: () => driverRef.current,
+      currentAppState: () => appStateRef.current,
+      start: () => (
+        requiredMissionProtocolVersion === REALTIME_AGENT_MISSION_PROTOCOL_VERSION
+          ? controller.resumeMissionV1()
+          : requiredMissionProtocolVersion === REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
+            ? controller.resumeMissionV2()
+            : controller.start()
+      ),
+      stopOwnedController: () => { void controller.stop('user'); },
+    });
+    if (!settled.owned) return false;
+    const outcome = settled.outcome;
+    if (outcome === 'realtime' || outcome === 'resumed') {
+      driverRef.current = 'live';
+      realtimeActiveRef.current = true;
+      return true; // EXCLUSIVITÉ : aucune oreille/bouche legacy tant que le temps réel vit.
+    }
       if (outcome === 'cancelled') {
         driverRef.current = 'idle';
         realtimeActiveRef.current = false;

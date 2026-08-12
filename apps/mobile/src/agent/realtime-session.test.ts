@@ -152,6 +152,8 @@ function harness(
     /** Simule volontairement un montage audité sans propriétaire runtime. */
     omitAgentMissionRuntime?: boolean;
     negotiation?: RealtimeVoiceConfig;
+    /** Remplace le GET config afin de prouver les courses stop/réponse tardive. */
+    negotiateImpl?: () => Promise<RealtimeVoiceConfig | null>;
   } = {},
 ) {
   const log: string[] = input.log ?? [];
@@ -162,7 +164,6 @@ function harness(
     ?? (
       input.omitAgentMissionRuntime !== true
       && negotiated.transport === 'webrtc'
-      && negotiated.speechDelivery === 'audited-signed-url-v1'
         ? owningMissionRuntime()
         : undefined
     );
@@ -192,7 +193,6 @@ function harness(
       ? (
           handle !== null
           && negotiated.transport === 'webrtc'
-          && negotiated.speechDelivery === 'audited-signed-url-v1'
             ? missionSessionStub(
                 log,
                 `auto-mission-${label ?? 'initial'}`,
@@ -288,6 +288,7 @@ function harness(
     {
       negotiate: async () => {
         external.negotiations += 1;
+        if (input.negotiateImpl !== undefined) return input.negotiateImpl();
         return input.available === false
           ? { ...NEGOTIATION, available: false, availabilityReason: 'not_entitled' }
           : negotiated;
@@ -384,13 +385,14 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     expect(external.receivedAgentMissionProtocolVersion).toBe(2);
   });
 
-  it('conserve OpenAI natif sans capability Mission et transmet explicitement null', async () => {
+  it('conserve OpenAI natif sous la même capability Mission V2 que le parcours Jarvis', async () => {
     const h = harness({ negotiation: NATIVE_WEBRTC_NEGOTIATION });
 
     await expect(h.controller.start()).resolves.toBe('realtime');
 
     expect(h.external.receivedNegotiation).toBe(NATIVE_WEBRTC_NEGOTIATION);
-    expect(h.external.receivedAgentMissionProtocolVersion).toBeNull();
+    expect(h.external.receivedAgentMissionProtocolVersion)
+      .toBe(REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION);
     expect(h.log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
   });
 
@@ -398,6 +400,87 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     const { controller, log } = harness({ available: false });
     expect(await controller.start()).toBe('unavailable');
     expect(log).toEqual([]);
+  });
+
+  it.each(['disabled', 'not_entitled', 'entitlement_unavailable'] as const)(
+    'le config natif indisponible (%s) ferme sans démarrer le pilote historique',
+    async (availabilityReason) => {
+      const h = harness({
+        negotiation: {
+          ...NATIVE_WEBRTC_NEGOTIATION,
+          available: false,
+          availabilityReason,
+        },
+      });
+
+      await expect(h.controller.start()).resolves.toBe('failed_closed');
+      expect(h.log).toEqual(['failed-closed:agent_mission_negotiation_failed']);
+      expect(h.external.receivedNegotiation).toBeNull();
+      expect(h.log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+    },
+  );
+
+  it('ignore une indisponibilité native reçue après stop sans ressusciter l’erreur', async () => {
+    const deferredNegotiation = (() => {
+      let resolve!: (value: RealtimeVoiceConfig) => void;
+      const promise = new Promise<RealtimeVoiceConfig>((done) => { resolve = done; });
+      return { promise, resolve };
+    })();
+    const h = harness({
+      negotiation: NATIVE_WEBRTC_NEGOTIATION,
+      negotiateImpl: () => deferredNegotiation.promise,
+    });
+
+    const started = h.controller.start();
+    await Promise.resolve();
+    await h.controller.stop('background');
+    deferredNegotiation.resolve({
+      ...NATIVE_WEBRTC_NEGOTIATION,
+      available: false,
+      availabilityReason: 'entitlement_unavailable',
+    });
+
+    await expect(started).resolves.toBe('cancelled');
+    expect(h.log.some((entry) => entry.startsWith('failed-closed:'))).toBe(false);
+    expect(h.log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+    expect(h.external.receivedNegotiation).toBeNull();
+  });
+
+  it('une négociation A tardive ne résout jamais le waiter Mission de la génération B', async () => {
+    const deferredA = (() => {
+      let resolve!: (value: RealtimeVoiceConfig) => void;
+      const promise = new Promise<RealtimeVoiceConfig>((done) => { resolve = done; });
+      return { promise, resolve };
+    })();
+    let negotiationAttempt = 0;
+    const h = harness({
+      negotiation: NATIVE_WEBRTC_NEGOTIATION,
+      negotiateImpl: () => {
+        negotiationAttempt += 1;
+        return negotiationAttempt === 1
+          ? deferredA.promise
+          : Promise.resolve(NATIVE_WEBRTC_NEGOTIATION);
+      },
+    });
+
+    const startA = h.controller.resumeMissionV2();
+    await Promise.resolve();
+    await h.controller.stop('background');
+    const startB = h.controller.resumeMissionV2();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    deferredA.resolve({
+      ...NATIVE_WEBRTC_NEGOTIATION,
+      available: false,
+      availabilityReason: 'disabled',
+    });
+    await expect(startA).resolves.toBe('cancelled');
+
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await expect(startB).resolves.toBe('resumed');
+    expect(h.log).toContain('mic:true');
+    expect(h.log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+    expect(h.log.some((entry) => entry.startsWith('failed-closed:'))).toBe(false);
   });
 
   it('demande le fuseau après la négociation uniquement pour Mission V2', async () => {
@@ -493,15 +576,10 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     expect(log).toContain('mic:true');
   });
 
-  it.each([
-    ['OpenAI natif', NATIVE_WEBRTC_NEGOTIATION],
-    ['Mistral', MISTRAL_NEGOTIATION],
-  ] as const)(
-    'ne bloque jamais %s sans Mission V2 sur la confirmation temporelle',
-    async (_label, negotiation) => {
+  it('ne bloque jamais Mistral sans Mission V2 sur la confirmation temporelle', async () => {
       let timeZoneGateCalls = 0;
       const h = harness({
-        negotiation,
+        negotiation: MISTRAL_NEGOTIATION,
         ensureConfirmedTimeZoneForMissionV2: async () => {
           timeZoneGateCalls += 1;
           return false;
@@ -512,8 +590,7 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
 
       expect(timeZoneGateCalls).toBe(0);
       expect(h.external.receivedAgentMissionProtocolVersion).toBeNull();
-    },
-  );
+  });
 
   it('reprise V2 indisponible : échoue fermée sans jamais appeler le fallback legacy', async () => {
     const { controller, log } = harness({
@@ -537,14 +614,9 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     expect(h.log).not.toContain('mic:true');
   });
 
-  it.each([
-    ['Mistral V1', MISTRAL_NEGOTIATION],
-    ['OpenAI native non certifié', NATIVE_WEBRTC_NEGOTIATION],
-  ] as const)(
-    'reprise V2 refuse %s avant de créer le transport',
-    async (_label, negotiation) => {
+  it('reprise V2 refuse Mistral V1 avant de créer le transport', async () => {
       const h = harness({
-        negotiation,
+        negotiation: MISTRAL_NEGOTIATION,
         agentMissionRuntime: acceptingMissionRuntime(),
       });
 
@@ -554,8 +626,32 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
       expect(h.external.receivedNegotiation).toBeNull();
       expect(h.log.some((entry) => entry.startsWith('publish:'))).toBe(false);
       expect(h.log).not.toContain('mic:true');
-    },
-  );
+  });
+
+  it('reprise V2 OpenAI native conserve Mission jusqu’au contexte confirmé et au micro', async () => {
+    const log: string[] = [];
+    const realtimeSessionId = '09000000-0000-4000-8000-000000000021';
+    const h = harness({
+      log,
+      handle: realtimeSessionId,
+      negotiation: NATIVE_WEBRTC_NEGOTIATION,
+      agentMissionSessions: [
+        missionSessionStub(log, 'native-resume-mission', realtimeSessionId),
+      ],
+      agentMissionRuntime: acceptingMissionRuntime(),
+    });
+
+    const pending = h.controller.resumeMissionV2();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+
+    await expect(pending).resolves.toBe('resumed');
+    expect(h.external.receivedNegotiation).toEqual(NATIVE_WEBRTC_NEGOTIATION);
+    expect(h.external.receivedAgentMissionProtocolVersion)
+      .toBe(REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION);
+    expect(log).toContain('mic:true');
+    expect(log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+  });
 
   it('reprise V2 ne réussit qu’après capability V2, contexte confirmé et micro ouvert', async () => {
     const log: string[] = [];
@@ -1681,7 +1777,7 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     });
     const h = harness({
       gateDelay,
-      negotiation: NATIVE_WEBRTC_NEGOTIATION,
+      negotiation: MISTRAL_NEGOTIATION,
     });
     await h.controller.start();
     h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
@@ -1877,7 +1973,7 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
   it('repli pendant le bootstrap (orchestrateur → legacy) : outcome=fallback, pas de double boucle', async () => {
     const { controller, log, external } = harness({
       deferStart: true,
-      negotiation: NATIVE_WEBRTC_NEGOTIATION,
+      negotiation: MISTRAL_NEGOTIATION,
     });
     const pending = controller.start();
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -1909,7 +2005,7 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
   it('transmet le canal text_only après refus micro, sans le transformer en repli vocal', async () => {
     const { controller, log, external } = harness({
       deferStart: true,
-      negotiation: NATIVE_WEBRTC_NEGOTIATION,
+      negotiation: MISTRAL_NEGOTIATION,
     });
     const pending = controller.start();
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -1924,7 +2020,7 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
 
   it('redémarrage après un repli mid-call : start() repart d’un monde PROPRE (jamais un zombie)', async () => {
     const { controller, log, emit, external } = harness({
-      negotiation: NATIVE_WEBRTC_NEGOTIATION,
+      negotiation: MISTRAL_NEGOTIATION,
     });
     await controller.start();
     emit({ type: 'transport', event: { type: 'state', state: readyState } });

@@ -1,6 +1,12 @@
 # SPEC — Bob Live OpenAI hybride : une seule voix par tour
 
-**Statut au 22 juillet 2026** : spécifié, non implémenté, non activable.
+**Statut au 10 août 2026** : **superseded pour la publication**, conservé comme étude historique.
+
+La décision
+[`DECISION_GPT_REALTIME_NATIVE_PUBLICATION_20260810.md`](DECISION_GPT_REALTIME_NATIVE_PUBLICATION_20260810.md)
+retient un unique rail `openai-native-webrtc-v1`. Le mode hybride décrit ci-dessous n'est pas un
+fallback de publication : il conserve sa valeur d'analyse, mais ne doit plus piloter le code, les
+flags, la readiness ni le discours produit.
 
 Cette spec complète `SPEC_GPT_REALTIME_NATIVE_DUPLEX.md`. Elle ne rend pas le runtime natif
 activable : le flag reste fermé jusqu'aux preuves PostgreSQL, provider et appareils physiques.
@@ -194,7 +200,8 @@ le tap alimentent ensuite la même transition AgentMission/use case.
 - [ ] Fin de parole → premier audio : p50 ≤ 900 ms, p95 ≤ 1 800 ms, séparé par source.
 - [ ] Barge-in → silence : p50 ≤ 250 ms, p95 ≤ 500 ms.
 - [ ] Contrôle livré → effet UI : p95 ≤ 400 ms.
-- [ ] Démarrage et mission OpenAI complète sans `MISTRAL_API_KEY` ni requête Mistral.
+- [ ] Démarrage et chaîne audio/Realtime OpenAI complète sans `MISTRAL_API_KEY` ni requête
+      Mistral ; les outils métier externes conservent leur provider explicite et traçable.
 - [x] Rotation sujet/preuve certifiée sur PostgreSQL réel, y compris A/v1 → B/v1, writer N-1 face
       au retire et boot refusé lorsque le registre durable ne correspond pas aux keyrings.
 - [ ] Sept jours de canary sans double voix, effet prématuré ni fuite inter-tenant.
