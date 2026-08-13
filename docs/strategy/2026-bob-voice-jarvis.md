@@ -1,5 +1,13 @@
 # Bob en mode vocal — le « Jarvis » de l'artisan
 
+> **HISTORIQUE — ne décrit plus l'architecture ni les capacités publiées.** Cette photographie du
+> premier prototype est remplacée par
+> `design_handoff_bob_pro/OBJECTIFS_SPECS_DOD_PUBLICATION.md`,
+> `design_handoff_bob_pro/DECISION_GPT_REALTIME_NATIVE_PUBLICATION_20260810.md` et les contrats
+> AgentMission V2. En particulier, les regex/outils provider et le duo Expo Speech/Whisper ne sont
+> pas la cible : Bob Live publie un unique cerveau serveur, GPT Realtime WebRTC natif et les mêmes
+> use cases/décisions scellées que l'UI. Les symboles ✅ ci-dessous sont uniquement historiques.
+
 > Principe : la **voix n'est qu'un canal d'entrée**. `voix → transcription (STT natif/cloud) → MÊME cerveau Bob (classifieur LLM → outils) → action`. Tout ce que Bob fait passe par les **mêmes use cases** que l'UI manuelle (parité). Garde-fous toujours actifs : périmètre strict (admin/finance), `parse` des arguments, money-guard (aucun montant inventé), et **politique d'autonomie** (auto / recommandé / tout-confirmer) — les actions sortantes/sensibles demandent confirmation (modale de choix).
 
 Statut : ✅ = fonctionne aujourd'hui · 🧭 = Bob **ouvre le bon écran** (navigation) · ⏳ = prévu (tool à brancher).

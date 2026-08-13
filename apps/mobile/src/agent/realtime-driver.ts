@@ -78,6 +78,9 @@ export class RealtimeContextPublisher {
   async publish(context: AgentContext): Promise<RealtimePublishResult> {
     if (this.closed) return { status: 'superseded' };
     this.inFlight?.abort();
+    // Une fence authentifie un écran précis. Dès qu'un nouvel écran part vers le serveur,
+    // l'ancienne ne peut plus autoriser un contrôle en file pendant la transition.
+    this.acknowledged = null;
     const abort = new AbortController();
     this.inFlight = abort;
     this.revision += 1;

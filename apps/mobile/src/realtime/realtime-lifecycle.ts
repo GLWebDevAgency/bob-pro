@@ -26,7 +26,7 @@ function stopOrchestrator(
   orchestrator: RealtimeResilienceOrchestrator,
   reason: RealtimeCloseReason,
 ): Promise<void> {
-  return orchestrator.stop(reason);
+  return orchestrator.stop(reason).then(() => undefined);
 }
 
 function useRealtimeLifecycle<T>(

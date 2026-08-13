@@ -172,8 +172,10 @@ prepared → dispatching → requested → accepted
   curseur n'avance jamais lors du claim : un pod concurrent ne reçoit rien tant que le lease vit,
   puis une page expirée est relivrée à l'identique sous un nouveau claim ;
 - le scheduler renouvelle le lease avant chaque transaction tenantée, elle-même bornée à quatre
-  secondes. Il traite au plus un lot par tenant et n'ACKe la page qu'après le succès de tous ses
-  tenants. Un ACK ou renouvellement portant un ancien claim est refusé sans effet ;
+  secondes. Il traite au plus un lot par tenant et ACKe la page dès que la page possédée a été
+  entièrement tentée. Les échecs individuels restent dus et sont redécouverts : un tenant en panne
+  ne bloque ni les autres tenants, ni le curseur, ni la rotation des clés. Un ACK ou renouvellement
+  portant un ancien claim est refusé sans effet ;
 - `list`, `renew` et `ACK` s'exécutent dans une transaction globale dédiée : une première
   instruction pose réellement `statement_timeout=3s` et `lock_timeout=1s`, puis seulement la
   fonction directory est appelée, sous une seconde borne Prisma de quatre secondes. Le
@@ -197,6 +199,24 @@ prepared → dispatching → requested → accepted
 - une capacité `provider_stream/v2` est créée pendant que la livraison native est encore
   `prepared`, avant `dispatcher.start` et avant tout `response.create`. Si le scellement ou
   l'écriture échoue, la livraison est annulée et aucun audio n'est demandé ;
+- la temporalité UX sépare strictement **présentation** et **effet**. Une carte informative, une
+  liste de candidats réels ou une question de désambiguïsation peuvent apparaître pendant que Bob
+  parle, via un événement de présentation non autoritatif lié au tour et hydraté depuis les données
+  réelles ; cet événement ne contient aucune route exécutable, aucun `proposalId` consommable et
+  aucun pouvoir métier ;
+- une navigation réversible peut être préparée pendant la parole, mais son application passe par
+  un handoff contextuel générationnel : l'ancien écran remet son fence, le nouvel écran publie et
+  acquitte son contexte, puis le micro reste continu sans que Bob n'interrompe sa propre phrase.
+  Tant que ce handoff sans coupure n'est pas certifié sur appareil, la navigation reste sérialisée
+  après livraison au lieu de prétendre au parallélisme ;
+- une proposition peut être rendue visible dès que son objet serveur est scellé, mais tous ses
+  boutons restent désactivés jusqu'au reçu durable, à la revalidation de contexte et à l'autorité
+  `/control-acknowledgements`. Une mutation — financière, légale, contractuelle, destructive ou
+  autre — ne quitte jamais ce rail opaque et conserve la confirmation humaine requise ;
+- ces événements de présentation constituent un protocole distinct de `provider_stream/v2` : ils
+  ne peuvent ni être promus implicitement en contrôle, ni contourner l'ACK, ni être dérivés d'une
+  metadata fournisseur. Les SLO mesurent séparément premier audio, première présentation, contrôle
+  consommable et effet confirmé ;
 - la rétention V2 copie exactement `native_delivery.retentionExpiresAt` dans le grant, puis celle
   du grant dans la consommation. Elle ne recalcule jamais `clock_timestamp() + 30 days`, ce qui
   dépasserait la racine de quelques millisecondes. Le writer N-1 `audited_artifact/v1` conserve sa
@@ -257,8 +277,11 @@ prepared → dispatching → requested → accepted
       liste de tenants configurée, et expose toute saturation de sa fenêtre.
 - [x] Une page n'avance qu'après ACK de son claim courant ; lease vivant, renouvellement, reprise
       après expiration et refus d'un ancien claim sont explicites et fail-closed.
-- [ ] `provider_stream/v2` est activé dans le même train que sa purge de graphe, ses tests RLS/CAS,
-      sa liaison XOR et son refus avant ACK ; aucun contrôle natif orphelin ne peut survivre.
+- [ ] La phase A `provider_stream/v2` livre de façon dormante sa purge de graphe, ses tests RLS/CAS,
+      sa liaison XOR, sa politique V2 et ses writers N-1 tout en conservant le CHECK d'interdiction.
+      La phase B retire ce CHECK et bascule l'autorité seulement dans l'opérateur exact-SHA, après
+      fermeture des admissions et drainage de tous les pods N-1 ; aucun contrôle natif orphelin
+      ne peut survivre.
 - [ ] Les fixtures cryptographiques `audited_artifact/v1` restent identiques octet pour octet ;
       `provider_stream/v2` utilise des domaines AAD, clé et HMAC distincts liés au
       `nativeDeliveryId`.

@@ -2584,14 +2584,32 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
     });
   });
 
-  it('lie le bootstrap natif à la delivery/version et refuse toute policy signée', async () => {
+  it('lie le bootstrap natif à Mission V2, acquitte la capability et refuse toute policy signée', async () => {
     const sessionHandle = '00000000-0000-4000-8000-000000000031';
-    const answerSdp = 'v=0\r\nm=audio 9 RTP/AVP 0\r\na=recvonly\r\n';
-    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+    const answerSdp = 'v=0\r\nm=audio 9 RTP/AVP 0\r\na=sendrecv\r\n';
+    const capability = `bam2_${Buffer.alloc(32, 31).toString('base64url')}`;
+    const paths: string[] = [];
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      const path = new URL(String(url)).pathname;
+      paths.push(path);
+      if (
+        path
+          === `/voice/realtime/calls/${sessionHandle}/agent-mission-bootstrap-acknowledgements`
+      ) {
+        expect(init?.method).toBe('POST');
+        expect(init?.headers).toMatchObject({
+          'x-bob-agent-mission-capability': capability,
+        });
+        expect(init?.body).toBeUndefined();
+        return new Response(JSON.stringify({ acknowledged: true, replayed: false }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
       expect(JSON.parse(String(init?.body))).toEqual({
         sdp: 'v=0\r\nm=audio 9 RTP/AVP 0\r\n',
         ...nativeBinding(currentConfigVersion),
         sessionHandle,
+        agentMissionProtocolVersion: 2,
       });
       return new Response(JSON.stringify({
         transport: 'webrtc',
@@ -2602,6 +2620,8 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
         voice: 'marin',
         ...nativeBinding(currentConfigVersion),
         maxSessionSeconds: 900,
+        agentMissionProtocolVersion: 2,
+        agentMissionCapability: capability,
       }), { headers: { 'content-type': 'application/json' } });
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -2612,13 +2632,28 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
       sdp: 'v=0\r\nm=audio 9 RTP/AVP 0\r\n',
       ...nativeBinding(currentConfigVersion),
       sessionHandle,
+      agentMissionProtocolVersion: 2,
     });
 
     expect(result).toMatchObject({
       ok: true,
       value: { speechDelivery: 'openai-native-webrtc-v1', answerSdp },
     });
-    if (result.ok) expect(result.value).not.toHaveProperty('speechSourcePolicy');
+    if (result.ok) {
+      expect(result.value).not.toHaveProperty('speechSourcePolicy');
+      expect(result.value.agentMissionSession).toMatchObject({
+        protocolVersion: 2,
+        realtimeSessionId: sessionHandle,
+        disposed: false,
+      });
+      expect(Object.keys(result.value)).not.toContain('agentMissionSession');
+      result.value.agentMissionSession?.dispose();
+      expect(result.value.agentMissionSession?.disposed).toBe(true);
+    }
+    expect(paths).toEqual([
+      '/voice/realtime/calls',
+      `/voice/realtime/calls/${sessionHandle}/agent-mission-bootstrap-acknowledgements`,
+    ]);
   });
 
   it('parle au serveur N-1 sans champs v4 et normalise sa réponse audited WebRTC', async () => {

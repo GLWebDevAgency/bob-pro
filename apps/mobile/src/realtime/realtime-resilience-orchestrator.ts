@@ -38,6 +38,12 @@ export interface RealtimeResilienceState {
   readonly fallbackChannel: LegacyFallbackChannel | null;
 }
 
+export interface RealtimeStopReceipt {
+  readonly status: 'closed' | 'unconfirmed';
+  readonly primaryClosed: boolean;
+  readonly fallbackClosed: boolean;
+}
+
 export type RealtimeResilienceEvent =
   | { readonly type: 'state'; readonly state: RealtimeResilienceState }
   | { readonly type: 'transport'; readonly event: RealtimeTransportEvent };
@@ -149,7 +155,7 @@ export class RealtimeResilienceOrchestrator {
   private fallbackSession: LegacyVoiceFallbackSession | null = null;
   private fallbackActivationTask: Promise<void> | null = null;
   private startTask: Promise<RealtimeResilienceState> | null = null;
-  private stopTask: Promise<void> | null = null;
+  private stopTask: Promise<RealtimeStopReceipt> | null = null;
   private recoveryTask: Promise<void> | null = null;
   private disconnectTask: Promise<void> | null = null;
   private connectivityGeneration = 0;
@@ -256,34 +262,32 @@ export class RealtimeResilienceOrchestrator {
     this.transition({ ...this.currentState, phase: 'ready', lastFailureReason: null });
   }
 
-  async stop(reason: RealtimeCloseReason = 'user'): Promise<void> {
+  async stop(reason: RealtimeCloseReason = 'user'): Promise<RealtimeStopReceipt> {
     if (this.stopTask) return this.stopTask;
     // Publier le verrou avant d'entrer dans la fermeture protège aussi contre un observateur
     // réentrant qui redemanderait stop/start pendant une transition d'état.
-    let resolveTask!: () => void;
+    let resolveTask!: (receipt: RealtimeStopReceipt) => void;
     let rejectTask!: (error: unknown) => void;
-    const task = new Promise<void>((resolve, reject) => {
+    const task = new Promise<RealtimeStopReceipt>((resolve, reject) => {
       resolveTask = resolve;
       rejectTask = reject;
     });
     this.stopTask = task;
     void this.performStop(reason).then(resolveTask, rejectTask);
     try {
-      await task;
+      return await task;
     } finally {
       if (this.stopTask === task) this.stopTask = null;
     }
   }
 
-  private async performStop(reason: RealtimeCloseReason): Promise<void> {
+  private async performStop(reason: RealtimeCloseReason): Promise<RealtimeStopReceipt> {
     const generation = ++this.sessionGeneration;
     this.connectivityGeneration += 1;
     this.disconnectTask = null;
     // La continuation ancienne reste fencée par génération, mais ne doit pas empêcher une
     // future mission explicite de posséder son propre cycle de récupération.
     this.recoveryTask = null;
-    this.abortController?.abort();
-    this.abortController = null;
     this.transition({
       ...this.currentState,
       phase: 'stopping',
@@ -291,7 +295,14 @@ export class RealtimeResilienceOrchestrator {
     });
 
     const primary = this.primary;
-    let fullyClosed = primary ? await this.disposePrimary(primary, reason) : true;
+    // Armer SYNCHRONIQUEMENT la fermeture avec la cause applicative avant d'annuler le signal
+    // externe. Sinon le listener AbortSignal du transport gagne la course et transforme tous les
+    // stops user/background/unmount en `lifecycle/aborted` dans la trace terrain.
+    const primaryClose = primary ? this.disposePrimary(primary, reason) : null;
+    this.abortController?.abort();
+    this.abortController = null;
+    const primaryClosed = primaryClose === null ? true : await primaryClose;
+    let fallbackClosed = true;
 
     // Une activation legacy déjà lancée doit rendre son lease puis le fermer avant qu'une
     // nouvelle mission puisse démarrer. Cela interdit tout chevauchement de TTS/cerveau.
@@ -300,14 +311,19 @@ export class RealtimeResilienceOrchestrator {
     }
     const fallback = this.fallbackSession;
     if (fallback) {
-      const fallbackClosed = await Promise.resolve()
+      fallbackClosed = await Promise.resolve()
         .then(() => fallback.close(reason))
         .then(() => true, () => false);
-      fullyClosed = fullyClosed && fallbackClosed;
       if (fallbackClosed && this.fallbackSession === fallback) this.fallbackSession = null;
     }
 
-    if (generation !== this.sessionGeneration) return;
+    const receipt = Object.freeze({
+      status: primaryClosed && fallbackClosed ? 'closed' : 'unconfirmed',
+      primaryClosed,
+      fallbackClosed,
+    } satisfies RealtimeStopReceipt);
+    if (generation !== this.sessionGeneration) return receipt;
+    const fullyClosed = receipt.status === 'closed';
     if (!fullyClosed) {
       this.transition({
         phase: 'failed',
@@ -316,7 +332,7 @@ export class RealtimeResilienceOrchestrator {
         lastFailureReason: this.currentState.lastFailureReason ?? 'provider_error',
         fallbackChannel: this.currentState.fallbackChannel,
       });
-      return;
+      return receipt;
     }
     this.reconnectAttempts = 0;
     this.transition({
@@ -326,6 +342,7 @@ export class RealtimeResilienceOrchestrator {
       lastFailureReason: null,
       fallbackChannel: null,
     });
+    return receipt;
   }
 
   private async runInitialConnection(generation: number): Promise<RealtimeResilienceState> {
@@ -585,14 +602,24 @@ export class RealtimeResilienceOrchestrator {
     if (attempt.closeTask) return attempt.closeTask;
     attempt.ready = false;
     this.unsubscribePrimary(attempt);
-    const task = Promise.resolve().then(() => attempt.transport.close(reason)).then(
+    let closeResult: Promise<void>;
+    try {
+      // L'appel direct permet au transport de verrouiller sa première cause avant qu'un signal
+      // d'annulation concurrent soit émis par l'orchestrateur.
+      closeResult = Promise.resolve(attempt.transport.close(reason));
+    } catch {
+      closeResult = Promise.reject(new Error('realtime_primary_close_failed'));
+    }
+    const task = closeResult.then(
       () => {
         attempt.closed = true;
         if (this.primary === attempt) this.primary = null;
         return true;
       },
       () => false,
-    );
+    ).finally(() => {
+      if (attempt.closeTask === task && !attempt.closed) attempt.closeTask = null;
+    });
     attempt.closeTask = task;
     return task;
   }

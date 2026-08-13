@@ -1,6 +1,10 @@
 import { createHmac } from 'node:crypto';
 import { Inject, Injectable, Optional } from '@nestjs/common';
-import { MISTRAL_CONVERSATION_PROTOCOL, isAllowedAgentNavigationRoute } from '@bob/ai';
+import {
+  MISTRAL_CONVERSATION_PROTOCOL,
+  isAllowedAgentNavigationRoute,
+  realtimeSdpSingleAudioDirection,
+} from '@bob/ai';
 import {
   appConflict,
   appForbidden,
@@ -1034,6 +1038,17 @@ export class RealtimeVoiceService {
       });
     }
     const nativeDelivery = parsed.value.speechDelivery === 'openai-native-webrtc-v1';
+    if (
+      nativeDelivery
+      && realtimeSdpSingleAudioDirection(parsed.value.sdp) !== 'sendrecv'
+    ) {
+      // Le contrat wire/delivery est déjà prouvé, mais aucun port tenanté ou fournisseur n'a
+      // encore été appelé. Une offre native ambiguë ne doit jamais consommer une admission.
+      return this.finishError('validation', startedAt, {
+        kind: 'validation',
+        issues: [{ field: 'sdp', message: 'Offre SDP native duplex invalide.' }],
+      });
+    }
     if (
       nativeDelivery
       && parsed.value.agentMissionNegotiation.requested !== 'v2'
@@ -2354,7 +2369,7 @@ export class RealtimeVoiceService {
       return;
     }
     if (providerTermination === 'confirmed') {
-      await this.admission.release({ ...lease, providerTermination: 'confirmed' }).catch(() => undefined);
+      await this.releaseFailedBootstrapLease(lease, 'confirmed');
       return;
     }
     if (providerTermination === 'unconfirmed') {
@@ -2363,7 +2378,7 @@ export class RealtimeVoiceService {
       return;
     }
     if (providerCallId === null) {
-      await this.admission.release({ ...lease, providerTermination: 'not_created' }).catch(() => undefined);
+      await this.releaseFailedBootstrapLease(lease, 'not_created');
       return;
     }
     try {
@@ -2373,7 +2388,24 @@ export class RealtimeVoiceService {
       this.logger.warn('bob.live.provider.error class=orphan_hangup_failed', 'BobLive');
       return;
     }
-    await this.admission.release({ ...lease, providerTermination: 'confirmed' }).catch(() => undefined);
+    await this.releaseFailedBootstrapLease(lease, 'confirmed');
+  }
+
+  private async releaseFailedBootstrapLease(
+    lease: RealtimeAdmissionLease,
+    providerTermination: 'confirmed' | 'not_created',
+  ): Promise<void> {
+    const failureClass = providerTermination === 'confirmed'
+      ? 'admission_release_failed_after_provider_termination'
+      : 'admission_release_failed_before_provider_creation';
+    try {
+      const released = await this.admission.release({ ...lease, providerTermination });
+      if (released.ok) return;
+    } catch {
+      // La cause brute peut contenir des détails d'infrastructure : seul le code borné sort.
+    }
+    this.metrics.bobLiveProviderErrors.inc({ class: failureClass });
+    this.logger.warn(`bob.live.bootstrap.cleanup.failed class=${failureClass}`, 'BobLive');
   }
 
   private finishError<T>(outcome: string, startedAt: number, error: AppError): Result<T, AppError> {
