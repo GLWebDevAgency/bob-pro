@@ -105,11 +105,16 @@ PR85 atteint au maximum le statut **implemented** lorsque tous les critères §5
 est atomique, la décision associée est suivie par Git et la PR est mergée. Le statut ne devient pas
 `certified` via cette PR.
 
-Les trains suivants, un à la fois, sont :
+À la suite des deux revues indépendantes de PR85, le micro-lot SDP pré-contrôle a été intercalé
+avant l'expansion afin de fermer le split-brain serveur/mobile observé sur le terrain. Les trains
+suivants, un à la fois, sont :
 
-1. expansion dormante `provider_stream/v2` + politique acoustique et maintenance ;
-2. readiness globale, minimum-client/fermeture legacy et opérateur native exact-SHA ;
-3. activation staging, canary Voice Trace, nouvelle APK puis QA Android/iPhone avec RTP, ACK,
+1. autorité SDP partagée et preuve verticale Mission V2 → contexte confirmé → micro, sans contrôle ;
+2. lifecycle local provider-neutral : sign-out acoustique/Mission, ACK asynchrone des rails
+   historiques et fence révision+digest sur chaque événement vocal ;
+3. expansion dormante `provider_stream/v2` + politique acoustique et maintenance ;
+4. readiness globale, minimum-client/fermeture legacy et opérateur native exact-SHA ;
+5. activation staging, canary Voice Trace, nouvelle APK puis QA Android/iPhone avec RTP, ACK,
    navigation, proposition, confirmations et barge-in mesurés.
 
 L'ouverture production reste **[BLOQUÉ FONDATEUR : acceptation explicite du risque acoustique

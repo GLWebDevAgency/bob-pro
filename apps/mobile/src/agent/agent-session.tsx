@@ -10,7 +10,6 @@ import {
 } from 'react';
 import { AppState } from 'react-native';
 import { router } from 'expo-router';
-import { randomUUID } from 'expo-crypto';
 import { echoOverlap, isAllowedAgentNavigationRoute, type AgentRun, type AskOptions , planSpokenDelivery, summarizeVoiceLatency, type VoiceLatencyTrace } from '@bob/ai';
 import { t } from '@bob/i18n';
 import { useTheme } from '@bob/ui';
@@ -41,43 +40,33 @@ import {
 import { snapshotAgentContext, useAgentContext, useAgentSurface, type AgentContext } from './agent-context';
 import {
   agentContextSemanticKey,
+  AgentRealtimeControllerRegistry,
+  classifyAgentRealtimeControllerAcquisition,
+  closeAgentRealtimeController,
   composeHandoffSpeech,
   LEGACY_LISTENING_SILENCE_GRACE_MS,
   planAgentSessionFallback,
   planAgentSessionFailedClosed,
   revalidateAgentSessionBackgroundAfterPermission,
-  realtimeGenericReconnectBudget,
   settleAgentSessionRealtimeBootstrap,
   shouldRecoverLegacyListeningSilence,
   shouldStopAgentSessionForAppState,
   type AgentSessionDriver,
 } from './agent-session-runtime';
+import { fenceAgentRealtimeHooks } from './agent-session-realtime-hook-fence';
 import { clearWizardHint, setWizardHint } from './wizard-hints';
-import { RealtimeControlAcknowledgementGate } from '../realtime/realtime-control-gate';
-import { RealtimeAuditedConversationTransport } from '../realtime/realtime-audited-conversation-transport';
-import { composeRealtimeConversationTransport } from '../realtime/realtime-conversation-transport-factory';
 import {
   ConversationTimeZoneGateCoordinator,
   type ConversationTimeZoneConfirmationState,
 } from './conversation-time-zone-gate';
-import { ExpoRealtimeAuditedSpeechPlayback } from '../realtime/expo-realtime-audited-speech-playback';
-import { RealtimeResilienceOrchestrator } from '../realtime/realtime-resilience-orchestrator';
 import {
-  RealtimeWebRtcTransport,
-} from '../realtime/webrtc-realtime-transport';
-import {
-  MistralRealtimeTransport,
-} from '../realtime/mistral-realtime-transport';
-import {
-  isRealtimeMistralConversationNegotiation,
-  MistralConversationTransport,
   type MistralConversationCheckpointBinding,
 } from '../realtime/mistral-conversation-runtime';
 import {
   useMistralConversationCheckpointBinding,
 } from '../realtime/mistral-conversation-checkpoint-provider';
 import { RealtimeSessionController } from './realtime-session';
-import { createRealtimePrimaryTransport } from './realtime-primary-transport';
+import { createAgentRealtimeSessionController } from './realtime-session-composition';
 import { registerBeforeSignOutCleanup } from '../data/session-cleanup';
 import { useAgentMissionRuntimeBridge } from './agent-mission-provider';
 import {
@@ -174,6 +163,8 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
   const { personality } = useTheme();
   const { session: authSession } = useAuth();
   const client = useBobClient();
+  const clientRef = useRef(client);
+  clientRef.current = client;
   const agentMissionRuntime = useAgentMissionRuntimeBridge();
   const mistralConversationCheckpoint = useMistralConversationCheckpointBinding();
   const mistralConversationCheckpointRef = useRef(mistralConversationCheckpoint);
@@ -332,126 +323,50 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
   // ── BOB LIVE : contrôleur temps réel, EXCLUSIF du pilote legacy. Le serveur fait foi
   // (entitlement voice_live + rollout dans realtimeVoiceConfig().available) — tant qu'il dit
   // non, ce chemin est inerte et la session reste 100 % historique. ──
-  const realtimeRef = useRef<RealtimeSessionController | null>(null);
-  const realtimeControllerClientRef = useRef(client);
-  const realtimeMistralCheckpointUsedRef = useRef<MistralConversationCheckpointBinding | null>(null);
+  const realtimeControllerRegistryRef = useRef<AgentRealtimeControllerRegistry<
+    RealtimeSessionController,
+    typeof client,
+    MistralConversationCheckpointBinding
+  > | null>(null);
+  realtimeControllerRegistryRef.current ??= new AgentRealtimeControllerRegistry();
   const realtimeActiveRef = useRef(false);
   const driverRef = useRef<AgentSessionDriver>('idle');
   const sessionGenerationRef = useRef(0);
   const appStateRef = useRef(AppState.currentState);
-  const getRealtimeController = (): RealtimeSessionController => {
-    if (realtimeRef.current) return realtimeRef.current;
-    realtimeControllerClientRef.current = client;
-    realtimeRef.current = new RealtimeSessionController(
-      {
-        negotiate: async () => {
-          const config = await client.realtimeVoiceConfig();
-          return config.ok ? config.value : null;
-        },
-        ensureConfirmedTimeZoneForMissionV2: requireConfirmedTimeZone,
-        confirmDiagnosticTraceBeforeListening: requestDiagnosticTraceDecision,
-        updateContext: async (handle, update) => client.updateRealtimeVoiceContext(handle, update),
-        createOrchestrator: (
-          negotiation,
-          agentMissionProtocolVersion,
-          legacyFallback,
-          currentFence,
-          onPrimaryCreated,
-        ) => {
-          const conversationV2 = isRealtimeMistralConversationNegotiation(negotiation);
-          return new RealtimeResilienceOrchestrator({
-            createPrimary: () => {
-              // Le provider choisi par le serveur est autoritaire : une mission n'essaie jamais
-              // une seconde clé en parallèle. V2 possède sa mission durable et ses reprises b2/r2.
-              const selection = createRealtimePrimaryTransport({
-                negotiation,
-                checkpoint: mistralConversationCheckpointRef.current,
-                factories: {
-                  webRtc: (webRtcNegotiation) => new RealtimeWebRtcTransport(
-                    client,
-                    webRtcNegotiation,
-                    {
-                    agentMissionProtocolVersion,
-                    },
-                  ),
-                  mistralConversation: (
-                    mistralConversationNegotiation,
-                    checkpoint,
-                  ) => new MistralConversationTransport(
-                    client,
-                    mistralConversationNegotiation,
-                    {
-                      getInitialContext: () => snapshotAgentContext(contextRef.current),
-                      checkpoint,
-                    },
-                  ),
-                  mistralPcm: (mistralPcmNegotiation) => new MistralRealtimeTransport(
-                    client,
-                    mistralPcmNegotiation,
-                    {
-                      getInitialContext: () => snapshotAgentContext(contextRef.current),
-                    },
-                  ),
-                },
-              });
-              realtimeMistralCheckpointUsedRef.current = selection.checkpointUsed;
-              const transport = composeRealtimeConversationTransport(
-                negotiation,
-                selection.uplink,
-                (auditedUplink) => new RealtimeAuditedConversationTransport(auditedUplink, {
-                  client,
-                  currentFence,
-                  createIdentifier: randomUUID,
-                  createPlayback: ({ audioLease, speechSourcePolicy }) => (
-                    new ExpoRealtimeAuditedSpeechPlayback({
-                      audioLease,
-                      speechSourcePolicy,
-                    })
-                  ),
-                }),
-              );
-              onPrimaryCreated(transport);
-              return transport;
-            },
-            legacyFallback,
-            // Une reconnexion générique recréerait une deuxième mission v2. Le runtime v2 est
-            // seul propriétaire de ses routes ; l'orchestrateur attend son verdict/fallback.
-            maxReconnectAttempts: realtimeGenericReconnectBudget(
-              agentMissionProtocolVersion,
-              conversationV2,
-            ),
-          });
-        },
-        createControlGate: (currentFence) =>
-          new RealtimeControlAcknowledgementGate(client, () => {
-            const fence = currentFence();
-            return fence === null ? null : fence;
-          }),
-        allowMicrophoneActivation: voiceMayActivateMicrophone,
-        agentMissionRuntime,
-      },
-      {
+  const getRealtimeController = async (): Promise<RealtimeSessionController | null> => {
+    const registry = realtimeControllerRegistryRef.current!;
+    const acquired = await registry.acquire({
+      readDesired: () => ({
+        client: clientRef.current,
+        checkpoint: mistralConversationCheckpointRef.current,
+      }),
+      closeStale: (controller) => closeAgentRealtimeController({
+        controller,
+        reason: 'unmount',
+      }),
+      create: (lease) => {
+        let controller: RealtimeSessionController | null = null;
+        const hooks = fenceAgentRealtimeHooks({
+          isCurrentController: lease.isCurrent,
+          ownsLiveUi: () => realtimeActiveRef.current,
+          hooks: {
         onPhase: (phase) => {
-          if (realtimeActiveRef.current) setSessionPhase(phase);
+          setSessionPhase(phase);
         },
         onUserTranscript: (text, final) => {
-          if (!realtimeActiveRef.current || !final) return;
+          if (!final) return;
           setTranscript(text);
           appendConversation({ role: 'user', text });
         },
         onBobTranscript: (text, final) => {
-          if (!realtimeActiveRef.current || !final) return;
+          if (!final) return;
           setResponse(text);
           appendConversation({ role: 'bob', text });
         },
         onDiagnosticTrace: (disclosure) => {
-          if (!realtimeActiveRef.current) return;
           setDiagnosticTrace(disclosure);
         },
         onReview: (proposalId, proposalExpiresAt) => {
-          if (!realtimeActiveRef.current) return;
-          // Le controle ACKe ne contient qu'une capacite opaque. L'Assistant rechargera son
-          // apercu owner-bound avant d'afficher Valider ; aucun args provider n'est accepte.
           if (!proposalId) {
             setResponse(t('assistant.proposalUnavailable', { personality }));
             setReviewRequired(false);
@@ -495,15 +410,10 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
           }));
         },
         onNavigate: (route) => {
-          if (!realtimeActiveRef.current) return;
-          // PAS de publication ici : contextRef porte encore l'ANCIEN écran. Le montage du
-          // nouvel écran change instanceId → l'effet [liveContextInstance] republie le BON
-          // contexte (publier les deux créait une course qui tuait la session — P1 14/07).
+          // Le nouvel écran seul republie son contexte exact après la navigation.
           router.push(route as never);
         },
         onFallback: (reason, channel) => {
-          // Primaire ENTIÈREMENT fermé (garantie orchestrateur) : texte honnête puis boucle
-          // historique — jamais deux cerveaux.
           const plan = planAgentSessionFallback(reason, channel);
           realtimeActiveRef.current = false;
           driverRef.current = plan.driver;
@@ -520,9 +430,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
             return;
           }
           setResponse(t('agent.global.liveFallback', { personality }));
-          void (async () => {
-            await say(t('agent.global.liveFallback', { personality }), true);
-          })();
+          void say(t('agent.global.liveFallback', { personality }), true);
         },
         onFailedClosed: () => {
           const plan = planAgentSessionFailedClosed();
@@ -545,10 +453,23 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
           setActive(false);
           setSessionPhase('idle');
         },
-        getContextSnapshot: () => snapshotAgentContext(contextRef.current),
+          },
+        });
+        controller = createAgentRealtimeSessionController({
+          client: lease.client,
+          agentMissionRuntime,
+          ensureConfirmedTimeZoneForMissionV2: requireConfirmedTimeZone,
+          confirmDiagnosticTraceBeforeListening: requestDiagnosticTraceDecision,
+          allowMicrophoneActivation: voiceMayActivateMicrophone,
+          getContextSnapshot: () => snapshotAgentContext(contextRef.current),
+          getMistralConversationCheckpoint: lease.getCheckpoint,
+          recordMistralConversationCheckpointUsed: lease.recordCheckpointUsed,
+          hooks,
+        });
+        return controller;
       },
-    );
-    return realtimeRef.current;
+    });
+    return acquired;
   };
   const voice = useVoiceInput((text) => transcriptHandlerRef.current(text), {
     owner: 'global-agent-session',
@@ -607,7 +528,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     }
   }, [personality, setSessionPhase]);
 
-  const stopWithReason = useCallback((
+  const stopWithReason = useCallback(async (
     reason: 'user' | 'background' | 'unmount',
     afterManualHandoff = false,
     policyReason: RealtimeVoiceClientPolicyCloseReason | null = null,
@@ -616,15 +537,12 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     // realtimeActiveRef ne passe à true) doit quand même invalider la génération du contrôleur
     // — sinon le bootstrap aboutit et ouvre un micro fantôme sur une session affichée éteinte.
     realtimeActiveRef.current = false;
-      settleDiagnosticTraceDecision(false);
+    settleDiagnosticTraceDecision(false);
     driverRef.current = 'idle';
-    realtimeMistralCheckpointUsedRef.current = null;
-    sessionGenerationRef.current += 1;
-    const realtimeStop = afterManualHandoff
-      ? realtimeRef.current?.stopAfterManualHandoff() ?? Promise.resolve()
-      : policyReason !== null
-        ? realtimeRef.current?.stopForPolicy(policyReason) ?? Promise.resolve()
-        : realtimeRef.current?.stop(reason) ?? Promise.resolve();
+    const stopGeneration = sessionGenerationRef.current + 1;
+    sessionGenerationRef.current = stopGeneration;
+    const registry = realtimeControllerRegistryRef.current!;
+    const controller = registry.peek();
     clearWizardHint(); // un hint en vol meurt avec la session — jamais de pré-remplissage fantôme
     turnGenerationRef.current += 1;
     activeRef.current = false;
@@ -635,13 +553,26 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     setContextAtTurn(null);
     replaceHandoff(null);
     setReviewRequired(false);
-      setDiagnosticTrace(null);
+    setDiagnosticTrace(null);
+    setSessionPhase(controller === null ? 'idle' : 'thinking');
+    const result = await registry.close((ownedController) => closeAgentRealtimeController({
+      controller: ownedController,
+      reason,
+      policyReason,
+      afterManualHandoff,
+    }));
+    // Un nouveau bootstrap a repris l'UI pendant la fermeture : son état est autoritaire.
+    if (sessionGenerationRef.current !== stopGeneration || activeRef.current) return;
+    if (result === 'closed') {
       setSessionPhase('idle');
-    return afterManualHandoff
-      ? realtimeStop
-      : realtimeStop.catch(() => undefined);
+      return;
+    }
+    setIssue('failed');
+    setResponse(t('live.error', { personality }));
+    setSessionPhase('error');
+    if (afterManualHandoff) throw new Error('agent_mission_release_failed');
   },
-    [replaceHandoff, setSessionPhase, settleDiagnosticTraceDecision, stopSpeaking],
+    [personality, replaceHandoff, setSessionPhase, settleDiagnosticTraceDecision, stopSpeaking],
   );
 
   const stop = useCallback((): void => {
@@ -654,13 +585,14 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
 
   const suspendForManualHandoff = useCallback(
     (): Promise<boolean> =>
-      realtimeRef.current?.suspendForManualHandoff() ?? Promise.resolve(false),
+      realtimeControllerRegistryRef.current?.peek()?.suspendForManualHandoff()
+        ?? Promise.resolve(false),
     [],
   );
 
   const stopAfterManualHandoff = useCallback(
     async (): Promise<number | null> => {
-      if (realtimeRef.current === null) return null;
+      if (realtimeControllerRegistryRef.current?.peek() === null) return null;
       await stopWithReason('user', true);
       const released = agentMissionRuntime.currentSnapshot?.();
       return released !== undefined && released.realtimeSessionId === null
@@ -676,20 +608,12 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
   );
 
   useEffect(() => {
-    const controller = realtimeRef.current;
-    if (controller === null) return;
-    const clientChanged = realtimeControllerClientRef.current !== client;
-    const usedCheckpoint = realtimeMistralCheckpointUsedRef.current;
-    const checkpointChanged = usedCheckpoint !== null
-      && usedCheckpoint !== mistralConversationCheckpoint;
-    if (!clientChanged && !checkpointChanged) return;
+    const registry = realtimeControllerRegistryRef.current!;
+    if (!registry.hasMismatch({ client, checkpoint: mistralConversationCheckpoint })) return;
 
     // Defense en profondeur sous la frontiere keyee de _layout : invalider synchroniquement les
     // callbacks UI, puis fermer l'ancienne mission avant qu'un futur start ne capture B.
     void stopWithReason('unmount');
-    if (realtimeRef.current === controller) realtimeRef.current = null;
-    realtimeControllerClientRef.current = client;
-    realtimeMistralCheckpointUsedRef.current = null;
   }, [client, mistralConversationCheckpoint, stopWithReason]);
 
   const say = useCallback(
@@ -964,8 +888,9 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
   // (micro off → interrupt → PUT confirmé → micro on) — l'échec bascule en repli.
   const liveContextKey = agentContextSemanticKey(liveContext);
   useEffect(() => {
-    if (!realtimeActiveRef.current || realtimeRef.current?.active !== true) return;
-    void realtimeRef.current?.publishContext();
+    const controller = realtimeControllerRegistryRef.current?.peek();
+    if (!realtimeActiveRef.current || controller?.active !== true) return;
+    void controller.publishContext();
   }, [liveContextKey]);
 
   const beginSession = useCallback(async (
@@ -991,11 +916,38 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     setReviewRequired(false);
     setContextAtTurn(null);
     replaceHandoff(null);
-      setDiagnosticTrace(null);
+    setDiagnosticTrace(null);
     setSessionPhase('thinking');
     // TEMPS RÉEL d'abord — le serveur décide (plan voice_live + rollout). Une reprise durable
     // interdit structurellement le repli historique et tout changement silencieux de protocole.
-    const controller = getRealtimeController();
+    let controller: RealtimeSessionController | null = null;
+    try {
+      controller = await getRealtimeController();
+    } catch {
+      // Une factory/rotation défaillante appartient à CE bootstrap. La classification ci-dessous
+      // applique le fail-closed uniquement si sa génération possède encore l'UI.
+      controller = null;
+    }
+    const acquisition = classifyAgentRealtimeControllerAcquisition({
+      generation: sessionGeneration,
+      currentGeneration: sessionGenerationRef.current,
+      active: activeRef.current,
+      driver: driverRef.current,
+      appState: appStateRef.current,
+      controller,
+    });
+    if (acquisition.kind === 'superseded') return false;
+    if (acquisition.kind === 'failed') {
+      driverRef.current = 'idle';
+      realtimeActiveRef.current = false;
+      activeRef.current = false;
+      setActive(false);
+      setIssue('failed');
+      setResponse(t('live.error', { personality }));
+      setSessionPhase('error');
+      return false;
+    }
+    const ownedController = acquisition.controller;
     const settled = await settleAgentSessionRealtimeBootstrap({
       generation: sessionGeneration,
       currentGeneration: () => sessionGenerationRef.current,
@@ -1004,12 +956,12 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
       currentAppState: () => appStateRef.current,
       start: () => (
         requiredMissionProtocolVersion === REALTIME_AGENT_MISSION_PROTOCOL_VERSION
-          ? controller.resumeMissionV1()
+          ? ownedController.resumeMissionV1()
           : requiredMissionProtocolVersion === REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
-            ? controller.resumeMissionV2()
-            : controller.start()
+            ? ownedController.resumeMissionV2()
+            : ownedController.start()
       ),
-      stopOwnedController: () => { void controller.stop('user'); },
+      stopOwnedController: () => { void ownedController.stop('user'); },
     });
     if (!settled.owned) return false;
     const outcome = settled.outcome;
@@ -1113,7 +1065,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
       // Le transport Mistral semi-duplex commit l'utterance et conserve la réponse auditée.
       // Un transport à VAD continu (OpenAI) répond false : son geste historique reste stop.
       if (phase === 'listening') {
-        void realtimeRef.current?.finishUserInput().then((accepted) => {
+        void realtimeControllerRegistryRef.current?.peek()?.finishUserInput().then((accepted) => {
           if (!accepted && realtimeActiveRef.current) stop();
         });
       } else {

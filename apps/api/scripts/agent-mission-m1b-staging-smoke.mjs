@@ -1136,6 +1136,17 @@ async function hangupAndClose(client, peer, sessionHandle, missionSession) {
   return hangupAccepted;
 }
 
+async function applyPeerAnswerSafely(peer, answerSdp) {
+  try {
+    await peer.applyAnswer(answerSdp);
+  } catch {
+    // Chromium/Playwright peut recopier une ligne SDP (ICE, fingerprint ou IP) dans son erreur.
+    // Cette frontière ne laisse sortir qu'une cause fermée et ne republie jamais le SDP brut.
+    fail('WebRTC answer was rejected');
+  }
+  return 'remote-description-applied+peer-connected+data-channel-open';
+}
+
 export async function runM1BNegativeStagingSmoke(environment = process.env, dependencies = {}) {
   const prepared = await authenticateAndPrepare(environment, dependencies);
   const { client, isMeaningfulQuoteDraftPayload, isRealtimeBootstrapTimeoutError } = prepared;
@@ -1154,11 +1165,12 @@ export async function runM1BNegativeStagingSmoke(environment = process.env, depe
   );
   const { call, peer, sessionHandle, attempts: bootstrapAttempts, recoveredTimeout } = bootstrap;
   let hangupAccepted = false;
+  let peerProof = null;
   try {
     if (call.agentMissionSession !== null) {
       fail('M1-B negotiated while the staging circuit was expected OFF');
     }
-    await peer.applyAnswer(call.answerSdp);
+    peerProof = await applyPeerAnswerSafely(peer, call.answerSdp);
   } finally {
     hangupAccepted = await hangupAndClose(client, peer, call.sessionHandle, null);
   }
@@ -1174,6 +1186,13 @@ export async function runM1BNegativeStagingSmoke(environment = process.env, depe
     mode: 'negative',
     passed: true,
     speechDelivery: config.speechDelivery,
+    // Valeurs fermées dérivées du contrat Bob, jamais du SDP fournisseur. Le peer réel ne rend
+    // la main qu'après setRemoteDescription + connexion + data channel ; aucune ligne SDP, ICE,
+    // fingerprint, IP ou identité de session n'entre dans le reçu.
+    expectedAnswerProfile: config.speechDelivery === 'openai-native-webrtc-v1'
+      ? 'single-audio-sendrecv'
+      : 'single-audio-recvonly',
+    peerProof,
     agentMission: 'off',
     cleanup: 'complete',
     hangupAccepted,
@@ -1583,7 +1602,7 @@ export async function runM1BRecoveryStagingSmoke(environment = process.env, depe
     ) {
       fail('recovery capability does not match the fresh realtime session');
     }
-    await bootstrap.peer.applyAnswer(bootstrap.call.answerSdp);
+    await applyPeerAnswerSafely(bootstrap.peer, bootstrap.call.answerSdp);
     const current = expectSuccess(
       await missionSession.getCurrentQuoteCreation(),
       'getCurrentQuoteCreation during recovery',
@@ -1669,7 +1688,7 @@ export async function runM1BPositiveStagingSmoke(environment = process.env, depe
     ) {
       fail('M1-B capability handle does not match the realtime session');
     }
-    await peer.applyAnswer(call.answerSdp);
+    await applyPeerAnswerSafely(peer, call.answerSdp);
     const current = expectSuccess(
       await missionSession.getCurrentQuoteCreation(),
       'getCurrentQuoteCreation',
@@ -1890,7 +1909,7 @@ export async function runM2A3PreviewStagingSmoke(environment = process.env, depe
     ) {
       fail('Mission V2 capability does not match the exact realtime session');
     }
-    await peer.applyAnswer(call.answerSdp);
+    await applyPeerAnswerSafely(peer, call.answerSdp);
     const current = expectSuccess(
       await missionSession.getCurrentQuoteCreation(),
       'getCurrentQuoteCreation during V2 canary',
@@ -1957,7 +1976,7 @@ export async function runM2A3PreviewOffStagingSmoke(environment = process.env, d
     if (call.agentMissionSession !== null) {
       fail('Mission V2 negotiated while the staging preview was expected OFF');
     }
-    await peer.applyAnswer(call.answerSdp);
+    await applyPeerAnswerSafely(peer, call.answerSdp);
   } catch (error) {
     primaryError = error;
   }
@@ -2099,7 +2118,7 @@ export async function runRealtimeVoiceTraceV2StagingSmoke(
     ) {
       fail('Voice Trace V2 disclosure drifted between public config and bootstrap');
     }
-    await peer.applyAnswer(call.answerSdp);
+    await applyPeerAnswerSafely(peer, call.answerSdp);
     if (mode === 'on') {
       const context = expectSuccess(
         await client.updateRealtimeVoiceContext(sessionHandle, {

@@ -25,7 +25,10 @@ import {
   parseRealtimeResumeTicketBody,
   safetyIdentifier,
 } from './realtime.service';
-import { RealtimeProviderCallCompensatedError } from './openai-realtime-call.adapter';
+import {
+  RealtimeProviderCallCompensatedError,
+  RealtimeProviderCleanupError,
+} from './openai-realtime-call.adapter';
 import type { RealtimeSidebandControl } from './realtime-sideband';
 import { deriveRealtimeTurnId } from './realtime-sideband';
 import type { RealtimeDurableControlPort } from './realtime-control';
@@ -2037,6 +2040,65 @@ describe('RealtimeVoiceService', () => {
   });
 
   it.each([
+    ['sendonly', `${OFFER_SDP}a=sendonly\r\n`],
+    ['recvonly', `${OFFER_SDP}a=recvonly\r\n`],
+    ['inactive', `${OFFER_SDP}a=inactive\r\n`],
+    ['deux audio', `${OFFER_SDP}m=audio 0 UDP/TLS/RTP/SAVPF 111\r\na=inactive\r\n`],
+    ['vidéo active', `${OFFER_SDP}m=video 9 UDP/TLS/RTP/SAVPF 96\r\na=sendrecv\r\n`],
+    ['direction malformée', `${OFFER_SDP}a=sendrecv:unexpected\r\n`],
+  ] as const)(
+    'refuse une offre native %s avant entitlement, Mission, lease et egress',
+    async (_label, sdp) => {
+      const provider: OpenAiRealtimeCallProvider = {
+        createCall: vi.fn(),
+        hangupCall: vi.fn(async () => undefined),
+      };
+      const durable = admission();
+      const reserve = vi.spyOn(durable, 'reserve');
+      const entitlements = entitled();
+      const gate = missionGate(`bam2_${Buffer.alloc(32, 83).toString('base64url')}`, 'v2');
+      const service = new RealtimeVoiceService(
+        { ...SETTINGS, speechDelivery: 'openai-native-webrtc-v1' },
+        provider,
+        missionCapableAdmission(durable),
+        sidebandStub(),
+        new Metrics(),
+        loggerStub(),
+        undefined,
+        entitlements,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        gate,
+        undefined,
+        NATIVE_RUNTIME_READY,
+      );
+
+      await expect(runAsPrincipal(() => service.createCall({
+        ...NATIVE_BOOTSTRAP_BINDING,
+        agentMissionProtocolVersion: 2,
+        sdp,
+      }))).resolves.toMatchObject({
+        ok: false,
+        error: {
+          kind: 'validation',
+          issues: [{ field: 'sdp' }],
+        },
+      });
+
+      expect(entitlements.check).not.toHaveBeenCalled();
+      expect(gate.prepare).not.toHaveBeenCalled();
+      expect(reserve).not.toHaveBeenCalled();
+      expect(provider.createCall).not.toHaveBeenCalled();
+      expect(provider.hangupCall).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
     { label: 'omis', mission: {} },
     { label: 'null', mission: { agentMissionProtocolVersion: null } },
     { label: 'V1', mission: { agentMissionProtocolVersion: 1 } },
@@ -3003,8 +3065,12 @@ describe('RealtimeVoiceService', () => {
 
   it('ne double jamais le hangup déjà compensé par l’adapter', async () => {
     const handle = '00000000-0000-4000-8000-000000000008';
-    const durable = admission();
-    const hangupCall = vi.fn<OpenAiRealtimeCallProvider['hangupCall']>(async () => undefined);
+    const order: string[] = [];
+    const base = admission();
+    const durable = tracedAdmission(base, order);
+    const hangupCall = vi.fn<OpenAiRealtimeCallProvider['hangupCall']>(async () => {
+      order.push('hangup');
+    });
     const provider: OpenAiRealtimeCallProvider = {
       createCall: vi.fn(async (input) => {
         await input.onCallCreated('rtc_compensated_once');
@@ -3038,6 +3104,9 @@ describe('RealtimeVoiceService', () => {
     });
     expect(hangupCall).toHaveBeenCalledOnce();
     expect(hangupCall).toHaveBeenCalledWith('rtc_compensated_once');
+    expect(order.indexOf('bind')).toBeLessThan(order.indexOf('hangup'));
+    expect(order.indexOf('hangup')).toBeLessThan(order.indexOf('release'));
+    expect(order.filter((event) => event === 'release')).toHaveLength(1);
     const subjectHash = admissionSubjectHash(SETTINGS.safetySecret!, 'company-1', 'user-1');
     await expect(durable.claimTermination({
       companyId: 'company-1',
@@ -3045,6 +3114,140 @@ describe('RealtimeVoiceService', () => {
       principalBindingHash: subjectHash,
       sessionId: handle,
     })).resolves.toEqual({ ok: true, claim: null, pending: false });
+  });
+
+  it('conserve au reaper le bail lié quand la compensation post-bind reste incertaine', async () => {
+    const handle = '00000000-0000-4000-8000-000000000081';
+    let now = Date.parse('2026-08-12T12:00:00.000Z');
+    const base = admission(3, () => now);
+    const release = vi.spyOn(base, 'release');
+    const provider: OpenAiRealtimeCallProvider = {
+      createCall: vi.fn(async (input) => {
+        await input.onCallCreated('rtc_cleanup_unconfirmed');
+        throw new RealtimeProviderCleanupError(
+          'provider_invalid_sdp',
+          'provider_hangup_timeout',
+        );
+      }),
+      hangupCall: vi.fn(async () => undefined),
+    };
+    const sideband = sidebandStub();
+    const service = new RealtimeVoiceService(
+      SETTINGS,
+      provider,
+      base,
+      sideband,
+      new Metrics(),
+      loggerStub(),
+      undefined,
+      entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
+    );
+
+    await expect(runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
+      sdp: OFFER_SDP,
+      sessionHandle: handle,
+    }))).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'dependency', cause: 'provider_invalid_sdp' },
+    });
+
+    expect(provider.hangupCall).not.toHaveBeenCalled();
+    expect(release).not.toHaveBeenCalled();
+    expect(sideband.attach).not.toHaveBeenCalled();
+    expect(base.snapshot().leases).toEqual([
+      expect.objectContaining({
+        sessionId: handle,
+        state: 'bound',
+        providerId: 'openai',
+        providerCallId: 'rtc_cleanup_unconfirmed',
+      }),
+    ]);
+
+    now += 16_000;
+    await expect(base.claimExpired({ companyId: 'company-1' })).resolves.toMatchObject({
+      ok: true,
+      claims: [expect.objectContaining({
+        sessionId: handle,
+        providerId: 'openai',
+        providerCallId: 'rtc_cleanup_unconfirmed',
+      })],
+    });
+  });
+
+  it('ne double pas le hangup si la release échoue après compensation confirmée', async () => {
+    const handle = '00000000-0000-4000-8000-000000000082';
+    const base = admission();
+    const release = vi.fn<RealtimeAdmissionPort['release']>(async () => ({
+      ok: false,
+      reason: 'unavailable',
+    }));
+    const durable: RealtimeAdmissionPort = {
+      ...tracedAdmission(base, []),
+      release,
+    };
+    const hangupCall = vi.fn<OpenAiRealtimeCallProvider['hangupCall']>(async () => undefined);
+    const provider: OpenAiRealtimeCallProvider = {
+      createCall: vi.fn(async (input) => {
+        await input.onCallCreated('rtc_release_uncertain');
+        await hangupCall('rtc_release_uncertain');
+        throw new RealtimeProviderCallCompensatedError('provider_invalid_sdp');
+      }),
+      hangupCall,
+    };
+    const metrics = new Metrics();
+    const logger = loggerStub();
+    const service = new RealtimeVoiceService(
+      SETTINGS,
+      provider,
+      durable,
+      sidebandStub(),
+      metrics,
+      logger,
+      undefined,
+      entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
+    );
+
+    await expect(runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
+      sdp: OFFER_SDP,
+      sessionHandle: handle,
+    }))).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'dependency', cause: 'provider_invalid_sdp' },
+    });
+
+    expect(hangupCall).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledWith(expect.objectContaining({
+      providerTermination: 'confirmed',
+    }));
+    expect(base.snapshot().leases).toEqual([
+      expect.objectContaining({
+        sessionId: handle,
+        state: 'bound',
+        providerCallId: 'rtc_release_uncertain',
+      }),
+    ]);
+    const providerErrors = await metrics.bobLiveProviderErrors.get();
+    expect(providerErrors.values).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        labels: { class: 'admission_release_failed_after_provider_termination' },
+        value: 1,
+      }),
+    ]));
+    expect(logger.warn).toHaveBeenCalledWith(
+      'bob.live.bootstrap.cleanup.failed class=admission_release_failed_after_provider_termination',
+      'BobLive',
+    );
   });
 
   it('nettoie l’appel créé quand le client annule pendant le bootstrap', async () => {

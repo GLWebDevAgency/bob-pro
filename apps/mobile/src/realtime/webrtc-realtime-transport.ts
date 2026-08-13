@@ -16,6 +16,7 @@ import {
   type RealtimeVoiceClientPolicyCloseReason,
   type RealtimeVoiceClientTerminationDiagnostic,
 } from '@bob/core';
+import { realtimeSdpSingleAudioDirection } from '@bob/ai';
 import { randomUUID } from 'expo-crypto';
 import type { MediaStream, MediaStreamTrack } from 'react-native-webrtc';
 import type RTCDataChannel from 'react-native-webrtc/lib/typescript/RTCDataChannel';
@@ -76,75 +77,9 @@ const CLIENT_CHECKPOINT_RANK = new Map<RealtimeVoiceClientCheckpoint, number>(
   REALTIME_VOICE_CLIENT_CHECKPOINTS.map((checkpoint, index) => [checkpoint, index]),
 );
 
-type SdpDirection = 'sendrecv' | 'sendonly' | 'recvonly' | 'inactive';
-
-interface SdpMediaSection {
-  readonly kind: string;
-  readonly port: number;
-  readonly directions: SdpDirection[];
-}
-
-const SDP_DIRECTIONS = new Set<SdpDirection>([
-  'sendrecv',
-  'sendonly',
-  'recvonly',
-  'inactive',
-]);
-
-/**
- * Retourne la direction effective de l'unique m-line audio active.
- *
- * L'absence de direction vaut `sendrecv` en SDP. Les directions dupliquées ou les
- * topologies audio multiples sont refusées : une connexion Bob Live possède exactement
- * une m-line audio. Sa direction est ensuite contrôlée par le contrat de livraison.
- */
-function activeAudioDirection(sdp: string): SdpDirection | null {
-  const sessionDirections: SdpDirection[] = [];
-  const mediaSections: SdpMediaSection[] = [];
-  let currentSection: SdpMediaSection | null = null;
-
-  for (const rawLine of sdp.split(/\r?\n/u)) {
-    const line = rawLine.trim();
-    if (line.startsWith('m=')) {
-      const parts = line.slice(2).split(/\s+/u);
-      const portToken = parts[1];
-      if (parts.length < 3 || !portToken || !/^\d+(?:\/\d+)?$/u.test(portToken)) {
-        return null;
-      }
-      currentSection = {
-        kind: parts[0]?.toLowerCase() ?? '',
-        port: Number(portToken.split('/')[0]),
-        directions: [],
-      };
-      mediaSections.push(currentSection);
-      continue;
-    }
-    if (!line.startsWith('a=')) continue;
-    const attribute = line.slice(2).toLowerCase();
-    if (!SDP_DIRECTIONS.has(attribute as SdpDirection)) continue;
-    const direction = attribute as SdpDirection;
-    if (currentSection) currentSection.directions.push(direction);
-    else sessionDirections.push(direction);
-  }
-
-  const audioSections = mediaSections.filter((section) => section.kind === 'audio');
-  const activeVideoSections = mediaSections.filter(
-    (section) => section.kind === 'video' && section.port !== 0,
-  );
-  if (
-    audioSections.length !== 1
-    || audioSections[0]?.port === 0
-    || activeVideoSections.length > 0
-    || sessionDirections.length > 1
-  ) return null;
-  const [audio] = audioSections;
-  if (!audio || audio.directions.length > 1) return null;
-  return audio.directions[0] ?? sessionDirections[0] ?? 'sendrecv';
-}
-
 function assertMobileOffer(sdp: string, nativeDownlink: boolean): void {
   const expectedDirection = nativeDownlink ? 'sendrecv' : 'sendonly';
-  if (activeAudioDirection(sdp) !== expectedDirection) {
+  if (realtimeSdpSingleAudioDirection(sdp) !== expectedDirection) {
     throw new RealtimeTransportError('bootstrap_failed');
   }
 }
@@ -153,7 +88,7 @@ function assertProviderAnswer(sdp: string, nativeDownlink: boolean): void {
   // La direction d'une answer est exprimée du point de vue du provider. Le contrat audité
   // reste strictement recvonly (uplink mobile), tandis que le contrat OpenAI natif est sendrecv.
   const expectedDirection = nativeDownlink ? 'sendrecv' : 'recvonly';
-  if (activeAudioDirection(sdp) !== expectedDirection) {
+  if (realtimeSdpSingleAudioDirection(sdp) !== expectedDirection) {
     throw new RealtimeTransportError('provider_error');
   }
 }
@@ -1116,8 +1051,8 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
       && remoteDescription?.type === 'answer'
       && typeof localDescription.sdp === 'string'
       && typeof remoteDescription.sdp === 'string'
-      && activeAudioDirection(localDescription.sdp) === expectedDirection
-      && activeAudioDirection(remoteDescription.sdp)
+      && realtimeSdpSingleAudioDirection(localDescription.sdp) === expectedDirection
+      && realtimeSdpSingleAudioDirection(remoteDescription.sdp)
         === (this.nativeDownlink ? 'sendrecv' : 'recvonly');
     if (exactTransceiver && appliedDescriptionsProveDirection) return;
 

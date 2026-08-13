@@ -25,7 +25,18 @@ const MISSION_ID = '66666666-6666-4666-8666-666666666666';
 const COMPANY_ID = 'company-staging';
 const DRAFT_SESSION_ID = 'draft-m1b-staging';
 const CONTEXT_DIGEST = 'a'.repeat(64);
-const ANSWER_SDP = `v=0\r\n${'a'.repeat(80)}`;
+// Poison synthétique anti-fuite uniquement — jamais présenté comme une fixture OpenAI réelle.
+const ANSWER_SDP = [
+  'v=0',
+  'o=- 1 1 IN IP4 192.0.2.42',
+  'c=IN IP6 2001:db8::42',
+  'a=ice-ufrag:private-ufrag',
+  'a=ice-pwd:private-password',
+  'a=fingerprint:sha-256 PRIVATE-FINGERPRINT',
+  'a=candidate:1 1 UDP 1 192.0.2.42 9 typ host',
+  'a=msid:private-stream private-track',
+  'a=ssrc:42 cname:private-cname',
+].join('\r\n');
 const OFFER_SDP = `v=0\r\n${'o'.repeat(80)}`;
 const CONFIRMED_AT = '2026-07-31T00:00:00.000Z';
 
@@ -418,6 +429,7 @@ function fakeDependencies(options = {}) {
     offerSdp: OFFER_SDP,
     async applyAnswer(answer) {
       events.push(`peer:answer:${answer === ANSWER_SDP}`);
+      if (options.peerApplyError !== undefined) throw options.peerApplyError;
     },
     async playAudioFile(path) {
       events.push(`peer:audio:${path}`);
@@ -812,6 +824,8 @@ test('preuve OFF établit une vraie session WebRTC avec capability Mission nulle
     mode: 'negative',
     passed: true,
     speechDelivery: 'openai-native-webrtc-v1',
+    expectedAnswerProfile: 'single-audio-sendrecv',
+    peerProof: 'remote-description-applied+peer-connected+data-channel-open',
     agentMission: 'off',
     cleanup: 'complete',
     hangupAccepted: true,
@@ -829,6 +843,74 @@ test('preuve OFF établit une vraie session WebRTC avec capability Mission nulle
     'realtime:hangup',
     'peer:close',
     `evidence:negative-final:${SESSION_ID}`,
+  ]);
+  const serializedReceipt = JSON.stringify(result);
+  for (const forbidden of [
+    'private-ufrag',
+    'private-password',
+    'PRIVATE-FINGERPRINT',
+    '192.0.2.42',
+    '2001:db8::42',
+    'private-stream',
+    'private-cname',
+  ]) {
+    assert.equal(serializedReceipt.includes(forbidden), false);
+  }
+});
+
+test('preuve OFF auditée décrit le profil contractuel attendu sans conserver le SDP fournisseur', async () => {
+  const fake = fakeDependencies({
+    agentMissionOff: true,
+    speechDelivery: 'audited-signed-url-v1',
+  });
+
+  const result = await runM1BNegativeStagingSmoke(environment(), fake.dependencies);
+
+  assert.equal(result.speechDelivery, 'audited-signed-url-v1');
+  assert.equal(result.expectedAnswerProfile, 'single-audio-recvonly');
+  assert.equal(result.peerProof, 'remote-description-applied+peer-connected+data-channel-open');
+  assert.equal(JSON.stringify(result).includes('private-'), false);
+});
+
+test('preuve OFF normalise un rejet WebRTC sensible puis ferme toujours les deux ressources', async () => {
+  const poison = [
+    'a=ice-ufrag:private-ufrag',
+    'a=ice-pwd:private-password',
+    'a=fingerprint:sha-256 PRIVATE-FINGERPRINT',
+    'a=candidate:1 1 UDP 1 192.0.2.42 9 typ host',
+    'c=IN IP6 2001:db8::42',
+    'a=msid:private-stream private-track',
+    'a=ssrc:42 cname:private-cname',
+  ].join('\r\n');
+  const fake = fakeDependencies({
+    agentMissionOff: true,
+    peerApplyError: new DOMException(`SDP rejected near ${poison}`, 'OperationError'),
+  });
+
+  let caught;
+  try {
+    await runM1BNegativeStagingSmoke(environment(), fake.dependencies);
+  } catch (error) {
+    caught = error;
+  }
+
+  assert.equal(caught?.message, 'agent-mission-m1b-staging-smoke:WebRTC answer was rejected');
+  const serializedError = String(caught?.stack ?? caught);
+  for (const forbidden of [
+    'private-ufrag',
+    'private-password',
+    'PRIVATE-FINGERPRINT',
+    '192.0.2.42',
+    '2001:db8::42',
+    'private-stream',
+    'private-cname',
+  ]) {
+    assert.equal(serializedError.includes(forbidden), false);
+  }
+  assert.deepEqual(fake.events.slice(-3), [
+    'peer:answer:true',
+    'realtime:hangup',
+    'peer:close',
   ]);
 });
 

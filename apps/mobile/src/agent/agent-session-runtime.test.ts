@@ -5,7 +5,10 @@ import {
   REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
 } from '@bob/api-client';
 import {
+  AgentRealtimeControllerRegistry,
   agentContextSemanticKey,
+  classifyAgentRealtimeControllerAcquisition,
+  closeAgentRealtimeController,
   composeHandoffSpeech,
   planAgentSessionFallback,
   planAgentSessionFailedClosed,
@@ -28,6 +31,224 @@ const context = (): AgentContext => ({
 });
 
 describe('agent session runtime fences', () => {
+  it('classe une acquisition A périmée comme inerte sans repeindre B', () => {
+    expect(classifyAgentRealtimeControllerAcquisition({
+      generation: 1,
+      currentGeneration: 2,
+      active: true,
+      driver: 'live_bootstrap',
+      appState: 'active',
+      controller: null,
+    })).toEqual({ kind: 'superseded' });
+    expect(classifyAgentRealtimeControllerAcquisition({
+      generation: 2,
+      currentGeneration: 2,
+      active: true,
+      driver: 'live_bootstrap',
+      appState: 'active',
+      controller: 'B',
+    })).toEqual({ kind: 'owned', controller: 'B' });
+  });
+
+  it('sérialise fermeture A, relit la cible et crée une seule autorité fraîche', async () => {
+    const registry = new AgentRealtimeControllerRegistry<string, object, string>();
+    const clientA = {};
+    const clientB = {};
+    const clientC = {};
+    let desired = { client: clientA, checkpoint: null as string | null };
+    let created = 0;
+    const create = () => `controller-${++created}`;
+    await expect(registry.acquire({
+      readDesired: () => desired,
+      create,
+      closeStale: async () => 'closed',
+    })).resolves.toBe('controller-1');
+
+    let releaseClose!: () => void;
+    const closeGate = new Promise<void>((resolve) => { releaseClose = resolve; });
+    desired = { client: clientB, checkpoint: null };
+    const first = registry.acquire({
+      readDesired: () => desired,
+      create,
+      closeStale: async () => { await closeGate; return 'closed'; },
+    });
+    desired = { client: clientC, checkpoint: null };
+    const second = registry.acquire({
+      readDesired: () => desired,
+      create,
+      closeStale: async () => 'closed',
+    });
+    releaseClose();
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      'controller-2',
+      'controller-2',
+    ]);
+    expect(created).toBe(2);
+    expect(registry.peek()).toBe('controller-2');
+  });
+
+  it('conserve le même controller tant que sa fermeture reste non confirmée', async () => {
+    const registry = new AgentRealtimeControllerRegistry<string, object, string>();
+    const clientA = {};
+    const clientB = {};
+    let desired = { client: clientA, checkpoint: null as string | null };
+    let created = 0;
+    const create = () => `controller-${++created}`;
+    await registry.acquire({
+      readDesired: () => desired,
+      create,
+      closeStale: async () => 'closed',
+    });
+    desired = { client: clientB, checkpoint: null };
+    await expect(registry.acquire({
+      readDesired: () => desired,
+      create,
+      closeStale: async () => 'unconfirmed',
+    })).resolves.toBeNull();
+    expect(registry.peek()).toBeNull();
+    expect(created).toBe(1);
+
+    await expect(registry.acquire({
+      readDesired: () => desired,
+      create,
+      closeStale: async () => 'closed',
+    })).resolves.toBe('controller-2');
+    expect(created).toBe(2);
+  });
+
+  it('ne réutilise jamais un controller fermé de manière incertaine quand la cible est inchangée', async () => {
+    const registry = new AgentRealtimeControllerRegistry<string, object, string>();
+    const client = {};
+    const desired = { client, checkpoint: null as string | null };
+    let created = 0;
+    let closeAttempts = 0;
+    const create = () => `controller-${++created}`;
+    const first = await registry.acquire({
+      readDesired: () => desired,
+      create,
+      closeStale: async () => 'closed',
+    });
+    expect(first).toBe('controller-1');
+
+    await expect(registry.close(async () => {
+      closeAttempts += 1;
+      return 'unconfirmed';
+    })).resolves.toBe('unconfirmed');
+
+    await expect(registry.acquire({
+      readDesired: () => desired,
+      create,
+      closeStale: async (controller) => {
+        closeAttempts += 1;
+        expect(controller).toBe('controller-1');
+        return 'closed';
+      },
+    })).resolves.toBe('controller-2');
+    expect({ closeAttempts, created }).toEqual({ closeAttempts: 2, created: 2 });
+  });
+
+  it('désarme immédiatement le lease UI pendant une fermeture encore en vol', async () => {
+    const registry = new AgentRealtimeControllerRegistry<string, object, string>();
+    const client = {};
+    const leaseCurrent: { current: (() => boolean) | null } = { current: null };
+    await registry.acquire({
+      readDesired: () => ({ client, checkpoint: null as string | null }),
+      create: (lease) => {
+        leaseCurrent.current = lease.isCurrent;
+        return 'controller';
+      },
+      closeStale: async () => 'closed',
+    });
+    expect(leaseCurrent.current?.()).toBe(true);
+
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const closing = registry.close(async () => {
+      expect(leaseCurrent.current?.()).toBe(false);
+      await gate;
+      return 'unconfirmed';
+    });
+    expect(leaseCurrent.current?.()).toBe(false);
+    release();
+    await expect(closing).resolves.toBe('unconfirmed');
+    expect(leaseCurrent.current?.()).toBe(false);
+  });
+
+  it('ignore le checkpoint tardif d’un lease remplacé', async () => {
+    const registry = new AgentRealtimeControllerRegistry<string, object, string>();
+    const clientA = {};
+    const clientB = {};
+    let desired = { client: clientA, checkpoint: 'a' as string | null };
+    const staleRecord: { current: ((checkpoint: string | null) => void) | null } = {
+      current: null,
+    };
+    await registry.acquire({
+      readDesired: () => desired,
+      create: (lease) => {
+        staleRecord.current = lease.recordCheckpointUsed;
+        return 'A';
+      },
+      closeStale: async () => 'closed',
+    });
+    desired = { client: clientB, checkpoint: 'b' };
+    await registry.acquire({
+      readDesired: () => desired,
+      create: (lease) => {
+        lease.recordCheckpointUsed('b');
+        return 'B';
+      },
+      closeStale: async () => 'closed',
+    });
+    staleRecord.current?.('poison');
+    expect(registry.hasMismatch(desired)).toBe(false);
+    expect(registry.peek()).toBe('B');
+  });
+
+  it('conserve le checkpoint consommé synchroniquement pendant la construction', async () => {
+    const registry = new AgentRealtimeControllerRegistry<string, object, string>();
+    const client = {};
+    let desired = { client, checkpoint: 'a' as string | null };
+    let created = 0;
+    await registry.acquire({
+      readDesired: () => desired,
+      create: (lease) => {
+        lease.recordCheckpointUsed('a');
+        return `controller-${++created}`;
+      },
+      closeStale: async () => 'closed',
+    });
+    desired = { client, checkpoint: 'b' };
+    expect(registry.hasMismatch(desired)).toBe(true);
+    await expect(registry.acquire({
+      readDesired: () => desired,
+      create: () => `controller-${++created}`,
+      closeStale: async () => 'closed',
+    })).resolves.toBe('controller-2');
+  });
+
+  it('rejoue une fermeture incertaine une fois sur la même autorité', async () => {
+    const calls: string[] = [];
+    const controller = {
+      stop: async () => {
+        calls.push('stop');
+        return calls.length === 1
+          ? { status: 'unconfirmed', missionReleased: true, transportClosed: false } as const
+          : { status: 'closed', missionReleased: true, transportClosed: true } as const;
+      },
+      stopForPolicy: async () => {
+        calls.push('policy');
+        return { status: 'unconfirmed', missionReleased: true, transportClosed: false } as const;
+      },
+      stopAfterManualHandoff: async () => undefined,
+    };
+    await expect(closeAgentRealtimeController({
+      controller,
+      reason: 'user',
+      policyReason: 'entitlement_revoked',
+    })).resolves.toBe('closed');
+    expect(calls).toEqual(['policy', 'stop']);
+  });
   it('ne republie pas un contexte semantiquement identique malgre de nouvelles references', () => {
     expect(agentContextSemanticKey(context())).toBe(agentContextSemanticKey(context()));
   });

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ok } from '@bob/core';
 import type { AgentContext } from '@bob/ai';
 import {
@@ -130,6 +130,8 @@ function harness(
     completionMode?: 'continuous' | 'one-shot';
     /** Diffère la résolution de orchestrator.start() — simule un bootstrap réseau lent. */
     deferStart?: boolean;
+    /** Diffère le cleanup primaire afin de prouver que l'outcome attend le teardown réel. */
+    stopDelay?: Promise<void>;
     /** Remplace le PUT contexte — pour orchestrer des courses de publication. */
     updateContextImpl?: (
       handle: string,
@@ -179,6 +181,7 @@ function harness(
       | typeof REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
       | null;
     reconnect: ((label: string, handle?: string | null) => RealtimeTransportLike) | null;
+    stopReasons: import('../realtime/realtime-transport').RealtimeCloseReason[];
   } = {
     resolveStart: null,
     fallback: null,
@@ -186,6 +189,7 @@ function harness(
     receivedNegotiation: null,
     receivedAgentMissionProtocolVersion: null,
     reconnect: null,
+    stopReasons: [],
   };
   const createTransport = (label: string | null, handle: string | null): RealtimeTransportLike => {
     const explicitAgentMissionSessions = input.agentMissionSessions;
@@ -264,8 +268,11 @@ function harness(
           }
         : { phase: 'ready', fallbackChannel: null, lastFailureReason: null };
     },
-    stop: async () => {
+    stop: async (reason = 'user') => {
       log.push('orchestrator:stop');
+      external.stopReasons.push(reason);
+      await input.stopDelay;
+      return { status: 'closed', primaryClosed: true, fallbackClosed: true };
     },
   };
   const hooks: RealtimeSessionHooks = {
@@ -388,7 +395,12 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
   it('conserve OpenAI natif sous la même capability Mission V2 que le parcours Jarvis', async () => {
     const h = harness({ negotiation: NATIVE_WEBRTC_NEGOTIATION });
 
-    await expect(h.controller.start()).resolves.toBe('realtime');
+    const started = h.controller.start();
+    await vi.waitFor(() => {
+      expect(h.external.receivedNegotiation).toBe(NATIVE_WEBRTC_NEGOTIATION);
+    });
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await expect(started).resolves.toBe('realtime');
 
     expect(h.external.receivedNegotiation).toBe(NATIVE_WEBRTC_NEGOTIATION);
     expect(h.external.receivedAgentMissionProtocolVersion)
@@ -414,7 +426,9 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
       });
 
       await expect(h.controller.start()).resolves.toBe('failed_closed');
-      expect(h.log).toEqual(['failed-closed:agent_mission_negotiation_failed']);
+      // Le résultat de bootstrap est l'unique autorité UX : aucun hook asynchrone ne double
+      // l'erreur avant qu'une session ait réellement atteint `realtime`.
+      expect(h.log).toEqual([]);
       expect(h.external.receivedNegotiation).toBeNull();
       expect(h.log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
     },
@@ -531,7 +545,13 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
 
   it('transmet la disclosure bootstrap au hook sans changer la phase', async () => {
     const h = harness({ negotiation: NATIVE_WEBRTC_NEGOTIATION });
-    await h.controller.start();
+    const started = h.controller.start();
+    await vi.waitFor(() => {
+      expect(h.external.receivedNegotiation).toBe(NATIVE_WEBRTC_NEGOTIATION);
+    });
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await expect(started).resolves.toBe('realtime');
+    h.log.length = 0;
 
     h.emit({
       type: 'transport',
@@ -543,6 +563,68 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
 
     expect(h.log).toContain('trace:staging_quality:30');
     expect(h.log.filter((entry) => entry.startsWith('phase:'))).toEqual([]);
+  });
+
+  it('bootstrap natif refusé : attend le teardown et ne publie jamais un second échec UX', async () => {
+    let releaseStop!: () => void;
+    const stopDelay = new Promise<void>((resolve) => {
+      releaseStop = resolve;
+    });
+    const h = harness({
+      negotiation: NATIVE_WEBRTC_NEGOTIATION,
+      putFails: true,
+      stopDelay,
+    });
+
+    let settled = false;
+    const started = h.controller.start().then((outcome) => {
+      settled = true;
+      return outcome;
+    });
+    await vi.waitFor(() => {
+      expect(h.external.receivedNegotiation).toBe(NATIVE_WEBRTC_NEGOTIATION);
+    });
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await vi.waitFor(() => {
+      expect(h.log).toContain('orchestrator:stop');
+    });
+
+    expect(settled).toBe(false);
+    expect(h.log.some((entry) => entry.startsWith('failed-closed:'))).toBe(false);
+    releaseStop();
+    await expect(started).resolves.toBe('failed_closed');
+    expect(h.log.some((entry) => entry.startsWith('failed-closed:'))).toBe(false);
+  });
+
+  it('après un bootstrap natif réussi, une rupture mid-call notifie une seule fois', async () => {
+    let publications = 0;
+    const h = harness({
+      negotiation: NATIVE_WEBRTC_NEGOTIATION,
+      updateContextImpl: async (_handle, revision) => {
+        publications += 1;
+        return publications === 1
+          ? ok({ revision, contextDigest: `digest-${revision}` })
+          : {
+              ok: false as const,
+              error: { kind: 'dependency' as const, port: 'realtime', cause: 'offline' },
+            };
+      },
+    });
+
+    const started = h.controller.start();
+    await vi.waitFor(() => {
+      expect(h.external.receivedNegotiation).toBe(NATIVE_WEBRTC_NEGOTIATION);
+    });
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await expect(started).resolves.toBe('realtime');
+
+    await h.controller.publishContext();
+    expect(h.log.filter((entry) => entry === 'failed-closed:provider_error')).toHaveLength(1);
+    h.emit({
+      type: 'transport',
+      event: { type: 'fallback', reason: 'provider_error' },
+    });
+    expect(h.log.filter((entry) => entry === 'failed-closed:provider_error')).toHaveLength(1);
   });
 
   it('ne bloque jamais une reprise V1 sur la confirmation du fuseau V2', async () => {
@@ -1150,7 +1232,9 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
       type: 'transport',
       event: { type: 'fallback', reason: 'provider_error' },
     });
-    await Promise.resolve();
+    await vi.waitFor(() => {
+      expect(h.log).toContain('failed-closed:provider_error');
+    });
     await h.external.fallback?.start({
       reason: 'provider_error',
       channel: 'voice',
@@ -1159,6 +1243,76 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     expect(h.controller.active).toBe(false);
     expect(h.log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
     expect(h.log).toContain('failed-closed:provider_error');
+    expect(h.external.stopReasons).toEqual(['fallback']);
+  });
+
+  it('expiration de session coupe l’oreille, libère Mission et interdit toute reconnexion', async () => {
+    const log: string[] = [];
+    const realtimeSessionId = '10000000-0000-4000-8000-000000000199';
+    let releases = 0;
+    const h = harness({
+      log,
+      handle: realtimeSessionId,
+      agentMissionSessions: [missionSessionStub(log, 'mission-max-duration', realtimeSessionId)],
+      agentMissionRuntime: {
+        adopt: () => true,
+        invalidateContext: () => undefined,
+        confirmContext: () => true,
+        settleTurn: () => true,
+        release: () => {
+          releases += 1;
+          return true;
+        },
+      },
+    });
+    await h.controller.start();
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await vi.waitFor(() => expect(h.log).toContain('mic:true'));
+    h.log.length = 0;
+
+    h.emit({ type: 'transport', event: { type: 'error', code: 'session_max_duration' } });
+    expect(h.log[0]).toBe('mic:false');
+    await vi.waitFor(() => expect(h.log).toContain('failed-closed:provider_error'));
+
+    expect(h.external.stopReasons).toEqual(['max_duration']);
+    expect(releases).toBe(1);
+    expect(h.controller.active).toBe(false);
+    expect(h.log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+    h.external.reconnect?.('forbidden');
+    expect(h.log).not.toContain('forbidden:mic:true');
+  });
+
+  it('release Mission refusée sur fallback terminalise avant toute seconde oreille', async () => {
+    const log: string[] = [];
+    const realtimeSessionId = '10000000-0000-4000-8000-000000000299';
+    const h = harness({
+      log,
+      handle: realtimeSessionId,
+      agentMissionSessions: [missionSessionStub(log, 'mission-release-refused', realtimeSessionId)],
+      agentMissionRuntime: {
+        adopt: () => true,
+        invalidateContext: () => undefined,
+        confirmContext: () => true,
+        settleTurn: () => true,
+        release: () => false,
+      },
+    });
+    await h.controller.start();
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await vi.waitFor(() => expect(h.log).toContain('mic:true'));
+    h.log.length = 0;
+
+    h.emit({ type: 'transport', event: { type: 'fallback', reason: 'provider_error' } });
+    expect(h.log[0]).toBe('mic:false');
+    await vi.waitFor(() => {
+      expect(h.log).toContain('failed-closed:agent_mission_negotiation_failed');
+    });
+
+    expect(h.external.stopReasons).toEqual(['fallback']);
+    expect(h.controller.active).toBe(false);
+    expect(h.log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+    await h.external.fallback?.start({ reason: 'provider_error', channel: 'voice' });
+    expect(h.log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
   });
 
   it('détruit l ancienne capability avant d adopter puis de réclamer le peer reconnecté', async () => {
@@ -1283,6 +1437,31 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     expect(log).toContain('mic:true');
   });
 
+  it('ignore tout contrôle tant que le contexte n’est pas confirmé et le micro pas ouvert', async () => {
+    let allow!: (value: boolean) => void;
+    const permissionLifecycle = new Promise<boolean>((resolve) => { allow = resolve; });
+    const h = harness({
+      allowMicrophoneActivation: () => permissionLifecycle,
+      gateKind: 'answer',
+      gateNavigate: '/chantiers',
+    });
+    await h.controller.start();
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await vi.waitFor(() => {
+      expect(h.log).toContain('publish:h-42:r1');
+    });
+    expect(h.log).not.toContain('mic:true');
+
+    h.emit(candidate('navigate-during-permission'));
+    await Promise.resolve();
+    expect(h.log).not.toContain('nav:/chantiers');
+    allow(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(h.log).toContain('mic:true');
+    expect(h.log.at(-1)).toBe('phase:listening');
+  });
+
   it('ferme sans fallback audio si l’app reste en background après la permission', async () => {
     const { controller, log, emit } = harness({
       allowMicrophoneActivation: async () => false,
@@ -1355,8 +1534,9 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     okCase.log.length = 0;
     await okCase.controller.publishContext();
-    expect(okCase.log.slice(0, 3)).toEqual([
+    expect(okCase.log.slice(0, 4)).toEqual([
       'mic:false',
+      'phase:thinking',
       'interrupt:navigation',
       'publish:h-42:r2',
     ]);
@@ -1667,7 +1847,7 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     void suspended.then(() => {
       didSuspend = true;
     });
-    expect(log.slice(0, 2)).toEqual(['mic:false', 'interrupt:tap']);
+    expect(log.slice(0, 3)).toEqual(['mic:false', 'phase:thinking', 'interrupt:tap']);
     expect(didSuspend).toBe(false);
 
     h.emit({
@@ -1680,6 +1860,46 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     await h.controller.stopAfterManualHandoff();
     expect(log.indexOf(`runtime:release:${realtimeSessionId}`))
       .toBeLessThan(log.indexOf('orchestrator:stop'));
+  });
+
+  it('un handoff manuel pendant un PUT contexte révoque durablement l’oreille', async () => {
+    let contextCalls = 0;
+    let releaseContext!: (
+      value: { ok: true; value: { revision: number; contextDigest: string } },
+    ) => void;
+    const h = harness({
+      updateContextImpl: (_handle, revision) => {
+        contextCalls += 1;
+        if (contextCalls === 1) {
+          return Promise.resolve(ok({ revision, contextDigest: `d-${revision}` }));
+        }
+        return new Promise((resolve) => {
+          releaseContext = resolve;
+        });
+      },
+    });
+    await h.controller.start();
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await vi.waitFor(() => expect(h.log).toContain('mic:true'));
+    h.log.length = 0;
+
+    const publication = h.controller.publishContext();
+    await vi.waitFor(() => expect(contextCalls).toBe(2));
+    await expect(h.controller.suspendForManualHandoff()).resolves.toBe(true);
+
+    releaseContext(ok({ revision: 2, contextDigest: 'd-2' }));
+    await publication;
+    await Promise.resolve();
+
+    expect(h.log).toContain('mic:false');
+    expect(h.log).not.toContain('mic:true');
+    expect(h.log).not.toContain('phase:listening');
+    const callsAfterHandoff = contextCalls;
+    await h.controller.publishContext();
+    expect(contextCalls).toBe(callsAfterHandoff);
+    expect(h.controller.active).toBe(true);
+
+    await h.controller.stopAfterManualHandoff();
   });
 
   it('refuse d’acquitter la passation si la capability ne peut pas être libérée', async () => {
@@ -1708,7 +1928,7 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     expect(log).toContain('orchestrator:stop');
   });
 
-  it('un stop lifecycle ferme et notifie une seule fois sans rejection non gérée si release refuse', async () => {
+  it('un stop lifecycle rend un reçu non confirmé sans callback UX tardif si release refuse', async () => {
     const realtimeSessionId = '13000000-0000-4000-8000-000000000002';
     const log: string[] = [];
     const h = harness({
@@ -1729,12 +1949,16 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    await expect(h.controller.stop('background')).resolves.toBeUndefined();
+    await expect(h.controller.stop('background')).resolves.toEqual({
+      status: 'unconfirmed',
+      missionReleased: false,
+      transportClosed: true,
+    });
 
     expect(log).toContain('orchestrator:stop');
     expect(log.filter(
       (entry) => entry === 'failed-closed:agent_mission_negotiation_failed',
-    )).toHaveLength(1);
+    )).toHaveLength(0);
     expect(h.controller.active).toBe(false);
 
     const negotiationsBeforeRestart = h.external.negotiations;
@@ -1870,6 +2094,117 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     expect(h.log.lastIndexOf('mic:true')).toBeGreaterThan(h.log.lastIndexOf('mic:false'));
   });
 
+  it('P0 — r2 synchronisé tardivement ne peut jamais ouvrir le micro sous la fence r3', async () => {
+    let syncCalls = 0;
+    let releaseR2!: (value: boolean) => void;
+    let releaseR3!: (value: boolean) => void;
+    const confirmed: number[] = [];
+    const h = harness({
+      synchronizeContext: async () => {
+        syncCalls += 1;
+        if (syncCalls === 1) return true;
+        return new Promise<boolean>((resolve) => {
+          if (syncCalls === 2) releaseR2 = resolve;
+          else releaseR3 = resolve;
+        });
+      },
+      agentMissionRuntime: {
+        adopt: () => true,
+        invalidateContext: () => undefined,
+        confirmContext: (_sessionId, fence) => {
+          confirmed.push(fence.contextRevision);
+          return true;
+        },
+        settleTurn: () => true,
+        release: () => true,
+      },
+    });
+    await h.controller.start();
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await vi.waitFor(() => expect(h.log).toContain('mic:true'));
+    expect(confirmed).toEqual([1]);
+    h.log.length = 0;
+    confirmed.length = 0;
+
+    const r2 = h.controller.publishContext();
+    await vi.waitFor(() => expect(h.log).toContain('sync:r2'));
+    const r3 = h.controller.publishContext();
+    await Promise.resolve();
+    expect(h.log).not.toContain('sync:r3');
+    h.emit(candidate('old-r1-during-handoff'));
+    h.emit({
+      type: 'transport',
+      event: { type: 'user_transcript', text: 'ancien écran', final: true },
+    });
+    await Promise.resolve();
+    expect(h.log.some((entry) => entry.startsWith('ack:old-r1'))).toBe(false);
+    expect(h.log.some((entry) => entry.startsWith('user:ancien'))).toBe(false);
+
+    releaseR2(true);
+    await vi.waitFor(() => expect(h.log).toContain('sync:r3'));
+    expect(h.log).not.toContain('mic:true');
+    expect(confirmed).toEqual([]);
+
+    releaseR3(true);
+    await Promise.all([r2, r3]);
+    expect(confirmed).toEqual([3]);
+    expect(h.log.filter((entry) => entry === 'mic:true')).toHaveLength(1);
+    expect(h.log.at(-1)).toBe('phase:listening');
+    expect(h.controller.active).toBe(true);
+  });
+
+  it('sérialise le handoff post-PUT Mistral r2/r3 sans chevaucher son waiter unique', async () => {
+    let activeSynchronizations = 0;
+    let maxSynchronizations = 0;
+    let syncCalls = 0;
+    let releaseR2!: (value: boolean) => void;
+    let releaseR3!: (value: boolean) => void;
+    const h = harness({
+      negotiation: MISTRAL_NEGOTIATION,
+      synchronizeContext: async () => {
+        syncCalls += 1;
+        activeSynchronizations += 1;
+        maxSynchronizations = Math.max(maxSynchronizations, activeSynchronizations);
+        if (syncCalls === 1) {
+          activeSynchronizations -= 1;
+          return true;
+        }
+        const result = await new Promise<boolean>((resolve) => {
+          const finish = (value: boolean): void => {
+            activeSynchronizations -= 1;
+            resolve(value);
+          };
+          if (syncCalls === 2) releaseR2 = finish;
+          else releaseR3 = finish;
+        });
+        return result;
+      },
+    });
+    await h.controller.start();
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await vi.waitFor(() => expect(h.log).toContain('mic:true'));
+    h.log.length = 0;
+
+    const r2 = h.controller.publishContext();
+    await vi.waitFor(() => expect(h.log).toContain('sync:r2'));
+    const r3 = h.controller.publishContext();
+    await Promise.resolve();
+    expect(maxSynchronizations).toBe(1);
+    expect(h.log).not.toContain('sync:r3');
+
+    releaseR2(true);
+    await vi.waitFor(() => expect(h.log).toContain('sync:r3'));
+    expect(maxSynchronizations).toBe(1);
+    expect(h.log).not.toContain('mic:true');
+    releaseR3(true);
+    await Promise.all([r2, r3]);
+
+    expect(maxSynchronizations).toBe(1);
+    expect(h.log.filter((entry) => entry === 'mic:true')).toHaveLength(1);
+    expect(h.log).not.toContain('orchestrator:stop');
+    expect(h.controller.active).toBe(true);
+  });
+
   it('reconnexion pendant le PUT initial : le succès ancien ne rouvre jamais l’ancien micro', async () => {
     let releaseInitial!: () => void;
     let calls = 0;
@@ -1997,9 +2332,30 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     external.resolveStart?.('legacy');
 
     await expect(pending).resolves.toBe('failed_closed');
-    expect(log).toContain('failed-closed:bootstrap_failed');
+    expect(log).not.toContain('failed-closed:bootstrap_failed');
     expect(log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
     expect(log).not.toContain('mic:true');
+  });
+
+  it('bootstrap natif en fallback transport ne rallume jamais le pilote legacy', async () => {
+    const { controller, log, emit, external } = harness({
+      deferStart: true,
+      negotiation: NATIVE_WEBRTC_NEGOTIATION,
+      agentMissionSessions: [null],
+    });
+    const pending = controller.start();
+    await vi.waitFor(() => expect(external.resolveStart).not.toBeNull());
+
+    emit({
+      type: 'transport',
+      event: { type: 'fallback', reason: 'bootstrap_failed' },
+    });
+    external.resolveStart?.('stopped');
+
+    await expect(pending).resolves.toBe('failed_closed');
+    expect(log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+    expect(log).not.toContain('mic:true');
+    expect(controller.active).toBe(false);
   });
 
   it('transmet le canal text_only après refus micro, sans le transformer en repli vocal', async () => {

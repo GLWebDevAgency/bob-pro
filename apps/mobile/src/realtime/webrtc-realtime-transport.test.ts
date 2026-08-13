@@ -336,6 +336,8 @@ const SEND_RECV_SDP = [
   'm=audio 9 UDP/TLS/RTP/SAVPF 111',
   'a=sendrecv',
   'm=application 9 UDP/DTLS/SCTP webrtc-datachannel',
+  // Pion/OpenAI porte cette direction sur l'association SCTP ; elle n'est pas une direction RTP.
+  'a=sendrecv',
   '',
 ].join('\r\n');
 
