@@ -8,6 +8,8 @@ on:
   pull_request:
     paths:
       - .github/workflows/bob-live-native.yml
+      - package.json
+      - patches/react-native-webrtc@124.0.8.patch
       - apps/mobile/app.json
       - apps/mobile/package.json
       - apps/mobile/modules/bob-live-audio/**
@@ -21,6 +23,8 @@ on:
       - main
     paths:
       - .github/workflows/bob-live-native.yml
+      - package.json
+      - patches/react-native-webrtc@124.0.8.patch
       - apps/mobile/app.json
       - apps/mobile/package.json
       - apps/mobile/modules/bob-live-audio/**
@@ -57,7 +61,7 @@ env:
 
 jobs:
   android-contract:
-    name: Android module + wire contract
+    name: Android app + native contracts
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -76,12 +80,24 @@ jobs:
           distribution: temurin
           java-version: "17"
       - run: pnpm install --frozen-lockfile
+      - name: Build the mobile workspace dependency graph
+        run: pnpm exec turbo run build --filter="@bob/mobile^..."
       - name: Typecheck the mobile and native TypeScript boundaries
         run: |
           pnpm --filter @bob/mobile typecheck
           pnpm --dir apps/mobile exec tsc --noEmit -p modules/bob-live-audio/tsconfig.json
       - name: Run the native wire-contract suite
         run: pnpm --dir apps/mobile exec vitest run --config modules/bob-live-audio/vitest.config.ts
+      - name: Certify the exact React Native WebRTC baseline
+        run: |
+          pnpm --filter @bob/mobile exec vitest run --config vitest.config.ts \
+            src/realtime/react-native-webrtc-dependency.contract.test.ts \
+            src/realtime/webrtc-realtime-transport.test.ts
+      - name: Bundle the real Android JavaScript graph
+        run: |
+          pnpm --filter @bob/mobile exec expo export \
+            --platform android \
+            --output-dir "${RUNNER_TEMP}/bob-live-metro-export"
       - name: Verify Expo autolinking on both platforms
         run: |
           pnpm --dir apps/mobile exec expo-modules-autolinking verify --platform android
@@ -106,11 +122,32 @@ jobs:
           # et ignore ce qui ne correspond plus, il ne peut pas produire de faux vert.
           restore-keys: |
             bob-live-gradle-${{ runner.os }}-
-      - name: Compile the Android bridge and run its deterministic VAD tests
+      - name: Verify the exact Android WebRTC artifact
         working-directory: apps/mobile/android
         env:
           GRADLE_USER_HOME: ${{ runner.temp }}/bob-live-gradle
-        run: ./gradlew :bob-live-audio:testDebugUnitTest --no-daemon --stacktrace
+        run: |
+          ./gradlew :app:dependencyInsight \
+            --dependency org.jitsi:webrtc \
+            --configuration debugRuntimeClasspath \
+            --no-daemon \
+            > "${RUNNER_TEMP}/bob-live-webrtc-android-dependency.txt"
+          ruby -e '
+            report = File.read(ARGV.fetch(0))
+            versions = report.scan(/org\.jitsi:webrtc:([0-9][0-9A-Za-z.+-]*)/).flatten.uniq
+            abort("Android WebRTC resolution is not exactly 124.0.0: #{versions.inspect}") unless versions == ["124.0.0"]
+          ' "${RUNNER_TEMP}/bob-live-webrtc-android-dependency.txt"
+      - name: Compile the real Android application and run deterministic VAD tests
+        id: android_app_build
+        working-directory: apps/mobile/android
+        env:
+          GRADLE_USER_HOME: ${{ runner.temp }}/bob-live-gradle
+        run: |
+          ./gradlew \
+            :bob-live-audio:testDebugUnitTest \
+            :app:assembleDebug \
+            --no-daemon \
+            --stacktrace
 
   swift-contract:
     name: Swift bridge + Expo iOS build + VAD contract
@@ -185,6 +222,14 @@ jobs:
       - name: Resolve the generated CocoaPods workspace
         working-directory: apps/mobile/ios
         run: pod install
+      - name: Verify the exact iOS WebRTC artifact
+        working-directory: apps/mobile/ios
+        run: |
+          ruby -e '
+            lock = File.read("Podfile.lock")
+            versions = lock.scan(/^  - JitsiWebRTC \(([^)]+)\)/).flatten.uniq
+            abort("JitsiWebRTC resolution is not exactly 124.0.2: #{versions.inspect}") unless versions == ["124.0.2"]
+          '
       # DerivedData — LE poste dominant du parc CI (audit 2026-07-28 : xcodebuild à froid p50
       # 16,5 min, ~86 % du coût pondéré au multiplicateur macOS). Discipline anti-faux-vert :
       #   1. restauration UNIQUEMENT en pull_request et UNIQUEMENT sur clé EXACTE (aucune

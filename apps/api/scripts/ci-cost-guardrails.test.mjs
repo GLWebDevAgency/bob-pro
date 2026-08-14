@@ -189,7 +189,7 @@ test('Gradle et CocoaPods restent des caches d’ENTRÉES, revalidés par leurs 
   const gradleCache = slice(
     androidJob,
     '- name: Mettre en cache les dépendances Gradle (wrapper + dépôts)',
-    '- name: Compile the Android bridge and run its deterministic VAD tests',
+    '- name: Verify the exact Android WebRTC artifact',
   );
   assert.match(gradleCache, /uses: actions\/cache@[a-f0-9]{40} # v4/u);
   assert.match(gradleCache, /\$\{\{ runner\.temp \}\}\/bob-live-gradle\/caches/u);
@@ -198,11 +198,15 @@ test('Gradle et CocoaPods restent des caches d’ENTRÉES, revalidés par leurs 
     !gradleCache.includes('bob-live-gradle\n'),
     'ne jamais cacher GRADLE_USER_HOME entier (démons, verrous) : caches/ et wrapper/ seulement',
   );
-  // Les tests VAD Android tournent toujours, à l'identique, daemon désactivé.
-  assert.match(
-    androidJob,
-    /\.\/gradlew :bob-live-audio:testDebugUnitTest --no-daemon --stacktrace/u,
-  );
+  // Les tests VAD et l'application Android réelle compilent dans le même step stable,
+  // sans daemon : un simple build du bridge ne peut donc plus fabriquer un faux vert.
+  const androidBuild = slice(androidJob, '- name: Compile the real Android application');
+  assert.match(androidBuild, /id: android_app_build/u);
+  assert.match(androidBuild, /\.\/gradlew/u);
+  assert.match(androidBuild, /:bob-live-audio:testDebugUnitTest/u);
+  assert.match(androidBuild, /:app:assembleDebug/u);
+  assert.match(androidBuild, /--no-daemon/u);
+  assert.match(androidBuild, /--stacktrace/u);
   assert.match(androidJob, /GRADLE_USER_HOME: \$\{\{ runner\.temp \}\}\/bob-live-gradle/u);
 
   const swiftJob = slice(bobLiveNative, '\n  swift-contract:\n');
