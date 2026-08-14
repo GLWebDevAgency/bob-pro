@@ -110,6 +110,7 @@ describe('react-native-webrtc dependency baseline', () => {
     expect(workflow.match(/- patches\/react-native-webrtc@124\.0\.8\.patch/gmu)).toHaveLength(2);
     expect(workflow).toContain(':app:dependencyInsight');
     expect(workflow).toContain('versions == ["124.0.0"]');
+    expect(workflow).toContain('turbo run build --filter="@bob/mobile^..."');
     expect(workflow).toContain('expo export');
     expect(workflow).toContain('--platform android');
     expect(workflow).toContain('${RUNNER_TEMP}/bob-live-metro-export');

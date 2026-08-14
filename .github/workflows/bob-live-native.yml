@@ -80,6 +80,8 @@ jobs:
           distribution: temurin
           java-version: "17"
       - run: pnpm install --frozen-lockfile
+      - name: Build the mobile workspace dependency graph
+        run: pnpm exec turbo run build --filter="@bob/mobile^..."
       - name: Typecheck the mobile and native TypeScript boundaries
         run: |
           pnpm --filter @bob/mobile typecheck
