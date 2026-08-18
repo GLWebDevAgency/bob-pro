@@ -867,7 +867,8 @@ jobs:
           distribution: temurin
           java-version: '17'
       - name: Installer les outils XML déterministes
-        run: sudo apt-get update && sudo apt-get install -y libxml2-utils unzip
+        # xmllint et unzip sont preinstalles sur ubuntu-latest ; apt = repli non bloquant.
+        run: (command -v xmllint >/dev/null 2>&1 && command -v unzip >/dev/null 2>&1) || (sudo apt-get update && sudo apt-get install -y libxml2-utils unzip)
       - run: pnpm install --frozen-lockfile
       - name: Tester les gardes de rapports de conformité
         run: node --test .github/scripts/*.test.mjs
