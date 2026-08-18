@@ -365,6 +365,32 @@ describe('RealtimeResilienceOrchestrator', () => {
     expect(orchestrator.state).toMatchObject({ phase: 'stopped', reconnectAttempts: 0 });
   });
 
+  it.each(['user', 'background', 'unmount'] as const)(
+    'arme stop(%s) avant l AbortSignal afin de préserver la cause autoritative',
+    async (reason) => {
+      const order: string[] = [];
+      const primary = new FakePrimaryTransport(
+        async (signal) => {
+          signal?.addEventListener('abort', () => order.push('abort'), { once: true });
+        },
+        order,
+        async () => undefined,
+      );
+      const orchestrator = new RealtimeResilienceOrchestrator({
+        createPrimary: () => primary,
+        legacyFallback: fallbackHarness().port,
+      });
+      await orchestrator.start();
+
+      await orchestrator.stop(reason);
+
+      expect(primary.closeReasons).toEqual([reason]);
+      expect(order.indexOf('primary.close')).toBeGreaterThanOrEqual(0);
+      expect(order.indexOf('primary.close')).toBeLessThan(order.indexOf('abort'));
+      expect(orchestrator.state.phase).toBe('stopped');
+    },
+  );
+
   it('un stop réentrant pendant l abonnement interdit connect et libère l observateur', async () => {
     const primary = resolvedPrimary();
     const fallback = fallbackHarness();
@@ -373,7 +399,7 @@ describe('RealtimeResilienceOrchestrator', () => {
       legacyFallback: fallback.port,
       sleep: async () => undefined,
     });
-    let reentrantStop: Promise<void> | null = null;
+    let reentrantStop: ReturnType<RealtimeResilienceOrchestrator['stop']> | null = null;
     orchestrator.subscribe((event) => {
       if (event.type === 'transport' && reentrantStop === null) {
         reentrantStop = orchestrator.stop('background');
@@ -673,7 +699,7 @@ describe('RealtimeResilienceOrchestrator', () => {
 
   it('rend visible l activation legacy avant un stop réentrant du port', async () => {
     const fallbackClose = vi.fn(async () => undefined);
-    let reentrantStop: Promise<void> | null = null;
+    let reentrantStop: ReturnType<RealtimeResilienceOrchestrator['stop']> | null = null;
     const lifecycle: { current: RealtimeResilienceOrchestrator | null } = { current: null };
     const fallback: LegacyVoiceFallbackPort = {
       start: vi.fn(async () => {
@@ -698,14 +724,20 @@ describe('RealtimeResilienceOrchestrator', () => {
     expect(orchestrator.state.phase).toBe('stopped');
   });
 
-  it('échoue fermé si le primaire ne confirme pas sa fermeture', async () => {
+  it('retente la fermeture du même primaire avant d’autoriser une nouvelle session', async () => {
+    let closeAttempt = 0;
     const closeFailure = new FakePrimaryTransport(
-      async () => { throw new RealtimeTransportError('provider_error'); },
+      async () => undefined,
       undefined,
-      async () => { throw new Error('close failed'); },
+      async () => {
+        closeAttempt += 1;
+        if (closeAttempt === 1) throw new Error('close failed');
+      },
     );
+    const fresh = resolvedPrimary();
+    const primaries = [closeFailure, fresh];
     const fallback = fallbackHarness();
-    const createPrimary = vi.fn(() => closeFailure);
+    const createPrimary = vi.fn(() => primaries.shift()!);
     const orchestrator = new RealtimeResilienceOrchestrator({
       createPrimary,
       legacyFallback: fallback.port,
@@ -714,13 +746,40 @@ describe('RealtimeResilienceOrchestrator', () => {
     });
 
     await orchestrator.start();
-    expect(orchestrator.state).toMatchObject({
-      phase: 'failed',
-      reconnectAttempts: 0,
-      lastFailureReason: 'provider_error',
+    await expect(orchestrator.stop('background')).resolves.toMatchObject({
+      status: 'unconfirmed',
+      primaryClosed: false,
+    });
+    await orchestrator.start();
+    expect(createPrimary).toHaveBeenCalledOnce();
+    await expect(orchestrator.stop('background')).resolves.toMatchObject({
+      status: 'closed',
+      primaryClosed: true,
     });
     await orchestrator.start();
 
+    expect(createPrimary).toHaveBeenCalledTimes(2);
+    expect(closeFailure.closeReasons).toEqual(['background', 'background']);
+    expect(fresh.connectCalls).toBe(1);
+    expect(fallback.start).not.toHaveBeenCalled();
+  });
+
+  it('propage session_max_duration comme cause autoritative sans reconnect ni fallback', async () => {
+    const primary = resolvedPrimary();
+    const fallback = fallbackHarness();
+    const createPrimary = vi.fn(() => primary);
+    const orchestrator = new RealtimeResilienceOrchestrator({
+      createPrimary,
+      legacyFallback: fallback.port,
+      reconnectDelayMs: () => 0,
+      sleep: async () => undefined,
+    });
+    await orchestrator.start();
+
+    primary.emit({ type: 'error', code: 'session_max_duration' });
+    await waitUntil(() => orchestrator.state.phase === 'stopped');
+
+    expect(primary.closeReasons).toEqual(['max_duration']);
     expect(createPrimary).toHaveBeenCalledOnce();
     expect(fallback.start).not.toHaveBeenCalled();
   });

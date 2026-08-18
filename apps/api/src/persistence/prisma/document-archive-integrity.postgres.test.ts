@@ -1,12 +1,19 @@
 import { randomInt, randomUUID } from 'node:crypto';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { Document } from '@bob/core';
 import {
   LEGACY_ARCHIVE_PROOF_REQUIRED,
   documentArchiveIntegrityProofSha256,
   type DocumentArchiveIntegrityProof,
 } from '../document-archive-jobs';
-import { PrismaDocumentArchiveJobRepository } from './repositories';
+import {
+  DOCUMENT_ARCHIVE_INVALID_JOB_PREDICATE_SQL,
+  DOCUMENT_ARCHIVE_JOB_MAX_LEASE_MINUTES,
+  DOCUMENT_ARCHIVE_JOB_MAX_RETRY_MINUTES,
+  DOCUMENT_ARCHIVE_JOB_OVERDUE_GRACE_MINUTES,
+} from '../../documents/archive-v2-job-validity';
+import { PrismaDocumentArchiveJobRepository, PrismaDocumentRepository } from './repositories';
 import { PrismaService } from './prisma.service';
 
 const RUN_POSTGRES_CERT = process.env.RUN_POSTGRES_DOCUMENT_ARCHIVE_CERT === 'true';
@@ -192,6 +199,99 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           dueAt: new Date('2026-08-20T10:00:00.000Z'),
         },
       });
+    }
+
+    function generatedInvoicePdf(input: {
+      companyId: string;
+      invoiceId: string;
+      documentId: string;
+      sha256: string;
+      reason: 'invoice-issued' | 'invoice-issued-pdf-only-b2c';
+    }): Document {
+      const versionId = `${input.documentId}-v1`;
+      const storageKey =
+        `companies/${input.companyId}/documents/${input.documentId}/v1/${input.sha256}`;
+      const recorded = Document.record({
+        id: input.documentId,
+        companyId: input.companyId,
+        kind: 'invoice_pdf',
+        origin: 'generated',
+        status: 'active',
+        filename: `${input.documentId}.pdf`,
+        mimeType: 'application/pdf',
+        byteSize: 42,
+        sha256: input.sha256,
+        storageKey,
+        linkedEntityType: 'invoice',
+        linkedEntityId: input.invoiceId,
+        documentDate: '2026-07-21',
+        issuedAt: '2026-07-21',
+        createdAt: '2026-07-21T10:00:00.000Z',
+        createdBy: null,
+        retentionUntil: '2036-08-10',
+        deletedAt: null,
+        tags: [],
+        versions: [{
+          id: versionId,
+          documentId: input.documentId,
+          version: 1,
+          storageKey,
+          sha256: input.sha256,
+          mimeType: 'application/pdf',
+          byteSize: 42,
+          createdAt: '2026-07-21T10:00:00.000Z',
+          reason: input.reason,
+        }],
+      });
+      if (!recorded.ok) throw new Error(`invalid generated PDF fixture: ${recorded.error.code}`);
+      return recorded.value;
+    }
+
+    async function auditTreatsJobAsInvalid(
+      jobId: string,
+      reasonOverride: string | null = null,
+    ): Promise<boolean> {
+      const [row] = await admin.$queryRawUnsafe<Array<{ invalid: boolean }>>(
+        `
+          SELECT (${DOCUMENT_ARCHIVE_INVALID_JOB_PREDICATE_SQL}) AS invalid
+            FROM (
+              SELECT source.id,
+                     source."companyId",
+                     source."invoiceId",
+                     coalesce($2::text, source.reason) AS reason,
+                     source.status,
+                     source."nextAttemptAt",
+                     source."leaseToken",
+                     source."integrityProof",
+                     source."integrityProofSha256",
+                     source."completedAt"
+                FROM public.document_archive_jobs AS source
+               WHERE source.id = $1::text
+            ) AS job
+        `,
+        jobId,
+        reasonOverride,
+      );
+      if (row === undefined) throw new Error(`job archive absent du certificat: ${jobId}`);
+      return row.invalid;
+    }
+
+    async function setJobNextAttemptFromDatabaseClock(
+      jobId: string,
+      offsetMinutes: number,
+    ): Promise<void> {
+      const affected = await admin.$executeRawUnsafe(
+        `
+          UPDATE public.document_archive_jobs
+             SET "nextAttemptAt" = statement_timestamp() + make_interval(mins => $2::integer)
+           WHERE id = $1::text
+        `,
+        jobId,
+        offsetMinutes,
+      );
+      if (affected !== 1) {
+        throw new Error(`job archive absent du réglage horloge PostgreSQL: ${jobId}`);
+      }
     }
 
     async function attestInvoicePdf(
@@ -602,6 +702,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           canCompleteV2: boolean;
           canAttestPdf: boolean;
           canCheckPdfVisibility: boolean;
+          canCheckDocumentVersionParent: boolean;
           canUseDeepPdfAttestationHelper: boolean;
           canUseDeepRepresentationHelper: boolean;
         }>
@@ -677,6 +778,11 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
                ) AS "canCheckPdfVisibility",
                has_function_privilege(
                  current_user,
+                 'public.document_version_parent_belongs_to_current_tenant_v1(text)',
+                 'EXECUTE'
+               ) AS "canCheckDocumentVersionParent",
+               has_function_privilege(
+                 current_user,
                  'public.document_archive_job_pdf_attestation_v2_is_valid(text,text,text,jsonb)',
                  'EXECUTE'
                ) AS "canUseDeepPdfAttestationHelper",
@@ -726,9 +832,17 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         canCompleteV2: true,
         canAttestPdf: true,
         canCheckPdfVisibility: true,
+        canCheckDocumentVersionParent: true,
         canUseDeepPdfAttestationHelper: false,
         canUseDeepRepresentationHelper: false,
       });
+
+      const [runtimeIdentity] = await workers[0]!.$queryRaw<Array<{ runtimeRole: string }>>`
+        SELECT current_user AS "runtimeRole"
+      `;
+      if (!runtimeIdentity?.runtimeRole) {
+        throw new Error('Document archive certification runtime role is unavailable.');
+      }
 
       const [shape] = await admin.$queryRaw<
         Array<{
@@ -776,6 +890,10 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           attestationTriggerEnabled: boolean;
           documentRepresentationPolicyRestrictive: boolean;
           pdfAttestationValidatorExists: boolean;
+          versionInsertFenceMigrationApplied: boolean;
+          documentVersionParentFenceHardened: boolean;
+          documentVersionParentFenceAclExact: boolean;
+          documentVersionInsertPolicyExact: boolean;
           publicMutationFunctions: number;
         }>
       >`
@@ -942,6 +1060,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
                      'document_archive_job_pdf_attestation_v2_is_valid',
                      'document_archive_job_scope_v2_is_valid',
                      'document_archive_protocol_v2_is_active',
+                     'document_version_parent_belongs_to_current_tenant_v1',
                      'enforce_document_archive_audit_evidence_immutable',
                      'enforce_document_archive_protocol_monotonicity',
                      'generated_invoice_pdf_attestation_visible_v2',
@@ -1064,6 +1183,70 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
                to_regprocedure(
                  'public.document_archive_job_pdf_attestation_v2_is_valid(text,text,text,jsonb)'
                ) IS NOT NULL AS "pdfAttestationValidatorExists",
+               EXISTS (
+                 SELECT 1 FROM _prisma_migrations
+                  WHERE migration_name = '20260810100000_document_version_insert_tenant_fence'
+                    AND finished_at IS NOT NULL
+                    AND rolled_back_at IS NULL
+               ) AS "versionInsertFenceMigrationApplied",
+               EXISTS (
+                 SELECT 1
+                   FROM pg_proc AS function
+                   JOIN pg_namespace AS namespace ON namespace.oid = function.pronamespace
+                   JOIN pg_roles AS owner ON owner.oid = function.proowner
+                  WHERE namespace.nspname = 'public'
+                    AND function.proname =
+                      'document_version_parent_belongs_to_current_tenant_v1'
+                    AND pg_get_function_identity_arguments(function.oid) =
+                      'expected_document_id text'
+                    AND function.prosecdef
+                    AND function.provolatile = 's'
+                    AND function.proisstrict
+                    AND coalesce(function.proconfig, ARRAY[]::text[]) @> ARRAY[
+                      'search_path=pg_catalog, public',
+                      'row_security=off'
+                    ]::text[]
+                    AND (owner.rolsuper OR owner.rolbypassrls)
+                    AND function.proowner = (
+                      SELECT relation.relowner
+                        FROM pg_class AS relation
+                       WHERE relation.oid = 'documents'::regclass
+                    )
+               ) AS "documentVersionParentFenceHardened",
+               (
+                 SELECT count(*) = 1
+                    AND bool_and(
+                      privilege.grantee = runtime_role.oid
+                      AND privilege.privilege_type = 'EXECUTE'
+                      AND NOT privilege.is_grantable
+                    )
+                   FROM pg_proc AS function
+                   JOIN pg_namespace AS namespace ON namespace.oid = function.pronamespace
+                   JOIN pg_roles AS runtime_role
+                     ON runtime_role.rolname = ${runtimeIdentity.runtimeRole}
+                  CROSS JOIN LATERAL aclexplode(
+                    coalesce(function.proacl, acldefault('f', function.proowner))
+                  ) AS privilege
+                  WHERE namespace.nspname = 'public'
+                    AND function.proname =
+                      'document_version_parent_belongs_to_current_tenant_v1'
+                    AND pg_get_function_identity_arguments(function.oid) =
+                      'expected_document_id text'
+                    AND privilege.grantee <> function.proowner
+               ) AS "documentVersionParentFenceAclExact",
+               (
+                 SELECT count(*) = 1
+                    AND bool_and(
+                      policy.polname = 'tenant_document_version_insert'
+                      AND policy.polpermissive
+                      AND policy.polroles = ARRAY[0::oid]
+                      AND pg_get_expr(policy.polwithcheck, policy.polrelid) =
+                        'document_version_parent_belongs_to_current_tenant_v1("documentId")'
+                    )
+                   FROM pg_policy AS policy
+                  WHERE policy.polrelid = 'document_versions'::regclass
+                    AND policy.polcmd = 'a'
+               ) AS "documentVersionInsertPolicyExact",
                (SELECT count(*)::integer
                   FROM pg_proc AS function
                   JOIN pg_namespace AS namespace ON namespace.oid = function.pronamespace
@@ -1080,6 +1263,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
                      'document_archive_job_complete_v2',
                      'attest_generated_invoice_pdf_v1',
                      'generated_invoice_pdf_attestation_visible_v2',
+                     'document_version_parent_belongs_to_current_tenant_v1',
                      'document_archive_job_pdf_attestation_v2_is_valid',
                      'generated_legal_archive_representation_v2_is_valid'
                    )
@@ -1133,6 +1317,10 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         attestationTriggerEnabled: true,
         documentRepresentationPolicyRestrictive: true,
         pdfAttestationValidatorExists: true,
+        versionInsertFenceMigrationApplied: true,
+        documentVersionParentFenceHardened: true,
+        documentVersionParentFenceAclExact: true,
+        documentVersionInsertPolicyExact: true,
         publicMutationFunctions: 0,
       });
 
@@ -1152,6 +1340,179 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       await expect(admin.documentArchiveProtocolState.delete({ where: { id: 1 } })).rejects.toThrow(
         'document archive protocol state is append-only',
       );
+    });
+
+    it('rejoue le repository writer N-1 exact et matérialise document, version et attestation malgré la fence SELECT', async () => {
+      const invoiceId = `archive-version-fence-b2c-${randomUUID()}`;
+      const documentId = `archive-version-fence-doc-${randomUUID()}`;
+      const sha256 = '1'.repeat(64);
+      await seedIssuedInvoice(companyA, invoiceId, 'b2c');
+      const document = generatedInvoicePdf({
+        companyId: companyA,
+        invoiceId,
+        documentId,
+        sha256,
+        reason: 'invoice-issued-pdf-only-b2c',
+      });
+      const repository = new PrismaDocumentRepository(workers[0]!);
+
+      await expect(
+        workers[0]!.withTenant(companyA, async (tx) => {
+          const [parent] = await tx.$queryRaw<Array<{ accepted: boolean }>>`
+            SELECT public.document_version_parent_belongs_to_current_tenant_v1(
+              ${documentId}
+            ) AS accepted
+          `;
+          expect(parent).toEqual({ accepted: false });
+
+          const inserted = await repository.insertInitialOrConfirmExact(document, {
+            documentSha256: sha256,
+            profile: 'plain_pdf',
+            embeddedXmlSha256: null,
+            detectorVersion: 1,
+          });
+          expect(inserted.status).toBe('inserted');
+        }),
+      ).resolves.toBeUndefined();
+
+      await expect(
+        admin.storedDocument.findUnique({
+          where: { id: documentId },
+          include: { versions: true, invoicePdfAttestations: true },
+        }),
+      ).resolves.toMatchObject({
+        id: documentId,
+        companyId: companyA,
+        versions: [{ id: `${documentId}-v1`, sha256 }],
+        invoicePdfAttestations: [{ profile: 'plain_pdf', documentSha256: sha256 }],
+      });
+
+      await expect(
+        workers[0]!.withTenant(companyA, (tx) =>
+          tx.storedDocument.findUnique({ where: { id: documentId } }),
+        ),
+      ).resolves.toMatchObject({ id: documentId });
+
+      await expect(
+        workers[0]!.$queryRaw<Array<{ accepted: boolean }>>`
+          SELECT public.document_version_parent_belongs_to_current_tenant_v1(
+            ${documentId}
+          ) AS accepted
+        `,
+      ).resolves.toEqual([{ accepted: false }]);
+      await expect(
+        workers[0]!.withTenant(companyB, async (tx) => {
+          const [parent] = await tx.$queryRaw<Array<{ accepted: boolean }>>`
+            SELECT public.document_version_parent_belongs_to_current_tenant_v1(
+              ${documentId}
+            ) AS accepted
+          `;
+          expect(parent).toEqual({ accepted: false });
+          await tx.storedDocumentVersion.createMany({
+            data: [{
+              id: `${documentId}-cross-tenant-v2`,
+              documentId,
+              version: 2,
+              storageKey: `companies/${companyA}/documents/${documentId}/v2/${'2'.repeat(64)}`,
+              sha256: '2'.repeat(64),
+              mimeType: 'application/pdf',
+              byteSize: 42,
+              createdAt: new Date('2026-07-21T10:01:00.000Z'),
+              reason: 'cross-tenant-forbidden',
+            }],
+          });
+        }),
+      ).rejects.toThrow(
+        'new row violates row-level security policy for table \\"document_versions\\"',
+      );
+      await expect(
+        admin.storedDocumentVersion.findUnique({
+          where: { id: `${documentId}-cross-tenant-v2` },
+        }),
+      ).resolves.toBeNull();
+    });
+
+    it('annule atomiquement le parent et sa version lorsque l’attestation byte-derived est refusée', async () => {
+      const invoiceId = `archive-version-fence-b2b-${randomUUID()}`;
+      const documentId = `archive-version-fence-rollback-${randomUUID()}`;
+      const sha256 = '3'.repeat(64);
+      await seedIssuedInvoice(companyA, invoiceId, 'b2b');
+      const document = generatedInvoicePdf({
+        companyId: companyA,
+        invoiceId,
+        documentId,
+        sha256,
+        reason: 'invoice-issued',
+      });
+      const repository = new PrismaDocumentRepository(workers[0]!);
+
+      await expect(
+        workers[0]!.withTenant(companyA, () =>
+          repository.insertInitialOrConfirmExact(document, {
+            documentSha256: sha256,
+            // Un B2B exige Factur-X PDF/A-3 : cette attestation volontairement fausse doit
+            // annuler les deux INSERT précédents, pas laisser un parent/version invisible.
+            profile: 'plain_pdf',
+            embeddedXmlSha256: null,
+            detectorVersion: 1,
+          }),
+        ),
+      ).rejects.toThrow('Invoice PDF representation attestation rejected.');
+      await expect(
+        admin.storedDocument.findUnique({ where: { id: documentId } }),
+      ).resolves.toBeNull();
+      await expect(
+        admin.storedDocumentVersion.findUnique({ where: { id: `${documentId}-v1` } }),
+      ).resolves.toBeNull();
+      await expect(
+        admin.documentInvoicePdfAttestation.findMany({ where: { documentId } }),
+      ).resolves.toEqual([]);
+    });
+
+    it('préserve aussi la création nested d’un parent uploadé et de sa version initiale', async () => {
+      const documentId = `archive-version-fence-n1-${randomUUID()}`;
+      const sha256 = '4'.repeat(64);
+      const storageKey =
+        `companies/${companyA}/documents/${documentId}/v1/${sha256}`;
+      await expect(
+        workers[0]!.withTenant(companyA, (tx) =>
+          tx.storedDocument.create({
+            data: {
+              id: documentId,
+              companyId: companyA,
+              kind: 'other',
+              origin: 'uploaded',
+              status: 'active',
+              filename: `${documentId}.bin`,
+              mimeType: 'application/octet-stream',
+              byteSize: 42,
+              sha256,
+              storageKey,
+              linkedEntityType: 'company',
+              linkedEntityId: companyA,
+              createdAt: new Date('2026-07-21T10:00:00.000Z'),
+              retentionUntil: '2036-07-21',
+              versions: {
+                create: {
+                  id: `${documentId}-v1`,
+                  version: 1,
+                  storageKey,
+                  sha256,
+                  mimeType: 'application/octet-stream',
+                  byteSize: 42,
+                  createdAt: new Date('2026-07-21T10:00:00.000Z'),
+                  reason: 'initial-upload',
+                },
+              },
+            },
+            include: { versions: true },
+          }),
+        ),
+      ).resolves.toMatchObject({
+        id: documentId,
+        companyId: companyA,
+        versions: [{ id: `${documentId}-v1`, sha256 }],
+      });
     });
 
     it('interdit au stockage de remplacer ou supprimer un original légal référencé', async () => {
@@ -1447,6 +1808,18 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           now: '2099-01-01T00:00:00.000Z',
         }),
       );
+      // Un enqueue frais n'est pas un P0 : le worker asynchrone dispose de trois cadences cron.
+      await expect(auditTreatsJobAsInvalid(id)).resolves.toBe(false);
+      // La grâce ne couvre jamais une corruption structurelle du scope métier.
+      await expect(
+        auditTreatsJobAsInvalid(id, 'invoice-issued-pdf-only-b2c'),
+      ).resolves.toBe(true);
+      await admin.documentArchiveJob.update({
+        where: { id },
+        data: { nextAttemptAt: new Date('9999-12-31T23:59:59.999Z') },
+      });
+      await expect(auditTreatsJobAsInvalid(id)).resolves.toBe(true);
+      await setJobNextAttemptFromDatabaseClock(id, 0);
       const candidate = await workers[0]!.withTenant(companyA, () =>
         repository.findByPiece(companyA, pieceId, 'invoice-issued'),
       );
@@ -1463,6 +1836,19 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         ),
       );
       expect(claimed.outcome).toBe('claimed');
+      // Le statut interne `failed` représente aussi une lease active ; son échéance future la
+      // distingue d'un job réellement abandonné.
+      await expect(auditTreatsJobAsInvalid(id)).resolves.toBe(false);
+      await setJobNextAttemptFromDatabaseClock(
+        id,
+        DOCUMENT_ARCHIVE_JOB_MAX_LEASE_MINUTES + 1,
+      );
+      await expect(auditTreatsJobAsInvalid(id)).resolves.toBe(true);
+      await setJobNextAttemptFromDatabaseClock(
+        id,
+        DOCUMENT_ARCHIVE_JOB_MAX_LEASE_MINUTES - 1,
+      );
+      await expect(auditTreatsJobAsInvalid(id)).resolves.toBe(false);
 
       const proof = invoiceProof(companyA, pieceId);
       const digest = documentArchiveIntegrityProofSha256(proof);
@@ -1524,6 +1910,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           repository.markDone(id, companyA, leaseToken, proof, digest, new Date().toISOString()),
         ),
       ).resolves.toBe(true);
+      await expect(auditTreatsJobAsInvalid(id)).resolves.toBe(false);
       await expect(
         workers[0]!.withTenant(companyA, (tx) =>
           tx.documentArchiveJobArtifact.findMany({ where: { jobId: id, companyId: companyA } }),
@@ -1542,6 +1929,99 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           }),
         ]),
       );
+
+      const xmlProjection = proof.artifacts.find((artifact) => artifact.kind === 'facturx_xml');
+      if (xmlProjection === undefined) throw new Error('projection XML de preuve absente');
+      await expect(admin.documentArchiveJobArtifact.deleteMany({
+        where: { jobId: id, companyId: companyA, kind: xmlProjection.kind },
+      })).resolves.toMatchObject({ count: 1 });
+      await expect(auditTreatsJobAsInvalid(id)).resolves.toBe(true);
+      await admin.documentArchiveJobArtifact.create({
+        data: {
+          jobId: id,
+          companyId: companyA,
+          kind: xmlProjection.kind,
+          contentProfile: xmlProjection.contentProfile,
+          documentId: xmlProjection.documentId,
+          versionId: xmlProjection.versionId,
+          versionNumber: xmlProjection.version,
+          storageKey: xmlProjection.storageKey,
+          mimeType: xmlProjection.mimeType,
+          byteSize: xmlProjection.byteSize,
+          sha256: xmlProjection.sha256,
+        },
+      });
+      await expect(auditTreatsJobAsInvalid(id)).resolves.toBe(false);
+      await admin.documentArchiveJobArtifact.update({
+        where: { document_archive_job_artifacts_pkey: { jobId: id, kind: xmlProjection.kind } },
+        data: { byteSize: xmlProjection.byteSize + 1 },
+      });
+      await expect(auditTreatsJobAsInvalid(id)).resolves.toBe(true);
+      await admin.documentArchiveJobArtifact.update({
+        where: { document_archive_job_artifacts_pkey: { jobId: id, kind: xmlProjection.kind } },
+        data: { byteSize: xmlProjection.byteSize },
+      });
+      await expect(auditTreatsJobAsInvalid(id)).resolves.toBe(false);
+
+      const failedId = randomUUID();
+      const failedPieceId = `db-proof-failed-${randomUUID()}`;
+      await seedIssuedInvoice(companyA, failedPieceId);
+      await workers[0]!.withTenant(companyA, () =>
+        repository.enqueue({
+          id: failedId,
+          companyId: companyA,
+          pieceId: failedPieceId,
+          reason: 'invoice-issued',
+          now: new Date(Date.now() - 1_000).toISOString(),
+        }),
+      );
+      const failedCandidate = await workers[0]!.withTenant(companyA, () =>
+        repository.findByPiece(companyA, failedPieceId, 'invoice-issued'),
+      );
+      if (failedCandidate === null) throw new Error('job de preuve failed absent');
+      const failedLeaseToken = randomUUID();
+      await expect(
+        workers[0]!.withTenant(companyA, () =>
+          repository.claimForArchive(
+            failedId,
+            companyA,
+            failedCandidate.updatedAt,
+            new Date().toISOString(),
+            new Date(Date.now() + 60_000).toISOString(),
+            failedLeaseToken,
+          ),
+        ),
+      ).resolves.toMatchObject({ outcome: 'claimed' });
+      await expect(auditTreatsJobAsInvalid(failedId)).resolves.toBe(false);
+      const failedAt = new Date();
+      await expect(
+        workers[0]!.withTenant(companyA, () =>
+          repository.markFailed(
+            failedId,
+            companyA,
+            failedLeaseToken,
+            failedAt.toISOString(),
+            new Date(failedAt.getTime() + 60_000).toISOString(),
+            'échec injecté par le certificat',
+          ),
+        ),
+      ).resolves.toBe(true);
+      await expect(auditTreatsJobAsInvalid(failedId)).resolves.toBe(false);
+      await setJobNextAttemptFromDatabaseClock(
+        failedId,
+        DOCUMENT_ARCHIVE_JOB_MAX_RETRY_MINUTES + 1,
+      );
+      await expect(auditTreatsJobAsInvalid(failedId)).resolves.toBe(true);
+      await admin.documentArchiveJob.update({
+        where: { id: failedId },
+        data: { nextAttemptAt: new Date('9999-12-31T23:59:59.999Z') },
+      });
+      await expect(auditTreatsJobAsInvalid(failedId)).resolves.toBe(true);
+      await setJobNextAttemptFromDatabaseClock(
+        failedId,
+        -(DOCUMENT_ARCHIVE_JOB_OVERDUE_GRACE_MINUTES + 1),
+      );
+      await expect(auditTreatsJobAsInvalid(failedId)).resolves.toBe(true);
     });
 
     it('fige explicitement le périmètre PDF seul B2C sans inventer de Flux 2', async () => {
@@ -2654,6 +3134,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       );
       const legacy = due.find((job) => job.id === legacyId);
       expect(legacy).toMatchObject({ status: 'done', integrityProof: null });
+      await expect(auditTreatsJobAsInvalid(legacyId)).resolves.toBe(true);
       const token = randomUUID();
       const claimed = await workers[0]!.withTenant(companyA, () =>
         repository.claimForArchive(

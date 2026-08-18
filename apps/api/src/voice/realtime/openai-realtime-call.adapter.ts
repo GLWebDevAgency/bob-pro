@@ -4,6 +4,7 @@ import type {
   OpenAiRealtimeCallProvider,
   RealtimeVoiceSettings,
 } from './realtime.types';
+import { realtimeSdpSingleAudioDirection } from '@bob/ai';
 
 const MAX_PROVIDER_SDP_BYTES = 256 * 1024;
 const CALL_ID = /^rtc_[A-Za-z0-9_-]{1,200}$/;
@@ -139,13 +140,28 @@ function callIdFromLocation(location: string | null): string {
   return callId;
 }
 
-function assertAnswerSdp(answerSdp: string): void {
+function assertHistoricalAnswerSdp(answerSdp: string): void {
   if (
     answerSdp.length < 16
     || answerSdp.includes('\u0000')
     || !answerSdp.startsWith('v=0')
     || !/(?:^|\r?\n)m=audio\s/m.test(answerSdp)
   ) {
+    throw new Error('provider_invalid_sdp');
+  }
+}
+
+function assertAnswerSdp(
+  answerSdp: string,
+  outputModality: 'audio' | 'text',
+): void {
+  // PR86 reste dormante : la nouvelle autorité s'applique uniquement au rail natif cible.
+  // Le rail audité déjà publié garde exactement son shape-check N-1 jusqu'à son retrait.
+  if (outputModality === 'text') {
+    assertHistoricalAnswerSdp(answerSdp);
+    return;
+  }
+  if (realtimeSdpSingleAudioDirection(answerSdp) !== 'sendrecv') {
     throw new Error('provider_invalid_sdp');
   }
 }
@@ -196,21 +212,36 @@ export class OpenAiRealtimeCallAdapter implements OpenAiRealtimeCallProvider {
       await input.onCallCreated(callId);
       throwIfBootstrapAborted(input.signal);
     } catch (error) {
-      return this.compensateCreatedCall(callId, callbackErrorClass(error));
+      return this.compensateCreatedCall(
+        callId,
+        callbackErrorClass(error),
+        input.session.output_modalities[0] === 'audio',
+      );
     }
 
     try {
       const answerSdp = await readBoundedText(response, MAX_PROVIDER_SDP_BYTES, input.signal);
-      assertAnswerSdp(answerSdp);
+      assertAnswerSdp(answerSdp, input.session.output_modalities[0]);
       return { answerSdp, callId };
     } catch (error) {
-      return this.compensateCreatedCall(callId, answerErrorClass(error));
+      return this.compensateCreatedCall(
+        callId,
+        answerErrorClass(error),
+        input.session.output_modalities[0] === 'audio',
+      );
     }
   }
 
-  private async compensateCreatedCall(callId: string, sourceErrorClass: string): Promise<never> {
+  private async compensateCreatedCall(
+    callId: string,
+    sourceErrorClass: string,
+    nativeStrictTerminal: boolean,
+  ): Promise<never> {
     try {
-      await this.hangupCall(callId);
+      await this.hangupCallWithPolicy(
+        callId,
+        nativeStrictTerminal ? 'native_compensation' : 'historical',
+      );
     } catch (cleanupError) {
       throw new RealtimeProviderCleanupError(sourceErrorClass, cleanupErrorClass(cleanupError));
     }
@@ -218,21 +249,34 @@ export class OpenAiRealtimeCallAdapter implements OpenAiRealtimeCallProvider {
   }
 
   async hangupCall(callId: string): Promise<void> {
+    return this.hangupCallWithPolicy(callId, 'historical');
+  }
+
+  private async hangupCallWithPolicy(
+    callId: string,
+    policy: 'historical' | 'native_compensation',
+  ): Promise<void> {
     if (!this.settings.apiKey) throw new Error('provider_not_configured');
     if (!CALL_ID.test(callId)) throw new Error('provider_call_id_invalid');
-    const existing = this.hangupsInFlight.get(callId);
+    const inFlightKey = `${callId}\u0000${policy}`;
+    const existing = this.hangupsInFlight.get(inFlightKey);
     if (existing) return existing;
 
-    const hangup = this.performHangup(callId);
-    this.hangupsInFlight.set(callId, hangup);
+    const hangup = this.performHangup(callId, policy);
+    this.hangupsInFlight.set(inFlightKey, hangup);
     try {
       await hangup;
     } finally {
-      if (this.hangupsInFlight.get(callId) === hangup) this.hangupsInFlight.delete(callId);
+      if (this.hangupsInFlight.get(inFlightKey) === hangup) {
+        this.hangupsInFlight.delete(inFlightKey);
+      }
     }
   }
 
-  private async performHangup(callId: string): Promise<void> {
+  private async performHangup(
+    callId: string,
+    policy: 'historical' | 'native_compensation',
+  ): Promise<void> {
     let lastError = 'provider_hangup_failed';
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
@@ -245,7 +289,14 @@ export class OpenAiRealtimeCallAdapter implements OpenAiRealtimeCallProvider {
           },
         );
         await response.body?.cancel().catch(() => undefined);
-        if (response.ok || response.status === 404 || response.status === 409) return;
+        // Le nouveau rail natif n'acquiert une preuve terminale que sur le statut 200 documenté.
+        // Le comportement historique reste byte-for-byte compatible dans ce lot dormant : le
+        // corriger sans keyring/reconciliation rendrait le reaper N-1 non convergent.
+        if (
+          policy === 'native_compensation'
+            ? response.status === 200
+            : response.ok || response.status === 404 || response.status === 409
+        ) return;
         lastError = `provider_hangup_http_${Math.floor(response.status / 100)}xx`;
         if (response.status < 500 && response.status !== 429) break;
       } catch (error) {

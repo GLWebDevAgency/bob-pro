@@ -336,6 +336,17 @@ const SEND_RECV_SDP = [
   'm=audio 9 UDP/TLS/RTP/SAVPF 111',
   'a=sendrecv',
   'm=application 9 UDP/DTLS/SCTP webrtc-datachannel',
+  // Pion/OpenAI porte cette direction sur l'association SCTP ; elle n'est pas une direction RTP.
+  'a=sendrecv',
+  '',
+].join('\r\n');
+
+// RFC 8866 : sans attribut de direction, une m-line active vaut sendrecv. OpenAI peut renvoyer
+// cette forme légitime ; le rail natif l'accepte sans relâcher le contrat audité recvonly.
+const IMPLICIT_SEND_RECV_SDP = [
+  'v=0',
+  'm=audio 9 UDP/TLS/RTP/SAVPF 111',
+  'm=application 9 UDP/DTLS/SCTP webrtc-datachannel',
   '',
 ].join('\r\n');
 
@@ -412,9 +423,7 @@ function client(
         typeof agentMissionSession === 'function'
           ? agentMissionSession(sessionHandle)
           : agentMissionSession === undefined
-            ? config.speechDelivery === 'audited-signed-url-v1'
-              ? missionSessionStub(sessionHandle).session
-              : null
+            ? missionSessionStub(sessionHandle).session
             : agentMissionSession;
       return {
         ok: true,
@@ -484,7 +493,7 @@ function transport(
     | null =
       negotiation.speechDelivery === 'audited-signed-url-v1'
         ? REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
-        : null,
+        : REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
 ): RealtimeWebRtcTransport {
   const value = new RealtimeWebRtcTransport(
     bobClient,
@@ -819,9 +828,14 @@ describe('RealtimeWebRtcTransport — courses et autorite serveur', () => {
 
   it.each([
     {
-      label: 'OpenAI natif avec protocole V2',
+      label: 'OpenAI natif sans protocole Mission',
       negotiation: nativeRealtimeConfig,
-      protocolVersion: REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
+      protocolVersion: null,
+    },
+    {
+      label: 'OpenAI natif avec protocole V1',
+      negotiation: nativeRealtimeConfig,
+      protocolVersion: REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
     },
     {
       label: 'WebRTC audité sans protocole Mission',
@@ -2092,7 +2106,7 @@ describe('RealtimeWebRtcTransport — downlink OpenAI natif', () => {
     };
   }
 
-  it('négocie exactement une m-line sendrecv et n ouvre la piste qu au buffer.started', async () => {
+  it('négocie Mission V2 et exactement une m-line sendrecv puis n ouvre la piste qu au buffer.started', async () => {
     const { bobClient, harness, value } = nativeHarness();
     await connectNative(value);
     const peer = harness.peers[0]!;
@@ -2113,8 +2127,13 @@ describe('RealtimeWebRtcTransport — downlink OpenAI natif', () => {
       speechDelivery: 'openai-native-webrtc-v1',
       configVersion: nativeRealtimeConfig.configVersion,
       sdp: SEND_RECV_SDP,
-      agentMissionProtocolVersion: null,
+      agentMissionProtocolVersion: REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
     });
+    const mission = value.takeAgentMissionSession();
+    expect(mission).toMatchObject({
+      protocolVersion: REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
+    });
+    mission?.dispose();
 
     const remote = peer.receiveRemoteTrack();
     expect(remote.transceiver).toBe(peer.transceiver);
@@ -2162,6 +2181,20 @@ describe('RealtimeWebRtcTransport — downlink OpenAI natif', () => {
     expect(remote.track.enabled).toBe(false);
     expect(value.state.phase).toBe('ready');
     expect(bobClient.hangupRealtimeVoiceCall).not.toHaveBeenCalled();
+  });
+
+  it('accepte une answer native sans direction explicite comme sendrecv par défaut SDP', async () => {
+    const bobClient = client(IMPLICIT_SEND_RECV_SDP, nativeRealtimeConfig);
+    const harness = runtimeHarness(
+      async () => new FakeStream(),
+      { offerSdp: SEND_RECV_SDP },
+    );
+    const value = transport(bobClient, harness, nativeRealtimeConfig);
+
+    await expect(value.connect()).resolves.toBeUndefined();
+
+    expect(harness.peers[0]?.setRemoteDescriptionCalls).toBe(1);
+    expect(value.state.phase).toBe('ready');
   });
 
   it('refuse une answer non sendrecv avant de l appliquer au peer natif', async () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { SupabaseDocumentStorage } from './storage';
 import { InMemoryDocumentStorage } from './storage.testing';
+import type { RequestDeadlineRuntime } from './supabase-object-info';
 
 const BYTES = new Uint8Array([1, 2, 3]);
 const SHA = '039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81';
@@ -50,6 +51,17 @@ describe('InMemoryDocumentStorage', () => {
       }),
     ).rejects.toThrow('outside tenant scope');
   });
+
+  it('refuse le même MIME invalide que l’adapter live', async () => {
+    const storage = new InMemoryDocumentStorage();
+
+    await expect(storage.put({
+      companyId: 'co-1',
+      key: `companies/co-1/documents/doc-1/v1/${SHA}.bin`,
+      bytes: BYTES,
+      contentType: '*/*',
+    })).rejects.toThrow('missing valid content type');
+  });
 });
 
 // ── SupabaseDocumentStorage : le « 400 not_found » de Supabase Storage (constaté en prod) ──
@@ -64,13 +76,26 @@ describe('SupabaseDocumentStorage — 400 not_found = absence, pas une erreur', 
   });
   const KEY = `companies/co-1/documents/doc-1/v1/${SHA}.bin`;
 
-  function makeStorage(fetchImpl: typeof fetch): SupabaseDocumentStorage {
+  function infoResponse(
+    contentType = 'application/xml',
+    size = BYTES.byteLength,
+  ): Response {
+    return new Response(JSON.stringify({ size, content_type: contentType }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+
+  function makeStorage(
+    fetchImpl: typeof fetch,
+    requestRuntime: RequestDeadlineRuntime = {},
+  ): SupabaseDocumentStorage {
     const original = globalThis.fetch;
     globalThis.fetch = fetchImpl;
     const storage = new SupabaseDocumentStorage({
       url: 'https://stub.supabase.co',
       serviceRoleKey: 'srk',
-    });
+    }, requestRuntime);
     // restauré par le test appelant après usage
     (storage as unknown as { __restore: () => void }).__restore = () => {
       globalThis.fetch = original;
@@ -95,6 +120,25 @@ describe('SupabaseDocumentStorage — 400 not_found = absence, pas une erreur', 
       await expect(storage.get('co-1', KEY)).rejects.toMatchObject({ name: 'TimeoutError' });
     } finally {
       globalThis.fetch = original;
+    }
+  });
+
+  it('refuse un MIME sortant invalide avant tout appel réseau', async () => {
+    let fetchCalls = 0;
+    const storage = makeStorage((async () => {
+      fetchCalls += 1;
+      return new Response('{}');
+    }) as typeof fetch);
+    try {
+      await expect(storage.put({
+        companyId: 'co-1',
+        key: KEY,
+        bytes: BYTES,
+        contentType: 'application/xml; boundary=poison',
+      })).rejects.toThrow('missing valid content type');
+      expect(fetchCalls).toBe(0);
+    } finally {
+      (storage as unknown as { __restore: () => void }).__restore();
     }
   });
 
@@ -131,7 +175,7 @@ describe('SupabaseDocumentStorage — 400 not_found = absence, pas une erreur', 
       await storage.stat('co-1', KEY);
       await storage.remove('co-1', KEY);
       expect(calls.map((call) => call.method)).toEqual([
-        'GET', 'POST', 'GET', 'POST', 'GET', 'DELETE',
+        'GET', 'POST', 'GET', 'GET', 'POST', 'GET', 'DELETE',
       ]);
       expect(calls.every((call) => call.signal instanceof AbortSignal)).toBe(true);
     } finally {
@@ -152,10 +196,12 @@ describe('SupabaseDocumentStorage — 400 not_found = absence, pas une erreur', 
 
   it('get calcule taille et SHA-256 depuis les octets effectivement téléchargés', async () => {
     const storage = makeStorage(
-      (async () => new Response(Buffer.from(BYTES), {
-        status: 200,
-        headers: { 'content-type': 'application/xml; charset=binary' },
-      })) as typeof fetch,
+      (async (url: RequestInfo | URL) => String(url).includes('/object/info/')
+        ? infoResponse('application/xml; charset=binary')
+        : new Response(Buffer.from(BYTES), {
+            status: 200,
+            headers: { 'content-type': 'text/plain' },
+          })) as typeof fetch,
     );
     try {
       const loaded = await storage.get('co-1', KEY);
@@ -171,10 +217,69 @@ describe('SupabaseDocumentStorage — 400 not_found = absence, pas une erreur', 
     }
   });
 
+  it('le GET et sa lecture info partagent le même budget de 15 secondes', async () => {
+    let now = 1_000;
+    const budgets: number[] = [];
+    const storage = makeStorage(
+      (async (url: RequestInfo | URL) => {
+        if (String(url).includes('/object/info/')) return infoResponse();
+        now += 6_000;
+        return new Response(Buffer.from(BYTES), {
+          status: 200,
+          headers: { 'content-type': 'text/plain' },
+        });
+      }) as typeof fetch,
+      {
+        now: () => now,
+        timeoutSignal: (milliseconds) => {
+          budgets.push(milliseconds);
+          return new AbortController().signal;
+        },
+      },
+    );
+    try {
+      await expect(storage.get('co-1', KEY)).resolves.toMatchObject({ sha256: SHA });
+      expect(budgets).toEqual([15_000, 9_000]);
+    } finally {
+      (storage as unknown as { __restore: () => void }).__restore();
+    }
+  });
+
+  it('refuse un objet téléchargé dont la métadonnée autoritative a disparu', async () => {
+    const storage = makeStorage(
+      (async (url: RequestInfo | URL) => String(url).includes('/object/info/')
+        ? new Response(NOT_FOUND_BODY, { status: 400 })
+        : new Response(Buffer.from(BYTES))) as typeof fetch,
+    );
+    try {
+      await expect(storage.get('co-1', KEY)).rejects.toThrow(
+        'metadata missing after object download',
+      );
+    } finally {
+      (storage as unknown as { __restore: () => void }).__restore();
+    }
+  });
+
+  it('refuse une taille metadata différente des octets effectivement téléchargés', async () => {
+    const storage = makeStorage(
+      (async (url: RequestInfo | URL) => String(url).includes('/object/info/')
+        ? infoResponse('application/xml', BYTES.byteLength + 1)
+        : new Response(Buffer.from(BYTES))) as typeof fetch,
+    );
+    try {
+      await expect(storage.get('co-1', KEY)).rejects.toThrow(
+        'object and metadata size mismatch',
+      );
+    } finally {
+      (storage as unknown as { __restore: () => void }).__restore();
+    }
+  });
+
   it('adopte un objet préexistant strictement identique sans POST ni DELETE', async () => {
     const methods: string[] = [];
-    const storage = makeStorage((async (_url: RequestInfo | URL, init?: RequestInit) => {
+    const storage = makeStorage((async (url: RequestInfo | URL, init?: RequestInit) => {
       methods.push(init?.method ?? 'GET');
+      if (String(url).includes('/object/info/')) return infoResponse();
       return new Response(Buffer.from(BYTES), {
         status: 200,
         headers: { 'content-type': 'application/xml; charset=binary' },
@@ -184,7 +289,7 @@ describe('SupabaseDocumentStorage — 400 not_found = absence, pas une erreur', 
       await expect(storage.put({
         companyId: 'co-1', key: KEY, bytes: BYTES, contentType: 'application/xml',
       })).resolves.toMatchObject({ created: false, sha256: SHA });
-      expect(methods).toEqual(['GET']);
+      expect(methods).toEqual(['GET', 'GET']);
     } finally {
       (storage as unknown as { __restore: () => void }).__restore();
     }
@@ -193,9 +298,10 @@ describe('SupabaseDocumentStorage — 400 not_found = absence, pas une erreur', 
   it('adopte le gagnant identique après un conflit d’upload concurrent', async () => {
     const methods: string[] = [];
     let getCount = 0;
-    const storage = makeStorage((async (_url: RequestInfo | URL, init?: RequestInit) => {
+    const storage = makeStorage((async (url: RequestInfo | URL, init?: RequestInit) => {
       const method = init?.method ?? 'GET';
       methods.push(method);
+      if (String(url).includes('/object/info/')) return infoResponse();
       if (method === 'GET') {
         getCount += 1;
         return getCount === 1
@@ -211,7 +317,7 @@ describe('SupabaseDocumentStorage — 400 not_found = absence, pas une erreur', 
       await expect(storage.put({
         companyId: 'co-1', key: KEY, bytes: BYTES, contentType: 'application/xml',
       })).resolves.toMatchObject({ created: false, sha256: SHA });
-      expect(methods).toEqual(['GET', 'POST', 'GET']);
+      expect(methods).toEqual(['GET', 'POST', 'GET', 'GET']);
       expect(methods).not.toContain('DELETE');
     } finally {
       (storage as unknown as { __restore: () => void }).__restore();
@@ -220,8 +326,9 @@ describe('SupabaseDocumentStorage — 400 not_found = absence, pas une erreur', 
 
   it('refuse une collision de même taille/MIME dont les octets diffèrent, sans effacement', async () => {
     const methods: string[] = [];
-    const storage = makeStorage((async (_url: RequestInfo | URL, init?: RequestInit) => {
+    const storage = makeStorage((async (url: RequestInfo | URL, init?: RequestInit) => {
       methods.push(init?.method ?? 'GET');
+      if (String(url).includes('/object/info/')) return infoResponse();
       return new Response(Buffer.from([1, 2, 4]), {
         status: 200,
         headers: { 'content-type': 'application/xml' },
@@ -231,7 +338,7 @@ describe('SupabaseDocumentStorage — 400 not_found = absence, pas une erreur', 
       await expect(storage.put({
         companyId: 'co-1', key: KEY, bytes: BYTES, contentType: 'application/xml',
       })).rejects.toThrow('collision');
-      expect(methods).toEqual(['GET']);
+      expect(methods).toEqual(['GET', 'GET']);
     } finally {
       (storage as unknown as { __restore: () => void }).__restore();
     }
@@ -240,9 +347,10 @@ describe('SupabaseDocumentStorage — 400 not_found = absence, pas une erreur', 
   it('refuse un readback corrompu après POST sans supprimer une clé potentiellement adoptée', async () => {
     const methods: string[] = [];
     let getCount = 0;
-    const storage = makeStorage((async (_url: RequestInfo | URL, init?: RequestInit) => {
+    const storage = makeStorage((async (url: RequestInfo | URL, init?: RequestInit) => {
       const method = init?.method ?? 'GET';
       methods.push(method);
+      if (String(url).includes('/object/info/')) return infoResponse();
       if (method === 'GET') {
         getCount += 1;
         return getCount === 1
@@ -258,7 +366,7 @@ describe('SupabaseDocumentStorage — 400 not_found = absence, pas une erreur', 
       await expect(storage.put({
         companyId: 'co-1', key: KEY, bytes: BYTES, contentType: 'application/xml',
       })).rejects.toThrow('read-after-write integrity mismatch');
-      expect(methods).toEqual(['GET', 'POST', 'GET']);
+      expect(methods).toEqual(['GET', 'POST', 'GET', 'GET']);
       expect(methods).not.toContain('DELETE');
     } finally {
       (storage as unknown as { __restore: () => void }).__restore();
@@ -268,9 +376,10 @@ describe('SupabaseDocumentStorage — 400 not_found = absence, pas une erreur', 
   it('adopte l’objet exact quand l’ACK du POST est perdu', async () => {
     const methods: string[] = [];
     let getCount = 0;
-    const storage = makeStorage((async (_url: RequestInfo | URL, init?: RequestInit) => {
+    const storage = makeStorage((async (url: RequestInfo | URL, init?: RequestInit) => {
       const method = init?.method ?? 'GET';
       methods.push(method);
+      if (String(url).includes('/object/info/')) return infoResponse();
       if (method === 'GET') {
         getCount += 1;
         return getCount === 1
@@ -286,27 +395,27 @@ describe('SupabaseDocumentStorage — 400 not_found = absence, pas une erreur', 
       await expect(storage.put({
         companyId: 'co-1', key: KEY, bytes: BYTES, contentType: 'application/xml',
       })).resolves.toMatchObject({ created: false, sha256: SHA });
-      expect(methods).toEqual(['GET', 'POST', 'GET']);
+      expect(methods).toEqual(['GET', 'POST', 'GET', 'GET']);
     } finally {
       (storage as unknown as { __restore: () => void }).__restore();
     }
   });
 
-  it('put : le pré-stat 400 not_found ne bloque plus le PREMIER upload (objet uploadé)', async () => {
+  it('premier upload : adopte le readback byte-exact malgré son en-tête GET générique', async () => {
     const calls: string[] = [];
     let objectGets = 0;
     const storage = makeStorage((async (url: RequestInfo | URL, init?: RequestInit) => {
       const u = String(url);
       const method = init?.method ?? 'GET';
       calls.push(`${method} ${u}`);
-      if (u.includes('/object/info/')) return new Response(NOT_FOUND_BODY, { status: 400 });
+      if (u.includes('/object/info/')) return infoResponse();
       if (method === 'GET' && u.includes('/object/bob-documents/')) {
         objectGets += 1;
         return objectGets === 1
           ? new Response(NOT_FOUND_BODY, { status: 400 })
           : new Response(Buffer.from(BYTES), {
               status: 200,
-              headers: { 'content-type': 'application/xml; charset=binary' },
+              headers: { 'content-type': 'text/plain' },
             });
       }
       return new Response('{}', { status: 200 }); // l'upload POST réussit
@@ -360,6 +469,36 @@ describe('SupabaseDocumentStorage — 400 not_found = absence, pas une erreur', 
     );
     try {
       await expect(storage.stat('co-1', KEY)).rejects.toThrow('missing valid size');
+    } finally {
+      (storage as unknown as { __restore: () => void }).__restore();
+    }
+  });
+
+  it.each([
+    ['absent', { size: 10 }],
+    ['vide', { size: 10, content_type: '  ' }],
+    ['sans type', { size: 10, content_type: '; charset=utf-8' }],
+    ['sans sous-type', { size: 10, content_type: 'not-a-mime' }],
+    ['non textuel', { size: 10, content_type: 42 }],
+  ])('un type MIME %s échoue fermé', async (_label, body) => {
+    const storage = makeStorage(
+      (async () => new Response(JSON.stringify(body), { status: 200 })) as typeof fetch,
+    );
+    try {
+      await expect(storage.stat('co-1', KEY)).rejects.toThrow('missing valid content type');
+    } finally {
+      (storage as unknown as { __restore: () => void }).__restore();
+    }
+  });
+
+  it('préserve une coupure réseau pendant le décodage des métadonnées', async () => {
+    const interruption = new DOMException('body aborted', 'AbortError');
+    const storage = makeStorage((async () => ({
+      ok: true,
+      json: async () => Promise.reject(interruption),
+    })) as unknown as typeof fetch);
+    try {
+      await expect(storage.stat('co-1', KEY)).rejects.toBe(interruption);
     } finally {
       (storage as unknown as { __restore: () => void }).__restore();
     }

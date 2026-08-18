@@ -19,6 +19,9 @@ const [
   rlsCleanup,
   facturXSample,
   snapshotCertificate,
+  versionInsertFence,
+  intermediateVersionInsertCertificate,
+  rls,
 ] = await Promise.all([
   readFile(
     new URL(
@@ -48,7 +51,78 @@ const [
     new URL('src/persistence/prisma/document-archive-snapshot.postgres.test.ts', root),
     'utf8',
   ),
+  readFile(
+    new URL(
+      'prisma/migrations/20260810100000_document_version_insert_tenant_fence/migration.sql',
+      root,
+    ),
+    'utf8',
+  ),
+  readFile(
+    new URL('scripts/certify-document-version-insert-fence-intermediate.sh', root),
+    'utf8',
+  ),
+  readFile(new URL('prisma/rls.sql', root), 'utf8'),
 ]);
+
+test('la fence d’insertion des versions rompt le cycle RLS sans ouvrir la lecture', () => {
+  assert.match(versionInsertFence, /SET LOCAL lock_timeout = '5s'/u);
+  assert.match(versionInsertFence, /SET LOCAL statement_timeout = '60s'/u);
+  assert.match(versionInsertFence, /SECURITY DEFINER/u);
+  assert.match(versionInsertFence, /SET search_path = pg_catalog, public/u);
+  assert.match(versionInsertFence, /SET row_security = off/u);
+  assert.match(versionInsertFence, /relation\.oid = 'public\.documents'::regclass/u);
+  assert.match(versionInsertFence, /owner\.rolsuper OR owner\.rolbypassrls/u);
+  assert.match(versionInsertFence, /pg_has_role\(session_user, document_owner_oid, 'SET'\)/u);
+  assert.match(
+    versionInsertFence,
+    /document_version_parent_fence_policy_owner[\s\S]*relation\.oid = 'public\.document_versions'::regclass[\s\S]*pg_has_role\(session_user, policy_owner_oid, 'SET'\)/u,
+  );
+  assert.match(versionInsertFence, /SET LOCAL ROLE %I/u);
+  assert.match(versionInsertFence, /RESET ROLE/u);
+  assert.match(versionInsertFence, /REVOKE ALL ON FUNCTION[\s\S]*FROM PUBLIC/u);
+  for (const role of ['anon', 'authenticated', 'service_role']) {
+    assert.match(versionInsertFence, new RegExp(`'${role}'`, 'u'));
+  }
+  assert.match(
+    versionInsertFence,
+    /document_version_parent_fence_existing_writers[\s\S]*privilege\.privilege_type = 'INSERT'[\s\S]*GRANT EXECUTE ON FUNCTION[\s\S]*writer\.rolname/u,
+  );
+  assert.match(
+    versionInsertFence,
+    /CREATE POLICY tenant_document_version_insert[\s\S]*document_version_parent_belongs_to_current_tenant_v1\("documentId"\)/u,
+  );
+  assert.doesNotMatch(
+    versionInsertFence,
+    /CREATE POLICY tenant_document_version_insert[\s\S]*SELECT 1[\s\S]*FROM public\.documents/u,
+  );
+  assert.match(
+    rls,
+    /CREATE POLICY tenant_document_version_insert[\s\S]*document_version_parent_belongs_to_current_tenant_v1\("documentId"\)/u,
+  );
+  assert.match(
+    release,
+    /document_version_parent_fence_acl_owner[\s\S]*SET LOCAL ROLE %I[\s\S]*REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %s CASCADE[\s\S]*GRANT EXECUTE ON FUNCTION public\.document_version_parent_belongs_to_current_tenant_v1\(TEXT\)[\s\S]*TO :"app_role"[\s\S]*RESET ROLE/u,
+  );
+  assert.match(
+    intermediateVersionInsertCertificate,
+    /assert-database-pair\.mjs --ephemeral-supabase-ci owner-split/u,
+  );
+  assert.match(
+    intermediateVersionInsertCertificate,
+    /DOCUMENT_VERSION_INSERT_FENCE_INTERMEDIATE_CERT_DATABASE_KIND[^\n]*ephemeral/u,
+  );
+  assert.match(
+    intermediateVersionInsertCertificate,
+    /active_version[\s\S]*!= 1[\s\S]*20260810100000_document_version_insert_tenant_fence\/migration\.sql[\s\S]*RUN_POSTGRES_DOCUMENT_VERSION_INSERT_FENCE_INTERMEDIATE_CERT=true/u,
+  );
+  const predeploy = ci.indexOf('id: release_schema');
+  const intermediate = ci.indexOf(
+    'sh apps/api/scripts/certify-document-version-insert-fence-intermediate.sh',
+  );
+  const activation = ci.indexOf('name: Activate document archive v2');
+  assert.ok(predeploy >= 0 && intermediate > predeploy && activation > intermediate);
+});
 
 test('expand/validate respectent le protocole de migration additif', () => {
   for (const migration of [expand, validate]) {
@@ -222,10 +296,32 @@ test('release et CI maintiennent V2 pendant expand puis activent V3 avant postde
     /archive_activated_now[\s\S]*?document_archive_protocol_state[\s\S]*?document_archive_snapshot_protocol_state[\s\S]*?snapshot_state\."activeVersion" = 1[\s\S]*?document-archive-integrity\.postgres\.test\.ts/u,
     'Le postdeploy ne rejoue le certificat V2 que tant que le cutover snapshot terminal ne l’a pas retiré.',
   );
-  const archiveV2 = ci.indexOf('activate-document-archive-v2.sh');
-  const snapshotV2 = ci.indexOf('activate-document-archive-snapshot-v2.sh');
-  const postdeploy = ci.indexOf('BOB_RELEASE_PHASE=postdeploy', snapshotV2);
-  assert.ok(archiveV2 >= 0 && snapshotV2 > archiveV2 && postdeploy > snapshotV2);
+  const rlsJobStart = ci.indexOf('\n  rls-certification:\n');
+  const rlsJobEnd = ci.indexOf('\n  document-archive-quarantine-certification:\n');
+  assert.ok(rlsJobStart >= 0 && rlsJobEnd > rlsJobStart);
+  const rlsJob = ci.slice(rlsJobStart, rlsJobEnd);
+  const archiveCertificateBlock = `      - name: Certify document archive v2 relational integrity
+        run: |
+          DOCUMENT_ARCHIVE_CERT_WORKER_COUNT=4 \\
+          RUN_POSTGRES_DOCUMENT_ARCHIVE_CERT=true \\
+            pnpm --filter @bob/api exec vitest run --testTimeout=30000 \\
+              src/persistence/prisma/document-archive-integrity.postgres.test.ts`;
+  assert.equal(
+    rlsJob.split(archiveCertificateBlock).length - 1,
+    1,
+    'La CI RLS doit contenir une invocation unique et exacte du certificat relationnel V2.',
+  );
+  const archiveV2 = rlsJob.indexOf('activate-document-archive-v2.sh');
+  const archiveV2Certificate = rlsJob.indexOf(archiveCertificateBlock, archiveV2);
+  const snapshotV2 = rlsJob.indexOf('activate-document-archive-snapshot-v2.sh');
+  const postdeploy = rlsJob.indexOf('BOB_RELEASE_PHASE=postdeploy', snapshotV2);
+  assert.ok(
+    archiveV2 >= 0
+      && archiveV2Certificate > archiveV2
+      && snapshotV2 > archiveV2Certificate
+      && postdeploy > snapshotV2,
+    'La CI doit exécuter le certificat relationnel V2 après son activation et avant le cutover V3.',
+  );
   const railwayArchiveV2 = releaseActivation.indexOf('activate-document-archive-v2.sh');
   const railwaySnapshotV2 = releaseActivation.indexOf('activate-document-archive-snapshot-v2.sh');
   const railwaySettlementV2 = releaseActivation.indexOf('activate-invoice-settlement-v2.sh');

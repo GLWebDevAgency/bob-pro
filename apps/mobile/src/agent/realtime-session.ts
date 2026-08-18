@@ -21,6 +21,7 @@ import {
 import type {
   LegacyVoiceFallbackPort,
   RealtimeResilienceEvent,
+  RealtimeStopReceipt,
 } from '../realtime/realtime-resilience-orchestrator';
 import {
   legacyFallbackChannelFor,
@@ -28,6 +29,7 @@ import {
 } from '../realtime/realtime-recovery-policy';
 import type {
   RealtimeClientDiagnosticUpdate,
+  RealtimeCloseReason,
   RealtimeFallbackReason,
   RealtimeTransportEvent,
 } from '../realtime/realtime-transport';
@@ -74,7 +76,13 @@ export interface RealtimeOrchestratorLike {
     readonly fallbackChannel: unknown;
     readonly lastFailureReason: RealtimeFallbackReason | null;
   }>;
-  stop(reason?: 'user' | 'background' | 'unmount'): Promise<void>;
+  stop(reason?: RealtimeCloseReason): Promise<RealtimeStopReceipt>;
+}
+
+export interface RealtimeSessionStopReceipt {
+  readonly status: 'closed' | 'unconfirmed';
+  readonly missionReleased: boolean;
+  readonly transportClosed: boolean;
 }
 
 /** Transport tel que vu par la glue — le contrat officiel (addendum 20:34). */
@@ -88,6 +96,17 @@ export interface RealtimeTransportLike {
   takeAgentMissionSession(): RealtimeAgentMissionSession | null;
   reportClientDiagnostic?(update: RealtimeClientDiagnosticUpdate): void;
 }
+
+interface RealtimeContextAttempt {
+  readonly controllerGeneration: number;
+  readonly primaryGeneration: number;
+  readonly transport: RealtimeTransportLike;
+  readonly publisher: RealtimeContextPublisher;
+  readonly epoch: number;
+  readonly fence: RealtimePublishedFence;
+}
+
+type RealtimeConfirmedContextAuthority = RealtimeContextAttempt;
 
 /** Gate d'ACK one-shot (lane GPT) : échange une référence provider NON FIABLE contre le
  * contrôle authentifié par NOTRE serveur, fencé sur le contexte réellement publié. */
@@ -174,9 +193,13 @@ export class RealtimeSessionController {
   /** Le port terminal orchestrateur a pris la main. Selon l'autorité observée, il a soit émis
    * onFallback, soit fermé via onFailedClosed ; start() ne doit jamais relancer une boucle. */
   private fallbackTaken = false;
-  /** Un primaire Mission dégradé ne terminalise l'UI qu'une fois, même si transport et
-   * orchestrateur signalent tous deux la rupture. Réarmé uniquement par un nouveau start. */
-  private failedClosedNotified = false;
+  /**
+   * L'outcome de `start()` est l'unique autorité UX tant que le bootstrap n'a pas réussi.
+   * Le hook asynchrone n'est armé qu'après ce succès et reste lié à sa génération : une
+   * continuation A ne peut donc jamais repeindre une session B.
+   */
+  private failedClosedHookGeneration: number | null = null;
+  private failedClosedNotifiedGeneration: number | null = null;
   /**
    * ACK de contrôle partagé par tour. Le terminal du même tour l'attend avant de provoquer la
    * relecture mission : l'UI ne peut donc jamais relire entre contrôle authentifié et effet.
@@ -219,10 +242,27 @@ export class RealtimeSessionController {
   private requestedAgentMissionProtocolVersion:
     RealtimeAgentMissionProtocolVersion | null = null;
   private agentMissionContextConfirmed = false;
+  /** Toute phase READY est seulement technique. L'UI n'entre en écoute qu'après contexte
+   * confirmé et activation effective de la piste locale, quel que soit le fournisseur. */
+  private confirmedListeningPhaseReady = false;
+  /** Un transfert vers l'UI manuelle révoque durablement l'oreille pour cette session. Aucun
+   * PUT contexte ou callback transport déjà en vol ne peut la rouvrir avant un nouveau start. */
+  private manualHandoffSuspended = false;
+  /** Autorité locale exacte du contexte autorisé à entendre/parler. La fence HTTP brute n'est
+   * jamais suffisante : transport, runtime Mission et permission micro doivent avoir convergé. */
+  private contextEpoch = 0;
+  private confirmedContextAuthority: RealtimeConfirmedContextAuthority | null = null;
+  /** Les PUT restent latest-wins et concurrents ; seule leur application transport/Mission est
+   * sérialisée afin de respecter le waiter unique Mistral et l'ordre r2 → r3. */
+  private contextSynchronizationTail: Promise<void> = Promise.resolve();
   private missionReadyWaiter: {
+    readonly generation: number;
     readonly promise: Promise<boolean>;
     readonly resolve: (ready: boolean) => void;
   } | null = null;
+  /** Une seule fermeture possède les ressources à la fois. Les appels concurrents rejoignent
+   * le même reçu ; un verdict non confirmé est ensuite réessayable par un nouveau stop/start. */
+  private teardownTask: Promise<RealtimeSessionStopReceipt> | null = null;
   private readonly turnSettlementWaiters = new Map<
     string,
     Set<(settled: boolean) => void>
@@ -277,19 +317,6 @@ export class RealtimeSessionController {
     if (missionRequired && this.deps.agentMissionRuntime === undefined) {
       return 'failed_closed';
     }
-    // Un précédent teardown qui n'a pas pu rendre sa capability ne doit jamais être recouvert
-    // par une nouvelle négociation. On retente une fois, puis on échoue fermé sans ouvrir de
-    // transport : deux propriétaires runtime seraient une corruption de session.
-    if (
-      !this.activeFlag
-      && this.agentMissionSessionTransferred
-      && !this.releaseAgentMissionSession()
-    ) {
-      this.notifyFailedClosed('agent_mission_negotiation_failed');
-      // Une capability encore possédée interdit aussi le start « normal » : retourner
-      // `unavailable` autoriserait AgentSession à démarrer le cerveau legacy en parallèle.
-      return 'failed_closed';
-    }
     if (this.activeFlag) {
       return !missionRequired
         || (
@@ -300,28 +327,54 @@ export class RealtimeSessionController {
         ? 'realtime'
         : 'failed_closed';
     }
+    // Un orchestrateur terminalisé peut encore exister après un repli mid-call. Le fermer AVANT
+    // de créer le waiter frais évite que le teardown de A ne résolve celui de B.
+    if (this.orchestrator || this.agentMissionSessionTransferred) {
+      // Ce nouvel appel reprend l'autorité UX : son outcome, et non un callback terminal tardif
+      // de l'ancien monde, expliquera tout refus de nettoyage.
+      this.failedClosedHookGeneration = null;
+      const cleanupGeneration = this.generation;
+      if ((await this.teardown('user', cleanupGeneration)).status !== 'closed') {
+        return 'failed_closed';
+      }
+    }
     const gen = ++this.generation;
+    this.failedClosedHookGeneration = null;
     this.requiredMissionProtocolVersion = requiredMissionProtocolVersion;
+    this.confirmedListeningPhaseReady = false;
+    this.manualHandoffSuspended = false;
+    this.revokeConfirmedContextAuthority();
     this.observedAgentMissionProtocolVersion = null;
     this.agentMissionContextConfirmed = false;
-    this.prepareMissionReadyWaiter(missionRequired);
+    this.prepareMissionReadyWaiter(missionRequired, gen);
     this.fallbackTaken = false;
-    this.failedClosedNotified = false;
     this.pendingTerminalDecision = null;
     this.resetCommittedInputLifecycle();
-    // Un orchestrateur zombie (repli mid-call scellé sans stop explicite) meurt ici :
-    // chaque start() repart d'un monde propre, jamais d'un transport mort.
-    if (this.orchestrator) await this.teardown('user');
     this.agentMissionCapabilityObserved = false;
     let negotiation: RealtimeVoiceConfig | null;
     try {
       negotiation = await this.deps.negotiate();
     } catch {
-      this.resolveMissionReady(false);
+      if (gen !== this.generation) {
+        this.resolveMissionReady(false, gen);
+        return 'cancelled';
+      }
+      this.resolveMissionReady(false, gen);
       return missionRequired ? 'failed_closed' : 'unavailable';
     }
+    if (gen !== this.generation) {
+      // negotiate() n'est pas abortable : une réponse tardive après stop/background ne doit
+      // jamais ressusciter une erreur UI, une capability ou un transport de l'ancienne génération.
+      this.resolveMissionReady(false, gen);
+      return 'cancelled';
+    }
     if (!negotiation?.available) {
-      this.resolveMissionReady(false);
+      this.resolveMissionReady(false, gen);
+      if (negotiation?.speechDelivery === 'openai-native-webrtc-v1') {
+        // Le discriminant du rail, déjà compris par N-1, suffit : toute indisponibilité native
+        // ferme le nouveau client. On ne casse pas le wire v4 avec un nouvel enum de diagnostic.
+        return 'failed_closed';
+      }
       return missionRequired ? 'failed_closed' : 'unavailable';
     }
     if (negotiation.diagnosticTrace !== undefined) {
@@ -334,28 +387,24 @@ export class RealtimeSessionController {
         accepted = false;
       }
       if (gen !== this.generation) {
-        this.resolveMissionReady(false);
+        this.resolveMissionReady(false, gen);
         return 'cancelled';
       }
       if (!accepted) {
-        this.resolveMissionReady(false);
+        this.resolveMissionReady(false, gen);
         return 'cancelled';
       }
     }
     if (
       missionRequired
-      && (
-        negotiation.transport !== 'webrtc'
-        || negotiation.speechDelivery !== 'audited-signed-url-v1'
-      )
+      && negotiation.transport !== 'webrtc'
     ) {
-      this.resolveMissionReady(false);
+      this.resolveMissionReady(false, gen);
       return 'failed_closed';
     }
     const requestedAgentMissionProtocolVersion:
       RealtimeAgentMissionProtocolVersion | null =
         negotiation.transport === 'webrtc'
-          && negotiation.speechDelivery === 'audited-signed-url-v1'
           ? (
               requiredMissionProtocolVersion
               ?? REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
@@ -373,11 +422,11 @@ export class RealtimeSessionController {
         timeZoneConfirmed = false;
       }
       if (gen !== this.generation) {
-        this.resolveMissionReady(false);
+        this.resolveMissionReady(false, gen);
         return missionRequired ? 'failed_closed' : 'unavailable';
       }
       if (!timeZoneConfirmed) {
-        this.resolveMissionReady(false);
+        this.resolveMissionReady(false, gen);
         return 'cancelled';
       }
     }
@@ -385,18 +434,26 @@ export class RealtimeSessionController {
       requestedAgentMissionProtocolVersion !== null
       && this.deps.agentMissionRuntime === undefined
     ) {
-      this.resolveMissionReady(false);
+      this.resolveMissionReady(false, gen);
       return 'failed_closed';
     }
     this.requestedAgentMissionProtocolVersion =
       requestedAgentMissionProtocolVersion;
+    const mustAwaitMissionReady = missionRequired
+      || negotiation.speechDelivery === 'openai-native-webrtc-v1';
+    if (mustAwaitMissionReady && !missionRequired) {
+      // Le bouton/orbe appelle start() sans protocole explicite. Le delivery natif négocié reste
+      // néanmoins Mission V2 obligatoire et doit donc créer le même waiter que resumeMissionV2().
+      this.prepareMissionReadyWaiter(true, gen);
+    }
     if (gen !== this.generation) {
-      this.resolveMissionReady(false);
+      this.resolveMissionReady(false, gen);
       return missionRequired ? 'failed_closed' : 'unavailable';
     }
     this.contextPublished = false;
     const fallbackPort: LegacyVoiceFallbackPort = {
       start: async (input) => {
+        if (gen !== this.generation) return { close: async () => undefined };
         const missionAuthorityObserved = this.hasObservedMissionAuthority();
         const missionReleased = this.releaseAgentMissionSession();
         // Le primaire est ENTIÈREMENT fermé (garantie orchestrateur). La session temps réel
@@ -405,18 +462,18 @@ export class RealtimeSessionController {
         this.generation += 1;
         this.activeFlag = false;
         this.fallbackTaken = true;
-        this.resolveMissionReady(false);
+        this.resolveMissionReady(false, gen);
         this.publisher?.close();
         this.publisher = null;
         this.controlGate?.close?.();
         this.controlGate = null;
         if (!missionReleased) {
-          this.notifyFailedClosed('agent_mission_negotiation_failed');
+          this.notifyFailedClosed('agent_mission_negotiation_failed', gen);
         } else if (
           missionAuthorityObserved
           || this.requestedAgentMissionProtocolVersion !== null
         ) {
-          this.notifyFailedClosed(input.reason);
+          this.notifyFailedClosed(input.reason, gen);
         } else {
           this.hooks.onFallback(input.reason, input.channel);
         }
@@ -427,11 +484,11 @@ export class RealtimeSessionController {
       negotiation,
       requestedAgentMissionProtocolVersion,
       fallbackPort,
-      () => this.publisher?.fence ?? null,
+      () => this.currentConfirmedFence(),
       (transport) => this.adoptPrimary(transport),
     );
     this.unsubscribe = this.orchestrator.subscribe((event) => {
-      void this.handleEvent(event);
+      void this.handleEvent(event, gen);
     });
     this.activeFlag = true;
     const state = await this.orchestrator.start();
@@ -443,7 +500,7 @@ export class RealtimeSessionController {
         : 'fallback';
     }
     if (gen !== this.generation) {
-      this.resolveMissionReady(false);
+      this.resolveMissionReady(false, gen);
       return missionRequired ? 'failed_closed' : 'unavailable';
     }
     if (state.phase === 'failed' || state.phase === 'stopped' || state.phase === 'legacy') {
@@ -455,13 +512,19 @@ export class RealtimeSessionController {
       await this.stop('user');
       return failedClosed ? 'failed_closed' : 'unavailable';
     }
-    if (missionRequired && !await this.waitForMissionReady(
-      gen,
-      requiredMissionProtocolVersion,
-    )) {
-      if (gen === this.generation) await this.stop('user');
-      return 'failed_closed';
+    if (mustAwaitMissionReady) {
+      if (requestedAgentMissionProtocolVersion === null) {
+        if (gen === this.generation) await this.stop('user');
+        return 'failed_closed';
+      }
+      if (!await this.waitForMissionReady(gen, requestedAgentMissionProtocolVersion)) {
+        if (gen === this.generation) await this.stop('user');
+        return 'failed_closed';
+      }
     }
+    // À partir de ce point seulement, l'outcome a certifié une session réellement vivante.
+    // Les ruptures suivantes sont asynchrones et passent par le hook, exactement une fois/gen.
+    this.failedClosedHookGeneration = gen;
     return 'realtime';
   }
 
@@ -472,7 +535,10 @@ export class RealtimeSessionController {
   async suspendForManualHandoff(): Promise<boolean> {
     const transport = this.lastTransport;
     if (!this.activeFlag || transport === null) return false;
+    this.manualHandoffSuspended = true;
     transport.setMicrophoneEnabled(false);
+    this.revokeConfirmedContextAuthority();
+    this.markContextTransitionNotListening();
     transport.interrupt('tap');
     const turnId = this.committedTurnId;
     if (turnId === null) return true;
@@ -481,24 +547,33 @@ export class RealtimeSessionController {
 
   /** Détruit la capability terminalisée puis ferme le transport, dans cet ordre. */
   async stopAfterManualHandoff(): Promise<void> {
+    const originGeneration = this.generation;
     this.generation += 1;
-    const released = await this.teardown('user');
-    if (!released) throw new Error('agent_mission_release_failed');
+    const receipt = await this.teardown('user', originGeneration);
+    if (receipt.status !== 'closed') throw new Error('agent_mission_release_failed');
   }
 
   /** Changement d'écran (addendum 20:34) : micro OFF → interrupt(navigation) → PUT exact ;
    * succès = micro rouvert sur le NOUVEAU contexte ; échec = stop/fallback (jamais un
    * cerveau parlant sur un contexte périmé). Inopérant hors session. */
   async publishContext(): Promise<void> {
-    if (!this.activeFlag || this.publisher === null || this.lastTransport === null) return;
+    if (
+      !this.activeFlag
+      || this.manualHandoffSuspended
+      || this.publisher === null
+      || this.lastTransport === null
+    ) return;
     const controllerGeneration = this.generation;
     const primaryGeneration = this.primaryGeneration;
     const transport = this.lastTransport;
     const publisher = this.publisher;
     const context = this.hooks.getContextSnapshot();
+    transport.setMicrophoneEnabled(false);
+    this.revokeConfirmedContextAuthority();
+    const contextEpoch = this.contextEpoch;
+    this.markContextTransitionNotListening();
     this.invalidateAgentMissionContext();
     this.resetCommittedInputLifecycle();
-    transport.setMicrophoneEnabled(false);
     transport.interrupt('navigation');
     const result = await publisher.publish(context);
     if (
@@ -522,25 +597,14 @@ export class RealtimeSessionController {
       );
       return;
     }
-    if (!await this.synchronizeTransportContext(
+    await this.enqueueConfirmedContextActivation({
       controllerGeneration,
       primaryGeneration,
       transport,
-      result.fence,
-    )) return;
-    if (!await this.confirmAgentMissionContext(
-      controllerGeneration,
-      primaryGeneration,
-      transport,
-      result.fence,
-      context,
-    )) return;
-    transport.reportClientDiagnostic?.({ type: 'checkpoint', checkpoint: 'context_confirmed' });
-    await this.openMicrophoneIfActive(
-      controllerGeneration,
-      primaryGeneration,
-      transport,
-    );
+      publisher,
+      epoch: contextEpoch,
+      fence: result.fence,
+    }, context);
   }
 
   /** Commit semi-duplex : conserve socket, feed audité et contrôle jusqu'à la réponse. */
@@ -561,24 +625,57 @@ export class RealtimeSessionController {
     return accepted;
   }
 
-  async stop(reason: 'user' | 'background' | 'unmount' = 'user'): Promise<void> {
-    this.generation += 1; // invalide tout start() encore en vol — jamais de micro posthume
-    await this.teardown(reason);
+  async stop(
+    reason: 'user' | 'background' | 'unmount' = 'user',
+  ): Promise<RealtimeSessionStopReceipt> {
+    return this.stopWithCloseReason(reason);
   }
 
-  async stopForPolicy(reason: RealtimeVoiceClientPolicyCloseReason): Promise<void> {
+  private async stopWithCloseReason(
+    reason: RealtimeCloseReason,
+  ): Promise<RealtimeSessionStopReceipt> {
+    if (this.teardownTask !== null) return this.teardownTask;
+    const originGeneration = this.generation;
+    this.generation += 1; // invalide tout start() encore en vol — jamais de micro posthume
+    return this.teardown(reason, originGeneration);
+  }
+
+  async stopForPolicy(
+    reason: RealtimeVoiceClientPolicyCloseReason,
+  ): Promise<RealtimeSessionStopReceipt> {
     // Publier la cause AVANT orchestrator.stop(): son AbortSignal externe peut gagner la course
     // contre primary.close(), mais le transport conservera alors la policy au lieu de fabriquer
     // un arrêt `aborted` ou `user`.
-    this.lastTransport?.reportClientDiagnostic?.({ type: 'policy_stop', closeReason: reason });
-    this.generation += 1;
-    await this.teardown('user');
+    if (this.teardownTask === null) {
+      this.lastTransport?.reportClientDiagnostic?.({ type: 'policy_stop', closeReason: reason });
+    }
+    return this.stopWithCloseReason('user');
   }
 
   private async teardown(
-    reason: 'user' | 'background' | 'unmount',
-  ): Promise<boolean> {
-    this.resolveMissionReady(false);
+    reason: RealtimeCloseReason,
+    originGeneration: number,
+  ): Promise<RealtimeSessionStopReceipt> {
+    if (this.teardownTask !== null) return this.teardownTask;
+    const task = this.performTeardown(reason, originGeneration).finally(() => {
+      if (this.teardownTask === task) this.teardownTask = null;
+    });
+    this.teardownTask = task;
+    return task;
+  }
+
+  private async performTeardown(
+    reason: RealtimeCloseReason,
+    originGeneration: number,
+  ): Promise<RealtimeSessionStopReceipt> {
+    const transport = this.lastTransport;
+    try {
+      transport?.setMicrophoneEnabled(false);
+    } catch {
+      // La fermeture du peer reste obligatoire ci-dessous ; aucune exception UI ne rouvre le mic.
+    }
+    this.revokeConfirmedContextAuthority();
+    this.markContextTransitionNotListening();
     this.resolveAllTurnSettlementWaiters(false);
     const missionReleased = this.releaseAgentMissionSession();
     this.activeFlag = false;
@@ -594,23 +691,55 @@ export class RealtimeSessionController {
     this.unsubscribe?.();
     this.unsubscribe = null;
     const orchestrator = this.orchestrator;
-    this.orchestrator = null;
-    this.lastTransport = null;
-    if (orchestrator) await orchestrator.stop(reason);
-    if (!missionReleased) {
-      this.notifyFailedClosed('agent_mission_negotiation_failed');
+    const transportReceipt = orchestrator
+      ? await orchestrator.stop(reason)
+      : Object.freeze({
+          status: 'closed',
+          primaryClosed: true,
+          fallbackClosed: true,
+        } satisfies RealtimeStopReceipt);
+    const transportClosed = transportReceipt.status === 'closed';
+    if (transportClosed && this.orchestrator === orchestrator) {
+      this.orchestrator = null;
+      if (this.lastTransport === transport) this.lastTransport = null;
     }
-    return missionReleased;
+    // Le résultat de bootstrap ne devient terminal qu'après le cleanup réel. La génération
+    // empêche un teardown A tardif de résoudre le waiter d'une nouvelle session B.
+    this.resolveMissionReady(false, originGeneration);
+    return Object.freeze({
+      status: missionReleased && transportClosed ? 'closed' : 'unconfirmed',
+      missionReleased,
+      transportClosed,
+    });
   }
 
-  private async handleEvent(event: RealtimeResilienceEvent): Promise<void> {
-    if (!this.activeFlag || event.type !== 'transport') return;
-    await this.handleTransportEvent(event.event);
+  private async handleEvent(
+    event: RealtimeResilienceEvent,
+    originGeneration: number,
+  ): Promise<void> {
+    if (
+      !this.activeFlag
+      || originGeneration !== this.generation
+      || event.type !== 'transport'
+    ) return;
+    await this.handleTransportEvent(event.event, originGeneration);
   }
 
-  private async handleTransportEvent(event: RealtimeTransportEvent): Promise<void> {
+  private async handleTransportEvent(
+    event: RealtimeTransportEvent,
+    originGeneration: number,
+  ): Promise<void> {
     switch (event.type) {
       case 'state': {
+        if (
+          this.currentConfirmedFence() === null
+          && event.state.phase !== 'ready'
+          && event.state.phase !== 'connecting'
+          && event.state.phase !== 'authorizing'
+          && event.state.phase !== 'degraded'
+          && event.state.phase !== 'closing'
+          && event.state.phase !== 'closed'
+        ) return;
         if (event.state.phase === 'user_speaking') {
           this.resetCommittedInputLifecycle();
         }
@@ -619,7 +748,13 @@ export class RealtimeSessionController {
         if (event.state.phase === 'bob_speaking') {
           this.responsePendingForCurrentInput = false;
         }
-        if (!preserveThinking) this.hooks.onPhase(mapTransportPhase(event.state.phase));
+        const deferTechnicalListening = (
+          event.state.phase === 'ready' || event.state.phase === 'user_speaking'
+        )
+          && !this.confirmedListeningPhaseReady;
+        if (!preserveThinking && !deferTechnicalListening) {
+          this.hooks.onPhase(mapTransportPhase(event.state.phase));
+        }
         if (event.state.phase === 'ready' && !this.contextPublished) {
           this.contextPublished = true;
           await this.publishThenOpenMicrophone();
@@ -627,18 +762,23 @@ export class RealtimeSessionController {
         return;
       }
       case 'user_input_committed':
+        if (this.currentConfirmedFence() === null) return;
         this.publishThinkingForCurrentInput(event.turnId);
         return;
       case 'user_transcript':
+        if (this.currentConfirmedFence() === null) return;
         this.hooks.onUserTranscript(event.text, event.final);
         return;
       case 'bob_transcript':
+        if (this.currentConfirmedFence() === null) return;
         this.hooks.onBobTranscript(event.text, event.final);
         return;
       case 'diagnostic_trace_disclosure':
         this.hooks.onDiagnosticTrace(event.disclosure);
         return;
       case 'agent_control_candidate': {
+        const contextEpoch = this.contextEpoch;
+        if (this.currentConfirmedFence() === null) return;
         // Référence provider NON FIABLE → ACK one-shot par NOTRE serveur (gate, fencé sur la
         // publication confirmée) → décision UNIQUEMENT sur le contrôle authentifié non-null.
         const controllerGeneration = this.generation;
@@ -658,11 +798,13 @@ export class RealtimeSessionController {
           const control = await gate.acknowledge(event.reference);
           if (
             !control ||
+            contextEpoch !== this.contextEpoch ||
+            !this.controlMatchesCurrentFence(control) ||
             !this.isCurrentPrimary(controllerGeneration, primaryGeneration, transport) ||
             this.publisher !== publisher ||
             this.controlGate !== gate
           ) {
-            this.controlAckOutcomes.set(turnId, false);
+            if (contextEpoch === this.contextEpoch) this.controlAckOutcomes.set(turnId, false);
             return false;
           }
           if (this.appliedControlTurns.has(turnId)) {
@@ -686,6 +828,7 @@ export class RealtimeSessionController {
         return;
       }
       case 'agent_control': {
+        if (!this.controlMatchesCurrentFence(event.control)) return;
         // Déjà authentifié (émis par une glue post-ACK, jamais par WebRTC) — décision directe.
         if (this.appliedControlTurns.has(event.control.turnId)) return;
         this.appliedControlTurns.add(event.control.turnId);
@@ -743,6 +886,7 @@ export class RealtimeSessionController {
         return;
       }
       case 'conversation_completed': {
+        if (this.currentConfirmedFence() === null) return;
         // Le candidat de contrôle est émis dans la même pile juste avant cette microtâche.
         // Attendre son échange one-shot évite de fermer le gate et de perdre une navigation.
         const controllerGeneration = this.generation;
@@ -759,9 +903,13 @@ export class RealtimeSessionController {
         const decision = this.pendingTerminalDecision;
         this.pendingTerminalDecision = null;
         const stoppedGeneration = this.generation + 1;
-        await this.stop('user');
+        const receipt = await this.stop('user');
         // Une mission fraîche peut démarrer pendant la fermeture réseau de l'ancienne.
         if (this.generation !== stoppedGeneration || this.activeFlag) return;
+        if (receipt.status !== 'closed') {
+          this.notifyFailedClosed('provider_error', controllerGeneration);
+          return;
+        }
         // Le controleur est deja inactif avant l'effet UI. Le composant peut donc naviguer sans
         // republier sur ce ticket, puis rendre son etat visuel idle via onCompleted.
         if (decision !== null) this.applyDecision(decision);
@@ -769,10 +917,57 @@ export class RealtimeSessionController {
         return;
       }
       case 'fallback':
-        // L'autorité Mission meurt au premier signal de dégradation, avant le hangup réseau,
-        // même si l'orchestrateur attend encore la preuve de fermeture audio.
-        if (!this.releaseAgentMissionSession()) {
-          this.notifyFailedClosed('agent_mission_negotiation_failed');
+        // Un rail Mission ne se reconnecte jamais derrière une UI en erreur. L'invalidation de la
+        // génération et le stop orchestrateur sont armés dans CETTE pile, avant scheduleRecovery.
+        if (
+          this.requestedAgentMissionProtocolVersion !== null
+          || this.hasObservedMissionAuthority()
+        ) {
+          // Ce latch appartient aussi au bootstrap : sans lui, la génération invalidée ci-dessous
+          // serait traduite en `unavailable` par startInternal(), puis l'appelant rallumerait le
+          // pilote legacy alors que la négociation avait déjà choisi Mission V2.
+          this.fallbackTaken = true;
+          const stoppedGeneration = this.generation + 1;
+          const receipt = await this.stopWithCloseReason('fallback');
+          if (this.generation === stoppedGeneration && !this.activeFlag) {
+            this.notifyFailedClosed(
+              !receipt.missionReleased
+                ? 'agent_mission_negotiation_failed'
+                : receipt.transportClosed
+                  ? event.reason
+                  : 'provider_error',
+              originGeneration,
+            );
+          }
+        } else {
+          // Pendant une récupération historique, l'ancien primaire n'a plus le droit d'afficher
+          // « écoute » ni de laisser passer transcript/contrôle. Le primaire de remplacement
+          // republiera son contexte avant de réarmer le micro.
+          try {
+            this.lastTransport?.setMicrophoneEnabled(false);
+          } catch {
+            // La fermeture/reconnexion orchestrateur reste l'autorité de cleanup.
+          }
+          this.revokeConfirmedContextAuthority();
+          this.markContextTransitionNotListening();
+        }
+        return;
+      case 'error':
+        if (event.code === 'session_max_duration') {
+          const stoppedGeneration = this.generation + 1;
+          const receipt = await this.stopWithCloseReason('max_duration');
+          if (this.generation === stoppedGeneration && !this.activeFlag) {
+            this.notifyFailedClosed('provider_error', originGeneration);
+          }
+          if (receipt.status !== 'closed') return;
+        } else if (event.code === 'data_channel_error') {
+          try {
+            this.lastTransport?.setMicrophoneEnabled(false);
+          } catch {
+            // Le recovery possédé reste obligatoire ; ne jamais repeindre listening entre pairs.
+          }
+          this.revokeConfirmedContextAuthority();
+          this.markContextTransitionNotListening();
         }
         return;
       default:
@@ -798,6 +993,8 @@ export class RealtimeSessionController {
       // exact puis rouvrira le micro.
       this.resetCommittedInputLifecycle();
       this.lastTransport?.setMicrophoneEnabled(false);
+      this.revokeConfirmedContextAuthority();
+      this.markContextTransitionNotListening();
       this.lastTransport?.interrupt('navigation');
       this.invalidateAgentMissionContext();
       this.hooks.onNavigate(decision.route);
@@ -810,14 +1007,16 @@ export class RealtimeSessionController {
   /** Une reconnexion ne change pas la génération de mission. Elle doit néanmoins rendre
    * immédiatement inertes le publieur, le gate et les décisions du peer remplacé. */
   private adoptPrimary(transport: RealtimeTransportLike): void {
-    this.prepareAgentMissionPrimaryReplacement();
     // Chaque primaire FRAIS naît micro fermé : le contexte part TOUJOURS avant la voix.
     transport.setMicrophoneEnabled(false);
-    this.primaryGeneration += 1;
     const previousTransport = this.lastTransport;
     if (previousTransport !== null && previousTransport !== transport) {
       previousTransport.setMicrophoneEnabled(false);
     }
+    this.revokeConfirmedContextAuthority();
+    this.markContextTransitionNotListening();
+    this.prepareAgentMissionPrimaryReplacement();
+    this.primaryGeneration += 1;
     this.publisher?.close();
     this.publisher = null;
     this.controlGate?.close?.();
@@ -830,7 +1029,7 @@ export class RealtimeSessionController {
     this.lastTransport = transport;
     this.agentMissionSessionClaimed = false;
     this.contextPublished = false;
-    this.controlGate = this.deps.createControlGate(() => this.publisher?.fence ?? null);
+    this.controlGate = this.deps.createControlGate(() => this.currentConfirmedFence());
   }
 
   private isCurrentPrimary(
@@ -861,6 +1060,80 @@ export class RealtimeSessionController {
     this.responsePendingForCurrentInput = false;
   }
 
+  private markContextTransitionNotListening(): void {
+    const wasTruthfullyListening = this.confirmedListeningPhaseReady;
+    this.confirmedListeningPhaseReady = false;
+    if (wasTruthfullyListening) this.hooks.onPhase('thinking');
+  }
+
+  private revokeConfirmedContextAuthority(): void {
+    this.contextEpoch += 1;
+    this.confirmedContextAuthority = null;
+    this.pendingControlAcks.clear();
+    this.controlAckOutcomes.clear();
+    this.pendingTerminalDecision = null;
+  }
+
+  private currentConfirmedFence(): RealtimePublishedFence | null {
+    const authority = this.confirmedContextAuthority;
+    if (authority === null || !this.contextAttemptIsCurrent(authority)) return null;
+    return authority.fence;
+  }
+
+  private controlMatchesCurrentFence(
+    control: import('../realtime/realtime-event-codecs').RealtimeAgentControl,
+  ): boolean {
+    const fence = this.currentConfirmedFence();
+    return fence !== null
+      && control.contextRevision === fence.contextRevision
+      && control.contextDigest === fence.contextDigest;
+  }
+
+  private contextAttemptIsCurrent(attempt: RealtimeContextAttempt): boolean {
+    const publisherFence = attempt.publisher.fence;
+    return !this.manualHandoffSuspended
+      && this.contextEpoch === attempt.epoch
+      && this.isCurrentPrimary(
+        attempt.controllerGeneration,
+        attempt.primaryGeneration,
+        attempt.transport,
+      )
+      && this.publisher === attempt.publisher
+      && publisherFence !== null
+      && publisherFence.sessionHandle === attempt.fence.sessionHandle
+      && publisherFence.contextRevision === attempt.fence.contextRevision
+      && publisherFence.contextDigest === attempt.fence.contextDigest
+      && attempt.transport.getSessionHandle() === attempt.fence.sessionHandle;
+  }
+
+  private async enqueueConfirmedContextActivation(
+    attempt: RealtimeContextAttempt,
+    context: AgentContext,
+  ): Promise<void> {
+    const previous = this.contextSynchronizationTail;
+    const activation = previous
+      .catch(() => undefined)
+      .then(() => this.activateConfirmedContext(attempt, context));
+    this.contextSynchronizationTail = activation.then(() => undefined, () => undefined);
+    await activation;
+  }
+
+  private async activateConfirmedContext(
+    attempt: RealtimeContextAttempt,
+    context: AgentContext,
+  ): Promise<void> {
+    if (!this.contextAttemptIsCurrent(attempt)) return;
+    if (!await this.synchronizeTransportContext(attempt)) return;
+    if (!this.contextAttemptIsCurrent(attempt)) return;
+    if (!await this.confirmAgentMissionContext(attempt, context)) return;
+    if (!this.contextAttemptIsCurrent(attempt)) return;
+    attempt.transport.reportClientDiagnostic?.({
+      type: 'checkpoint',
+      checkpoint: 'context_confirmed',
+    });
+    await this.openMicrophoneIfActive(attempt);
+  }
+
   private async stopCurrentPrimaryWithFallback(
     controllerGeneration: number,
     primaryGeneration: number,
@@ -878,59 +1151,79 @@ export class RealtimeSessionController {
       this.requestedAgentMissionProtocolVersion !== null
       || this.hasObservedMissionAuthority();
     const stoppedGeneration = this.generation + 1;
-    await this.stop('user');
+    const receipt = await this.stopWithCloseReason('fallback');
     // Le stop de l'ancien orchestrateur peut finir après le start d'une nouvelle mission.
     if (this.generation === stoppedGeneration && !this.activeFlag) {
       const channel = legacyFallbackChannelFor(reason);
       if (missionAuthorityRequired) {
-        this.notifyFailedClosed(reason);
+        this.notifyFailedClosed(
+          receipt.status === 'closed' ? reason : 'provider_error',
+          controllerGeneration,
+        );
       } else if (channel !== null) {
         this.hooks.onFallback(reason, channel);
       }
     }
   }
 
-  private async openMicrophoneIfActive(
-    controllerGeneration: number,
-    primaryGeneration: number,
-    transport: RealtimeTransportLike,
-  ): Promise<boolean> {
+  private async openMicrophoneIfActive(attempt: RealtimeContextAttempt): Promise<boolean> {
     let allowed = false;
     try {
       allowed = await this.deps.allowMicrophoneActivation();
     } catch {
       allowed = false;
     }
-    if (!this.isCurrentPrimary(controllerGeneration, primaryGeneration, transport)) return false;
+    if (
+      !this.contextAttemptIsCurrent(attempt)
+    ) return false;
     if (!allowed) {
       // L'application n'est plus visible : aucun repli legacy ne doit démarrer en arrière-plan.
       await this.stop('background');
       return false;
     }
-    if (!this.isCurrentPrimary(controllerGeneration, primaryGeneration, transport)) return false;
+    if (
+      !this.contextAttemptIsCurrent(attempt)
+    ) return false;
     try {
-      transport.setMicrophoneEnabled(true);
+      attempt.transport.setMicrophoneEnabled(true);
     } catch {
-      transport.reportClientDiagnostic?.({
+      attempt.transport.reportClientDiagnostic?.({
         type: 'failure',
         failureCode: 'microphone_activation_refused',
       });
       await this.stopCurrentPrimaryWithFallback(
-        controllerGeneration,
-        primaryGeneration,
-        transport,
+        attempt.controllerGeneration,
+        attempt.primaryGeneration,
+        attempt.transport,
         'provider_error',
       );
       return false;
     }
-    transport.reportClientDiagnostic?.({ type: 'checkpoint', checkpoint: 'microphone_opened' });
+    // `setMicrophoneEnabled` est une frontière native qui peut émettre synchroniquement. La
+    // fence ne devient donc autoritative qu'APRÈS son succès et une dernière revalidation : aucun
+    // événement réentrant ne peut traverser avec une autorité contextuelle prématurée.
+    if (!this.contextAttemptIsCurrent(attempt)) {
+      try {
+        attempt.transport.setMicrophoneEnabled(false);
+      } catch {
+        // Le teardown possédé reste l'autorité de fermeture ; ne jamais réouvrir sur ce contexte.
+      }
+      return false;
+    }
+    this.confirmedContextAuthority = Object.freeze({ ...attempt });
+    this.confirmedListeningPhaseReady = true;
+    attempt.transport.reportClientDiagnostic?.({
+      type: 'checkpoint',
+      checkpoint: 'microphone_opened',
+    });
+    this.hooks.onPhase('listening');
     if (
-      this.requiredMissionProtocolVersion !== null
+      this.requestedAgentMissionProtocolVersion !== null
       && this.agentMissionSessionTransferred
       && this.agentMissionContextConfirmed
-      && this.agentMissionProtocolVersion === this.requiredMissionProtocolVersion
+      && this.agentMissionProtocolVersion === this.requestedAgentMissionProtocolVersion
     ) {
-      this.resolveMissionReady(true);
+      this.resolveMissionReady(true, attempt.controllerGeneration);
     }
     return true;
   }
@@ -938,29 +1231,26 @@ export class RealtimeSessionController {
   /** Le PUT HTTP ne suffit pas au protocole Mistral v2 : sa fence doit aussi être appliquée
    * dans le stream WSS séquencé. Tout refus/timeout ferme la mission avant le micro. */
   private async synchronizeTransportContext(
-    controllerGeneration: number,
-    primaryGeneration: number,
-    transport: RealtimeTransportLike,
-    fence: RealtimePublishedFence,
+    attempt: RealtimeContextAttempt,
   ): Promise<boolean> {
-    const synchronize = transport.synchronizePublishedContext;
+    const synchronize = attempt.transport.synchronizePublishedContext;
     if (synchronize === undefined) return true;
     let synchronized = false;
     try {
-      synchronized = await synchronize.call(transport, fence);
+      synchronized = await synchronize.call(attempt.transport, attempt.fence);
     } catch {
       synchronized = false;
     }
-    if (!this.isCurrentPrimary(controllerGeneration, primaryGeneration, transport)) return false;
+    if (!this.contextAttemptIsCurrent(attempt)) return false;
     if (synchronized) return true;
-    transport.reportClientDiagnostic?.({
+    attempt.transport.reportClientDiagnostic?.({
       type: 'failure',
       failureCode: 'context_synchronization_failed',
     });
     await this.stopCurrentPrimaryWithFallback(
-      controllerGeneration,
-      primaryGeneration,
-      transport,
+      attempt.controllerGeneration,
+      attempt.primaryGeneration,
+      attempt.transport,
       'provider_error',
     );
     return false;
@@ -969,6 +1259,7 @@ export class RealtimeSessionController {
   /** L'ORDRE du contrat, FAIL-CLOSED (P0 GPT 20:24) : micro ON UNIQUEMENT si handle présent
    * ET PUT contexte confirmé — sinon stop + repli. Jamais une oreille sans contexte publié. */
   private async publishThenOpenMicrophone(): Promise<void> {
+    if (this.manualHandoffSuspended) return;
     const controllerGeneration = this.generation;
     const primaryGeneration = this.primaryGeneration;
     const transport = this.lastTransport;
@@ -1023,6 +1314,8 @@ export class RealtimeSessionController {
     this.publisher?.close();
     const publisher = new RealtimeContextPublisher(handle, this.deps.updateContext);
     this.publisher = publisher;
+    this.revokeConfirmedContextAuthority();
+    const contextEpoch = this.contextEpoch;
     const context = this.hooks.getContextSnapshot();
     transport.reportClientDiagnostic?.({ type: 'checkpoint', checkpoint: 'context_put_started' });
     const result = await publisher.publish(context);
@@ -1045,25 +1338,14 @@ export class RealtimeSessionController {
       );
       return;
     }
-    if (!await this.synchronizeTransportContext(
+    await this.enqueueConfirmedContextActivation({
       controllerGeneration,
       primaryGeneration,
       transport,
-      result.fence,
-    )) return;
-    if (!await this.confirmAgentMissionContext(
-      controllerGeneration,
-      primaryGeneration,
-      transport,
-      result.fence,
-      context,
-    )) return;
-    transport.reportClientDiagnostic?.({ type: 'checkpoint', checkpoint: 'context_confirmed' });
-    await this.openMicrophoneIfActive(
-      controllerGeneration,
-      primaryGeneration,
-      transport,
-    );
+      publisher,
+      epoch: contextEpoch,
+      fence: result.fence,
+    }, context);
   }
 
   /**
@@ -1180,9 +1462,15 @@ export class RealtimeSessionController {
     return this.agentMissionCapabilityObserved || this.agentMissionSessionTransferred;
   }
 
-  private notifyFailedClosed(reason: RealtimeFallbackReason): void {
-    if (this.failedClosedNotified) return;
-    this.failedClosedNotified = true;
+  private notifyFailedClosed(
+    reason: RealtimeFallbackReason,
+    originGeneration: number,
+  ): void {
+    if (
+      this.failedClosedHookGeneration !== originGeneration
+      || this.failedClosedNotifiedGeneration === originGeneration
+    ) return;
+    this.failedClosedNotifiedGeneration = originGeneration;
     this.hooks.onFailedClosed(reason);
   }
 
@@ -1198,44 +1486,42 @@ export class RealtimeSessionController {
   }
 
   private async confirmAgentMissionContext(
-    controllerGeneration: number,
-    primaryGeneration: number,
-    transport: RealtimeTransportLike,
-    fence: RealtimePublishedFence,
+    attempt: RealtimeContextAttempt,
     context: AgentContext,
   ): Promise<boolean> {
     if (!this.agentMissionSessionTransferred) return true;
+    if (!this.contextAttemptIsCurrent(attempt)) return false;
     const realtimeSessionId = this.agentMissionRealtimeSessionId;
     let confirmed = false;
     try {
       confirmed = realtimeSessionId !== null
         && this.deps.agentMissionRuntime?.confirmContext(
           realtimeSessionId,
-          fence,
+          attempt.fence,
           context,
         ) === true;
     } catch {
       confirmed = false;
     }
-    if (!this.isCurrentPrimary(controllerGeneration, primaryGeneration, transport)) return false;
+    if (!this.contextAttemptIsCurrent(attempt)) return false;
     if (confirmed) {
       this.agentMissionContextConfirmed = true;
       return true;
     }
-    transport.reportClientDiagnostic?.({
+    attempt.transport.reportClientDiagnostic?.({
       type: 'failure',
       failureCode: 'mission_context_confirmation_failed',
     });
     await this.stopCurrentPrimaryWithFallback(
-      controllerGeneration,
-      primaryGeneration,
-      transport,
+      attempt.controllerGeneration,
+      attempt.primaryGeneration,
+      attempt.transport,
       'provider_error',
     );
     return false;
   }
 
-  private prepareMissionReadyWaiter(required: boolean): void {
+  private prepareMissionReadyWaiter(required: boolean, generation: number): void {
     this.resolveMissionReady(false);
     if (!required) {
       this.missionReadyWaiter = null;
@@ -1245,11 +1531,12 @@ export class RealtimeSessionController {
     const promise = new Promise<boolean>((done) => {
       resolve = done;
     });
-    this.missionReadyWaiter = { promise, resolve };
+    this.missionReadyWaiter = { generation, promise, resolve };
   }
 
-  private resolveMissionReady(ready: boolean): void {
+  private resolveMissionReady(ready: boolean, generation?: number): void {
     const waiter = this.missionReadyWaiter;
+    if (generation !== undefined && waiter?.generation !== generation) return;
     this.missionReadyWaiter = null;
     waiter?.resolve(ready);
   }
@@ -1263,11 +1550,11 @@ export class RealtimeSessionController {
       && this.agentMissionContextConfirmed
       && this.agentMissionProtocolVersion === requiredProtocolVersion
     ) {
-      this.resolveMissionReady(true);
+      this.resolveMissionReady(true, generation);
       return true;
     }
     const waiter = this.missionReadyWaiter;
-    if (waiter === null) return false;
+    if (waiter === null || waiter.generation !== generation) return false;
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const ready = await Promise.race([
       waiter.promise,

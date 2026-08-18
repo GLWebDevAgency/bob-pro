@@ -251,10 +251,22 @@ jobs:
       - name: Expand schema, spool outbox and certify the mixed-version phase
         id: release_schema
         run: BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED=false BOB_RELEASE_PHASE=predeploy sh apps/api/scripts/release.sh
-      - name: Activate archive/settlement/outbox v2 and certify the post-deploy contract
+      - name: Certify the document-version writer N-1 before ACL reconstruction
+        env:
+          DOCUMENT_VERSION_INSERT_FENCE_INTERMEDIATE_CERT_DATABASE_KIND: ephemeral
+        run: sh apps/api/scripts/certify-document-version-insert-fence-intermediate.sh
+      - name: Activate document archive v2
         run: |
           DOCUMENT_ARCHIVE_V2_ACTIVATION_RELEASE_SHA="$GITHUB_SHA" \
             sh apps/api/scripts/activate-document-archive-v2.sh
+      - name: Certify document archive v2 relational integrity
+        run: |
+          DOCUMENT_ARCHIVE_CERT_WORKER_COUNT=4 \
+          RUN_POSTGRES_DOCUMENT_ARCHIVE_CERT=true \
+            pnpm --filter @bob/api exec vitest run --testTimeout=30000 \
+              src/persistence/prisma/document-archive-integrity.postgres.test.ts
+      - name: Activate snapshot, settlement and outbox v2 then certify post-deploy
+        run: |
           RUN_POSTGRES_DOCUMENT_ARCHIVE_SNAPSHOT_ACTIVATION_CERT=true \
           DOCUMENT_ARCHIVE_SNAPSHOT_V2_ACTIVATION_RELEASE_SHA="$GITHUB_SHA" \
             pnpm --filter @bob/api exec vitest run --testTimeout=60000 \

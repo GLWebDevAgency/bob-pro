@@ -454,19 +454,24 @@ describe('validator sandbox readiness', () => {
 describe('SupabaseArchiveAuditStorage', () => {
   it('rejoue une erreur transitoire puis relit les octets bornés', async () => {
     const payload = new TextEncoder().encode('archive-pdf');
-    const responses = [
+    const objectResponses = [
       new Response('temporary', { status: 503 }),
       new Response(payload, {
         status: 200,
         headers: {
           'content-length': String(payload.byteLength),
-          'content-type': 'application/pdf',
+          'content-type': 'text/plain',
         },
       }),
     ];
     const delays: number[] = [];
-    const fetchImpl: typeof globalThis.fetch = async () =>
-      responses.shift() ?? new Response(null, { status: 500 });
+    const fetchImpl: typeof globalThis.fetch = async (url) =>
+      String(url).includes('/object/info/')
+        ? new Response(JSON.stringify({
+            size: payload.byteLength,
+            content_type: 'application/pdf',
+          }))
+        : objectResponses.shift() ?? new Response(null, { status: 500 });
     const storage = new SupabaseArchiveAuditStorage(
       'https://storage.invalid',
       'secret',
@@ -486,6 +491,83 @@ describe('SupabaseArchiveAuditStorage', () => {
     expect(loaded?.bytes).toEqual(payload);
     expect(loaded?.contentType).toBe('application/pdf');
     expect(delays).toEqual([250]);
+  });
+
+  it('audite un XML byte-exact avec le MIME info malgré un en-tête GET générique', async () => {
+    const payload = new TextEncoder().encode('<xml>factur-x</xml>');
+    const calls: string[] = [];
+    const storage = new SupabaseArchiveAuditStorage(
+      'https://storage.invalid',
+      'secret',
+      'bob-documents',
+      1_024,
+      async (url) => {
+        calls.push(String(url));
+        return String(url).includes('/object/info/')
+          ? new Response(JSON.stringify({
+              size: payload.byteLength,
+              content_type: 'application/xml',
+            }))
+          : new Response(payload, { headers: { 'content-type': 'text/plain' } });
+      },
+      async () => undefined,
+    );
+
+    await expect(storage.load(
+      'company-1',
+      'companies/company-1/documents/document-1/v1/a.xml',
+    )).resolves.toMatchObject({
+      byteSize: payload.byteLength,
+      contentType: 'application/xml',
+    });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toContain('/storage/v1/object/info/');
+  });
+
+  it('échoue fermé si les métadonnées ont disparu ou divergent après le téléchargement', async () => {
+    const payload = new TextEncoder().encode('archive');
+    const key = 'companies/company-1/documents/document-1/v1/a.pdf';
+    for (const infoResponse of [
+      new Response('{"statusCode":"404"}', { status: 404 }),
+      new Response(JSON.stringify({ size: payload.byteLength + 1, content_type: 'application/pdf' })),
+    ]) {
+      const storage = new SupabaseArchiveAuditStorage(
+        'https://storage.invalid',
+        'secret',
+        'bob-documents',
+        1_024,
+        async (url) => String(url).includes('/object/info/')
+          ? infoResponse
+          : new Response(payload, { headers: { 'content-type': 'application/pdf' } }),
+        async () => undefined,
+      );
+      await expect(storage.load('company-1', key)).rejects.toThrow(
+        /metadata missing|metadata size mismatch/u,
+      );
+    }
+  });
+
+  it('préserve une coupure réseau pendant le décodage des métadonnées', async () => {
+    const payload = new TextEncoder().encode('archive');
+    const interruption = new DOMException('body aborted', 'AbortError');
+    const storage = new SupabaseArchiveAuditStorage(
+      'https://storage.invalid',
+      'secret',
+      'bob-documents',
+      1_024,
+      (async (url) => String(url).includes('/object/info/')
+        ? ({
+            ok: true,
+            json: async () => Promise.reject(interruption),
+          } as unknown as Response)
+        : new Response(payload)) as typeof globalThis.fetch,
+      async () => undefined,
+    );
+
+    await expect(storage.load(
+      'company-1',
+      'companies/company-1/documents/document-1/v1/a.pdf',
+    )).rejects.toBe(interruption);
   });
 
   it('retourne absent sur 404 sans rejouer et refuse les clés hors tenant', async () => {
@@ -602,6 +684,21 @@ describe('buildProtocolV2VerifiedReport', () => {
         'ARCHIVE_PROTOCOL_V2_LATE_ATTESTATION_WRITE',
       ]),
     );
+  });
+
+  it('refuse le verdict V2 lorsqu’un ordre d’archive reste incomplet', () => {
+    const report = buildProtocolV2VerifiedReport({
+      byteAudit: protocolV2ByteAudit(),
+      relational: protocolV2RelationalState({ invalidArchiveJobs: 1 }),
+      auditedAt: new Date('2026-07-21T12:00:00.000Z'),
+      releaseSha: 'a'.repeat(40),
+      storageBucket: 'bob-documents',
+    });
+
+    expect(report.readyForActivation).toBe(false);
+    expect(report.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'ARCHIVE_PROTOCOL_V2_JOB_PROOF_INVALID' }),
+    ]));
   });
 });
 

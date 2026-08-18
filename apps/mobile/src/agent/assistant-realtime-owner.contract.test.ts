@@ -71,7 +71,18 @@ describe('Bob Live mobile — propriétaire Realtime unique', () => {
     expect(globalAccess).toContain('const { active: sessionActive, stopForPolicy } = session');
     expect(globalAccess).toContain('stopForPolicy(sessionStopReason)');
     expect(globalAccess).not.toContain('if (transition.shouldStop) stopSession()');
-    expect(agentSession).toContain('realtimeRef.current?.stopForPolicy(policyReason)');
+    expect(agentSession).toContain("void stopWithReason('user', false, reason)");
+    expect(agentSession).toContain('policyReason,');
+    expect(agentSession).toContain('registry.close((ownedController) => closeAgentRealtimeController({');
+  });
+
+  it('le provider attend le bootstrap sous une autorité de génération, jamais avec un stop brut', () => {
+    expect(agentSession).toContain('settleAgentSessionRealtimeBootstrap({');
+    expect(agentSession).toContain('currentGeneration: () => sessionGenerationRef.current');
+    expect(agentSession).toContain("stopOwnedController: () => { void ownedController.stop('user'); }");
+    expect(agentSession).not.toMatch(
+      /sessionGeneration\s*!==\s*sessionGenerationRef\.current[\s\S]{0,300}controller\.stop\('user'\)/u,
+    );
   });
 
   it('le droit Live est identique sur les deux surfaces et un cache en erreur ferme le micro', () => {

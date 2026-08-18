@@ -14,7 +14,10 @@ export interface StoredObject extends StoredObjectMetadata {
   created: boolean;
 }
 
-/** Objet relu : les métadonnées sont calculées depuis les octets retournés, pas déclaratives. */
+/**
+ * Objet relu : taille et SHA sont calculés depuis les octets retournés ; le type MIME vient de la
+ * métadonnée autoritative du fournisseur et doit être cohérent avec ces octets.
+ */
 export interface LoadedStoredObject extends StoredObjectMetadata {
   bytes: Uint8Array;
 }

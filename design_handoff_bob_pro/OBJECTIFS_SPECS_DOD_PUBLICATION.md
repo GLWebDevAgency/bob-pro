@@ -24,6 +24,42 @@ interne limité à un compte : staging porte le master V1, le master M2-A et le 
 `OFF` jusqu'au GO final V1. **Contre-signature Claude : demandée le 2026-07-31 dans le canal
 Git-native ; à consigner avant mutation de la matrice normative.**
 
+**Amendement d'architecture dérivé de l'objectif fondateur : 2026-08-10, chat Codex courant — avis
+conditionnel Claude msg Git-native n°494** — `openai-native-webrtc-v1` devient la cible preview qui
+remplacera le rail audité/hybride comme
+unique sortie acoustique du chemin GPT Realtime de publication au cutover certifié. Le mobile et
+OpenAI négocient un vrai `sendrecv`; Bob garde
+l'autorité du texte canonique, des outils et des effets. Le transcript fournisseur post-RTP est une
+preuve de révocation, pas un pré-audit. Les contrôles restent opaques et inertes jusqu'à l'ACK
+durable ; les mutations protégées conservent leur confirmation. Voice Trace V2 chiffrée est
+obligatoire pour certifier le canary staging. Voir
+`DECISION_GPT_REALTIME_NATIVE_PUBLICATION_20260810.md`.
+
+Cet amendement supersède, **pour la publication V1**, le point 1 du 25/07 : le sélecteur
+administration GPT ↔ Voxtral devient un chantier post-V1 et les profils publics ne conserveront
+qu'un rail acoustique. La matrice reste néanmoins la vérité de l'état déployé jusqu'à sa mutation
+atomique lors du cutover. L'acceptation production du risque `audible-before-audit` et
+l'équivalence d'audit demandée par Claude restent explicitement bloquées ; aucune contre-signature
+ne leur est attribuée par ce texte.
+
+**Amendement fondateur : 2026-08-17/18 — Jarvis universel et bâton de développement** — La
+directive du 17/08 (« toute l'application avec Jarvis ») entre dans ce cap. La spec normative est
+[SPEC_JARVIS_UNIVERSEL_ORCHESTRATION_20260817.md](SPEC_JARVIS_UNIVERSEL_ORCHESTRATION_20260817.md)
+(moteur unique `JarvisRun` absorbant `AgentMission` et remplaçant `buildBobActions`, catalogue
+`PublicActionSurfaceManifest`, lots U0–U7), rédigée par GPT et amendée par Claude le 18/08 des
+trois P0 de la contre-expertise (table normative classe→mode §7.0, articulation V1 §2.1, gates de
+continuité de surface et de plancher de version §17.1). Les dix décisions fondatrices de son §20
+sont tranchées par délégation explicite et consignées dans
+[DECISION_JARVIS_UNIVERSEL_20260817.md](DECISION_JARVIS_UNIVERSEL_20260817.md)
+(`FD-2026-0817-01..11`) ; l'ADR du moteur unique est
+[ADR-0002](../docs/adr/ADR-0002-jarvis-run-moteur-unique.md) ; le squelette d'AIPD (gate FD-09)
+est [legal/AIPD_VOIX_JARVIS_20260818.md](legal/AIPD_VOIX_JARVIS_20260818.md). **L'articulation V1
+ne change pas** : la publication V1 n'attend pas le train U0–U7 (bloc normatif du 17/08 dans
+[PROGRAMME_V1_PUBLICATION.md](PROGRAMME_V1_PUBLICATION.md)). **Bâton du 18/08** : Claude conduit
+le développement (GPT hors quota Codex jusqu'au 20/08 ; il reprend sur décision fondateur) ; la
+contre-lecture GPT des amendements est attendue à son retour, non bloquante. Le lot RNW A1 reste
+une fondation de transport séparée, gelée en vol sous sa spec c46b7802.
+
 Rappel de dépendance : la DoD §6.3 (« Bob Live passe sur appareils ») reste suspendue à
 l'actation par le fondateur de la **clé OpenAI production + budget** (D3 du PROGRAMME).
 
@@ -56,7 +92,7 @@ présente dans le code, non branchée ou non prouvée sur le chemin réel n'est 
 | --- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | O1  | Vérité Git retrouvée                            | `main` contient tous les lots retenus, compile depuis un checkout propre et devient l'unique base des nouvelles branches.                                    |
 | O2  | Facturation conforme et complète                | Le lot Factur-X / PDF-A-3 / TVA / BT-23 est verticalement branché, testé et certifié sans identifiant fiscal inventé.                                        |
-| O3  | GPT Realtime est le chemin vocal de publication | Une session utilise OpenAI de l'entrée audio à la sortie audio, sans clé ni service Mistral implicite.                                                       |
+| O3  | GPT Realtime est le chemin vocal de publication | La chaîne audio/Realtime utilise OpenAI de l'entrée audio à la sortie audio, sans service vocal Mistral implicite ; les outils métier externes gardent leur provider explicite. |
 | O4  | Bob accompagne une mission continue             | Navigation, changement d'écran, contexte, choix structurés, diff et confirmation restent corrélés jusqu'à réussite, abandon explicite ou erreur récupérable. |
 | O5  | Voice Trace rend la qualité pilotable           | Chaque tour produit une trace corrélée ; p50/p95, interruptions, erreurs et dégradations sont observables sans audio ni secret dans les logs.                |
 | O6  | Zéro donnée fabriquée en production             | Écrans, API, calculs et réponses Bob utilisent la base du tenant ; absence et erreur sont affichées honnêtement.                                             |
@@ -102,13 +138,18 @@ présente dans le code, non branchée ou non prouvée sur le chemin réel n'est 
 
 1. Une session de publication choisit `openai` une seule fois au démarrage.
 2. En mode OpenAI, capture/transport, compréhension temps réel et synthèse vocale ne dépendent
-   d'aucune clé Mistral. Une absence de clé OpenAI refuse clairement l'ouverture de Bob Live.
+   d'aucune clé Mistral. Une absence de clé OpenAI refuse clairement l'ouverture de Bob Live ; les
+   outils métier externes gardent leur provider explicite et tracé.
 3. Une panne ne déclenche jamais un changement silencieux de fournisseur. Le produit propose une
    reconnexion, un mode manuel ou un repli explicitement annoncé et mesuré.
 4. Les outils métier restent provider-neutral : changer de transport vocal ne change ni les use
    cases, ni les politiques de confirmation, ni les preuves d'audit.
 5. Les flags Mistral full-duplex/V3 restent désactivés dans les profils de publication et sont
    protégés contre une activation accidentelle.
+6. Au cutover certifié, le contrat acoustique de publication devient
+   `openai-native-webrtc-v1`. Le rail `audited-signed-url-v1` reste l'état opérationnel documenté
+   par la matrice tant que le train n'est pas activé ; il ne constitue ni un fallback GPT implicite
+   ni une solution au rejet SDP `sendonly`/`sendrecv`.
 
 ### 4.2 Mission conversationnelle continue
 
@@ -230,6 +271,12 @@ payload provider, ni argument d'outil libre, et ne s'applique jamais à la produ
 Une cible de latence non atteinte ne peut pas être transformée en succès documentaire : la mesure,
 le device, le réseau, le commit et la distribution doivent accompagner le verdict.
 
+Voice Trace observe sans devenir une autorité métier. Sur staging, cinq échecs d'écriture
+consécutifs ouvrent son disjoncteur, émettent un incident sans contenu et interdisent tout nouveau
+verdict de certification. La session en cours ne rejoue ni parole ni effet pour « réparer » la
+trace ; elle se termine selon sa propre machine conversationnelle. Production reste Trace V2 OFF
+tant que la gouvernance dédiée ne l'autorise pas.
+
 ### 4.5 Données et états d'interface
 
 - Les chemins de production n'importent ni fixture, ni repository in-memory, ni constante de démo.
@@ -312,7 +359,12 @@ l'intégration.
 
 ### 6.2 GPT Realtime + Voice Trace
 
-- [ ] Une clé OpenAI suffit à la session complète ; aucune requête Mistral n'est observée.
+- [ ] Une clé OpenAI suffit à la chaîne audio/Realtime complète ; aucune requête vocale Mistral
+      n'est observée. Les outils métier externes sont mesurés séparément par provider.
+- [ ] Le rail actif est `openai-native-webrtc-v1` : une offre/réponse `sendrecv`, une piste audio
+      locale, une piste audio distante, zéro vidéo et aucun artefact TTS concurrent.
+- [ ] Le premier appui après boot puis après plus de quinze minutes d'inactivité atteint
+      l'activation sans sonde TTS/Whisper ni 503 de readiness.
 - [ ] Ouverture, reconnexion, arrière-plan, interruption, hangup et perte réseau convergent vers un
       état terminal unique et testable.
 - [ ] Le micro ne se ferme pas spontanément et un seul overlay Bob existe sur chaque écran autorisé.
@@ -340,6 +392,8 @@ l'intégration.
 - [ ] Les SLO de la section 4.4 sont mesurés sur au moins un iPhone réel et un Android réel.
 - [ ] Voice Trace permet de diagnostiquer chaque échec en une lecture et ne journalise aucune donnée
       vocale sensible.
+- [ ] Readiness et config publiques ne peuvent être vertes si runtime natif, Mission V2, keyrings
+      ou Voice Trace de canary ne correspondent pas au contrat exact.
 - [ ] Le chemin Mistral V3 est OFF et un test anti-drift empêche son activation dans la build.
 
 ### 6.3 Publication
@@ -413,9 +467,9 @@ remplace jamais ce registre.
 | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | O1 — vérité Git               | specified                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | branche de sauvegarde + graphe rebasé + `main` poussé                                                                                                                                           |
 | O2 — Factur-X/TVA             | implemented, PostgreSQL 17 et one-shot localement certifiés ; incompatibilité Bubblewrap/Railway prouvée et correction bornée `implemented` dans `SPEC_ARCHIVE_AUDIT_RAILWAY_STABILIZATION.md`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | scanner Railway vide/B2C sans exécutable tiers, puis vraie paire Mustang/FNFE sous launcher Railway Landlock+seccomp + train 0/1 + checkout propre                                              |
-| O3 — GPT Realtime             | implemented partiellement — isolation fournisseur, WebRTC `sendrecv`, chaîne auditée OpenAI TTS → Whisper Bob-managed privé → renderer et readiness fail-closed testés ; runtime natif fermé                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | image Whisper + round-trip certifiés sur staging, puis dispatcher/ACK natifs, barge-in audité AEC et QA device sans requête Mistral                                                             |
+| O3 — GPT Realtime             | `implemented` partiellement — PR85 fusionnée dans `main@2e36622e` pose Mission V2 native et PR86 fusionnée dans `main@1a1a8a12` pose l'autorité SDP + le bootstrap vertical pré-contrôle, sans activation. Le rail audité reste publié ; compile-lock, extinction audio locale prouvée, contrôle `provider_stream`, politique acoustique, readiness/minimum-client et opérateur restent à solder.                                                                                                                                                                                                                                                                                      | Une seule PR active à la fois : baseline exacte `react-native-webrtc@124.0.8` → lifecycle local/sign-out provider-neutral → ACK micro asynchrone → fence causale des événements → `provider_stream/v2` phase A dormante → readiness/minimum-client/fermeture legacy/opérateur → phase B exact-SHA → canary, APK et QA Android/iPhone. |
 | O4 — mission continue         | `certified` sur staging pour M1-B — recovery `30334601843`, vraie mission WebRTC + ACK contexte/RLS `30335132334`, retour OFF ; M1-C client fusionné dans `main@e163f929`, non certifié device ; K1 fusionné par PR #26 dans `main@c1fd88de` ; K2 fusionné par PR #30 dans `main@9e62b472` ; M2-A-0 `implemented` dans `4c844111`, M2-A-1 fusionné par PR #33 dans `main@47ea5050`, M2-A-2 fusionné par PR #34 dans `main@cd6092d7` et M2-A-3 `implemented` jusqu’à `1c7f12c9`, avec suites complètes, récupération Prisma réelle avant/après `COMMIT`, PostgreSQL non-superuser, writer/reader N-1, revues adversariales GO et flags publics OFF tels que consignés dans la spec M2-A | M2-A-3 : CI puis gate Supabase staging `schema-only` exact-SHA, flags/keyring laissés fermés, eval du vrai modèle et QA iPhone/Android ; ne pas annoncer le devis vocal complet avant M2-B/M2-C |
-| O5 — Voice Trace              | `implemented` dans `9f652f52` — journal V2 réellement câblé du bootstrap à l’ACK/barge-in, contenu chiffré, RLS/append-only, rétention/effacement, consentement mobile et opérateur staging exact-SHA ; migrations/certifications Supabase staging et release normale `30714091501` vertes sur `64adf909` ; M2-A V2 réactivé globalement par `30722382425` sur `main@ce97fb6a` ; le drill Trace `30722668381` a passé build et 60 tests puis s’est arrêté avant mutation, car ses trois smokes V2 omettaient leur profil local `m2a3-preview` ; Trace reste OFF et production n’a pas été mutée                                                                                                                                                 | Corriger le profil local des smokes et faire prouver/préserver par O5 l’enveloppe M2-A canonique owner/SHA/run avant toute mutation ou réouverture ; CI + merge, release staging normale exact-SHA, réactivation M2-A puis drill OFF→ON→OFF→ON avec flag final ON ; diagnostic device et SLO ensuite |
+| O5 — Voice Trace              | `implemented` dans `9f652f52` — journal V2 câblé, contenu chiffré, RLS/append-only, rétention/effacement et opérateur exact-SHA. Le présent lot remplace les lectures de topologie qui dépendaient à tort du helper secret M1-B ; le drill terrain reste dû, donc aucune trace native n'est encore revendiquée. | Fusionner le correctif, certifier OFF→ON→OFF→ON sur le SHA natif, laisser Trace ON pour les sujets canary puis prouver transcript → plan → résultat → ACK/barge-in sur appareil. |
 | O6 — données réelles          | implemented partiellement                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | garde d'artefact + certification écran/API tenant vierge et peuplé                                                                                                                              |
 | O7 — release reproductible    | implemented — preuves historiques M1-B/archive/release staging `30351623978` et CI `main@83ef4afe` vertes ; accélération locale verte, revue adversariale GO, CI/mesure staging encore dues                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | PR unique : CI complète puis staging exact-SHA ≤ 35 min, merge et nettoyage ; aucune production                                                                                                 |
 | O8 — Plateforme Agréée réelle | specified                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | gate G-PA-01 + contrat/sandbox + premier flux légal réconcilié                                                                                                                                  |

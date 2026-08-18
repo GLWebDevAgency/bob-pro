@@ -1,6 +1,12 @@
 import { createHash } from 'node:crypto';
 import { type DocumentStoragePort, type LoadedStoredObject, type StoredObject } from '@bob/core';
 import { loadEnv } from '../config/env';
+import {
+  CompositeRequestDeadline,
+  parseStorageContentType,
+  parseSupabaseObjectInfo,
+  type RequestDeadlineRuntime,
+} from './supabase-object-info';
 
 export const DOCUMENT_STORAGE = Symbol('DOCUMENT_STORAGE');
 const DOCUMENT_STORAGE_REQUEST_TIMEOUT_MS = 15_000;
@@ -79,6 +85,7 @@ export class SupabaseDocumentStorage implements DocumentStoragePort {
       bucket?: string;
       requestTimeoutMs?: number;
     },
+    private readonly requestRuntime: RequestDeadlineRuntime = {},
   ) {
     const timeoutMs = this.requestTimeoutMs;
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) {
@@ -90,8 +97,8 @@ export class SupabaseDocumentStorage implements DocumentStoragePort {
     return this.config.requestTimeoutMs ?? DOCUMENT_STORAGE_REQUEST_TIMEOUT_MS;
   }
 
-  private requestSignal(): AbortSignal {
-    return AbortSignal.timeout(this.requestTimeoutMs);
+  private requestDeadline(): CompositeRequestDeadline {
+    return new CompositeRequestDeadline(this.requestTimeoutMs, this.requestRuntime);
   }
 
   private get bucket(): string {
@@ -136,12 +143,15 @@ export class SupabaseDocumentStorage implements DocumentStoragePort {
     contentType: string;
   }): Promise<StoredObject> {
     assertTenantStorageKey(input.companyId, input.key);
+    // Refus AVANT le premier GET/POST : une métadonnée invalide ne doit jamais publier une clé
+    // immuable que le readback strict rendrait ensuite impossible à adopter.
+    const contentType = parseStorageContentType(input.contentType);
     const expectedSha256 = documentSha256(input.bytes);
     const isExact = (object: LoadedStoredObject | null): object is LoadedStoredObject =>
       object !== null
       && object.sizeBytes === input.bytes.byteLength
       && object.sha256 === expectedSha256
-      && normalizedContentType(object.contentType) === normalizedContentType(input.contentType);
+      && normalizedContentType(object.contentType) === normalizedContentType(contentType);
     const existing = await this.get(input.companyId, input.key);
     if (existing) {
       if (isExact(existing)) {
@@ -153,9 +163,9 @@ export class SupabaseDocumentStorage implements DocumentStoragePort {
     try {
       response = await fetch(this.objectUrl(input.key), {
         method: 'POST',
-        headers: { ...this.headers(input.contentType), 'x-upsert': 'false' },
+        headers: { ...this.headers(contentType), 'x-upsert': 'false' },
         body: Buffer.from(input.bytes),
-        signal: this.requestSignal(),
+        signal: this.requestDeadline().signal(),
       });
     } catch (error) {
       // Une coupure après acceptation du POST est indiscernable d'un refus réseau. Une relecture
@@ -187,11 +197,19 @@ export class SupabaseDocumentStorage implements DocumentStoragePort {
     companyId: string,
     key: string,
   ): Promise<LoadedStoredObject | null> {
+    return this.getUntil(companyId, key, this.requestDeadline());
+  }
+
+  private async getUntil(
+    companyId: string,
+    key: string,
+    deadline: CompositeRequestDeadline,
+  ): Promise<LoadedStoredObject | null> {
     assertTenantStorageKey(companyId, key);
     const response = await fetch(this.objectUrl(key), {
       method: 'GET',
       headers: this.headers(),
-      signal: this.requestSignal(),
+      signal: deadline.signal(),
     });
     if (!response.ok) {
       const text = await response.text();
@@ -199,22 +217,34 @@ export class SupabaseDocumentStorage implements DocumentStoragePort {
       throw new Error(`Supabase storage download failed: ${response.status} ${text}`);
     }
     const bytes = new Uint8Array(await response.arrayBuffer());
+    // L'en-tête du téléchargement n'est pas la métadonnée objet autoritative. Supabase peut
+    // servir un XML byte-identique en `text/plain` alors que `/object/info` conserve bien
+    // `application/xml` (incident staging du 2026-08-05). Taille/SHA restent dérivés des octets ;
+    // seul le MIME vient de la métadonnée persistée, avec cohérence de taille fail-closed.
+    const metadata = await this.statUntil(companyId, key, deadline);
+    if (metadata === null) {
+      throw new Error('Supabase storage metadata missing after object download.');
+    }
+    if (metadata.sizeBytes !== bytes.byteLength) {
+      throw new Error('Supabase storage object and metadata size mismatch.');
+    }
     return {
       key,
       bytes,
       sizeBytes: bytes.byteLength,
       sha256: documentSha256(bytes),
-      contentType: response.headers.get('content-type') ?? 'application/octet-stream',
+      contentType: metadata.contentType,
     };
   }
 
   async getSignedUrl(companyId: string, key: string, ttlSeconds: number): Promise<string> {
     assertTenantStorageKey(companyId, key);
+    const deadline = this.requestDeadline();
     const response = await fetch(this.signUrl(key), {
       method: 'POST',
       headers: this.headers('application/json'),
       body: JSON.stringify({ expiresIn: ttlSeconds }),
-      signal: this.requestSignal(),
+      signal: deadline.signal(),
     });
     if (!response.ok)
       throw new Error(
@@ -234,40 +264,47 @@ export class SupabaseDocumentStorage implements DocumentStoragePort {
     companyId: string,
     key: string,
   ): Promise<{ sizeBytes: number; contentType: string } | null> {
+    return this.statUntil(companyId, key, this.requestDeadline());
+  }
+
+  private async statUntil(
+    companyId: string,
+    key: string,
+    deadline: CompositeRequestDeadline,
+  ): Promise<{ sizeBytes: number; contentType: string } | null> {
     assertTenantStorageKey(companyId, key);
     // GET /object/info/ et non HEAD : un HEAD sans corps ne permet pas de distinguer le 400
     // « not_found » de Supabase d'une vraie erreur (cause du xmlDocumentId null en prod).
     const response = await fetch(this.infoUrl(key), {
       method: 'GET',
       headers: this.headers(),
-      signal: this.requestSignal(),
+      signal: deadline.signal(),
     });
     if (!response.ok) {
       const text = await response.text();
       if (SupabaseDocumentStorage.isNotFound(response.status, text)) return null;
       throw new Error(`Supabase storage stat failed: ${response.status} ${text}`);
     }
-    const info = (await response.json()) as { size?: unknown; content_type?: unknown };
-    if (!Number.isSafeInteger(info.size) || (info.size as number) < 0) {
-      // La taille participe à la preuve d'intégrité du document. Une réponse Storage malformée
-      // ne doit jamais être présentée comme un vrai fichier vide (ancien repli `0`).
-      throw new Error('Supabase storage stat response missing valid size.');
+    let info: unknown;
+    try {
+      info = await response.json();
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        throw new Error('Supabase Storage object info response is not valid JSON.');
+      }
+      throw error;
     }
-    return {
-      sizeBytes: info.size as number,
-      contentType:
-        typeof info.content_type === 'string' && info.content_type.trim() !== ''
-          ? info.content_type
-          : 'application/octet-stream',
-    };
+    // Une réponse Storage malformée ne doit jamais être présentée comme un vrai fichier vide.
+    return parseSupabaseObjectInfo(info);
   }
 
   async remove(companyId: string, key: string): Promise<void> {
     assertTenantStorageKey(companyId, key);
+    const deadline = this.requestDeadline();
     const response = await fetch(this.objectUrl(key), {
       method: 'DELETE',
       headers: this.headers(),
-      signal: this.requestSignal(),
+      signal: deadline.signal(),
     });
     if (!response.ok) {
       const text = await response.text();

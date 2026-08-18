@@ -158,6 +158,36 @@ test('chaque step operateur Trace recoit le keyring sans jamais le promouvoir au
   assert.doesNotMatch(workflow, /^ {6}BOB_REALTIME_VOICE_TRACE_V2_ENCRYPTION_KEYRING:/mu);
 });
 
+test('les lectures de topologie Railway ne dépendent jamais du helper secret M1-B', () => {
+  assert.doesNotMatch(
+    workflow,
+    /agent-mission-m1b-staging-railway\.mjs\s+(?:deployment-id|wait-deployment|serving-deployment-id)/u,
+  );
+  assert.equal(
+    occurrences(workflow, /railway-release-deployment\.mjs\s+deployment-id/gu),
+    2,
+  );
+  assert.equal(
+    occurrences(workflow, /railway-release-deployment\.mjs\s+wait-deployment/gu),
+    2,
+  );
+  assert.equal(
+    occurrences(workflow, /railway-release-deployment\.mjs\s+serving-deployment-id/gu),
+    3,
+  );
+  for (const name of ['staging-drill', 'rollback-off']) {
+    assert.match(
+      job(name),
+      /^ {6}TARGET_ENVIRONMENT_NAME: staging$/mu,
+      `${name} doit borner le helper Railway à staging`,
+    );
+  }
+  assert.equal(
+    occurrences(workflow, /^ {6}TARGET_ENVIRONMENT_NAME: staging$/gmu),
+    2,
+  );
+});
+
 test('le seul recu certifie vient apres la preuve production finale et porte toutes les preuves', () => {
   const staging = job('staging-drill');
   const after = job('production-after');

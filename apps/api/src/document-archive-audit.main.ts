@@ -19,6 +19,11 @@ import {
   type LoadedArchiveObject,
 } from './documents/archive-preactivation-audit';
 import { inspectInvoicePdfRepresentation } from './documents/pdfa3';
+import {
+  CompositeRequestDeadline,
+  parseSupabaseObjectInfo,
+} from './documents/supabase-object-info';
+import { DOCUMENT_ARCHIVE_INVALID_JOB_PREDICATE_SQL } from './documents/archive-v2-job-validity';
 
 const DEFAULT_MAX_OBJECT_BYTES = 64 * 1024 * 1024;
 const STORAGE_FETCH_ATTEMPTS = 3;
@@ -201,7 +206,7 @@ export function buildProtocolV2VerifiedReport(input: {
   if (relational.invalidArchiveJobs > 0) {
     addIssue(
       'ARCHIVE_PROTOCOL_V2_JOB_PROOF_INVALID',
-      'Au moins un ordre d’archive ou une preuve terminée viole les invariants V2.',
+      'Au moins un ordre d’archive est incomplet ou sa preuve viole les invariants V2.',
     );
   }
   if (relational.storageOrphans > 0) {
@@ -841,24 +846,7 @@ class PrismaArchivePreactivationRepository implements ArchivePreactivationReposi
                (
                  SELECT count(*)::integer
                    FROM public.document_archive_jobs AS job
-                  WHERE NOT coalesce(
-                          public.document_archive_job_scope_v2_is_valid(
-                            job."companyId", job."invoiceId", job.reason
-                          ),
-                          FALSE
-                        )
-                     OR (
-                       job."completedAt" IS NOT NULL
-                       AND (
-                         job."integrityProof" IS NULL
-                         OR NOT coalesce(
-                           public.document_archive_job_pdf_attestation_v2_is_valid(
-                             job."companyId", job."invoiceId", job.reason, job."integrityProof"
-                           ),
-                           FALSE
-                         )
-                       )
-                     )
+                  WHERE ${DOCUMENT_ARCHIVE_INVALID_JOB_PREDICATE_SQL}
                ) AS "invalidArchiveJobs"
       `);
         const counter = counters[0];
@@ -1111,6 +1099,50 @@ export class SupabaseArchiveAuditStorage implements ArchivePreactivationStorage 
     };
   }
 
+  private async fetchWithRetries(
+    url: string,
+    deadline: CompositeRequestDeadline,
+  ): Promise<Response> {
+    for (let attempt = 1; attempt <= STORAGE_FETCH_ATTEMPTS; attempt += 1) {
+      let response: Response;
+      try {
+        response = await this.fetchImpl(url, {
+          method: 'GET',
+          headers: this.headers(),
+          redirect: 'error',
+          signal: deadline.signal(),
+        });
+      } catch {
+        if (attempt === STORAGE_FETCH_ATTEMPTS || deadline.remainingMs() < 1) {
+          throw new Error('Supabase Storage est indisponible après trois tentatives bornées.');
+        }
+        const backoffMs = 250 * 2 ** (attempt - 1);
+        if (backoffMs >= deadline.remainingMs()) {
+          throw new Error('Supabase Storage est indisponible dans le budget réseau imparti.');
+        }
+        await this.wait(backoffMs);
+        continue;
+      }
+      if (!retryableStorageStatus(response.status) || attempt === STORAGE_FETCH_ATTEMPTS) {
+        return response;
+      }
+      await response.body?.cancel().catch(() => undefined);
+      const backoffMs = 250 * 2 ** (attempt - 1);
+      if (backoffMs >= deadline.remainingMs()) {
+        throw new Error('Supabase Storage est indisponible dans le budget réseau imparti.');
+      }
+      await this.wait(backoffMs);
+    }
+    throw new Error('Supabase Storage est indisponible après trois tentatives bornées.');
+  }
+
+  private static isNotFound(response: Response, body: string): boolean {
+    return (
+      response.status === 404
+      || (response.status === 400 && /not_found|"statusCode"\s*:\s*"404"/u.test(body))
+    );
+  }
+
   async load(companyId: string, storageKey: string): Promise<LoadedArchiveObject | null> {
     const expectedRoot = `companies/${companyId}/documents/`;
     if (
@@ -1121,42 +1153,15 @@ export class SupabaseArchiveAuditStorage implements ArchivePreactivationStorage 
     ) {
       throw new Error('Clé Storage hors du périmètre tenant.');
     }
-    const url = `${this.baseUrl}/storage/v1/object/${encodeURIComponent(this.bucket)}/${encodeStorageKey(storageKey)}`;
-    let response: Response | null = null;
-    let lastFailureStatus: number | null = null;
-    for (let attempt = 1; attempt <= STORAGE_FETCH_ATTEMPTS; attempt += 1) {
-      try {
-        response = await this.fetchImpl(url, {
-          method: 'GET',
-          headers: this.headers(),
-          redirect: 'error',
-          signal: AbortSignal.timeout(STORAGE_FETCH_TIMEOUT_MS),
-        });
-        if (!retryableStorageStatus(response.status) || attempt === STORAGE_FETCH_ATTEMPTS) break;
-        lastFailureStatus = response.status;
-        await response.body?.cancel().catch(() => undefined);
-        response = null;
-      } catch {
-        if (attempt === STORAGE_FETCH_ATTEMPTS) {
-          throw new Error('Supabase Storage est indisponible après trois tentatives bornées.');
-        }
-      }
-      await this.wait(250 * 2 ** (attempt - 1));
-    }
-    if (response === null) {
-      throw new Error(
-        lastFailureStatus === null
-          ? 'Supabase Storage est indisponible après trois tentatives bornées.'
-          : `Supabase Storage reste indisponible (${lastFailureStatus}) après trois tentatives.`,
-      );
-    }
+    const objectPath = `${encodeURIComponent(this.bucket)}/${encodeStorageKey(storageKey)}`;
+    const deadline = new CompositeRequestDeadline(STORAGE_FETCH_TIMEOUT_MS);
+    const response = await this.fetchWithRetries(
+      `${this.baseUrl}/storage/v1/object/${objectPath}`,
+      deadline,
+    );
     if (!response.ok) {
       const errorBody = await readResponseSnippet(response);
-      if (
-        response.status === 404 ||
-        (response.status === 400 && /not_found|"statusCode"\s*:\s*"404"/u.test(errorBody))
-      )
-        return null;
+      if (SupabaseArchiveAuditStorage.isNotFound(response, errorBody)) return null;
       throw new Error(`Supabase Storage GET a échoué (${response.status}).`);
     }
     const declaredLength = response.headers.get('content-length');
@@ -1192,11 +1197,35 @@ export class SupabaseArchiveAuditStorage implements ArchivePreactivationStorage 
       bytes.set(chunk, offset);
       offset += chunk.byteLength;
     }
+    const infoResponse = await this.fetchWithRetries(
+      `${this.baseUrl}/storage/v1/object/info/${objectPath}`,
+      deadline,
+    );
+    if (!infoResponse.ok) {
+      const errorBody = await readResponseSnippet(infoResponse);
+      if (SupabaseArchiveAuditStorage.isNotFound(infoResponse, errorBody)) {
+        throw new Error('Supabase Storage metadata missing after object download.');
+      }
+      throw new Error(`Supabase Storage INFO a échoué (${infoResponse.status}).`);
+    }
+    let rawInfo: unknown;
+    try {
+      rawInfo = await infoResponse.json();
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        throw new Error('Supabase Storage object info response is not valid JSON.');
+      }
+      throw error;
+    }
+    const info = parseSupabaseObjectInfo(rawInfo);
+    if (info.sizeBytes !== byteSize) {
+      throw new Error('Supabase Storage object and metadata size mismatch.');
+    }
     return {
       bytes,
       byteSize,
       sha256: createHash('sha256').update(bytes).digest('hex'),
-      contentType: response.headers.get('content-type') ?? 'application/octet-stream',
+      contentType: info.contentType,
     };
   }
 }

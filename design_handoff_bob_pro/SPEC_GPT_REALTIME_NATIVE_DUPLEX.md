@@ -2,10 +2,12 @@
 
 **Statut** : en implémentation, non activable en production avant certification physique.
 
-**Décision du 22 juillet 2026** : le chemin natif reste limité aux paroles génériques à faible
-risque. Le Jarvis métier OpenAI cible le contrat hybride et l'autorité « une seule voix par tour »
-définis dans `SPEC_OPENAI_HYBRID_SPEECH.md`. Le présent lot construit et éprouve le transport natif ;
-il ne doit pas être interprété comme une autorisation de prononcer nativement des faits métier.
+**Amendement accepté comme cible preview le 10 août 2026** :
+[DECISION_GPT_REALTIME_NATIVE_PUBLICATION_20260810.md](DECISION_GPT_REALTIME_NATIVE_PUBLICATION_20260810.md)
+remplace la limitation du 22 juillet. Le chemin natif devient le rail acoustique de publication
+pour toutes les réponses canoniques Bob, y compris les faits métier et les tours portant un
+contrôle. Le risque d'un transcript fournisseur disponible après le début du RTP est explicite ;
+les effets restent, eux, fermés jusqu'à la preuve durable et la confirmation requise.
 
 ## 1. Résultat produit
 
@@ -14,8 +16,11 @@ voix par WebRTC. Le microphone reste ouvert pendant la parole de Bob afin que l'
 l'interrompre naturellement. Le cerveau métier, le contexte d'écran, les contrôles et les mutations
 restent exclusivement sous l'autorité de Bob Pro.
 
-Le mode Mistral conserve son transport et sa parole par artefact audité. Aucun fallback implicite,
-appel concurrent ou mélange de clés n'est autorisé dans une session.
+Au cutover natif, le mode Mistral sera gelé hors profils de publication, son code et ses preuves
+restant préservés pour le chantier post-V1. Avant ce cutover, la matrice V1 existante reste
+l'autorité opérationnelle ; cette spec ne simule pas un retrait qui n'a pas encore été déployé.
+Aucun fallback implicite, appel concurrent ou mélange de clés n'est autorisé dans une session
+OpenAI.
 
 ### 1.1 North Star produit — le « Jarvis métier » de Bob
 
@@ -34,12 +39,12 @@ et confirmation — reste le scénario canonique de bout en bout. Transport, bou
 mission métier possèdent des DoD distinctes et doivent toutes être certifiées avant de revendiquer
 « Bob partout ».
 
-## 2. Contrats de livraison séparés
+## 2. Contrat de publication et rail historique
 
-- `openai-native-webrtc-v1` : RTP descendant GPT Realtime, plein duplex candidat, contrôle durable
-  distinct de la metadata fournisseur ;
-- `audited-signed-url-v1` : artefact privé TTS/ASR actuel, utilisé par Mistral et disponible comme
-  chemin à exactitude acoustique pré-audible.
+- `openai-native-webrtc-v1` : unique contrat acoustique du train GPT Realtime ; RTP descendant,
+  microphone continu, barge-in natif et contrôle durable distinct de la metadata fournisseur ;
+- `audited-signed-url-v1` : contrat historique préaudité, conservé pour lecture/réversibilité ; il
+  ne sera plus sélectionnable par les profils GPT Realtime après le cutover natif certifié.
 
 Le bootstrap et le client discriminent ces contrats. Un client ancien, une réponse ambiguë ou une
 configuration partielle échoue fermé ; il ne joue jamais les deux sorties.
@@ -79,12 +84,14 @@ Il ne peut pas retirer une phrase déjà entendue.
 
 Conséquences de rollout :
 
-- le master Bob Live reste fermé pendant ce lot ;
+- la première activation native reste limitée aux comptes internes de staging/preview ;
 - aucune communication « exactitude acoustique préauditée » n'est permise pour ce mode ;
-- la première activation native est limitée aux comptes internes, puis aux réponses non
-  actionnables et à faible risque ;
-- les paroles financières, légales, contractuelles ou portant un contrôle restent sur le chemin
-  préaudité tant qu'une certification et un ADR de risque dédiés ne les autorisent pas.
+- les faits métier peuvent être vocalisés, mais les montants/libellés/statuts viennent du résultat
+  canonique des outils et de la base, jamais d'une prose provider non validée ;
+- une navigation ou proposition n'est publiée qu'après ACK natif durable ; une mutation
+  financière, légale, contractuelle ou destructive exige encore sa confirmation explicite ;
+- une divergence acoustique révoque le contrôle, clôt le tour et produit une trace de sécurité,
+  sans pouvoir prétendre effacer ce qui a déjà été entendu.
 
 ## 5. Machine durable cible
 
@@ -165,8 +172,10 @@ prepared → dispatching → requested → accepted
   curseur n'avance jamais lors du claim : un pod concurrent ne reçoit rien tant que le lease vit,
   puis une page expirée est relivrée à l'identique sous un nouveau claim ;
 - le scheduler renouvelle le lease avant chaque transaction tenantée, elle-même bornée à quatre
-  secondes. Il traite au plus un lot par tenant et n'ACKe la page qu'après le succès de tous ses
-  tenants. Un ACK ou renouvellement portant un ancien claim est refusé sans effet ;
+  secondes. Il traite au plus un lot par tenant et ACKe la page dès que la page possédée a été
+  entièrement tentée. Les échecs individuels restent dus et sont redécouverts : un tenant en panne
+  ne bloque ni les autres tenants, ni le curseur, ni la rotation des clés. Un ACK ou renouvellement
+  portant un ancien claim est refusé sans effet ;
 - `list`, `renew` et `ACK` s'exécutent dans une transaction globale dédiée : une première
   instruction pose réellement `statement_timeout=3s` et `lock_timeout=1s`, puis seulement la
   fonction directory est appelée, sous une seconde borne Prisma de quatre secondes. Le
@@ -177,8 +186,41 @@ prepared → dispatching → requested → accepted
   l'exactly-once ;
 - la purge de rétention est bornée, tenantée, limitée aux terminaux échus et refuse toute racine
   encore référencée ; DELETE est encadré par FORCE RLS, une policy RESTRICTIVE et un trigger DB ;
-- `provider_stream/v2` reste physiquement interdit par CHECK pendant la V1. Ce CHECK ne pourra
-  être retiré que dans le même train qu'une purge atomique consommation → grant → livraison ;
+- l'activation de `provider_stream/v2` suit obligatoirement deux phases. La phase A déploie une
+  expansion **dormante** : lecteur/écrivain dual, domaines cryptographiques séparés v1/v2,
+  politique acoustique V2, purge atomique consommation → grant → livraison, RLS/ACL et preuves
+  N-1, tandis que le CHECK d'interdiction reste validé. La phase B ferme les admissions, draine
+  toutes les sessions et tous les pods N-1, retire le CHECK et bascule l'autorité de protocole sur
+  V2 avec le même SHA applicatif ;
+- le reçu d'ACK natif reste exactement au format public existant à six champs. Après validation de
+  ce reçu Bob, le mobile construit localement la référence de contrôle autoritative
+  `{turnId, acknowledgementId, contextRevision, contextDigest}` et réutilise le gate durable
+  `/control-acknowledgements`. Aucune metadata fournisseur n'autorise un effet ;
+- une capacité `provider_stream/v2` est créée pendant que la livraison native est encore
+  `prepared`, avant `dispatcher.start` et avant tout `response.create`. Si le scellement ou
+  l'écriture échoue, la livraison est annulée et aucun audio n'est demandé ;
+- la temporalité UX sépare strictement **présentation** et **effet**. Une carte informative, une
+  liste de candidats réels ou une question de désambiguïsation peuvent apparaître pendant que Bob
+  parle, via un événement de présentation non autoritatif lié au tour et hydraté depuis les données
+  réelles ; cet événement ne contient aucune route exécutable, aucun `proposalId` consommable et
+  aucun pouvoir métier ;
+- une navigation réversible peut être préparée pendant la parole, mais son application passe par
+  un handoff contextuel générationnel : l'ancien écran remet son fence, le nouvel écran publie et
+  acquitte son contexte, puis le micro reste continu sans que Bob n'interrompe sa propre phrase.
+  Tant que ce handoff sans coupure n'est pas certifié sur appareil, la navigation reste sérialisée
+  après livraison au lieu de prétendre au parallélisme ;
+- une proposition peut être rendue visible dès que son objet serveur est scellé, mais tous ses
+  boutons restent désactivés jusqu'au reçu durable, à la revalidation de contexte et à l'autorité
+  `/control-acknowledgements`. Une mutation — financière, légale, contractuelle, destructive ou
+  autre — ne quitte jamais ce rail opaque et conserve la confirmation humaine requise ;
+- ces événements de présentation constituent un protocole distinct de `provider_stream/v2` : ils
+  ne peuvent ni être promus implicitement en contrôle, ni contourner l'ACK, ni être dérivés d'une
+  metadata fournisseur. Les SLO mesurent séparément premier audio, première présentation, contrôle
+  consommable et effet confirmé ;
+- la rétention V2 copie exactement `native_delivery.retentionExpiresAt` dans le grant, puis celle
+  du grant dans la consommation. Elle ne recalcule jamais `clock_timestamp() + 30 days`, ce qui
+  dépasserait la racine de quelques millisecondes. Le writer N-1 `audited_artifact/v1` conserve sa
+  sémantique historique ;
 - le runtime ne reçoit ni TRUNCATE, ni REFERENCES, ni TRIGGER, ni suppression des contrôles ;
 - la preuve comportementale (CAS, horloge, courses, `SKIP LOCKED`, keyset et purge) s'exécute
   uniquement en CI sur un PostgreSQL loopback nommé `bob_ephemeral_*` ; le script de release live
@@ -187,7 +229,9 @@ prepared → dispatching → requested → accepted
 ## 6. Critères d'acceptation binaires — code et contrats
 
 - [x] Le config public et le bootstrap discriminent exactement les deux modes de livraison.
-- [ ] Une session OpenAI native démarre avec une seule clé OpenAI et n'appelle jamais Mistral.
+- [ ] Une session OpenAI native démarre avec une seule clé OpenAI pour toute sa chaîne
+      audio/Realtime et n'y appelle jamais Mistral ; les outils métier externes gardent leur
+      provider explicite et traçable.
 - [x] `output_modalities=['audio']`, `create_response=false`, aucun outil et budget borné sont
       vérifiés par tests de contrat provider.
 - [x] Le sideband rejette réponse inconnue, metadata divergente, sortie texte, outil, réponse
@@ -233,12 +277,32 @@ prepared → dispatching → requested → accepted
       liste de tenants configurée, et expose toute saturation de sa fenêtre.
 - [x] Une page n'avance qu'après ACK de son claim courant ; lease vivant, renouvellement, reprise
       après expiration et refus d'un ancien claim sont explicites et fail-closed.
-- [x] `provider_stream/v2` est impossible en V1 tant que sa purge de graphe n'existe pas.
+- [ ] La phase A `provider_stream/v2` livre de façon dormante sa purge de graphe, ses tests RLS/CAS,
+      sa liaison XOR, sa politique V2 et ses writers N-1 tout en conservant le CHECK d'interdiction.
+      La phase B retire ce CHECK et bascule l'autorité seulement dans l'opérateur exact-SHA, après
+      fermeture des admissions et drainage de tous les pods N-1 ; aucun contrôle natif orphelin
+      ne peut survivre.
+- [ ] Les fixtures cryptographiques `audited_artifact/v1` restent identiques octet pour octet ;
+      `provider_stream/v2` utilise des domaines AAD, clé et HMAC distincts liés au
+      `nativeDeliveryId`.
+- [ ] N mobile + N-1 serveur et N serveur + N-1 mobile conservent le reçu ACK à six champs et
+      échouent sans effet en l'absence d'une capacité consommable ; aucun fallback implicite ne
+      contourne l'autorité.
+- [ ] La politique acoustique V2 autorise le texte canonique issu de BobAgent, y compris faits
+      tenantés et tours portant un contrôle, sans jamais autoriser un texte provider ou une
+      mutation avant confirmation. Le lecteur continue de vérifier les preuves policy V1 pendant
+      tout leur horizon de rétention.
 - [x] Aucun flag de production n'est activé par le lot.
 
 ## 7. Certification bloquante avant activation
 
 - [ ] Tests unitaires, courses, contrats, typecheck, lint et builds API/mobile verts.
+- [ ] Premier appui juste après boot puis après plus de 15 minutes d'inactivité : aucune sonde
+      TTS/Whisper, aucun 503 de readiness et activation lifecycle atteinte.
+- [ ] `/health/ready` et `/voice/realtime/config` prouvent provider OpenAI, delivery natif,
+      runtime boot-vérifié et Mission V2 ; tout mismatch rend `available=false`.
+- [ ] Voice Trace V2 staging est ON pour les seuls sujets canary, chiffrée sous RLS, sans audio ni
+      texte dans Railway/Sentry/CI ; une panne de trace bloque le verdict de certification.
 - [x] Les expansions et indexes `CONCURRENTLY` sont séparés ; la contraction préactivation
       `provider_stream` utilise `ADD ... NOT VALID` puis `VALIDATE` dans deux migrations courtes.
 - [x] CI PostgreSQL éphémère : CAS, RLS, horloge DB, `SKIP LOCKED`, drainage et purge mutationnels.
@@ -248,7 +312,8 @@ prepared → dispatching → requested → accepted
 - [ ] Fin de parole → premier audio : p50 ≤ 900 ms, p95 ≤ 1 800 ms.
 - [ ] Début de barge-in → silence : p50 ≤ 250 ms, p95 ≤ 500 ms.
 - [ ] Background/foreground, perte réseau et changement de route audio certifiés.
-- [ ] Zéro requête Mistral observée sur toute la mission OpenAI.
+- [ ] Zéro requête Mistral observée dans la chaîne audio/Realtime de la mission OpenAI ; les
+      appels d'outils métier externes sont attribués séparément.
 - [ ] Le profil de charge staging utilise 1 000 comptes actifs aux volumes de données représentatifs
       et des paliers de 50, 100 puis 250 sessions Live concurrentes. Chaque palier tient au moins
       15 minutes et le palier 250 un soak d'une heure ; latences p50/p95/p99, pool PostgreSQL,
@@ -260,10 +325,10 @@ prepared → dispatching → requested → accepted
 
 ## 8. Hors lot
 
-- activation production et modification des variables Railway ;
+- activation production : le lot installe uniquement l'opérateur et certifie staging/preview ;
 - Mistral V3 ;
 - réécriture globale en Rust : TypeScript/Nest/Expo restent l'autorité produit ; seuls des hotspots
   natifs mesurés (DSP/VAD/écho/PCM, PDF/OCR, crypto/compression) pourront être extraits après profilage ;
-- nouvelles capacités métier des missions vocales multi-étapes ;
+- nouveaux use cases métier sans rapport avec les missions déjà annoncées ;
 - preuve acoustique indépendante avant écoute, incompatible avec un RTP immédiatement audible
   sans buffering complet.

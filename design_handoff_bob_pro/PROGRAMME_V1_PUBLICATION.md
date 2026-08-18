@@ -18,6 +18,16 @@
 > décision commune. Acomptes professionnels (B2B/B2G) : fermeture V1 CONFIRMÉE par le fondateur
 > le 25/07 avec parcours de repli « situation » à proposer dans l'app.
 
+> **Articulation Jarvis universel du 17/08/2026 (délégation fondateur — FD-2026-0817-11,
+> [DECISION_JARVIS_UNIVERSEL_20260817.md](DECISION_JARVIS_UNIVERSEL_20260817.md))** — La parité
+> vocale universelle (§2 de la spec d'orchestration Jarvis, `closed=0`) est **l'objectif
+> produit** ; la **publication V1 n'attend pas le train U0–U7**. La V1 publie avec le présent
+> programme + le critère inter-domaines consigné le 16/08 (mission client → chantier → devis →
+> facture → préparation pré-comptable), soit le socle U0/U1 et la chaîne U3/U4 sur les parcours
+> du programme. U5–U7 se livrent et s'annoncent action par action après publication ; le claim
+> public « toute l'app » reste interdit avant `universal_released` (FD-2026-0817-10). Aucun lot
+> U* ne s'ajoute au chemin critique de publication sans décision fondateur tracée ici.
+
 RÈGLE : quand le travail EN COURS est terminé, FEATURE FREEZE — plus aucun ajout avant
 publication de la V1, SAUF manque jugé indispensable D'UN COMMUN ACCORD Claude+GPT.
 Ce document est la liste unique de clôture ; toute entrée nouvelle exige l'accord des
