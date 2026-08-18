@@ -290,7 +290,8 @@ function generateCommand(
 // ---------------------------------------------------------------------------
 
 describe('customer_contact@1 — property : contrat §3 sous séquences arbitraires', () => {
-  it('120 séquences × 40 commandes : ≤ 1 intent cumulé, union §5.1, round-trip du state', () => {
+  // 4 800 réductions + round-trip de parse : sous les 5 s en local, pas sur le runner CI.
+  it('120 séquences × 40 commandes : ≤ 1 intent cumulé, union §5.1, round-trip du state', { timeout: 60_000 }, () => {
     for (let seed = 1; seed <= 120; seed++) {
       const random = mulberry32(seed);
       const allocatedEffectId = prngUuid(random);

@@ -1044,7 +1044,8 @@ function generateCommand(
 }
 
 describe('single_business_action@1 — property : ≤ 1 effet mutant par séquence arbitraire', () => {
-  it('120 séquences × 40 commandes : au plus un intent, toujours le premier effectId serveur', () => {
+  // Même marge CI que le property test customer-contact (runner plus lent qu'en local).
+  it('120 séquences × 40 commandes : au plus un intent, toujours le premier effectId serveur', { timeout: 60_000 }, () => {
     for (let seed = 1; seed <= 120; seed++) {
       const random = mulberry32(seed);
       let run: SbaRun = makeRun(initialState());
