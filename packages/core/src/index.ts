@@ -84,6 +84,12 @@ export * from './domain/ocr/ocr-extraction';
 export * from './domain/banking/bank-balance-snapshot';
 export * from './domain/banking/bank-balance-freshness';
 export * from './domain/agent/agent-mission';
+// Domaine — Jarvis U1-b (vocabulaire, work items, reducer racine)
+export * from './domain/agent/jarvis-run';
+export * from './domain/agent/jarvis-work-item';
+export * from './domain/agent/jarvis-run-reducer';
+export * from './domain/agent/definitions/single-business-action-v1';
+export * from './domain/agent/definitions/customer-contact-v1';
 export * from './domain/agent/agent-mission-event';
 export * from './domain/agent/mission-kind';
 
