@@ -31,6 +31,7 @@ DECLARE
     'agent_mission_quote_line_work',
     'agent_mission_fingerprint_key_version_floors',
     'agent_mission_fingerprint_key_bindings',
+    'jarvis_work_items',
     'documents',
     'document_analyses',
     'document_folders',
@@ -269,6 +270,32 @@ CREATE POLICY agent_missions_owner_update ON agent_missions FOR UPDATE
     "companyId" = current_setting('app.current_company_id', true)
     AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
     AND "id"::text = nullif(current_setting('app.current_agent_mission_id', true), '')
+  );
+
+DROP POLICY IF EXISTS jarvis_work_items_owner_select ON jarvis_work_items;
+DROP POLICY IF EXISTS jarvis_work_items_owner_insert ON jarvis_work_items;
+DROP POLICY IF EXISTS jarvis_work_items_owner_update ON jarvis_work_items;
+CREATE POLICY jarvis_work_items_owner_select ON jarvis_work_items FOR SELECT
+  USING (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
+  );
+CREATE POLICY jarvis_work_items_owner_insert ON jarvis_work_items FOR INSERT
+  WITH CHECK (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
+    AND "runId"::text = nullif(current_setting('app.current_agent_mission_id', true), '')
+  );
+CREATE POLICY jarvis_work_items_owner_update ON jarvis_work_items FOR UPDATE
+  USING (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
+    AND "runId"::text = nullif(current_setting('app.current_agent_mission_id', true), '')
+  )
+  WITH CHECK (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
+    AND "runId"::text = nullif(current_setting('app.current_agent_mission_id', true), '')
   );
 
 DROP POLICY IF EXISTS agent_mission_events_owner_select ON agent_mission_events;
