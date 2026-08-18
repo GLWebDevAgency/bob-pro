@@ -95,8 +95,8 @@ describe.skipIf(!RUN_CERT)(
       if (directUrl === '' || certAdminUrl === '') {
         throw new Error('DIRECT_URL deployer et AGENT_MISSION_CERT_ADMIN_URL sont requis.');
       }
-      admin = new PrismaClient({ datasourceUrl: certAdminUrl });
-      deployer = new PrismaClient({ datasourceUrl: directUrl });
+      admin = new PrismaClient({ datasourceUrl: certAdminUrl, errorFormat: 'minimal' });
+      deployer = new PrismaClient({ datasourceUrl: directUrl, errorFormat: 'minimal' });
       await Promise.all([admin.$connect(), deployer.$connect()]);
       for (const [companyId, suffix] of [
         [companyA, '7'],

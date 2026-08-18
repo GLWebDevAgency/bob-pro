@@ -5106,6 +5106,13 @@ esac
   -v m2a_release_flag_version=1 \
   -f "$ROOT_DIR/apps/api/prisma/agent-mission-realtime-release-cert.sql"
 
+# Jarvis U1-a (SPEC_U1_NOYAU_DURABLE_20260818) : expand en place + jarvis_work_items.
+# Appliquees par le deployer non-superuser comme toutes les migrations de la sequence.
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260818200000_jarvis_run_expand/migration.sql"
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260818200100_jarvis_run_validate/migration.sql"
+
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
 SET ROLE bob_schema_owner;
 GRANT USAGE ON SCHEMA public TO bob_cert_auditor;
@@ -5139,7 +5146,8 @@ AGENT_MISSION_CERT_ADMIN_URL="$CERT_ADMIN_URL" \
 RUN_AGENT_MISSION_POSTGRES_CERT=true \
 AGENT_MISSION_CERT_DATABASE_IS_DISPOSABLE=true \
 pnpm --filter @bob/api exec vitest run \
-  src/persistence/prisma/agent-mission.persistence.postgres.test.ts
+  src/persistence/prisma/agent-mission.persistence.postgres.test.ts \
+  src/persistence/prisma/jarvis-run-expand.postgres.test.ts
 
 # Cycle de rotation réel, après les tests métier qui utilisent volontairement la version 1.
 # La preuve couvre deux connexions concurrentes, les snapshots après verrou, le retrait N-1 et
