@@ -5129,6 +5129,11 @@ GRANT SELECT ON TABLE
   public.customers
 TO bob_cert_auditor;
 GRANT DELETE ON TABLE public.realtime_session_leases TO bob_cert_auditor;
+-- Jarvis U1-a : la preuve FK RESTRICT tente un DELETE de mission qui doit mourir sur la
+-- contrainte (23503), pas sur le droit (42501). Concession de certification uniquement,
+-- meme precedent que le DELETE leases ci-dessus ; la base est jetable.
+GRANT DELETE ON TABLE public.agent_missions TO bob_cert_auditor;
+GRANT SELECT ON TABLE public.jarvis_work_items TO bob_cert_auditor;
 GRANT SELECT, INSERT ON TABLE public.companies, public.customers TO bob_cert_auditor;
 RESET ROLE;
 SQL
