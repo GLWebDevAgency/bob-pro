@@ -122,7 +122,9 @@ jobs:
         with:
           node-version: 22.18.0
           cache: pnpm
-      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      # psql est preinstalle sur ubuntu-latest ; apt ne sert que de repli et ne doit
+      # jamais bloquer la certification sur une panne de miroir (incident 18/08).
+      - run: command -v psql >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y postgresql-client)
       - run: pnpm install --frozen-lockfile
       - name: Certify the staging-only Prisma name reconciliation on real PostgreSQL
         env:
@@ -203,7 +205,9 @@ jobs:
         with:
           node-version: 22.18.0
           cache: pnpm
-      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      # psql est preinstalle sur ubuntu-latest ; apt ne sert que de repli et ne doit
+      # jamais bloquer la certification sur une panne de miroir (incident 18/08).
+      - run: command -v psql >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y postgresql-client)
       - run: pnpm install --frozen-lockfile
       - name: Certify the exact-key quarantine release contract
         run: pnpm --filter @bob/api run test:archive-quarantine-release
@@ -453,7 +457,9 @@ jobs:
         with:
           node-version: 22.18.0
           cache: pnpm
-      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      # psql est preinstalle sur ubuntu-latest ; apt ne sert que de repli et ne doit
+      # jamais bloquer la certification sur une panne de miroir (incident 18/08).
+      - run: command -v psql >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y postgresql-client)
       - run: pnpm install --frozen-lockfile
       - name: Certify the exact-key quarantine release contract
         run: pnpm --filter @bob/api run test:archive-quarantine-release
@@ -613,7 +619,9 @@ jobs:
         with:
           node-version: 22.18.0
           cache: pnpm
-      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      # psql est preinstalle sur ubuntu-latest ; apt ne sert que de repli et ne doit
+      # jamais bloquer la certification sur une panne de miroir (incident 18/08).
+      - run: command -v psql >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y postgresql-client)
       - run: pnpm install --frozen-lockfile
       - name: Reproduce the non-superuser Supabase deployer and Data API defaults
         run: sh apps/api/scripts/bootstrap-supabase-ci-postgres.sh
@@ -749,7 +757,9 @@ jobs:
         with:
           node-version: 22.18.0
           cache: pnpm
-      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      # psql est preinstalle sur ubuntu-latest ; apt ne sert que de repli et ne doit
+      # jamais bloquer la certification sur une panne de miroir (incident 18/08).
+      - run: command -v psql >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y postgresql-client)
       - run: pnpm install --frozen-lockfile
       - name: Reproduce the non-superuser Supabase deployer and Data API defaults
         run: sh apps/api/scripts/bootstrap-supabase-ci-postgres.sh
@@ -857,7 +867,16 @@ jobs:
           distribution: temurin
           java-version: '17'
       - name: Installer les outils XML déterministes
-        run: sudo apt-get update && sudo apt-get install -y libxml2-utils unzip
+        # xmllint n'est pas preinstalle : apt avec timeout dur (echec en ~4 min, jamais 30)
+        # et bascule de miroir en second essai (incident azure.archive 18/08).
+        run: |
+          if command -v xmllint >/dev/null 2>&1 && command -v unzip >/dev/null 2>&1; then exit 0; fi
+          if timeout 240 sudo apt-get update -o Acquire::Retries=3; then
+            sudo apt-get install -y libxml2-utils unzip && exit 0
+          fi
+          sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+          timeout 240 sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y libxml2-utils unzip
       - run: pnpm install --frozen-lockfile
       - name: Tester les gardes de rapports de conformité
         run: node --test .github/scripts/*.test.mjs

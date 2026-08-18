@@ -344,6 +344,7 @@ model Company {
   quoteCreationRequests                       QuoteCreationRequest[]
   quoteDraftSlots                             QuoteDraftSlot[]
   agentMissions                               AgentMission[]
+  jarvisWorkItems                             JarvisWorkItem[]
   agentMissionEvents                          AgentMissionEvent[]
   documents                                   StoredDocument[]
   documentFolders                             DocumentFolder[]
@@ -503,14 +504,64 @@ model AgentMission {
   retentionExpiresAt DateTime                    @db.Timestamptz(6)
   createdAt          DateTime                    @db.Timestamptz(6)
   updatedAt          DateTime                    @db.Timestamptz(6)
+  /// Jarvis U1-a (expand additif, SPEC_U1_NOYAU_DURABLE_20260818) : NULL = ligne legacy ;
+  /// la projection déterministe du cutover §17 posera definitionVersion = protocolVersion.
+  definitionVersion  Int?
+  /// Uniquement un index de réveil (spec §5.1) : le scanner soumet une commande de wake
+  /// idempotente au gateway, il ne mute jamais le run.
+  nextWakeAt         DateTime?                   @db.Timestamptz(6)
   events             AgentMissionEvent[]         @relation("AgentMissionEvents")
   quoteDraftSlots    QuoteDraftSlot[]            @relation("AgentMissionQuoteDraft")
   quoteLineWork      AgentMissionQuoteLineWork[] @relation("AgentMissionQuoteLineWork")
+  jarvisWorkItems    JarvisWorkItem[]            @relation("JarvisRunWorkItems")
 
   @@unique([id, companyId, ownerUserId], map: "agent_missions_owner_binding_key")
   @@index([companyId, ownerUserId, kind, status], map: "agent_missions_owner_status_idx")
   @@index([retentionExpiresAt], map: "agent_missions_retention_idx")
   @@map("agent_missions")
+}
+
+/// Outbox durable d'orchestration Jarvis (spec §5.3, SPEC_U1_NOYAU_DURABLE_20260818).
+/// Ne duplique JAMAIS une outbox métier : elle soumet une fois la commande idempotente à
+/// l'outbox canonique (notification_jobs, document_archive_jobs, …), conserve la référence
+/// du job retourné (submittedJobRef) puis l'observe. Inerte jusqu'à U1-b/c.
+model JarvisWorkItem {
+  id                  String       @id @db.Uuid
+  companyId           String
+  company             Company      @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  runId               String       @db.Uuid
+  ownerUserId         String
+  run                 AgentMission @relation("JarvisRunWorkItems", fields: [runId, companyId, ownerUserId], references: [id, companyId, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  effectId            String       @db.Uuid
+  actionId            String
+  actionVersion       Int
+  /// Union fermée §5.3 : confirmation(receiptId) | mandateGrant(...) | certifiedSystemRule(...).
+  authorizationSource Json
+  actingPrincipalId   String
+  targetDigest        String?      @db.Char(64)
+  /// Références purpose-specific chiffrées côté autorité — jamais le contenu sensible.
+  payloadRef          Json?
+  submittedJobRef     Json?
+  executeBy           DateTime     @db.Timestamptz(6)
+  status              String       @default("prepared")
+  attempts            Int          @default(0)
+  nextAttemptAt       DateTime?    @db.Timestamptz(6)
+  leaseOwner          String?
+  leaseToken          String?      @db.Uuid
+  /// Fence de lease (§5.3) : incrémenté à chaque claim ; seul le détenteur du fence courant écrit.
+  leaseFence          BigInt       @default(0)
+  leaseExpiresAt      DateTime?    @db.Timestamptz(6)
+  authorizedAt        DateTime?    @db.Timestamptz(6)
+  authorizationDigest String?      @db.Char(64)
+  resultDigest        String?      @db.Char(64)
+  signalAppliedAt     DateTime?    @db.Timestamptz(6)
+  createdAt           DateTime     @db.Timestamptz(6)
+  updatedAt           DateTime     @db.Timestamptz(6)
+
+  @@unique([companyId, effectId], map: "jarvis_work_items_effect_key")
+  @@index([companyId, status, nextAttemptAt], map: "jarvis_work_items_dispatch_idx")
+  @@index([runId], map: "jarvis_work_items_run_idx")
+  @@map("jarvis_work_items")
 }
 
 /// Faits normalisés et éphémères d'une ligne de devis en cours de résolution par AgentMission.
@@ -583,6 +634,7 @@ model AgentMissionEvent {
 
   @@unique([companyId, ownerUserId, commandId], map: "agent_mission_events_owner_command_key")
   @@unique([missionId, sequence], map: "agent_mission_events_sequence_key")
+  @@unique([companyId, missionId, commandId], map: "agent_mission_events_run_command_key")
   @@index([companyId, ownerUserId, missionId, occurredAt], map: "agent_mission_events_owner_timeline_idx")
   @@index([retentionExpiresAt], map: "agent_mission_events_retention_idx")
   @@index([fingerprintKeyVersion], map: "agent_mission_events_fingerprint_key_version_idx")
@@ -1298,29 +1350,29 @@ model DocumentArchiveAuditEvidence {
 /// Plan exact-key privé d'une quarantaine Storage staging. Cette table et ses enfants sont
 /// append-only, FORCE RLS et sans policy runtime ; seul l'opérateur DIRECT_URL peut les lire.
 model DocumentArchiveQuarantineOperation {
-  id                        String                           @id @default(uuid()) @db.Uuid
-  environment               String
-  companyId                 String
-  companyIdSha256           String                           @db.Char(64)
-  sourceBucket              String
-  destinationBucket         String
-  manifestDigest            String                           @unique(map: "document_archive_quarantine_operation_manifest_key") @db.Char(64)
-  databaseIdentity          String                           @db.Uuid
-  databaseSnapshotDigest    String                           @db.Char(64)
-  auditDeploymentId         String                           @unique(map: "document_archive_quarantine_operation_audit_key") @db.Uuid
-  releaseSha                String                           @db.Char(40)
-  auditInventoryDigest      String                           @db.Char(64)
-  auditReportSha256         String                           @db.Char(64)
-  entryCount                Int                              @db.SmallInt
-  copyReceiptKey            String
-  deletedReceiptKey         String
-  finalReceiptKey           String
-  privateManifest           Json
-  createdAt                 DateTime                         @default(now()) @db.Timestamptz(6)
-  protocolState             DocumentArchiveProtocolState     @relation("DocumentArchiveQuarantineDatabaseIdentity", fields: [databaseIdentity], references: [databaseIdentity], onDelete: Restrict, onUpdate: Restrict)
-  auditEvidence             DocumentArchiveAuditEvidence     @relation("DocumentArchiveQuarantineAudit", fields: [auditDeploymentId, releaseSha, auditInventoryDigest, auditReportSha256, sourceBucket, databaseIdentity], references: [deploymentId, releaseSha, inventoryDigest, reportSha256, storageBucket, databaseIdentity], onDelete: Restrict, onUpdate: Restrict)
-  entries                   DocumentArchiveQuarantineEntry[]
-  events                    DocumentArchiveQuarantineEvent[]
+  id                     String                           @id @default(uuid()) @db.Uuid
+  environment            String
+  companyId              String
+  companyIdSha256        String                           @db.Char(64)
+  sourceBucket           String
+  destinationBucket      String
+  manifestDigest         String                           @unique(map: "document_archive_quarantine_operation_manifest_key") @db.Char(64)
+  databaseIdentity       String                           @db.Uuid
+  databaseSnapshotDigest String                           @db.Char(64)
+  auditDeploymentId      String                           @unique(map: "document_archive_quarantine_operation_audit_key") @db.Uuid
+  releaseSha             String                           @db.Char(40)
+  auditInventoryDigest   String                           @db.Char(64)
+  auditReportSha256      String                           @db.Char(64)
+  entryCount             Int                              @db.SmallInt
+  copyReceiptKey         String
+  deletedReceiptKey      String
+  finalReceiptKey        String
+  privateManifest        Json
+  createdAt              DateTime                         @default(now()) @db.Timestamptz(6)
+  protocolState          DocumentArchiveProtocolState     @relation("DocumentArchiveQuarantineDatabaseIdentity", fields: [databaseIdentity], references: [databaseIdentity], onDelete: Restrict, onUpdate: Restrict)
+  auditEvidence          DocumentArchiveAuditEvidence     @relation("DocumentArchiveQuarantineAudit", fields: [auditDeploymentId, releaseSha, auditInventoryDigest, auditReportSha256, sourceBucket, databaseIdentity], references: [deploymentId, releaseSha, inventoryDigest, reportSha256, storageBucket, databaseIdentity], onDelete: Restrict, onUpdate: Restrict)
+  entries                DocumentArchiveQuarantineEntry[]
+  events                 DocumentArchiveQuarantineEvent[]
 
   @@unique([id, companyId, sourceBucket, destinationBucket, manifestDigest], map: "document_archive_quarantine_operation_identity_key")
   @@map("document_archive_quarantine_operations")
@@ -1356,31 +1408,31 @@ model DocumentArchiveQuarantineEntry {
 }
 
 model DocumentArchiveQuarantineEvent {
-  id                 BigInt                             @id @default(autoincrement())
-  operationId        String                             @db.Uuid
-  kind               String
-  ordinal            Int                                @db.SmallInt
-  objectId           String?                            @db.Uuid
-  objectVersion      String?
-  objectCreatedAt    DateTime?                          @db.Timestamptz(6)
-  objectUpdatedAt    DateTime?                          @db.Timestamptz(6)
-  objectMetadata     Json?
-  objectUserMetadata Json?
-  byteSha256         String?                            @db.Char(64)
-  byteSize           BigInt?
-  contentType        String?
-  evidence           Json
-  evidenceSha256     String                             @db.Char(64)
-  workflowIdentity   Json?
-  finalAuditDeploymentId    String?                            @db.Uuid
-  finalAuditReleaseSha      String?                            @db.Char(40)
-  finalAuditInventoryDigest String?                            @db.Char(64)
-  finalAuditReportSha256    String?                            @db.Char(64)
-  finalAuditStorageBucket   String?
-  finalAuditDatabaseIdentity String?                           @db.Uuid
-  createdAt          DateTime                           @default(now()) @db.Timestamptz(6)
-  operation          DocumentArchiveQuarantineOperation @relation(fields: [operationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  finalAuditEvidence DocumentArchiveAuditEvidence?      @relation("DocumentArchiveQuarantineFinalAudit", fields: [finalAuditDeploymentId, finalAuditReleaseSha, finalAuditInventoryDigest, finalAuditReportSha256, finalAuditStorageBucket, finalAuditDatabaseIdentity], references: [deploymentId, releaseSha, inventoryDigest, reportSha256, storageBucket, databaseIdentity], onDelete: Restrict, onUpdate: Restrict)
+  id                         BigInt                             @id @default(autoincrement())
+  operationId                String                             @db.Uuid
+  kind                       String
+  ordinal                    Int                                @db.SmallInt
+  objectId                   String?                            @db.Uuid
+  objectVersion              String?
+  objectCreatedAt            DateTime?                          @db.Timestamptz(6)
+  objectUpdatedAt            DateTime?                          @db.Timestamptz(6)
+  objectMetadata             Json?
+  objectUserMetadata         Json?
+  byteSha256                 String?                            @db.Char(64)
+  byteSize                   BigInt?
+  contentType                String?
+  evidence                   Json
+  evidenceSha256             String                             @db.Char(64)
+  workflowIdentity           Json?
+  finalAuditDeploymentId     String?                            @db.Uuid
+  finalAuditReleaseSha       String?                            @db.Char(40)
+  finalAuditInventoryDigest  String?                            @db.Char(64)
+  finalAuditReportSha256     String?                            @db.Char(64)
+  finalAuditStorageBucket    String?
+  finalAuditDatabaseIdentity String?                            @db.Uuid
+  createdAt                  DateTime                           @default(now()) @db.Timestamptz(6)
+  operation                  DocumentArchiveQuarantineOperation @relation(fields: [operationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  finalAuditEvidence         DocumentArchiveAuditEvidence?      @relation("DocumentArchiveQuarantineFinalAudit", fields: [finalAuditDeploymentId, finalAuditReleaseSha, finalAuditInventoryDigest, finalAuditReportSha256, finalAuditStorageBucket, finalAuditDatabaseIdentity], references: [deploymentId, releaseSha, inventoryDigest, reportSha256, storageBucket, databaseIdentity], onDelete: Restrict, onUpdate: Restrict)
 
   @@unique([operationId, kind, ordinal], map: "document_archive_quarantine_event_key")
   @@index([operationId, kind, ordinal], map: "document_archive_quarantine_events_operation_kind_idx")
