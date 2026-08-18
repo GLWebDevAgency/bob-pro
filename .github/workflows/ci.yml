@@ -122,7 +122,9 @@ jobs:
         with:
           node-version: 22.18.0
           cache: pnpm
-      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      # psql est preinstalle sur ubuntu-latest ; apt ne sert que de repli et ne doit
+      # jamais bloquer la certification sur une panne de miroir (incident 18/08).
+      - run: command -v psql >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y postgresql-client)
       - run: pnpm install --frozen-lockfile
       - name: Certify the staging-only Prisma name reconciliation on real PostgreSQL
         env:
@@ -203,7 +205,9 @@ jobs:
         with:
           node-version: 22.18.0
           cache: pnpm
-      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      # psql est preinstalle sur ubuntu-latest ; apt ne sert que de repli et ne doit
+      # jamais bloquer la certification sur une panne de miroir (incident 18/08).
+      - run: command -v psql >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y postgresql-client)
       - run: pnpm install --frozen-lockfile
       - name: Certify the exact-key quarantine release contract
         run: pnpm --filter @bob/api run test:archive-quarantine-release
@@ -453,7 +457,9 @@ jobs:
         with:
           node-version: 22.18.0
           cache: pnpm
-      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      # psql est preinstalle sur ubuntu-latest ; apt ne sert que de repli et ne doit
+      # jamais bloquer la certification sur une panne de miroir (incident 18/08).
+      - run: command -v psql >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y postgresql-client)
       - run: pnpm install --frozen-lockfile
       - name: Certify the exact-key quarantine release contract
         run: pnpm --filter @bob/api run test:archive-quarantine-release
@@ -613,7 +619,9 @@ jobs:
         with:
           node-version: 22.18.0
           cache: pnpm
-      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      # psql est preinstalle sur ubuntu-latest ; apt ne sert que de repli et ne doit
+      # jamais bloquer la certification sur une panne de miroir (incident 18/08).
+      - run: command -v psql >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y postgresql-client)
       - run: pnpm install --frozen-lockfile
       - name: Reproduce the non-superuser Supabase deployer and Data API defaults
         run: sh apps/api/scripts/bootstrap-supabase-ci-postgres.sh
@@ -749,7 +757,9 @@ jobs:
         with:
           node-version: 22.18.0
           cache: pnpm
-      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      # psql est preinstalle sur ubuntu-latest ; apt ne sert que de repli et ne doit
+      # jamais bloquer la certification sur une panne de miroir (incident 18/08).
+      - run: command -v psql >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y postgresql-client)
       - run: pnpm install --frozen-lockfile
       - name: Reproduce the non-superuser Supabase deployer and Data API defaults
         run: sh apps/api/scripts/bootstrap-supabase-ci-postgres.sh
