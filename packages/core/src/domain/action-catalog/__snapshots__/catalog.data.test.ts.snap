@@ -1,0 +1,23 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`ACTION_CATALOG_V0 — invariants sur la donnée réelle > couvre toutes les familles du §6.1 (aucun domaine vide) 1`] = `
+[
+  "catalogue",
+  "chantier",
+  "client",
+  "communication",
+  "contact",
+  "contexte",
+  "contrat",
+  "depense",
+  "devis",
+  "document",
+  "encaissement",
+  "facture",
+  "gestion",
+  "impaye",
+  "parc_intervention",
+  "precompta",
+  "societe_reglages",
+]
+`;
