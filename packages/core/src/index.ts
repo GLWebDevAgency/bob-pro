@@ -14,6 +14,11 @@ export * from './domain/billing/shared/totals';
 export * from './domain/billing/shared/purchase-order-ref';
 export * from './domain/billing/shared/discount';
 
+// Domaine — catalogue des actions publiques (spec Jarvis §6, FD-2026-0817-02)
+export * from './domain/action-catalog/types';
+export * from './domain/action-catalog/policy';
+export * from './domain/action-catalog/invariants';
+
 // Domaine — entités
 export * from './domain/company/company';
 export * from './domain/customer/customer';
