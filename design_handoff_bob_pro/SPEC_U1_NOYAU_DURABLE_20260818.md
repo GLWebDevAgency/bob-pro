@@ -85,5 +85,15 @@ Choix structurants :
 2. CHECK élargi : `kind='quote_creation'` et les 3 statuts legacy passent ; un kind inconnu échoue.
 3. `jarvis_work_items` : unicité `(company_id, effect_id)` prouvée par violation ; FK composite prouvée (insert orphelin refusé) ; RESTRICT prouvé (delete de mission avec work item refusé).
 4. RLS : cross-tenant refusé sur `jarvis_work_items` avec le rôle applicatif non-superuser.
-5. Index unique partiel `(company_id, mission_id, command_id)` : doublon même-run refusé, même commandId sur deux runs distincts accepté (le trigger d'unicité owner reste plus strict pour le writer N-1 — prouvé non régressé).
+5. Index unique `(company_id, mission_id, command_id)` : déclaré et posé par l'expand ; sa preuve
+   comportementale par violation est **portée par U1-c** avec le flux de commandes canonique — un
+   insert brut d'événement contournerait les gardes de fingerprint (binding guard) et ne
+   prouverait rien de fidèle.
 6. `prisma migrate diff` propre, `tsc` + tests complets du paquet api verts.
+
+Amendement 18/08 (cycles de certification) : la création de mission dans les preuves passe par le
+**writer N-1 réel** (`StartQuoteAgentMission` + UoW canonique + capability provisionnée), jamais
+par un INSERT simulé — le premier jet simulait la forme et s'est fait refuser par les gardes
+mêmes que la certification existe pour opposer (capability GUC, payload fermé). Les migrations
+assument le propriétaire du schéma par le bloc d'élévation contrôlée du patron maison (contrat
+Supabase non-superuser).
