@@ -42,6 +42,24 @@ atomique lors du cutover. L'acceptation production du risque `audible-before-aud
 l'équivalence d'audit demandée par Claude restent explicitement bloquées ; aucune contre-signature
 ne leur est attribuée par ce texte.
 
+**Amendement fondateur : 2026-08-17/18 — Jarvis universel et bâton de développement** — La
+directive du 17/08 (« toute l'application avec Jarvis ») entre dans ce cap. La spec normative est
+[SPEC_JARVIS_UNIVERSEL_ORCHESTRATION_20260817.md](SPEC_JARVIS_UNIVERSEL_ORCHESTRATION_20260817.md)
+(moteur unique `JarvisRun` absorbant `AgentMission` et remplaçant `buildBobActions`, catalogue
+`PublicActionSurfaceManifest`, lots U0–U7), rédigée par GPT et amendée par Claude le 18/08 des
+trois P0 de la contre-expertise (table normative classe→mode §7.0, articulation V1 §2.1, gates de
+continuité de surface et de plancher de version §17.1). Les dix décisions fondatrices de son §20
+sont tranchées par délégation explicite et consignées dans
+[DECISION_JARVIS_UNIVERSEL_20260817.md](DECISION_JARVIS_UNIVERSEL_20260817.md)
+(`FD-2026-0817-01..11`) ; l'ADR du moteur unique est
+[ADR-0002](../docs/adr/ADR-0002-jarvis-run-moteur-unique.md) ; le squelette d'AIPD (gate FD-09)
+est [legal/AIPD_VOIX_JARVIS_20260818.md](legal/AIPD_VOIX_JARVIS_20260818.md). **L'articulation V1
+ne change pas** : la publication V1 n'attend pas le train U0–U7 (bloc normatif du 17/08 dans
+[PROGRAMME_V1_PUBLICATION.md](PROGRAMME_V1_PUBLICATION.md)). **Bâton du 18/08** : Claude conduit
+le développement (GPT hors quota Codex jusqu'au 20/08 ; il reprend sur décision fondateur) ; la
+contre-lecture GPT des amendements est attendue à son retour, non bloquante. Le lot RNW A1 reste
+une fondation de transport séparée, gelée en vol sous sa spec c46b7802.
+
 Rappel de dépendance : la DoD §6.3 (« Bob Live passe sur appareils ») reste suspendue à
 l'actation par le fondateur de la **clé OpenAI production + budget** (D3 du PROGRAMME).
 
