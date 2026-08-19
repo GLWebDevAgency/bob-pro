@@ -318,7 +318,8 @@ CREATE TABLE public.realtime_voice_trace_events (
       AND ("plannerIntent" IS NULL OR "plannerIntent" ~ '^[a-z][a-z0-9_]{0,63}$')
       AND ("missionKind" IS NULL OR "missionKind" IN (
       -- REALTIME_TRACE_MISSION_KINDS_START
-      'quote_creation@1'
+      'quote_creation@1',
+      'customer_contact@1'
     -- REALTIME_TRACE_MISSION_KINDS_END
       ))
     ) OR (
