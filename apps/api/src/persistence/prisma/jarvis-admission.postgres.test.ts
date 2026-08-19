@@ -897,7 +897,12 @@ describe.skipIf(!RUN_CERT)(
             }
             await new Promise((resolve) => setTimeout(resolve, 25));
           }
-          await expect(crashing).rejects.toThrow();
+          // La règle NOMMÉE du refus : la terminaison administrateur du backend
+          // (pg_terminate_backend ⇒ 57P01 « terminating connection due to administrator
+          // command ») ou la fermeture de connexion qu'elle provoque côté client.
+          await expect(crashing).rejects.toThrow(
+            /57P01|terminating connection due to administrator command|closed the connection|Connection terminated/i,
+          );
           blockerGate.resolve();
           await blocker;
 
