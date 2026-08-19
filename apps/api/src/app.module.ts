@@ -24,6 +24,7 @@ import { ContractRenewalService } from './jobs/contract-renewal.service';
 import { DigestService } from './jobs/digest.service';
 import { DocumentArchiveService } from './jobs/document-archive.service';
 import { NotificationDeliveryService } from './jobs/notification-delivery.service';
+import { JarvisWorkItemDispatchService } from './jobs/jarvis-work-item-dispatch.service';
 import { ScheduledTenantDirectory } from './jobs/tenant-directory';
 import { VoiceTracePurgeService } from './jobs/voice-trace-purge.service';
 import { VoiceTraceRecorder, voiceTraceRecorderProvider } from './voice/voice-trace.recorder';
@@ -119,7 +120,7 @@ import {
     PaymentsController,
     CatalogueController,
     ChantiersController,
-  EquipmentsController,
+    EquipmentsController,
     MaintenanceContractsController,
     InterventionsController,
     PublicSignatureController,
@@ -142,6 +143,10 @@ import {
     DigestService,
     DocumentArchiveService,
     NotificationDeliveryService,
+    // Jarvis U1-c (§5.3) : worker de dispatch des work items. Ses autorités (annuaire, repository
+    // sous GUC, UoW d'admission) sont des tokens @Optional non liés dans cette tranche — tick
+    // no-op fail-closed audité tant que les callers U1-d ne fournissent pas les liaisons.
+    JarvisWorkItemDispatchService,
     ScheduledTenantDirectory,
     // Traçage du comportement vocal (bêta-test) : l'enregistreur est injecté dans
     // BackendService (chemin vocal réel) et la purge honore la rétention de 30 jours.

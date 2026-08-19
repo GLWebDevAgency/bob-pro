@@ -18,6 +18,7 @@ export * from './domain/billing/shared/discount';
 export * from './domain/action-catalog/types';
 export * from './domain/action-catalog/policy';
 export * from './domain/action-catalog/invariants';
+export * from './domain/action-catalog/catalog.data';
 
 // Domaine — entités
 export * from './domain/company/company';
@@ -90,6 +91,8 @@ export * from './domain/agent/jarvis-work-item';
 export * from './domain/agent/jarvis-run-reducer';
 export * from './domain/agent/definitions/single-business-action-v1';
 export * from './domain/agent/definitions/customer-contact-v1';
+export * from './domain/agent/jarvis-command-id';
+export * from './application/ports/jarvis-admission';
 export * from './domain/agent/agent-mission-event';
 export * from './domain/agent/mission-kind';
 
