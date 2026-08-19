@@ -18,7 +18,7 @@ import {
   deriveNextWakeAt,
   type JarvisRunEnvelope,
 } from '../jarvis-run';
-import { type JarvisReduceContext } from '../jarvis-run-reducer';
+import { type JarvisReduceContext, type JarvisTargetRevalidation } from '../jarvis-run-reducer';
 import {
   CUSTOMER_CONTACT_LIMITS,
   CUSTOMER_CONTACT_SENSITIVE_FIELDS,
@@ -85,9 +85,7 @@ function startCommand(random: () => number): CustomerContactCommand {
   };
 }
 
-function duplicateCandidates(
-  random: () => number,
-): readonly CustomerContactDuplicateCandidateV1[] {
+function duplicateCandidates(random: () => number): readonly CustomerContactDuplicateCandidateV1[] {
   const count = 1 + Math.floor(random() * 3);
   const candidates: CustomerContactDuplicateCandidateV1[] = [];
   for (let index = 0; index < count; index++) {
@@ -105,9 +103,14 @@ function stageProposalCommand(
   random: () => number,
   state: CustomerContactStateV1,
 ): CustomerContactCommand {
-  const targetRevision = state.intent.mode === 'update'
-    ? (random() < 0.85 ? state.intent.target.revision : state.intent.target.revision + 1)
-    : (random() < 0.9 ? null : 1);
+  const targetRevision =
+    state.intent.mode === 'update'
+      ? random() < 0.85
+        ? state.intent.target.revision
+        : state.intent.target.revision + 1
+      : random() < 0.9
+        ? null
+        : 1;
   return {
     type: 'stage_proposal',
     proposalId: prngUuid(random),
@@ -122,27 +125,33 @@ function confirmCommand(
   random: () => number,
   state: CustomerContactStateV1,
 ): CustomerContactCommand {
-  const confirmationId = state.confirmation?.confirmationId ?? prngUuid(random);
-  const proposalHash = state.proposal?.proposalHash ?? prngHex(random, 64);
-  if (state.intent.mode === 'create') {
-    return {
-      type: 'confirm',
-      confirmationId,
-      proposalHash,
-      revalidatedTargetRevision: null,
-      revalidatedSensitiveDigest: null,
-    };
-  }
-  const baseRevision = state.proposal?.targetRevision ?? state.intent.target.revision;
-  const baseDigest = state.proposal?.sensitiveDigest ?? prngHex(random, 64);
-  const stale = random() < 0.25; // §9.1 : cible mutée entre présentation et confirm
+  // Le wire d'un confirm ne porte QUE ces trois clés : la cible relue vit dans le contexte.
   return {
     type: 'confirm',
-    confirmationId,
-    proposalHash,
-    revalidatedTargetRevision: stale ? baseRevision + 1 : baseRevision,
-    revalidatedSensitiveDigest: stale && random() < 0.5 ? prngHex(random, 64) : baseDigest,
+    confirmationId: state.confirmation?.confirmationId ?? prngUuid(random),
+    proposalHash: state.proposal?.proposalHash ?? prngHex(random, 64),
   };
+}
+
+/** Digest sensible d'une cible « qui n'a pas bougé » — l'admission le dérive, ici on le simule. */
+const STABLE_TARGET_DIGEST = 'a1'.repeat(32);
+
+/**
+ * Ce que l'ADMISSION produirait pour ce state : `null` hors cible, sinon la cible relue sous
+ * verrou — la plupart du temps intacte, 25 % du temps mutée entre présentation et confirm (§9.1,
+ * l'artisan corrige sa fiche pendant que la proposition est à l'écran).
+ */
+function targetRevalidationFor(
+  random: () => number,
+  state: CustomerContactStateV1 | null,
+): JarvisTargetRevalidation | null {
+  if (state === null || state.intent.mode !== 'update') return null;
+  const sealedRevision = state.proposal?.targetRevision ?? state.intent.target.revision;
+  const sealedDigest = state.proposal?.targetSensitiveDigest ?? STABLE_TARGET_DIGEST;
+  if (random() >= 0.25) return { revision: sealedRevision, sensitiveDigest: sealedDigest };
+  return random() < 0.5
+    ? { revision: sealedRevision + 1, sensitiveDigest: sealedDigest }
+    : { revision: sealedRevision, sensitiveDigest: prngHex(random, 64) };
 }
 
 function receiptCommand(
@@ -150,9 +159,10 @@ function receiptCommand(
   state: CustomerContactStateV1,
 ): CustomerContactCommand {
   if (random() < 0.6) {
-    const customerId = state.intent.mode === 'update'
-      ? state.intent.target.customerId
-      : `customer-${prngHex(random, 8)}`;
+    const customerId =
+      state.intent.mode === 'update'
+        ? state.intent.target.customerId
+        : `customer-${prngHex(random, 8)}`;
     return {
       type: 'record_effect_receipt',
       effectId: state.effectId,
@@ -210,10 +220,10 @@ function generateCommand(
           type: 'record_customer_resolution',
           resolution: {
             kind: 'target_verified',
+            // Plus aucune révision au wire (§8) : la résolution DÉSIGNE la cible, la relecture
+            // d'admission la DATE. Le générateur ne peut donc plus fabriquer de dérive ici —
+            // elle se prouve désormais par `targetRevalidation`, où elle est réelle.
             customerId: state.intent.target.customerId,
-            revision: random() < 0.5
-              ? state.intent.target.revision
-              : state.intent.target.revision + 1,
           },
         };
       }
@@ -291,101 +301,109 @@ function generateCommand(
 
 describe('customer_contact@1 — property : contrat §3 sous séquences arbitraires', () => {
   // 4 800 réductions + round-trip de parse : sous les 5 s en local, pas sur le runner CI.
-  it('120 séquences × 40 commandes : ≤ 1 intent cumulé, union §5.1, round-trip du state', { timeout: 60_000 }, () => {
-    for (let seed = 1; seed <= 120; seed++) {
-      const random = mulberry32(seed);
-      const allocatedEffectId = prngUuid(random);
-      let run: CustomerContactRunEnvelope = {
-        kind: 'customer_contact',
-        runId: prngUuid(random),
-        companyId: 'company-1',
-        createdBy: 'user-1',
-        definitionVersion: 1,
-        status: 'active',
-        revision: 0,
-        stateVersion: 1,
-        state: null,
-        nextWakeAt: null,
-        terminalAt: null,
-      };
-      let clockMs = Date.parse(T0);
-      let transitionsWithIntents = 0;
-      const emittedEffectIds = new Set<string>();
-
-      for (let index = 0; index < 40; index++) {
-        clockMs += 1_000 + Math.floor(random() * 30_000);
-        if (random() < 0.05) clockMs += 6 * 60 * 60 * 1_000; // saut → expirations TTL
-        let command: CustomerContactCommand;
-        if (run.state === null) {
-          command = startCommand(random);
-        } else {
-          // Round-trip d'entrée : le state courant DOIT re-parser via le parse public.
-          const current = parseCustomerContactState(run.state);
-          if (current === null) {
-            throw new Error(`state courant invalide (seed ${seed}, pas ${index}) — invariant rompu`);
-          }
-          command = generateCommand(random, current);
-        }
-        const context: JarvisReduceContext = {
-          // commandId canonique : il devient proposalCommandId/consumedByCommandId re-parsés.
-          commandId: prngUuid(random),
-          expectedRevision: run.revision,
-          occurredAt: new Date(clockMs).toISOString(),
-          actingPrincipalId: 'principal-1',
-          allocatedEffectIds: [allocatedEffectId],
+  it(
+    '120 séquences × 40 commandes : ≤ 1 intent cumulé, union §5.1, round-trip du state',
+    { timeout: 60_000 },
+    () => {
+      for (let seed = 1; seed <= 120; seed++) {
+        const random = mulberry32(seed);
+        const allocatedEffectId = prngUuid(random);
+        let run: CustomerContactRunEnvelope = {
+          kind: 'customer_contact',
+          runId: prngUuid(random),
+          companyId: 'company-1',
+          createdBy: 'user-1',
+          definitionVersion: 1,
+          status: 'active',
+          revision: 0,
+          stateVersion: 1,
+          state: null,
+          nextWakeAt: null,
+          terminalAt: null,
         };
-        const result = CUSTOMER_CONTACT_V1.reduce(run, command, context);
-        if (result.ok) {
-          const { postimage, workItemIntents, wakes } = result.value;
-          // Union §5.1 fermée — le run ne devient JAMAIS `expired`.
-          expect(JARVIS_RUN_STATUSES).toContain(postimage.status);
-          expect(postimage.status).not.toBe('expired');
-          if (postimage.kind !== 'customer_contact') {
-            throw new Error('postimage inattendue : kind hors customer_contact');
-          }
-          // terminalAt non-null ⇔ statut terminal.
-          expect(postimage.terminalAt !== null).toBe(
-            JARVIS_RUN_TERMINAL_STATUSES.has(postimage.status),
-          );
-          // Round-trip de sortie : le state produit RE-PARSE via le parse public du module.
-          const reparsed = parseCustomerContactState(postimage.state);
-          if (reparsed === null) {
-            throw new Error(`round-trip rompu (seed ${seed}, pas ${index})`);
-          }
-          // nextWakeAt = index DÉRIVÉ des réveils du state — jamais une valeur propre.
-          expect(postimage.nextWakeAt).toBe(deriveNextWakeAt(reparsed.wakes));
-          expect(postimage.nextWakeAt).toBe(deriveNextWakeAt(wakes));
-          expect(jsonUtf8Fits(postimage.state, CUSTOMER_CONTACT_LIMITS.maxStateBytes)).toBe(true);
-          // Révision : +1 sur commit, inchangée sur no-op idempotent — jamais autre chose.
-          expect([run.revision, run.revision + 1]).toContain(postimage.revision);
-          expect(workItemIntents.length).toBeLessThanOrEqual(
-            CUSTOMER_CONTACT_LIMITS.maxOpenWorkItems,
-          );
-          if (workItemIntents.length > 0) {
-            transitionsWithIntents += 1;
-            for (const intent of workItemIntents) {
-              emittedEffectIds.add(intent.effectId);
-              expect(intent.effectId).toBe(allocatedEffectId);
-              expect(intent.authorizationSource).toEqual({
-                source: 'confirmation',
-                receiptId: context.commandId,
-              });
-            }
-          }
-          run = postimage;
-        } else if ('error' in result) {
-          // Erreurs racine fermées — jamais autre chose pour une définition enregistrée.
-          expect(['invalid_command', 'revision_conflict', 'run_terminal']).toContain(
-            result.error.code,
-          );
-        } else {
-          throw new Error('quarantaine inattendue pour une définition enregistrée');
-        }
-      }
+        let clockMs = Date.parse(T0);
+        let transitionsWithIntents = 0;
+        const emittedEffectIds = new Set<string>();
 
-      // ≤ 1 effet mutant par run, quel que soit l'ordre des commandes (§4.3, §5.4).
-      expect(transitionsWithIntents).toBeLessThanOrEqual(1);
-      expect(emittedEffectIds.size).toBeLessThanOrEqual(1);
-    }
-  });
+        for (let index = 0; index < 40; index++) {
+          clockMs += 1_000 + Math.floor(random() * 30_000);
+          if (random() < 0.05) clockMs += 6 * 60 * 60 * 1_000; // saut → expirations TTL
+          let command: CustomerContactCommand;
+          let current: CustomerContactStateV1 | null = null;
+          if (run.state === null) {
+            command = startCommand(random);
+          } else {
+            // Round-trip d'entrée : le state courant DOIT re-parser via le parse public.
+            current = parseCustomerContactState(run.state);
+            if (current === null) {
+              throw new Error(
+                `state courant invalide (seed ${seed}, pas ${index}) — invariant rompu`,
+              );
+            }
+            command = generateCommand(random, current);
+          }
+          const context: JarvisReduceContext = {
+            // commandId canonique : il devient proposalCommandId/consumedByCommandId re-parsés.
+            commandId: prngUuid(random),
+            expectedRevision: run.revision,
+            occurredAt: new Date(clockMs).toISOString(),
+            actingPrincipalId: 'principal-1',
+            allocatedEffectIds: [allocatedEffectId],
+            targetRevalidation: targetRevalidationFor(random, current),
+          };
+          const result = CUSTOMER_CONTACT_V1.reduce(run, command, context);
+          if (result.ok) {
+            const { postimage, workItemIntents, wakes } = result.value;
+            // Union §5.1 fermée — le run ne devient JAMAIS `expired`.
+            expect(JARVIS_RUN_STATUSES).toContain(postimage.status);
+            expect(postimage.status).not.toBe('expired');
+            if (postimage.kind !== 'customer_contact') {
+              throw new Error('postimage inattendue : kind hors customer_contact');
+            }
+            // terminalAt non-null ⇔ statut terminal.
+            expect(postimage.terminalAt !== null).toBe(
+              JARVIS_RUN_TERMINAL_STATUSES.has(postimage.status),
+            );
+            // Round-trip de sortie : le state produit RE-PARSE via le parse public du module.
+            const reparsed = parseCustomerContactState(postimage.state);
+            if (reparsed === null) {
+              throw new Error(`round-trip rompu (seed ${seed}, pas ${index})`);
+            }
+            // nextWakeAt = index DÉRIVÉ des réveils du state — jamais une valeur propre.
+            expect(postimage.nextWakeAt).toBe(deriveNextWakeAt(reparsed.wakes));
+            expect(postimage.nextWakeAt).toBe(deriveNextWakeAt(wakes));
+            expect(jsonUtf8Fits(postimage.state, CUSTOMER_CONTACT_LIMITS.maxStateBytes)).toBe(true);
+            // Révision : +1 sur commit, inchangée sur no-op idempotent — jamais autre chose.
+            expect([run.revision, run.revision + 1]).toContain(postimage.revision);
+            expect(workItemIntents.length).toBeLessThanOrEqual(
+              CUSTOMER_CONTACT_LIMITS.maxOpenWorkItems,
+            );
+            if (workItemIntents.length > 0) {
+              transitionsWithIntents += 1;
+              for (const intent of workItemIntents) {
+                emittedEffectIds.add(intent.effectId);
+                expect(intent.effectId).toBe(allocatedEffectId);
+                expect(intent.authorizationSource).toEqual({
+                  source: 'confirmation',
+                  receiptId: context.commandId,
+                });
+              }
+            }
+            run = postimage;
+          } else if ('error' in result) {
+            // Erreurs racine fermées — jamais autre chose pour une définition enregistrée.
+            expect(['invalid_command', 'revision_conflict', 'run_terminal']).toContain(
+              result.error.code,
+            );
+          } else {
+            throw new Error('quarantaine inattendue pour une définition enregistrée');
+          }
+        }
+
+        // ≤ 1 effet mutant par run, quel que soit l'ordre des commandes (§4.3, §5.4).
+        expect(transitionsWithIntents).toBeLessThanOrEqual(1);
+        expect(emittedEffectIds.size).toBeLessThanOrEqual(1);
+      }
+    },
+  );
 });

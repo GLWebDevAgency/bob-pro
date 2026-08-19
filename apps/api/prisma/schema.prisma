@@ -733,6 +733,12 @@ model Customer {
   /// Cas RATP CAP : plus jamais une facture sans n° d'engagement.
   requiresPurchaseOrder    Boolean?
   isSubcontractingBtp      Boolean               @default(false)
+  /// Jarvis §9.1 — compteur d'édition de la fiche (expand additif 20260819200000, patron
+  /// `CustomerContact.revision`). Incrémenté par le SEUL writer canonique (`UpdateCustomer` ->
+  /// `PrismaCustomerRepository.save`) ; c'est l'entier que la relecture d'admission compare au
+  /// sceau de la proposition pour détecter une mutation entre présentation et confirmation.
+  /// Bornes (1 .. int4 max) portées par customers_revision_range_check.
+  revision                 Int                   @default(1)
   chantiers                Chantier[]
   quotes                   Quote[]
   invoices                 Invoice[]

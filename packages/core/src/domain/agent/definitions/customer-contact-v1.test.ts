@@ -7,6 +7,7 @@ import {
   type JarvisReduceContext,
   type JarvisReduceResult,
   type JarvisRunTransition,
+  type JarvisTargetRevalidation,
 } from '../jarvis-run-reducer';
 import {
   CUSTOMER_CONTACT_ACTION_VERSION,
@@ -50,8 +51,18 @@ const EXISTING_CUSTOMER_ID = 'customer-7';
 
 const FIELDS_DIGEST = sha256Hex('fields-v1');
 const SENSITIVE_DIGEST = sha256Hex('sensitive-v1');
-const MUTATED_SENSITIVE_DIGEST = sha256Hex('sensitive-v2');
 const MATCH_DIGEST = sha256Hex('match-evidence');
+
+/**
+ * Ce que l'ADMISSION dérive de la fiche RELUE sous verrou (§7.1) — jamais une valeur du wire :
+ * le sceau posé à la mise en proposition, puis la même lecture au confirm.
+ */
+const TARGET_SENSITIVE_DIGEST = sha256Hex('target-sensitive-v1');
+const MUTATED_TARGET_SENSITIVE_DIGEST = sha256Hex('target-sensitive-v2');
+const TARGET_AT_REVISION_3 = Object.freeze({
+  revision: 3,
+  sensitiveDigest: TARGET_SENSITIVE_DIGEST,
+});
 
 const T0 = '2026-08-18T10:00:00.000Z';
 function at(offsetMs: number): string {
@@ -74,6 +85,24 @@ function ctx(
     occurredAt: over.occurredAt ?? T0,
     actingPrincipalId: over.actingPrincipalId ?? 'principal-1',
     allocatedEffectIds: over.allocatedEffectIds ?? [],
+    // L'admission relit TOUJOURS la cible d'un run de modification, dans SA transaction : le
+    // contexte par défaut simule cette relecture « la fiche n'a pas bougé ». Un test qui prouve
+    // une dérive — ou une cible devenue illisible — la pose explicitement.
+    targetRevalidation:
+      over.targetRevalidation === undefined ? unmutatedTarget(run) : over.targetRevalidation,
+  };
+}
+
+/**
+ * Relecture d'une cible intacte : la révision vérifiée, et le digest déjà scellé s'il existe.
+ * Un state CORROMPU (suites de garde-fous) n'a pas de cible lisible : aucune relecture.
+ */
+function unmutatedTarget(run: CustomerContactRunEnvelope): JarvisTargetRevalidation | null {
+  const state = parseCustomerContactState(run.state);
+  if (state === null || state.intent.mode !== 'update') return null;
+  return {
+    revision: state.intent.target.revision,
+    sensitiveDigest: state.proposal?.targetSensitiveDigest ?? TARGET_SENSITIVE_DIGEST,
   };
 }
 
@@ -132,7 +161,7 @@ function updateAtPreparing(): CustomerContactRunEnvelope {
   const started = step(seedRun(), START_UPDATE, { allocatedEffectIds: [EFFECT_ID] }).run;
   return step(started, {
     type: 'record_customer_resolution',
-    resolution: { kind: 'target_verified', customerId: TARGET_CUSTOMER_ID, revision: 3 },
+    resolution: { kind: 'target_verified', customerId: TARGET_CUSTOMER_ID },
   }).run;
 }
 
@@ -147,7 +176,8 @@ const STAGE_UPDATE_PROPOSAL = {
 
 function updateAtPresented(): CustomerContactRunEnvelope {
   let run = updateAtPreparing();
-  run = step(run, STAGE_UPDATE_PROPOSAL).run;
+  // Le sceau de cible naît de la relecture d'admission — pas du contenu de la commande.
+  run = step(run, STAGE_UPDATE_PROPOSAL, { targetRevalidation: TARGET_AT_REVISION_3 }).run;
   run = step(run, {
     type: 'record_presentation_ack',
     confirmationId: CONFIRMATION_ID,
@@ -161,8 +191,6 @@ function confirmUpdateCommand(run: CustomerContactRunEnvelope): Record<string, u
     type: 'confirm',
     confirmationId: CONFIRMATION_ID,
     proposalHash: stateOf(run).proposal!.proposalHash,
-    revalidatedTargetRevision: 3,
-    revalidatedSensitiveDigest: SENSITIVE_DIGEST,
   };
 }
 
@@ -171,7 +199,10 @@ function updateAtCompleted(): {
   receiptCommand: Record<string, unknown>;
 } {
   let run = updateAtPresented();
-  run = step(run, confirmUpdateCommand(run), { occurredAt: at(20_000) }).run;
+  run = step(run, confirmUpdateCommand(run), {
+    occurredAt: at(20_000),
+    targetRevalidation: TARGET_AT_REVISION_3,
+  }).run;
   run = step(run, {
     type: 'record_effect_submitted',
     effectId: EFFECT_ID,
@@ -386,11 +417,99 @@ describe('customer_contact@1 — cible réelle en update', () => {
     expectInvalid(
       CUSTOMER_CONTACT_V1.reduce(
         started,
-        { type: 'record_customer_resolution', resolution: { kind: 'target_verified', customerId: 'customer-999', revision: 3 } },
+        { type: 'record_customer_resolution', resolution: { kind: 'target_verified', customerId: 'customer-999' } },
         ctx(started),
       ),
       'target_mismatch',
     );
+  });
+
+  it("scelle la révision RELUE, jamais celle que l'émetteur croit connaître (§8)", () => {
+    // L'ouverture depuis l'écran ne peut PAS connaître la révision de la fiche : elle ne l'a pas
+    // lue sous verrou. Le seul émetteur possible est donc muet là-dessus, et le domaine prend la
+    // relecture d'admission — ici une fiche déjà modifiée sept fois. Si la commande faisait foi,
+    // toute fiche de révision ≠ celle du seed condamnerait la proposition suivante en
+    // `target_revision_stale`, sans qu'aucune trace ne dise pourquoi.
+    const started = step(seedRun(), START_UPDATE, { allocatedEffectIds: [EFFECT_ID] }).run;
+    const resolved = step(
+      started,
+      {
+        type: 'record_customer_resolution',
+        resolution: { kind: 'target_verified', customerId: TARGET_CUSTOMER_ID },
+      },
+      { targetRevalidation: { revision: 7, sensitiveDigest: TARGET_SENSITIVE_DIGEST } },
+    );
+    const state = stateOf(resolved.run);
+    expect(state.intent.mode).toBe('update');
+    expect(state.intent.mode === 'update' ? state.intent.target.revision : null).toBe(7);
+    // Et la proposition qui suit doit sceller CETTE révision-là, pas celle du démarrage.
+    expectInvalid(
+      CUSTOMER_CONTACT_V1.reduce(
+        resolved.run,
+        { ...STAGE_UPDATE_PROPOSAL, targetRevision: 3 },
+        ctx(resolved.run, {
+          targetRevalidation: { revision: 7, sensitiveDigest: TARGET_SENSITIVE_DIGEST },
+        }),
+      ),
+      'target_revision_stale',
+    );
+  });
+
+  it('refuse la résolution quand la cible est illisible : jamais une révision devinée', () => {
+    // Fiche disparue, policy refusée, tenant incohérent : l'admission ne rend AUCUNE relecture.
+    // Sceller malgré tout reviendrait à inventer l'état d'une entité — le refus est nommé.
+    const started = step(seedRun(), START_UPDATE, { allocatedEffectIds: [EFFECT_ID] }).run;
+    expectInvalid(
+      CUSTOMER_CONTACT_V1.reduce(
+        started,
+        {
+          type: 'record_customer_resolution',
+          resolution: { kind: 'target_verified', customerId: TARGET_CUSTOMER_ID },
+        },
+        ctx(started, { targetRevalidation: null }),
+      ),
+      'target_revalidation_missing',
+    );
+  });
+
+  it("lit encore un état N-1 (proposition sans sceau de cible) : annulable, jamais confirmable", () => {
+    // COMPATIBILITÉ N-1. `targetSensitiveDigest` est né avec U1-e. Un run déjà en base au moment
+    // du déploiement porte une proposition SANS cette clé : si le parseur l'exigeait, le state
+    // deviendrait illisible et le run IRRÉDUCTIBLE — `state_shape` sur toute commande, y compris
+    // `cancel_run`. L'artisan garderait à vie un run mort tenant son premier plan.
+    const presented = updateAtPresented();
+    const state = stateOf(presented);
+    const proposal = state.proposal;
+    if (proposal === null) throw new Error('proposition attendue');
+    const { targetSensitiveDigest: _retire, ...proposalN1 } = proposal as unknown as Record<
+      string,
+      unknown
+    > & { targetSensitiveDigest: unknown };
+    const runN1: CustomerContactRunEnvelope = {
+      ...presented,
+      state: { ...(presented.state as Record<string, unknown>), proposal: proposalN1 },
+    };
+
+    // (a) LISIBLE : le run se réduit encore, donc l'artisan peut s'en défaire.
+    const cancelled = CUSTOMER_CONTACT_V1.reduce(
+      runN1,
+      { type: 'cancel_run', reason: 'user_cancelled' },
+      ctx(runN1, { occurredAt: at(20_000) }),
+    );
+    expect(cancelled.ok).toBe(true);
+
+    // (b) PAS CONFIRMABLE : sans sceau, la garde §9.1 n'a rien à comparer — la proposition est
+    // INVALIDÉE (elle sera refaite), jamais consommée sur une cible qu'on n'a pas vérifiée.
+    const confirmed = CUSTOMER_CONTACT_V1.reduce(
+      runN1,
+      confirmUpdateCommand(runN1),
+      ctx(runN1, { occurredAt: at(20_000), targetRevalidation: TARGET_AT_REVISION_3 }),
+    );
+    expect(confirmed.ok).toBe(true);
+    if (!confirmed.ok) throw new Error('transition attendue');
+    const after = stateOf(confirmed.value.postimage as CustomerContactRunEnvelope);
+    expect(after.confirmation?.status).toBe('invalidated');
+    expect(confirmed.value.workItemIntents).toEqual([]);
   });
 
   it('refuse un outcome de résolution incohérent avec le mode', () => {
@@ -403,7 +522,7 @@ describe('customer_contact@1 — cible réelle en update', () => {
     expectInvalid(
       CUSTOMER_CONTACT_V1.reduce(
         startedCreateRun,
-        { type: 'record_customer_resolution', resolution: { kind: 'target_verified', customerId: TARGET_CUSTOMER_ID, revision: 3 } },
+        { type: 'record_customer_resolution', resolution: { kind: 'target_verified', customerId: TARGET_CUSTOMER_ID } },
         ctx(startedCreateRun),
       ),
       'resolution_mode_mismatch',
@@ -488,8 +607,6 @@ describe('customer_contact@1 — cycle §7.1', () => {
       type: 'confirm',
       confirmationId: CONFIRMATION_ID,
       proposalHash: stateOf(run).proposal!.proposalHash,
-      revalidatedTargetRevision: null,
-      revalidatedSensitiveDigest: null,
     });
     expect(transition.workItemIntents[0]!.actionId).toBe(CUSTOMER_CONTACT_CREATE_ACTION_ID);
     expect(transition.workItemIntents[0]!.targetDigest).toBeNull();
@@ -584,17 +701,127 @@ describe('customer_contact@1 — invalidation stale (§9.1)', () => {
 
   it('cible relue divergente AU confirm (adresse/destinataire mutés) => invalidated, jamais consumed', () => {
     const presented = updateAtPresented();
-    const { run, transition } = step(presented, {
-      ...confirmUpdateCommand(presented),
-      revalidatedTargetRevision: 5,
-      revalidatedSensitiveDigest: MUTATED_SENSITIVE_DIGEST,
-    }, { occurredAt: at(20_000) });
+    // La commande de confirm est INCHANGÉE (trois clés) : seule la RELECTURE d'admission diverge.
+    const { run, transition } = step(presented, confirmUpdateCommand(presented), {
+      occurredAt: at(20_000),
+      targetRevalidation: { revision: 5, sensitiveDigest: MUTATED_TARGET_SENSITIVE_DIGEST },
+    });
     const state = stateOf(run);
     expect(state.confirmation!.status).toBe('invalidated');
     expect(state.phase).toBe('preparing_proposal');
     expect(state.intent).toEqual({ mode: 'update', target: { customerId: TARGET_CUSTOMER_ID, revision: 5 } });
     expect(transition.workItemIntents).toHaveLength(0);
     expect(transition.event.type).toBe('cc_proposal_invalidated');
+  });
+
+  it('les DEUX bras de la garde mordent seuls : révision bougée seule, digest bougé seul', () => {
+    const presented = updateAtPresented();
+    // Bras 1 — la révision a bougé, le digest sensible non (mutation d'un champ non sensible).
+    const byRevision = step(presented, confirmUpdateCommand(presented), {
+      occurredAt: at(20_000),
+      targetRevalidation: { revision: 4, sensitiveDigest: TARGET_SENSITIVE_DIGEST },
+    });
+    expect(stateOf(byRevision.run).confirmation!.status).toBe('invalidated');
+    expect(stateOf(byRevision.run).intent).toEqual({
+      mode: 'update',
+      target: { customerId: TARGET_CUSTOMER_ID, revision: 4 },
+    });
+    // Bras 2 — la révision est intacte, le digest sensible a bougé : un writer qui n'incrémente
+    // pas la révision ne peut pas passer sous le radar de la garde §9.1.
+    const byDigest = step(presented, confirmUpdateCommand(presented), {
+      occurredAt: at(20_000),
+      targetRevalidation: { revision: 3, sensitiveDigest: MUTATED_TARGET_SENSITIVE_DIGEST },
+    });
+    expect(stateOf(byDigest.run).confirmation!.status).toBe('invalidated');
+    expect(byDigest.transition.workItemIntents).toHaveLength(0);
+  });
+
+  it('cible NON relue par l’admission : refus nommé, jamais un confirm à l’aveugle', () => {
+    const presented = updateAtPresented();
+    expectInvalid(
+      CUSTOMER_CONTACT_V1.reduce(
+        presented,
+        confirmUpdateCommand(presented),
+        ctx(presented, { occurredAt: at(20_000), targetRevalidation: null }),
+      ),
+      'target_revalidation_missing',
+    );
+    // La proposition reste INTACTE : un refus n'est pas une invalidation.
+    expect(stateOf(presented).confirmation!.status).toBe('presented');
+  });
+
+  it('mise en proposition sans relecture, ou avec une cible qui a déjà bougé : refus nommés', () => {
+    const preparing = updateAtPreparing();
+    expectInvalid(
+      CUSTOMER_CONTACT_V1.reduce(
+        preparing,
+        STAGE_UPDATE_PROPOSAL,
+        ctx(preparing, { targetRevalidation: null }),
+      ),
+      'target_revalidation_missing',
+    );
+    expectInvalid(
+      CUSTOMER_CONTACT_V1.reduce(
+        preparing,
+        STAGE_UPDATE_PROPOSAL,
+        ctx(preparing, {
+          targetRevalidation: { revision: 4, sensitiveDigest: TARGET_SENSITIVE_DIGEST },
+        }),
+      ),
+      'target_revision_stale',
+    );
+  });
+
+  it('création : une cible relue n’a aucun sens — refus nommé aux deux étapes', () => {
+    let run = startedCreate();
+    run = step(run, {
+      type: 'record_customer_resolution',
+      resolution: { kind: 'no_duplicates' },
+    }).run;
+    const stageCreate = { ...STAGE_UPDATE_PROPOSAL, targetRevision: null };
+    expectInvalid(
+      CUSTOMER_CONTACT_V1.reduce(
+        run,
+        stageCreate,
+        ctx(run, { targetRevalidation: TARGET_AT_REVISION_3 }),
+      ),
+      'target_revalidation_forbidden',
+    );
+    run = step(run, stageCreate).run;
+    run = step(run, {
+      type: 'record_presentation_ack',
+      confirmationId: CONFIRMATION_ID,
+      ack: 'screen_ack',
+    }).run;
+    expect(stateOf(run).proposal!.targetSensitiveDigest).toBeNull();
+    expectInvalid(
+      CUSTOMER_CONTACT_V1.reduce(
+        run,
+        {
+          type: 'confirm',
+          confirmationId: CONFIRMATION_ID,
+          proposalHash: stateOf(run).proposal!.proposalHash,
+        },
+        ctx(run, { targetRevalidation: TARGET_AT_REVISION_3 }),
+      ),
+      'target_revalidation_forbidden',
+    );
+  });
+
+  it('le confirm REFUSE de porter la cible relue : cinq clés = refus de forme', () => {
+    const presented = updateAtPresented();
+    expectInvalid(
+      CUSTOMER_CONTACT_V1.reduce(
+        presented,
+        {
+          ...confirmUpdateCommand(presented),
+          revalidatedTargetRevision: 3,
+          revalidatedSensitiveDigest: TARGET_SENSITIVE_DIGEST,
+        },
+        ctx(presented, { occurredAt: at(20_000) }),
+      ),
+      'command_shape',
+    );
   });
 
   it("l'invalidation n'est jamais rétroactive : après consommation, la mutation est refusée", () => {
@@ -1120,8 +1347,6 @@ describe('customer_contact@1 — statuts §5.1 et registre racine', () => {
       type: 'confirm',
       confirmationId: uuid(0xf2),
       proposalHash: stateOf(run).proposal!.proposalHash,
-      revalidatedTargetRevision: null,
-      revalidatedSensitiveDigest: null,
     }).run;
     observed.push(run.status);
     run = step(run, { type: 'record_effect_submitted', effectId: EFFECT_ID, submittedJobRef: null }).run;

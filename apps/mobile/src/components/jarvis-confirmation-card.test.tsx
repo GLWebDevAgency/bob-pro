@@ -358,7 +358,7 @@ describe('JarvisConfirmationCard', () => {
     expect(coordinator.acknowledgePresentation).toHaveBeenCalledTimes(1);
   });
 
-  it('n’accuse jamais un écran qui ne montre pas la proposition', async () => {
+  it('n’accuse jamais un écran qui ne montre pas la proposition, mais laisse toujours abandonner', async () => {
     const coordinator = stubCoordinator();
     const { renderer } = await render(
       { run: run(), presentation: presentation({ phase: 'preparing_proposal' }) },
@@ -366,8 +366,13 @@ describe('JarvisConfirmationCard', () => {
     );
 
     expect(coordinator.acknowledgePresentation).not.toHaveBeenCalled();
-    expect(renderer.root.findAllByType(HOST_BUTTON)).toHaveLength(0);
     expect(texts(renderer)).toContain('Bob prépare la proposition…');
+    // UN SEUL geste ici, et c'est l'abandon : ni confirmer (il n'y a rien à confirmer) ni
+    // écarter. Sans lui, un run PARKÉ — celui dont la résolution de cible n'a pas abouti —
+    // tiendrait le premier plan de l'artisan sans aucun recours à l'écran.
+    const boutons = renderer.root.findAllByType(HOST_BUTTON);
+    expect(boutons).toHaveLength(1);
+    expect(boutons[0]?.props.title).toBe('Annuler');
   });
 
   it('montre les détails critiques de façon vocalisable et confirme le geste', async () => {

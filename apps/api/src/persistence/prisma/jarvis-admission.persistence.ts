@@ -8,6 +8,10 @@
  * `guard_agent_mission_event_append_v3` : CAS/INSERT du run D'ABORD
  * (`updatedAt = occurredAt`), PUIS append de l'événement (`sequence = revisionAfter`),
  * puis work items. Toute erreur rollbacke l'ensemble.
+ *
+ * U1-e §2 : c'est aussi ICI, et nulle part ailleurs, que la CIBLE d'un run de modification est
+ * relue (`FOR UPDATE`, même transaction) et son digest sensible dérivé — le client ne peut pas
+ * se certifier lui-même, et une lecture hors transaction rouvrirait une fenêtre TOCTOU.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -16,7 +20,12 @@ import {
   ACTION_CATALOG_V0,
   AGENT_MISSION_RETENTION_MS,
   CUSTOMER_CONTACT_V1,
+  JARVIS_RUN_LEASE_RELEASING_STATUSES,
+  JARVIS_RUN_STATUSES,
+  JARVIS_RUN_TERMINAL_STATUSES,
   SINGLE_BUSINESS_ACTION_V1,
+  computeCustomerContactTargetSensitiveDigest,
+  parseCustomerContactState,
   projectQuoteMissionJarvisStatus,
   reduceJarvisRun,
   resolveJarvisDefinition,
@@ -28,6 +37,7 @@ import {
   type JarvisRunEnvelope,
   type JarvisRunTransition,
   type JarvisSystemAdmissionEnvelope,
+  type JarvisTargetRevalidation,
   type JarvisUserAdmissionEnvelope,
 } from '@bob/core';
 import { Prisma } from '@prisma/client';
@@ -245,6 +255,64 @@ async function findJarvisRunForUpdate(
     FOR UPDATE
   `;
   return rows[0] ?? null;
+}
+
+/** Colonnes de `customers` qui COMPOSENT les champs sensibles §9.1 — rien d'autre ne sort. */
+interface JarvisCustomerTargetRow {
+  readonly revision: number;
+  readonly tvaIntracom: string | null;
+  readonly billingChannelType: string | null;
+  readonly addrLine1: string | null;
+  readonly addrZip: string | null;
+  readonly addrCity: string | null;
+  readonly contactName: string | null;
+  readonly email: string | null;
+}
+
+/**
+ * RELECTURE AUTORITAIRE DE LA CIBLE (§7.1, U1-e §2) — la seule source admissible de la révision
+ * et du digest sensible revalidés :
+ *  · DANS la transaction d'admission, APRÈS le verrou de la ligne de run et le verrou société :
+ *    l'ordre des verrous reste global (société -> run -> cible), donc sans interblocage avec
+ *    `BackendService.updateCustomer`, qui prend la société puis écrit la fiche ;
+ *  · `FOR UPDATE` sur la ligne cible : entre cette lecture et le COMMIT, plus personne ne mute
+ *    la fiche — la fenêtre TOCTOU d'une lecture faite dans le controller n'existe pas ici ;
+ *  · dérivation par une fonction PURE du core, jamais un digest recopié d'un scellé existant
+ *    (ce serait une auto-certification toujours vraie).
+ * `null` = pas de cible (création, seed, kind hors fiche client) OU cible illisible : la
+ * définition refuse alors la modification, elle ne la devine pas.
+ */
+async function readJarvisTargetRevalidation(
+  tx: Prisma.TransactionClient,
+  owner: JarvisAdmissionOwner,
+  run: JarvisRunEnvelope,
+): Promise<JarvisTargetRevalidation | null> {
+  if (run.kind !== 'customer_contact') return null;
+  const state = parseCustomerContactState(run.state);
+  if (state === null || state.intent.mode !== 'update') return null;
+  const rows = await tx.$queryRaw<JarvisCustomerTargetRow[]>`
+    SELECT "revision", "tvaIntracom", "billingChannelType", "addrLine1", "addrZip", "addrCity",
+           "contactName", "email"
+    FROM public.customers
+    WHERE "id" = ${state.intent.target.customerId}
+      AND "companyId" = ${owner.companyId}
+    LIMIT 1
+    FOR UPDATE
+  `;
+  const row = rows[0];
+  if (row === undefined) return null;
+  return Object.freeze({
+    revision: row.revision,
+    sensitiveDigest: computeCustomerContactTargetSensitiveDigest({
+      vatNumber: row.tvaIntracom,
+      billingChannel: row.billingChannelType,
+      addressLine: row.addrLine1,
+      postalCode: row.addrZip,
+      city: row.addrCity,
+      recipientName: row.contactName,
+      email: row.email,
+    }),
+  });
 }
 
 /** Écritures dans l'ordre du garde SQL : run PUIS événement PUIS work items. */
@@ -557,6 +625,11 @@ async function admitCore(
   const allocatedEffectIds = Array.from({ length: definition?.limits.maxOpenWorkItems ?? 1 }, () =>
     randomUUID(),
   );
+  // §7.1 : la cible d'un run de modification est relue ICI, sous verrou, pour TOUTE commande de
+  // ce run — la définition décide seule de ce qu'elle en fait. L'admission ne renifle jamais le
+  // type de commande pour choisir de verrouiller ou non : le verrou est uniforme, donc l'ordre
+  // des verrous l'est aussi.
+  const targetRevalidation = await readJarvisTargetRevalidation(tx, envelope, run);
   const reduced = reduceJarvisRun(
     run,
     {
@@ -570,6 +643,7 @@ async function admitCore(
       occurredAt: now,
       actingPrincipalId: envelope.ownerUserId,
       allocatedEffectIds,
+      targetRevalidation,
     },
   );
   if (!reduced.ok) {
@@ -692,6 +766,70 @@ export async function runJarvisSystemAdmissionInTransaction(
     },
     deps,
   );
+}
+
+/**
+ * Statuts qui TIENNENT le premier plan (§5.1) — DÉRIVÉS des constantes du domaine, jamais
+ * recopiés : c'est exactement le prédicat de l'index partiel `agent_missions_one_active_owner_key`
+ * (migration 20260819000200), donc au plus UNE ligne de l'owner peut les porter.
+ */
+const JARVIS_FOREGROUND_HOLDING_STATUSES: readonly string[] = JARVIS_RUN_STATUSES.filter(
+  (status) =>
+    !JARVIS_RUN_TERMINAL_STATUSES.has(status) &&
+    !JARVIS_RUN_LEASE_RELEASING_STATUSES.has(status) &&
+    status !== 'quarantined',
+);
+
+/**
+ * Statuts qu'un run COURANT ne peut pas porter : les terminaux §5.1 et le gel §5.5. Dérivés eux
+ * aussi — un statut terminal ajouté au domaine sort de l'annuaire sans qu'on y touche.
+ */
+const JARVIS_TERMINAL_OR_FROZEN_STATUSES: readonly string[] = [
+  ...JARVIS_RUN_TERMINAL_STATUSES,
+  'quarantined',
+];
+
+/**
+ * ANNUAIRE DU RUN COURANT (U1-e §1) — sans lui, un appareil ne connaît AUCUN `runId` : la voix
+ * ne renvoie que la parole, et la carte de confirmation resterait invisible après la mort de la
+ * session vocale. Owner-scopé, lecture seule, aucun verrou (il vit dans la transaction stateless
+ * `readJarvisStateless`, en lecture RepeatableRead).
+ *
+ * Ce qu'un run COURANT est, ici et dans le controller :
+ *  · non terminal — `terminalAt IS NULL` ET statut hors terminaux : les deux, parce que la
+ *    colonne et le statut sont posés par la même transition et qu'une seule des deux suffirait
+ *    à rendre un run fini « reprenable » si l'autre dérivait ;
+ *  · pas gelé — `quarantined` (§5.5) refuse TOUTE commande : le proposer à l'écran offrirait une
+ *    carte que rien ne peut faire avancer. Il ne tient pas non plus le premier plan (backstop).
+ * La branche devis (`quote_creation`) garde ses routes legacy §17.1 : elle n'est jamais énumérée
+ * ici — le filtre de `kind` est celui de `readJarvisRunById`, mot pour mot.
+ *
+ * DÉTERMINISME de l'ordre : le run qui tient le premier plan passe devant (l'index partiel en
+ * garantit l'unicité), puis le plus récemment muté, puis l'identifiant — deux lectures du même
+ * état rendent donc toujours le même run, jamais un choix au hasard du plan d'exécution.
+ */
+export async function readJarvisCurrentRun(
+  tx: Prisma.TransactionClient,
+  owner: JarvisAdmissionOwner,
+): Promise<JarvisRunEnvelope | null> {
+  const rows = await tx.$queryRaw<JarvisRunRow[]>`
+    SELECT ${JARVIS_RUN_COLUMNS}
+    FROM public.agent_missions
+    WHERE "companyId" = ${owner.companyId}
+      AND "ownerUserId" = ${owner.ownerUserId}
+      AND "kind" IN ('single_business_action', 'customer_contact')
+      AND "terminalAt" IS NULL
+      AND "status" NOT IN (${Prisma.join(JARVIS_TERMINAL_OR_FROZEN_STATUSES)})
+    ORDER BY
+      CASE
+        WHEN "status" IN (${Prisma.join(JARVIS_FOREGROUND_HOLDING_STATUSES)}) THEN 0
+        ELSE 1
+      END,
+      "updatedAt" DESC,
+      "id" ASC
+    LIMIT 1
+  `;
+  return rows[0] === undefined ? null : envelopeFromRow(rows[0]);
 }
 
 export async function readJarvisRunById(

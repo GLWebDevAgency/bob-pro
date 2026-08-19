@@ -149,6 +149,14 @@ export interface JarvisConfirmationCardProps {
   readonly ports: JarvisRunPorts;
   /** Relecture autoritative (GET run) après tout geste abouti — l'écran ne devine jamais. */
   readonly onAuthoritativeRefresh: () => void;
+  /**
+   * L'hôte est-il RÉELLEMENT devant les yeux de l'artisan ? §7.1 — `record_presentation_ack`
+   * atteste que la proposition A ÉTÉ AFFICHÉE, et c'est lui qui ouvre le droit de confirmer.
+   * Une carte montée dans un onglet en arrière-plan est montée, pas VUE : l'accusé y serait un
+   * mensonge, et un mensonge qui déverrouille une écriture. Par défaut `true` — un hôte qui ne
+   * sait pas répondre affiche la carte au premier plan.
+   */
+  readonly visible?: boolean;
 }
 
 export function JarvisConfirmationCard({
@@ -156,6 +164,7 @@ export function JarvisConfirmationCard({
   coordinator,
   ports,
   onAuthoritativeRefresh,
+  visible = true,
 }: JarvisConfirmationCardProps) {
   const { colors, semantic } = useTheme();
   const [busy, setBusy] = useState<JarvisRunGesture | null>(null);
@@ -222,8 +231,10 @@ export function JarvisConfirmationCard({
   };
 
   // Clé du rendu RÉEL : elle ne change que si une AUTRE confirmation est réellement affichée.
+  // `visible` entre dans la CONDITION, pas dans la clé : quand l'hôte revient au premier plan,
+  // la même clé redevient due et l'accusé part — jamais un second accusé pour la même proposition.
   const ackKey =
-    mode.kind === 'proposal' && mode.ackable && confirmation !== null
+    visible && mode.kind === 'proposal' && mode.ackable && confirmation !== null
       ? `${frame.run.runId}:${frame.run.revision}:${confirmation.confirmationId}`
       : null;
 
@@ -254,6 +265,12 @@ export function JarvisConfirmationCard({
   }, [ackKey]);
 
   if (mode.kind === 'notice') {
+    // ABANDON TOUJOURS POSSIBLE TANT QUE RIEN N'EST ENGAGÉ. `preparing` couvre les phases où Bob
+    // n'a encore rien écrit — dont un run PARKÉ (résolution de cible non aboutie), qui tient
+    // pourtant le premier plan de l'artisan. Sans ce geste il n'aurait AUCUN recours à l'écran :
+    // ni confirmer (pas de proposition), ni écarter, ni reprendre. On ne l'offre pas sur
+    // `recording`/`cancelling` : l'écriture est partie, dire « annulé » y serait un mensonge.
+    const abandonnable = mode.reason === 'preparing';
     return (
       <Card padding={space[7]}>
         <Text accessibilityRole="header" style={[font('cardTitle'), { color: colors.ink900 }]}>
@@ -265,6 +282,20 @@ export function JarvisConfirmationCard({
         >
           {NOTICES[mode.reason]}
         </Text>
+        {abandonnable ? (
+          <View style={{ marginTop: space[5] }}>
+            <Button
+              title="Annuler"
+              variant="secondary"
+              loading={busy === 'cancel'}
+              disabled={busy !== null}
+              accessibilityLabel="Annuler. Bob abandonne cette demande, rien ne sera enregistré."
+              onPress={() => {
+                void run('cancel', () => coordinator.cancel(frame, ports));
+              }}
+            />
+          </View>
+        ) : null}
       </Card>
     );
   }

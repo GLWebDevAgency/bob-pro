@@ -17,6 +17,8 @@ import {
   JARVIS_PROPOSAL_PAYLOAD_PURGE_LIMIT_PER_OWNER,
   JARVIS_PROPOSAL_PAYLOAD_PURGE_MAX_OWNERS_PER_TENANT,
   JarvisProposalPayloadPurgeService,
+  asJarvisProposalPayloadRetention,
+  asJarvisProposalPayloadRetentionOwners,
   type JarvisProposalPayloadRetentionOwnersPort,
 } from './jarvis-proposal-payload-purge.service';
 
@@ -266,6 +268,62 @@ describe('JarvisProposalPayloadPurgeService — le PII périmé disparaît vraim
 
     expect([first.skipped, second.skipped]).toContain('running');
     expect(h.store.calls).toHaveLength(1);
+  });
+
+  /**
+   * U1-e §4 — LA LIAISON. Le magasin durable porte désormais `listRetentionOwners` (autorité
+   * SECURITY DEFINER `list_jarvis_payload_retention_owners_v1`). Ce qui suit prouve que le
+   * câblage est STRUCTUREL et fail-closed : reconnu quand la méthode existe, `null` sinon, et
+   * qu'une fois reconnu le tick cesse vraiment de rendre `owner_directory_absent`.
+   */
+  it('reconnaît structurellement l’annuaire du magasin durable, et rien d’autre', () => {
+    const withDirectory = {
+      purgeExpired: async () => 0,
+      listRetentionOwners: async () => [],
+    } as unknown as Parameters<typeof asJarvisProposalPayloadRetentionOwners>[0];
+    const withoutDirectory = {
+      purgeExpired: async () => 0,
+    } as unknown as Parameters<typeof asJarvisProposalPayloadRetentionOwners>[0];
+
+    expect(asJarvisProposalPayloadRetentionOwners(withDirectory)).toBe(withDirectory);
+    // Fail-closed : un magasin qui sait purger mais pas énumérer n'improvise pas un annuaire.
+    expect(asJarvisProposalPayloadRetentionOwners(withoutDirectory)).toBeNull();
+    expect(asJarvisProposalPayloadRetentionOwners(null)).toBeNull();
+    // Les deux reconnaissances sont INDÉPENDANTES : l'une ne vaut jamais l'autre.
+    expect(asJarvisProposalPayloadRetention(withoutDirectory)).toBe(withoutDirectory);
+  });
+
+  it('annuaire lié ⇒ le tick n’est plus `owner_directory_absent` et le PII échu part', async () => {
+    // Le MÊME objet porte les deux capacités, comme l'adapter Prisma réel : une seule connexion,
+    // une purge owner-scopée et une énumération sous autorité.
+    const store = new FakePayloadStore([row({ ownerUserId: 'usr_1' })]);
+    const durable = Object.assign(store, {
+      listRetentionOwners: async (companyId: string, limit: number) => {
+        expect(companyId).toBe('co_1');
+        expect(limit).toBe(JARVIS_PROPOSAL_PAYLOAD_PURGE_MAX_OWNERS_PER_TENANT);
+        return ['usr_1'];
+      },
+    });
+    const logger = new AppLogger();
+    const audit = vi.spyOn(logger, 'audit').mockImplementation(() => undefined);
+    const service = new JarvisProposalPayloadPurgeService(
+      persistenceWith(durable),
+      tenantDirectory(['co_1']),
+      logger,
+      asJarvisProposalPayloadRetentionOwners(
+        durable as unknown as Parameters<typeof asJarvisProposalPayloadRetentionOwners>[0],
+      ),
+      () => NOW,
+    );
+
+    const summary = await service.sweep();
+
+    expect(summary).toEqual({ skipped: null, tenants: 1, owners: 1, purged: 1, failures: 0 });
+    expect(store.rows).toEqual([]);
+    // Plus AUCUN audit de dépendance absente : la rétention n'est plus une promesse creuse.
+    expect(audit.mock.calls.map((call) => call[0])).not.toContain(
+      'jarvis.proposal_payload.purge_dependencies_absent',
+    );
   });
 
   it('le tick planifié n’explose jamais : un annuaire de tenants en panne est journalisé', async () => {

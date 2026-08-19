@@ -43,7 +43,13 @@ import { ScheduledTenantDirectory } from './tenant-directory';
 // ses propres tests. La dupliquer créerait deux lois qui divergeraient au premier réglage.
 import { selectVoiceTracePurgeTenantBatch } from './voice-trace-purge.service';
 
-/** Annuaire SERVEUR des propriétaires à balayer (implémentation PostgreSQL : lot suivant). */
+/**
+ * Annuaire SERVEUR des propriétaires à balayer. Implémentation PostgreSQL livrée en U1-e :
+ * `PrismaJarvisProposalPayloadStore.listRetentionOwners` (fonction SECURITY DEFINER
+ * `list_jarvis_payload_retention_owners_v1`, rôle d'autorité NOLOGIN/NOBYPASSRLS, GRANT par
+ * colonne excluant `payload`). Le jeton reste @Optional : une persistance non durable ne le
+ * fournit pas, et le tick redevient alors le no-op audité décrit plus haut.
+ */
 export const JARVIS_PROPOSAL_PAYLOAD_RETENTION_OWNERS = Symbol(
   'JARVIS_PROPOSAL_PAYLOAD_RETENTION_OWNERS',
 );
@@ -100,6 +106,22 @@ export function asJarvisProposalPayloadRetention(
   const candidate = store as unknown as { readonly purgeExpired?: unknown };
   return typeof candidate.purgeExpired === 'function'
     ? (store as unknown as JarvisProposalPayloadRetentionPort)
+    : null;
+}
+
+/**
+ * MÊME reconnaissance structurelle pour l'annuaire (U1-e §4) : l'énumération des propriétaires
+ * vit hors du port métier, sur le seul adapter capable de la prouver (autorité SECURITY DEFINER).
+ * Une persistance qui n'en porte pas reste `null` — fail-closed, jamais un annuaire simulé qui
+ * ferait conclure « rien à effacer » sur du PII réellement échu.
+ */
+export function asJarvisProposalPayloadRetentionOwners(
+  store: JarvisProposalPayloadStorePort | null,
+): JarvisProposalPayloadRetentionOwnersPort | null {
+  if (store === null) return null;
+  const candidate = store as unknown as { readonly listRetentionOwners?: unknown };
+  return typeof candidate.listRetentionOwners === 'function'
+    ? (store as unknown as JarvisProposalPayloadRetentionOwnersPort)
     : null;
 }
 

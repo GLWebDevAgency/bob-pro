@@ -70,14 +70,22 @@ export type CustomerContactProposedFieldKey = (typeof CUSTOMER_CONTACT_PROPOSED_
  * Projection §9.1 champ sensible → champs proposés qui le composent. Une mutation de l'un
  * d'eux entre présentation et confirmation invalide la proposition — jamais `consumed`.
  */
-export const CUSTOMER_CONTACT_SENSITIVE_FIELD_SOURCES: Readonly<
-  Record<CustomerContactSensitiveField, readonly CustomerContactProposedFieldKey[]>
-> = Object.freeze({
+export const CUSTOMER_CONTACT_SENSITIVE_FIELD_SOURCES = Object.freeze({
   vat_profile: Object.freeze(['vatNumber'] as const),
   billing_channel: Object.freeze(['billingChannel'] as const),
   address: Object.freeze(['addressLine', 'postalCode', 'city'] as const),
   recipient: Object.freeze(['recipientName', 'email'] as const),
-});
+}) satisfies Readonly<
+  Record<CustomerContactSensitiveField, readonly CustomerContactProposedFieldKey[]>
+>;
+
+/**
+ * Clés de champ qui COMPOSENT réellement un champ sensible §9.1 — dérivées de la table de
+ * projection elle-même, jamais recopiées : ajouter une source à `CUSTOMER_CONTACT_SENSITIVE_FIELD_SOURCES`
+ * élargit ce type et casse à la compilation tout appelant qui ne la relirait pas.
+ */
+export type CustomerContactSensitiveSourceKey =
+  (typeof CUSTOMER_CONTACT_SENSITIVE_FIELD_SOURCES)[CustomerContactSensitiveField][number];
 
 /** Longueur maximale admise par champ — bornes de canonicalisation, jamais des règles métier. */
 const FIELD_MAX_LENGTHS: Readonly<Record<CustomerContactProposedFieldKey, number>> = Object.freeze({
@@ -260,6 +268,55 @@ export function computeCustomerContactSensitiveDigest(
       CUSTOMER_CONTACT_SENSITIVE_FIELDS.map((sensitive) => [
         sensitive,
         CUSTOMER_CONTACT_SENSITIVE_FIELD_SOURCES[sensitive].map((key) => fields[key] ?? null),
+      ]),
+    ]),
+  );
+}
+
+/**
+ * Vue MINIMALE de la fiche client RELUE (§7.1) : exactement les colonnes qui composent les
+ * champs sensibles §9.1, jamais la fiche entière — ce qui n'entre pas dans le digest n'a pas
+ * à voyager. Le type des clés est DÉRIVÉ de la table de projection : impossible d'oublier une
+ * source, impossible d'en inventer une.
+ */
+export type CustomerContactTargetSensitiveRecordV1 = Readonly<
+  Record<CustomerContactSensitiveSourceKey, string | null>
+>;
+
+/**
+ * Forme canonique d'une valeur STOCKÉE avant digest : espaces normalisés, vide ⇒ « absent ».
+ * Aucune borne de longueur ici — contrairement à `canonicalLine`, qui garde une ENTRÉE du
+ * modèle : une valeur trop longue déjà en base doit produire un digest, jamais un refus (le
+ * refus éteindrait la garde §9.1 au lieu de la déclencher).
+ */
+function canonicalStoredValue(value: string | null): string | null {
+  if (value === null) return null;
+  const normalized = value.trim().replace(/\s+/gu, ' ');
+  return normalized.length === 0 ? null : normalized;
+}
+
+/**
+ * Digest du sous-ensemble SENSIBLE d'une fiche RELUE — l'entrée de la garde §9.1 (spec Jarvis
+ * §7.1) : l'admission le dérive DANS sa transaction, sous le verrou de la ligne cible, à la
+ * mise en proposition (sceau) puis à la confirmation (contrôle). Fonction PURE : ni horloge,
+ * ni I/O, ni port.
+ *
+ * DOMAINE SÉPARÉ, volontairement : le préfixe diffère de celui des CHAMPS PROPOSÉS
+ * (`computeCustomerContactSensitiveDigest`) pour qu'un digest de cible ne puisse JAMAIS être
+ * confondu avec — ni satisfait par — un digest de proposition. Une comparaison croisée est
+ * impossible par construction, jamais seulement improbable.
+ */
+export function computeCustomerContactTargetSensitiveDigest(
+  record: CustomerContactTargetSensitiveRecordV1,
+): string {
+  return sha256Hex(
+    JSON.stringify([
+      'bob.jarvis-run.customer-contact.target-sensitive.v1',
+      CUSTOMER_CONTACT_SENSITIVE_FIELDS.map((sensitive) => [
+        sensitive,
+        CUSTOMER_CONTACT_SENSITIVE_FIELD_SOURCES[sensitive].map((key) =>
+          canonicalStoredValue(record[key]),
+        ),
       ]),
     ]),
   );

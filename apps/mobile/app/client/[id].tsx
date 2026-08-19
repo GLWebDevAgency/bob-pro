@@ -106,7 +106,14 @@ import {
 import { useDocuments } from '../../src/data/documents';
 import { useBobClient } from '../../src/data/client';
 import { hasBlockingAuthoritativeDataError } from '../../src/data/authoritative-query-state';
-import { usePublishAgentContext, type AgentContext, type AgentAccessLayout } from '../../src/agent';
+import {
+  jarvisFrameTargetsCustomer,
+  usePublishAgentContext,
+  useJarvisRunFrame,
+  type AgentContext,
+  type AgentAccessLayout,
+} from '../../src/agent';
+import { JarvisConfirmationCard } from '../../src/components/jarvis-confirmation-card';
 import { CustomerForm, type CustomerFormInitial } from '../../src/components/customer-form';
 import { formatSiret } from '../../src/components/CompanyFicheCard';
 import { CustomerBillingSections } from '../../src/components/CustomerBillingSections';
@@ -447,6 +454,14 @@ export default function ClientDetail() {
   );
   const agentLayout = useMemo<AgentAccessLayout>(() => ({ bottomAvoidance: 78 }), []);
   usePublishAgentContext(agentContext, agentLayout);
+  /**
+   * U1-e §3 — SECOND HÔTE du run Jarvis. La fiche est la surface cataloguée de
+   * `client-modifier@1`, le seul écran qui possède l'« avant », et elle n'a AUCUNE garde
+   * d'entitlement : une proposition de modification y reste visible même quand l'onglet assistant
+   * est fermé par l'abonnement. Le run découvert est le même (même clé de query, même registre de
+   * `commandId`) : monter la carte dans les deux hôtes est idempotent, jamais deux commandes.
+   */
+  const jarvis = useJarvisRunFrame();
   const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: 150 });
 
   // Docs DU client = documents du coffre liés à SES pièces (factures, devis, chantiers).
@@ -1113,6 +1128,20 @@ export default function ClientDetail() {
                   )}
                 </View>
               </BobSurface>
+
+              {/* ── Proposition de Bob sur CETTE fiche (run Jarvis `customer_contact@1`,
+                   U1-e §3) : ancrée AVANT les gestes manuels concurrents — on voit ce que Bob
+                   propose avant de refaire la même chose à la main. Gate stricte : seule une
+                   MODIFICATION visant cet id s'affiche ici (jarvisFrameTargetsCustomer). ── */}
+              {jarvis.state.phase === 'ready' &&
+              jarvisFrameTargetsCustomer(jarvis.state.frame, id) ? (
+                <JarvisConfirmationCard
+                  frame={jarvis.state.frame}
+                  coordinator={jarvis.coordinator}
+                  ports={jarvis.state.ports}
+                  onAuthoritativeRefresh={jarvis.refresh}
+                />
+              ) : null}
 
               {/* ── 4 actions rapides — QuickAction kit (Lot 4 ; parité humain ↔ Bob ;
                    tel:/mailto: = device). Tones : devis b2b (même canal que la Home),

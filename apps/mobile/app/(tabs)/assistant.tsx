@@ -73,7 +73,8 @@ import { makeBobAgent } from '../../src/data/bob';
 import { getAutonomy } from '../../src/data/settings';
 import { ActionDiffView } from '../../src/components/ActionDiffView';
 import { SendIcon, SparkIcon } from '../../src/components/icons';
-import { useAgentSession } from '../../src/agent';
+import { useAgentSession, useJarvisRunFrame } from '../../src/agent';
+import { JarvisConfirmationCard } from '../../src/components/jarvis-confirmation-card';
 import {
   canRunAssistantManualTurn,
   planAssistantRealtimeControl,
@@ -271,6 +272,13 @@ export default function Assistant() {
   const client = useBobClient();
   const agent = useMemo(() => makeBobAgent(client), [client]);
   const globalSession = useAgentSession();
+  /**
+   * U1-e §3 — HÔTE PRIMAIRE du run Jarvis : cet onglet est déjà la destination du handoff
+   * voix→écran (« Continuer dans l'assistant ») et le catalogue y épingle `bob-action-confirmer@1`.
+   * Le hook découvre le run courant lui-même : la voix ne renvoie que la parole, aucun `runId`
+   * n'atteint l'appareil autrement.
+   */
+  const jarvis = useJarvisRunFrame();
   // Entitlements TYPÉS (fondation paywall) : l'assistant lui-même (ai_assistant, gating
   // historique de l'écran) et BOB LIVE (voice_live — le serveur reste l'arbitre du realtime,
   // ici on décide seulement du TEASER quand le tap n'ouvre aucun droit).
@@ -1070,6 +1078,32 @@ export default function Assistant() {
               </BobBubble>
             );
           })}
+
+          {/* ── Carte de confirmation Jarvis — item SŒUR des cartes d'action ci-dessus : même
+               grammaire (bulle → ActionDiffView → garde-fou → Annuler/Confirmer), mais chaque
+               geste passe par le canal d'admission scellé, pas par `agent.confirm`. Elle vit en
+               fin de fil, où la dernière proposition de Bob est attendue. ── */}
+          {jarvis.state.phase === 'ready' ? (
+            <JarvisConfirmationCard
+              frame={jarvis.state.frame}
+              coordinator={jarvis.coordinator}
+              ports={jarvis.state.ports}
+              visible={assistantFocused}
+              onAuthoritativeRefresh={jarvis.refresh}
+            />
+          ) : null}
+          {/* Une demande de Bob que l'écran ne sait PAS rendre (lecture en panne, présentation
+              absente) ne disparaît pas en silence : le run tient le premier plan de l'artisan,
+              donc il doit le voir et pouvoir réessayer. Se taire ici, c'est laisser quelqu'un
+              devant un assistant muet qui refuse par ailleurs toute nouvelle demande. */}
+          {jarvis.state.phase === 'error' || jarvis.state.phase === 'unpresentable' ? (
+            <View style={{ marginHorizontal: 16, marginTop: 8 }}>
+              <ErrorRetry
+                message="Bob a une demande en cours mais n’arrive pas à l’afficher."
+                onRetry={jarvis.refresh}
+              />
+            </View>
+          ) : null}
 
           {busy ? <TypingBubble phase={phase} /> : null}
         </ScrollView>

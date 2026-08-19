@@ -221,6 +221,14 @@ fi
 SET createrole_self_grant = 'set';
 CREATE ROLE bob_schema_owner
   NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+-- Jarvis U1-e (SPEC_U1E §4) : autorite de l'annuaire de retention des payloads. Creee ICI, par
+-- le DEPLOYEUR et sous `createrole_self_grant='set'` — exactement comme
+-- `ensure_jarvis_payload_retention_directory_role` en release. L'adhesion SET du createur naît
+-- IMPLICITEMENT (elle est requise par le seul `ALTER FUNCTION … OWNER TO` du provisionnement) :
+-- un GRANT d'adhesion explicite vers le deployeur est INTERDIT par le contrat Supabase du depot
+-- (supabase-owner-membership-release-safety) — Supabase tue la connexion sur un tel GRANT.
+CREATE ROLE bob_jarvis_payload_retention_directory
+  NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
 SQL
 "$PSQL_BIN" "$DEPLOYER_BOOTSTRAP_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
   -f "$ROOT_DIR/apps/api/prisma/agent-mission-release-flag-authority-role.sql"
@@ -5163,6 +5171,102 @@ esac
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
   -f "$ROOT_DIR/apps/api/prisma/migrations/20260819100000_jarvis_proposal_payloads/migration.sql"
 
+# Jarvis U1-e (SPEC_U1E_PARCOURS_VISIBLE_20260819 §2) : revision de la fiche client. Expand
+# ADDITIF applique sur la surface `customers` N-1 du harnais — exactement ce que fera la
+# release : la colonne nait a 1 par DEFAULT, aucune ligne existante n'est reecrite, et le
+# writer N-1 (les INSERT du harnais, qui ne posent que id/companyId/name) reste accepte.
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260819200000_customers_revision/migration.sql"
+
+# Jarvis U1-e (SPEC_U1E §4) : annuaire d'autorite des proprietaires a purger. Applique comme en
+# release — d'abord la migration (fonction SECURITY INVOKER, donc FERMEE a tout appelant), puis le
+# provisionnement qui la bascule DEFINER. Entre les deux la fonction existe et refuse : c'est ce
+# fail-closed que la preuve 4 verifie AVANT la bascule.
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260819210000_jarvis_payload_retention_directory/migration.sql"
+
+# Preuve du fail-closed NATIF : tant que le provisionnement n'a pas eu lieu, meme le deployeur se
+# fait refuser en 42501. Une fonction d'annuaire qui repondrait ici serait un chemin privilegie ne
+# de la migration elle-meme — exactement ce que le patron interdit.
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+DO $bob_u1e_directory_closed$
+DECLARE
+  refused BOOLEAN := FALSE;
+BEGIN
+  BEGIN
+    PERFORM * FROM public.list_jarvis_payload_retention_owners_v1('cert-company', 10);
+  EXCEPTION
+    WHEN insufficient_privilege THEN refused := TRUE;
+  END;
+  IF NOT refused THEN
+    RAISE EXCEPTION 'JARVIS_U1E_DIRECTORY_NOT_FAIL_CLOSED_BEFORE_PROVISIONING';
+  END IF;
+END;
+$bob_u1e_directory_closed$;
+SQL
+
+# Provisionnement : COPIE FIDELE de `provision_jarvis_payload_retention_directory` (release.sh),
+# reduite au seul cluster de certification (role applicatif fige a `bob_app`). Toute divergence
+# entre ce bloc et release.sh se paierait par une certification qui prouve autre chose que ce que
+# le deploiement fait — c'est pourquoi l'ordre des gestes y est identique, geste pour geste.
+"$PSQL_BIN" "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 <<'SQL'
+-- CREATE temporaire : PostgreSQL exige que le nouveau proprietaire d'une fonction ait CREATE sur
+-- son schema. Retire plus bas, dans la meme transaction.
+SET LOCAL ROLE bob_schema_owner;
+GRANT USAGE, CREATE ON SCHEMA public TO bob_jarvis_payload_retention_directory;
+RESET ROLE;
+
+ALTER FUNCTION public.list_jarvis_payload_retention_owners_v1(TEXT, INTEGER)
+  OWNER TO bob_jarvis_payload_retention_directory;
+
+SET LOCAL ROLE bob_jarvis_payload_retention_directory;
+REVOKE ALL ON FUNCTION public.list_jarvis_payload_retention_owners_v1(TEXT, INTEGER) FROM PUBLIC;
+ALTER FUNCTION public.list_jarvis_payload_retention_owners_v1(TEXT, INTEGER) SECURITY DEFINER;
+ALTER FUNCTION public.list_jarvis_payload_retention_owners_v1(TEXT, INTEGER)
+  SET search_path = pg_catalog;
+ALTER FUNCTION public.list_jarvis_payload_retention_owners_v1(TEXT, INTEGER)
+  SET row_security = on;
+ALTER FUNCTION public.list_jarvis_payload_retention_owners_v1(TEXT, INTEGER)
+  SET statement_timeout = '4s';
+ALTER FUNCTION public.list_jarvis_payload_retention_owners_v1(TEXT, INTEGER)
+  SET lock_timeout = '1s';
+
+-- ACL = allowlist EXACTE (meme requete qu'en release) : tout grantee EXECUTE qui n'est pas le
+-- definer saute, y compris les trois roles Data API que Supabase sert par defaut.
+SELECT format('REVOKE ALL ON FUNCTION %s FROM %s CASCADE',
+              function.oid::regprocedure,
+              CASE WHEN privilege.grantee = 0 THEN 'PUBLIC'
+                   ELSE quote_ident(grantee.rolname) END)
+  FROM pg_catalog.pg_proc AS function
+ CROSS JOIN LATERAL pg_catalog.aclexplode(
+   COALESCE(function.proacl, pg_catalog.acldefault('f', function.proowner))
+ ) AS privilege
+  LEFT JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = privilege.grantee
+ WHERE function.oid =
+   'public.list_jarvis_payload_retention_owners_v1(text,integer)'::regprocedure
+   AND privilege.privilege_type = 'EXECUTE'
+   AND privilege.grantee <> function.proowner
+\gexec
+REVOKE ALL PRIVILEGES ON FUNCTION public.list_jarvis_payload_retention_owners_v1(TEXT, INTEGER)
+  FROM anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.list_jarvis_payload_retention_owners_v1(TEXT, INTEGER) TO bob_app;
+RESET ROLE;
+
+SET LOCAL ROLE bob_schema_owner;
+REVOKE CREATE ON SCHEMA public FROM bob_jarvis_payload_retention_directory;
+GRANT USAGE ON SCHEMA public TO bob_jarvis_payload_retention_directory;
+
+-- Table remise a plat AVANT le grant par colonne : un privilege de table entier survivant rendrait
+-- la restriction par colonne inoperante.
+REVOKE ALL PRIVILEGES ON TABLE public.jarvis_proposal_payloads
+  FROM bob_jarvis_payload_retention_directory CASCADE;
+-- `payload` EXCLU : l'autorite lit des coordonnees, jamais du contenu.
+GRANT SELECT ("companyId", "ownerUserId", "retentionExpiresAt")
+  ON TABLE public.jarvis_proposal_payloads
+  TO bob_jarvis_payload_retention_directory;
+RESET ROLE;
+SQL
+
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
 SET ROLE bob_schema_owner;
 GRANT USAGE ON SCHEMA public TO bob_cert_auditor;
@@ -5210,6 +5314,7 @@ DIRECT_URL="$DIRECT_URL" \
 AGENT_MISSION_CERT_ADMIN_URL="$CERT_ADMIN_URL" \
 RUN_AGENT_MISSION_POSTGRES_CERT=true \
 AGENT_MISSION_CERT_DATABASE_IS_DISPOSABLE=true \
+JARVIS_PAYLOAD_RETENTION_DIRECTORY_CERT=true \
 pnpm --filter @bob/api exec vitest run \
   src/persistence/prisma/agent-mission.persistence.postgres.test.ts \
   src/persistence/prisma/jarvis-run-expand.postgres.test.ts \
@@ -5217,7 +5322,8 @@ pnpm --filter @bob/api exec vitest run \
   src/persistence/prisma/jarvis-admission.postgres.test.ts \
   src/persistence/prisma/jarvis-proposal-payloads.postgres.test.ts \
   src/jobs/jarvis-customer-effect.executor.postgres.test.ts \
-  src/persistence/prisma/jarvis-oracles.postgres.test.ts
+  src/persistence/prisma/jarvis-oracles.postgres.test.ts \
+  src/persistence/prisma/jarvis-u1e.postgres.test.ts
 
 # Cycle de rotation réel, après les tests métier qui utilisent volontairement la version 1.
 # La preuve couvre deux connexions concurrentes, les snapshots après verrou, le retrait N-1 et

@@ -365,13 +365,8 @@ describe.skipIf(!RUN_CERT)(
     }
 
     function confirmCommand(confirmationId: string, proposalHash: string): unknown {
-      return {
-        type: 'confirm',
-        confirmationId,
-        proposalHash,
-        revalidatedTargetRevision: null,
-        revalidatedSensitiveDigest: null,
-      };
+      // U1-e §2 : trois clés — la cible relue vient de l'admission, jamais du wire.
+      return { type: 'confirm', confirmationId, proposalHash };
     }
 
     /** Version de définition que le REGISTRE du processus ne connaît pas (§5.5). */
@@ -1034,13 +1029,7 @@ describe.skipIf(!RUN_CERT)(
         expect(presentedProposal?.proposalHash).toBe(proposalHash);
 
         // §5.6 : une commande système dont la réduction émettrait un intent est REFUSÉE.
-        const confirmCommand = {
-          type: 'confirm',
-          confirmationId,
-          proposalHash,
-          revalidatedTargetRevision: null,
-          revalidatedSensitiveDigest: null,
-        } as const;
+        const confirmCommand = { type: 'confirm', confirmationId, proposalHash } as const;
         const refused = expectAdmission(
           await uowA.runJarvisSystemAdmission(
             systemEnvelope({

@@ -64,6 +64,9 @@ vi.mock('react-native', () => ({
   useWindowDimensions: () => ({ width: 390, height: 844 }),
 }));
 vi.mock('react-native-svg', () => ({ default: 'Svg', Circle: 'Circle', Path: 'Path', Rect: 'Rect' }));
+// ActionDiffView (grammaire partagée de la carte Jarvis) tire les icônes Expo : le vrai paquet
+// n'est pas résolvable hors bundler Metro.
+vi.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons' }));
 vi.mock('expo-linear-gradient', () => ({ LinearGradient: 'LinearGradient' }));
 vi.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ top: 59, right: 0, bottom: 34, left: 0 }),
@@ -80,7 +83,16 @@ vi.mock('expo-router', () => ({
   }),
   useLocalSearchParams: () => ({ id: 'c1' }),
 }));
-vi.mock('../../../src/agent', () => ({ usePublishAgentContext: vi.fn() }));
+vi.mock('../../../src/agent', () => ({
+  usePublishAgentContext: vi.fn(),
+  // Aucun run Jarvis dans cette planche : la fiche doit rendre EXACTEMENT comme avant U1-e.
+  useJarvisRunFrame: () => ({
+    state: { phase: 'absent' },
+    coordinator: null,
+    refresh: vi.fn(),
+  }),
+  jarvisFrameTargetsCustomer: () => false,
+}));
 vi.mock('../../../src/components/customer-form', () => ({ CustomerForm: () => null }));
 vi.mock('../../../src/components/CustomerBillingSections', () => ({ CustomerBillingSections: () => null }));
 vi.mock('../../../src/components/CustomerContactsCard', () => ({ CustomerContactsCard: () => null }));

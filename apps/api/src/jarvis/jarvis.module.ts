@@ -4,13 +4,16 @@
  * Le module possède ses providers ; `AppModule` n'en recopie AUCUN (patron `AgentMissionModule`) :
  * la DI testée ici est donc exactement celle qui démarre en production.
  *
- * Il fournit quatre choses, et rien d'autre :
+ * Il fournit cinq choses, et rien d'autre :
  *   · `JARVIS_ADMISSION` — l'adapter du port mono-argument vers le UoW unique (§17) ;
  *   · `JARVIS_DISPATCH_ADMISSION` — la MÊME instance pour le worker de dispatch (§5.3) ;
  *   · `JARVIS_PROPOSAL_PAYLOAD_STORE` — le magasin PII scellé des propositions (§5.5), pris sur
  *     LA persistance (`Persistence.createJarvisProposalPayloadStore`, patron de tous les autres
  *     repositories Prisma) : sans ce provider le jeton résolvait `null` en production, et la
  *     charge confirmée à l'écran restait inatteignable pour la voix, le tap et le worker ;
+ *   · `JARVIS_PROPOSAL_PAYLOAD_RETENTION_OWNERS` — l'annuaire d'autorité des propriétaires dont le
+ *     PII de proposition est échu (U1-e §4) : sans lui, le balayage horaire s'arrêtait sur
+ *     `owner_directory_absent` et la rétention du magasin PII restait une promesse creuse ;
  *   · `JARVIS_EFFECT_EXECUTORS` — le registre d'exécuteurs d'effets du worker.
  *
  * Le keyring HMAC vient d'`AgentMissionModule` (`AGENT_MISSION_FINGERPRINTS`) : une seule
@@ -32,6 +35,10 @@ import {
   JarvisCustomerEffectExecutor,
   type JarvisCustomerEffectAuthority,
 } from '../jobs/jarvis-customer-effect.executor';
+import {
+  JARVIS_PROPOSAL_PAYLOAD_RETENTION_OWNERS,
+  asJarvisProposalPayloadRetentionOwners,
+} from '../jobs/jarvis-proposal-payload-purge.service';
 import {
   JARVIS_DISPATCH_ADMISSION,
   JARVIS_EFFECT_EXECUTORS,
@@ -71,6 +78,22 @@ const jarvisProposalPayloadStoreProvider: Provider = {
   provide: JARVIS_PROPOSAL_PAYLOAD_STORE,
   inject: [PERSISTENCE],
   useFactory: buildJarvisProposalPayloadStore,
+};
+
+/**
+ * Annuaire des propriétaires à purger (U1-e §4) — pris sur LE MÊME magasin, jamais sur un second
+ * client Prisma : l'autorité SECURITY DEFINER est un chemin de PLUS sur la même connexion, pas une
+ * seconde persistance. La reconnaissance est STRUCTURELLE (`listRetentionOwners`), exactement
+ * comme celle de `purgeExpired` : un adapter qui ne sait pas énumérer sous autorité rend `null`,
+ * et `JarvisProposalPayloadPurgeService` retrouve son no-op audité `owner_directory_absent`.
+ *
+ * C'est ce provider qui ferme le dernier silence de la rétention : sans lui, le @Cron horaire
+ * s'arrêtait AVANT de demander quoi que ce soit, et le PII échu restait en base indéfiniment.
+ */
+const jarvisProposalPayloadRetentionOwnersProvider: Provider = {
+  provide: JARVIS_PROPOSAL_PAYLOAD_RETENTION_OWNERS,
+  inject: [JARVIS_PROPOSAL_PAYLOAD_STORE],
+  useFactory: asJarvisProposalPayloadRetentionOwners,
 };
 
 /**
@@ -133,6 +156,7 @@ const jarvisEffectExecutorsProvider: Provider = {
     jarvisAdmissionProvider,
     jarvisDispatchAdmissionProvider,
     jarvisProposalPayloadStoreProvider,
+    jarvisProposalPayloadRetentionOwnersProvider,
     jarvisTapAuthorityProvider,
     jarvisEffectExecutorsProvider,
   ],
@@ -143,6 +167,10 @@ const jarvisEffectExecutorsProvider: Provider = {
     JARVIS_ADMISSION,
     JARVIS_DISPATCH_ADMISSION,
     JARVIS_PROPOSAL_PAYLOAD_STORE,
+    // Le service de purge est déclaré par AppModule : sans EXPORT, son injection @Optional
+    // résoudrait `null` et le tick resterait `owner_directory_absent` — le silence exact que
+    // ce lot referme.
+    JARVIS_PROPOSAL_PAYLOAD_RETENTION_OWNERS,
     JARVIS_EFFECT_EXECUTORS,
   ],
 })
