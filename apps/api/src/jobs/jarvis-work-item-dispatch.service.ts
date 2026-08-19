@@ -25,6 +25,13 @@
  * exécuteur prévu, au-dessus de l'outbox canonique `notification_jobs`) est livré prêt mais
  * NON enregistré ; U1-d le branche action par action.
  *
+ * RÉCONCILIATION CÂBLÉE (U1-d, revue C9) : dès qu'un exécuteur RÉEL est enregistré, une reprise
+ * `authorized` n'est plus laissée en suspens — le worker lui demande de LIRE son effet par
+ * `effectId` (`reconcileEffect`) et route le verdict : reçu trouvé ⇒ résultat persisté et
+ * signalé ; absence prouvée ou action idempotente ⇒ rejeu du MÊME effectId ; indécidable ⇒
+ * `outcome_unknown` motivé. Sans cette lecture, une ligne `authorized` voyait sa lease
+ * renouvelée à chaque tick, indéfiniment : un run bloqué à vie par un worker mort.
+ *
  * Horloge : les échéances (`executeBy`) sont jugées contre l'horloge BASE (`readAt` de la
  * lecture stateless RepeatableRead), jamais contre l'horloge ambiante du worker.
  */
@@ -120,13 +127,34 @@ export interface JarvisEffectExecutionOutcome {
 }
 
 /**
+ * Verdict de RÉCONCILIATION d'un effet déjà autorisé dont le résultat n'a jamais été persisté
+ * (worker mort entre `authorized` et `storeResult`). L'exécuteur est la SEULE autorité capable
+ * de le rendre : lui seul connaît le namespace d'idempotence de son action (§5.3, §9.1).
+ *  · `landed` — l'autorité métier montre le reçu : l'issue est DÉCIDÉE, on la persiste ;
+ *  · `not_landed` — l'autorité PROUVE l'absence d'effet : rien n'est parti ;
+ *  · `safe_to_replay` — l'action est idempotente par construction : rejouer ne peut pas doubler ;
+ *  · `undecidable` — l'autorité ne répond pas : aucune issue ne peut être inventée.
+ */
+export type JarvisEffectReconciliation =
+  | { readonly kind: 'landed'; readonly outcome: JarvisEffectExecutionOutcome }
+  | { readonly kind: 'not_landed' }
+  | { readonly kind: 'safe_to_replay' }
+  | { readonly kind: 'undecidable' };
+
+/**
  * Exécuteur d'effet enregistré par `actionId@version`. L'exécution soumet UNE commande
  * idempotente à une outbox métier canonique puis l'observe — jamais une seconde outbox (§5.3).
  * `recalculateTargetDigest` sert la revalidation ciblée (axe `targetDigest` de la liste fermée).
+ *
+ * `reconcileEffect` est la LECTURE par `effectId` exigée avant tout rejeu (§5.3 : « il réconcilie
+ * d'abord l'autorité métier/provider avec le même effectId »). Elle est optionnelle par
+ * compatibilité de l'interface, jamais par tolérance : un exécuteur qui ne l'expose pas laisse
+ * ses reprises `authorized` sans arbitre, et le worker refuse alors de clore quoi que ce soit.
  */
 export interface JarvisEffectExecutor {
   execute(input: JarvisEffectExecutionInput): Promise<JarvisEffectExecutionOutcome>;
   recalculateTargetDigest?(input: JarvisEffectExecutionInput): Promise<string | null>;
+  reconcileEffect?(input: JarvisEffectExecutionInput): Promise<JarvisEffectReconciliation>;
 }
 
 export function jarvisEffectExecutorKey(actionId: string, actionVersion: number): string {
@@ -328,9 +356,9 @@ function buildReceiptCommand(
     return null;
   }
   // cancelled / failed_terminal / outcome_unknown : clôture d'échec. Pour outcome_unknown,
-  // cette clôture n'est honnête EN U1-c que parce que le registre vide prouve qu'aucune I/O
-  // n'est partie ; dès qu'un exécuteur réel existe (U1-d), un indécidable post-I/O doit passer
-  // par la réconciliation par effectId AVANT d'autoriser cette clôture terminale.
+  // cette clôture n'est honnête que parce que rien n'a pu partir sans être observé : registre
+  // vide en U1-c, et depuis U1-d (revue C9) réconciliation par `effectId` OBLIGATOIRE avant
+  // qu'une reprise `authorized` puisse être close — jamais un indécidable prononcé sans lecture.
   if (kind === 'single_business_action') {
     return {
       type: 'record_effect_receipt',
@@ -537,6 +565,9 @@ export class JarvisWorkItemDispatchService {
             lease,
           );
           summary.signalled += signalled;
+          // Une reprise peut désormais EXÉCUTER (rejeu du même effectId après réconciliation) :
+          // le compteur doit le dire, sinon un rejeu réussi passerait pour un tick vide.
+          if (outcome === 'executed') summary.executed += 1;
           if (outcome === 'unknown') summary.unknown += 1;
           if (outcome === 'failed') summary.failures += 1;
         }
@@ -751,24 +782,38 @@ export class JarvisWorkItemDispatchService {
 
   /**
    * Règlement d'une ligne `authorized` reprise après expiration de lease (revue C10) : le
-   * worker précédent est mort APRÈS le point de non-retour, AVANT `storeResult`. En U1-c le
-   * registre d'exécuteurs est VIDE : l'absence d'exécuteur pour l'action PROUVE qu'aucune
-   * I/O n'a jamais pu partir — le règlement `outcome_unknown` motif `executor_unregistered`
-   * puis son signal sont honnêtes (même doctrine que le chemin nominal). Si un exécuteur
-   * EST enregistré (tests / U1-d), l'issue est indécidable ICI : la réconciliation par
-   * `effectId` (U1-d) doit trancher — fail-closed, la ligne reste `authorized` sous sa
-   * lease renouvelée, JAMAIS une clôture inventée ni un retry aveugle (§5.3).
+   * worker précédent est mort APRÈS le point de non-retour, AVANT `storeResult`.
+   *
+   * Registre VIDE (U1-c) : l'absence d'exécuteur pour l'action PROUVE qu'aucune I/O n'a jamais
+   * pu partir — le règlement `outcome_unknown` motif `executor_unregistered` puis son signal
+   * sont honnêtes.
+   *
+   * Exécuteur ENREGISTRÉ (U1-d, revue C9) : l'issue ne se devine pas, elle se LIT. Le protocole
+   * §5.3 est appliqué tel quel — « il réconcilie d'abord l'autorité métier/provider avec le même
+   * effectId : reçu trouvé => persistance et observation du résultat ; absence d'effet prouvée
+   * par l'autorité et action safe-to-retry => nouvel appel avec le MÊME effectId ; résultat
+   * indécidable => outcome_unknown, sans retry aveugle ». Un exécuteur enregistré SANS
+   * `reconcileEffect` n'a aucun arbitre : la ligne reste `authorized` sous sa lease renouvelée
+   * (fail-closed, jamais une clôture inventée) et le défaut de câblage est audité.
    */
   private async reconcileReclaimedAuthorized(
     coordinates: JarvisWorkItemCoordinates,
     lease: JarvisWorkItemLease,
   ): Promise<{ outcome: LeaseOutcome; signalled: number }> {
-    const repository = this.repository;
-    if (repository === null) return { outcome: 'skipped', signalled: 0 };
+    if (this.repository === null) return { outcome: 'skipped', signalled: 0 };
     const executor = this.executors.get(
       jarvisEffectExecutorKey(lease.actionId, lease.actionVersion),
     );
-    if (executor !== undefined) {
+    if (executor === undefined) {
+      return this.settleReclaimedAuthorized(coordinates, lease, {
+        status: 'outcome_unknown',
+        resultDigest: unknownOutcomeResultDigest(lease.effectId, 'executor_unregistered'),
+      });
+    }
+    if (executor.reconcileEffect === undefined) {
+      // Aucune lecture par effectId : rien ici ne peut trancher entre « parti » et « jamais
+      // parti ». On ne clôt pas et on ne rejoue pas — l'exécuteur doit exposer sa
+      // réconciliation avant d'être enregistré (§5.3).
       this.logger.audit('jarvis.dispatch.reconciliation_required', {
         companyId: coordinates.companyId,
         workItemId: lease.id,
@@ -778,13 +823,86 @@ export class JarvisWorkItemDispatchService {
       });
       return { outcome: 'skipped', signalled: 0 };
     }
-    const resultDigest = unknownOutcomeResultDigest(lease.effectId, 'executor_unregistered');
+    let verdict: JarvisEffectReconciliation;
+    try {
+      verdict = await executor.reconcileEffect({ coordinates, lease });
+    } catch (e) {
+      // Une réconciliation qui lève n'a rien prouvé : indécidable, comme si l'autorité s'était
+      // tue — jamais un rejeu sur une absence non démontrée.
+      this.logger.warn(
+        `Réconciliation Jarvis en échec (${lease.actionId}@${lease.actionVersion}): ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+        'jarvis-dispatch',
+      );
+      verdict = { kind: 'undecidable' };
+    }
+    this.logger.audit('jarvis.dispatch.reconciled', {
+      companyId: coordinates.companyId,
+      workItemId: lease.id,
+      effectId: lease.effectId,
+      actionId: lease.actionId,
+      actionVersion: lease.actionVersion,
+      verdict: verdict.kind,
+    });
+    if (verdict.kind === 'landed') {
+      // Reçu trouvé : l'issue est celle que l'autorité montre, persistée puis observée.
+      return this.settleReclaimedAuthorized(coordinates, lease, verdict.outcome);
+    }
+    if (verdict.kind === 'not_landed' || verdict.kind === 'safe_to_replay') {
+      // Absence prouvée (ou action idempotente par construction) : NOUVEL appel avec le MÊME
+      // effectId — jamais un nouvel effectId, jamais un second effet.
+      return this.settleReclaimedAuthorized(
+        coordinates,
+        lease,
+        await this.executeReclaimed(executor, coordinates, lease),
+      );
+    }
+    // Indécidable : `outcome_unknown` motivé. Le laisser `authorized` sous une lease renouvelée
+    // à chaque tick bloquerait le run À VIE ; le mot honnête pour « on ne sait pas si l'effet
+    // est parti » existe dans le vocabulaire fermé, c'est celui-là (§5.3).
+    return this.settleReclaimedAuthorized(coordinates, lease, {
+      status: 'outcome_unknown',
+      resultDigest: unknownOutcomeResultDigest(lease.effectId, 'reconciliation_undecidable'),
+    });
+  }
+
+  /** Rejeu du MÊME effectId après réconciliation ; une exception reste indécidable (§5.3). */
+  private async executeReclaimed(
+    executor: JarvisEffectExecutor,
+    coordinates: JarvisWorkItemCoordinates,
+    lease: JarvisWorkItemLease,
+  ): Promise<JarvisEffectExecutionOutcome> {
+    try {
+      return await executor.execute({ coordinates, lease });
+    } catch (e) {
+      this.logger.warn(
+        `Rejeu d'effet Jarvis en échec (${lease.actionId}@${lease.actionVersion}): ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+        'jarvis-dispatch',
+      );
+      return {
+        status: 'outcome_unknown',
+        resultDigest: unknownOutcomeResultDigest(lease.effectId, 'executor_error'),
+      };
+    }
+  }
+
+  /** Résultat immuable fencé puis signal — la reprise ne repasse JAMAIS par `authorize`. */
+  private async settleReclaimedAuthorized(
+    coordinates: JarvisWorkItemCoordinates,
+    lease: JarvisWorkItemLease,
+    execution: JarvisEffectExecutionOutcome,
+  ): Promise<{ outcome: LeaseOutcome; signalled: number }> {
+    const repository = this.repository;
+    if (repository === null) return { outcome: 'skipped', signalled: 0 };
     const stored = await repository.storeResult(coordinates, {
       id: lease.id,
       leaseToken: lease.leaseToken,
       leaseFence: lease.leaseFence,
-      status: 'outcome_unknown',
-      resultDigest,
+      status: execution.status,
+      resultDigest: execution.resultDigest,
     });
     if (!stored) {
       this.logger.audit('jarvis.dispatch.store_result_lost', {
@@ -800,15 +918,19 @@ export class JarvisWorkItemDispatchService {
       effectId: lease.effectId,
       actionId: lease.actionId,
       actionVersion: lease.actionVersion,
+      status: execution.status,
     });
     const applied = await this.signalStoredResult(coordinates, {
       id: lease.id,
       effectId: lease.effectId,
-      status: 'outcome_unknown',
-      resultDigest,
+      status: execution.status,
+      resultDigest: execution.resultDigest,
       leaseFence: lease.leaseFence,
     });
-    return { outcome: 'unknown', signalled: applied ? 1 : 0 };
+    return {
+      outcome: execution.status === 'outcome_unknown' ? 'unknown' : 'executed',
+      signalled: applied ? 1 : 0,
+    };
   }
 
   /**

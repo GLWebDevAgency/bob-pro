@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { QUOTE_CREATION_MISSION_KIND_V1 } from '@bob/core';
+import { CUSTOMER_CONTACT_MISSION_KIND_V1, QUOTE_CREATION_MISSION_KIND_V1 } from '@bob/core';
 import type {
   RealtimeQuoteMissionOrchestrationInput,
   RealtimeQuoteMissionOrchestrationOutcome,
@@ -7,10 +7,7 @@ import type {
   RealtimeQuoteMissionPreparationOutcome,
   RealtimeQuoteMissionPreparedTurn,
 } from './realtime-quote-mission-orchestrator';
-import type {
-  QuoteCreationSemanticFrameV1,
-  QuoteCreationSemanticFrameV2,
-} from '@bob/ai';
+import type { QuoteCreationSemanticFrameV1, QuoteCreationSemanticFrameV2 } from '@bob/ai';
 import type { RegisteredRealtimeMissionKind } from './realtime-mission-kind';
 import {
   RealtimeMissionKindRegistry,
@@ -30,10 +27,17 @@ function turn(): RealtimeQuoteMissionOrchestrationInput {
   return {} as RealtimeQuoteMissionOrchestrationInput;
 }
 
+/** Le registre exige UN adaptateur par identité publiée : la fiche client complète la liste. */
+function customerContactCandidate(): unknown {
+  return {
+    id: CUSTOMER_CONTACT_MISSION_KIND_V1,
+    prepare: vi.fn(async () => preparation),
+    runPlanned: vi.fn(async () => outcome),
+  };
+}
+
 function registryFromUnsafe(candidates: readonly unknown[]): RealtimeMissionKindRegistry {
-  return new RealtimeMissionKindRegistry(
-    candidates as readonly RegisteredRealtimeMissionKind[],
-  );
+  return new RealtimeMissionKindRegistry(candidates as readonly RegisteredRealtimeMissionKind[]);
 }
 
 function expectRegistryError(
@@ -70,7 +74,7 @@ describe('RealtimeMissionKindRegistry', () => {
       prepare: originalPrepare,
       runPlanned: originalRunPlanned,
     };
-    const registry = new RealtimeMissionKindRegistry([candidate]);
+    const registry = registryFromUnsafe([candidate, customerContactCandidate()]);
     const captured = registry.get(QUOTE_CREATION_MISSION_KIND_V1);
     candidate.prepare = replacementPrepare;
     candidate.runPlanned = replacementRunPlanned;
@@ -95,20 +99,44 @@ describe('RealtimeMissionKindRegistry', () => {
 
   it('refuse une liste vide ou un kind attendu manquant', () => {
     expectRegistryError(() => registryFromUnsafe([]), 'missing_id');
+    // Le devis seul ne suffit plus : `customer_contact@1` est publié, il DOIT être câblé.
+    expectRegistryError(
+      () =>
+        registryFromUnsafe([
+          {
+            id: QUOTE_CREATION_MISSION_KIND_V1,
+            prepare: vi.fn(async () => preparation),
+            runPlanned: vi.fn(async () => outcome),
+          },
+        ]),
+      'missing_id',
+    );
   });
 
   it.each([
     ['valeur primitive', [null], 'invalid_adapter'],
-    ['adaptateur non appelable', [{
-      id: QUOTE_CREATION_MISSION_KIND_V1,
-      prepare: null,
-      runPlanned: null,
-    }], 'invalid_adapter'],
-    ['identité inconnue', [{
-      id: 'equipment_management@1',
-      prepare: vi.fn(),
-      runPlanned: vi.fn(),
-    }], 'unsupported_id'],
+    [
+      'adaptateur non appelable',
+      [
+        {
+          id: QUOTE_CREATION_MISSION_KIND_V1,
+          prepare: null,
+          runPlanned: null,
+        },
+      ],
+      'invalid_adapter',
+    ],
+    [
+      'identité inconnue',
+      [
+        {
+          id: 'equipment_management@1',
+          prepare: vi.fn(),
+          runPlanned: vi.fn(),
+        },
+      ],
+      'unsupported_id',
+    ],
   ] as const)('refuse %s', (_label, candidates, code) => {
     expectRegistryError(() => registryFromUnsafe(candidates), code);
   });
@@ -120,23 +148,20 @@ describe('RealtimeMissionKindRegistry', () => {
       runPlanned: vi.fn(async () => outcome),
     };
 
-    expectRegistryError(
-      () => registryFromUnsafe([candidate, candidate]),
-      'duplicate_id',
-    );
+    expectRegistryError(() => registryFromUnsafe([candidate, candidate]), 'duplicate_id');
   });
 
   it('échoue fermé si un appel JavaScript contourne le type fermé de get', () => {
-    const registry = new RealtimeMissionKindRegistry([{
-      id: QUOTE_CREATION_MISSION_KIND_V1,
-      prepare: vi.fn(async () => preparation),
-      runPlanned: vi.fn(async () => outcome),
-    }]);
+    const registry = registryFromUnsafe([
+      {
+        id: QUOTE_CREATION_MISSION_KIND_V1,
+        prepare: vi.fn(async () => preparation),
+        runPlanned: vi.fn(async () => outcome),
+      },
+      customerContactCandidate(),
+    ]);
     const unsafeGet = registry.get.bind(registry) as (id: unknown) => unknown;
 
-    expectRegistryError(
-      () => unsafeGet('equipment_management@1'),
-      'unsupported_id',
-    );
+    expectRegistryError(() => unsafeGet('equipment_management@1'), 'unsupported_id');
   });
 });

@@ -170,6 +170,11 @@ export class InMemoryPersistence implements Persistence {
     // simule jamais abusivement RLS, advisory locks ou transaction_timestamp().
     return null;
   }
+  createJarvisProposalPayloadStore(): null {
+    // Une mémoire ne peut attester ni la RLS owner-scopée, ni le sceau recalculé au repos, ni la
+    // rétention décidée par la base : la charge PII reste indisponible, jamais approximée.
+    return null;
+  }
   createAgentMissionResumeUnitOfWork(): null {
     // Un double mémoire ne peut pas attester RLS owner + snapshot RR strictement read-only.
     return null;
@@ -268,8 +273,7 @@ export class InMemoryPersistence implements Persistence {
     const subscriptionSnapshot = this.subscriptions.snapshot();
     const cabinetSnapshot = this.cabinet.snapshot?.();
     const documentSnapshot = this.documents.snapshot();
-    const documentInvoicePdfAttestationSnapshot =
-      this.documents.snapshotInvoicePdfAttestations();
+    const documentInvoicePdfAttestationSnapshot = this.documents.snapshotInvoicePdfAttestations();
     const documentAnalysisSnapshot = this.documentAnalyses.snapshot();
     const folderSnapshot = this.documentFolders.snapshot();
     const quoteSnapshot = this.quotes.snapshot();

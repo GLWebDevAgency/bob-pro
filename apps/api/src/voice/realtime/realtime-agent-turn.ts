@@ -7,13 +7,16 @@ import {
   type AgentRun,
   type PreclassifiedAgentPlan,
   type Provider,
+  type RealtimeCustomerContactSemanticContext,
   type RealtimeQuoteSemanticMissionContext,
   type RealtimeSemanticHostManifest,
   type RealtimeSemanticPlannerInput,
   type RealtimeSemanticPlannerResult,
 } from '@bob/ai';
 import {
+  CUSTOMER_CONTACT_MISSION_KIND_V1,
   QUOTE_CREATION_MISSION_KIND_V1,
+  isMissionKindId,
   type AppError,
   type ConfirmedTimeZone,
   type MissionKindId,
@@ -26,6 +29,11 @@ import type {
   OpenAiNativeSpeechSource,
 } from './openai-native-speech-risk';
 import { prepareRealtimeContext } from './realtime-context';
+import type {
+  RealtimeJarvisMissionOrchestrationInput,
+  RealtimeJarvisMissionOrchestratorPort,
+  RealtimeJarvisMissionPreparedTurn,
+} from './realtime-jarvis-mission-orchestrator';
 import type {
   RealtimeQuoteMissionAuthority,
   RealtimeQuoteMissionOrchestrationInput,
@@ -54,6 +62,11 @@ export interface RealtimeAgentTurnInput {
   readonly confirmedTimeZone?: ConfirmedTimeZone;
   /** Autorité serveur dérivée de la lease admise ; jamais fournie par le modèle ou le client. */
   readonly agentMissionAuthority?: RealtimeQuoteMissionAuthority;
+  /**
+   * Kinds admis PAR L'ADMISSION DE SESSION (flag par kind), threadés par le service — jamais
+   * codés en dur ici : un kind absent de cette liste n'a ni lentille, ni outil, ni exécution.
+   */
+  readonly admittedMissionKinds?: readonly MissionKindId[];
   /** Fence durable lu au début du tour, puis relu juste avant toute publication. */
   readonly contextFence: RealtimeAgentContextFence;
   /** Observateur staging non autoritaire ; ses pannes ne modifient jamais le résultat du tour. */
@@ -140,7 +153,8 @@ function traceSemanticPlan(
       plannerDisposition: 'mission_frame',
       plannerAuthority: 'mission',
       plannerModel: planning.frame.model,
-      missionKind: QUOTE_CREATION_MISSION_KIND_V1,
+      // Le kind tracé est celui RÉELLEMENT planifié ; absent = writer N-1 (devis).
+      missionKind: planning.missionKind ?? QUOTE_CREATION_MISSION_KIND_V1,
     });
     return;
   }
@@ -216,12 +230,15 @@ function sameContextVersion(
   left: RealtimeAgentContextVersion,
   right: RealtimeAgentContextVersion,
 ): boolean {
-  return left.version === right.version
-    && left.revision === right.revision
-    && left.digest === right.digest;
+  return (
+    left.version === right.version &&
+    left.revision === right.revision &&
+    left.digest === right.digest
+  );
 }
 
-const CONTEXT_UNAVAILABLE_SPEECH = 'Je ne peux pas vérifier le contexte de cet écran. Rien n’a été exécuté.';
+const CONTEXT_UNAVAILABLE_SPEECH =
+  'Je ne peux pas vérifier le contexte de cet écran. Rien n’a été exécuté.';
 
 interface SelectedCanonicalSpeech {
   readonly text: string;
@@ -229,40 +246,41 @@ interface SelectedCanonicalSpeech {
 }
 
 function canonicalSpeech(run: AgentRun): SelectedCanonicalSpeech {
-  const selected = run.spokenPrompt !== undefined
-    ? { value: run.spokenPrompt, source: 'spoken_prompt' as const }
-    : run.naturalBody !== undefined
-      ? { value: run.naturalBody, source: 'natural_body' as const }
-      : run.card.body !== undefined
-        ? { value: run.card.body, source: 'card_body' as const }
-        : { value: run.card.title, source: 'card_title' as const };
+  const selected =
+    run.spokenPrompt !== undefined
+      ? { value: run.spokenPrompt, source: 'spoken_prompt' as const }
+      : run.naturalBody !== undefined
+        ? { value: run.naturalBody, source: 'natural_body' as const }
+        : run.card.body !== undefined
+          ? { value: run.card.body, source: 'card_body' as const }
+          : { value: run.card.title, source: 'card_title' as const };
   return {
     text: selected.value
-    // Les contrôles n'ont aucune valeur vocale et pourraient modifier la trame sideband.
-    // eslint-disable-next-line no-control-regex
-    .replace(/[\u0000-\u001f\u007f]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, MAX_CANONICAL_SPEECH_CHARS),
+      // Les contrôles n'ont aucune valeur vocale et pourraient modifier la trame sideband.
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\u0000-\u001f\u007f]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, MAX_CANONICAL_SPEECH_CHARS),
     source: selected.source,
   };
 }
 
 function safeFailureSpeech(error: AppError): string {
   if (
-    error.kind === 'conflict'
-    && error.entity === 'agent_intent_ownership'
-    && error.reason === 'mission_owned'
+    error.kind === 'conflict' &&
+    error.entity === 'agent_intent_ownership' &&
+    error.reason === 'mission_owned'
   ) {
     return MISSION_OWNERSHIP_REFUSAL;
   }
   if (error.kind === 'validation') {
-    return "Je n’ai pas bien compris. Reformule ta demande en une phrase courte.";
+    return 'Je n’ai pas bien compris. Reformule ta demande en une phrase courte.';
   }
   if (error.kind === 'forbidden') {
-    return "Je ne peux pas traiter cette demande dans cet espace. Tu peux continuer manuellement dans l’application.";
+    return 'Je ne peux pas traiter cette demande dans cet espace. Tu peux continuer manuellement dans l’application.';
   }
-  return "Je rencontre un souci temporaire. Rien n’a été exécuté.";
+  return 'Je rencontre un souci temporaire. Rien n’a été exécuté.';
 }
 
 export function classifyRealtimeAgentSpeechPurpose(
@@ -278,10 +296,11 @@ export function classifyRealtimeAgentSpeechPurpose(
   // Seuls les gabarits d'aide générique, sans contexte tenant et sans naturalisation LLM,
   // peuvent demander le chemin conversationnel. Tout autre answer est un fait métier potentiel.
   if (
-    !hasScreenContext
-    && run.naturalBody === undefined
-    && (run.intent === 'aide' || run.intent === 'unknown')
-  ) return 'generic_assistance';
+    !hasScreenContext &&
+    run.naturalBody === undefined &&
+    (run.intent === 'aide' || run.intent === 'unknown')
+  )
+    return 'generic_assistance';
   return 'business_answer';
 }
 
@@ -297,6 +316,8 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
     private readonly quoteMissions: RealtimeQuoteMissionOrchestratorPort | null = null,
     private readonly semanticPlanner: RealtimeSemanticPlannerPort | null = null,
     private readonly now: () => Date = () => new Date(),
+    /** Vertical fiche client (U1-d) : présent dès le boot, délégué nul tant qu'il n'est pas câblé. */
+    private readonly customerContactMissions: RealtimeJarvisMissionOrchestratorPort | null = null,
   ) {}
 
   async run(input: RealtimeAgentTurnInput): Promise<RealtimeAgentTurnOutcome> {
@@ -332,19 +353,30 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
       phase: 'unavailable',
       presentedChoices: [],
     };
-    const admittedMissionKinds = input.agentMissionAuthority === undefined
-      ? Object.freeze([]) as readonly MissionKindId[]
-      : Object.freeze([QUOTE_CREATION_MISSION_KIND_V1]);
+    // Kinds admis : dérivés de l'ENTRÉE (admission de session), jamais d'une liste écrite ici.
+    // Sans autorité de lease, aucun kind n'est admis — la voix reste sur le chemin global.
+    const admittedMissionKinds =
+      input.agentMissionAuthority === undefined
+        ? (Object.freeze([]) as readonly MissionKindId[])
+        : (Object.freeze([
+            ...new Set((input.admittedMissionKinds ?? []).filter(isMissionKindId)),
+          ]) as readonly MissionKindId[]);
     const executor = this.resolveExecutor();
+    let preparedCustomerContact: RealtimeJarvisMissionPreparedTurn | null = null;
+    let customerContactRequest: RealtimeJarvisMissionOrchestrationInput | null = null;
+    let customerContactContext: RealtimeCustomerContactSemanticContext | undefined;
 
-    if (input.agentMissionAuthority !== undefined) {
+    if (
+      input.agentMissionAuthority !== undefined &&
+      admittedMissionKinds.includes(QUOTE_CREATION_MISSION_KIND_V1)
+    ) {
       const authority = input.agentMissionAuthority;
       const quoteMissions = this.quoteMissions;
       const contextRevision = input.contextFence.expected.revision;
       if (
-        quoteMissions === null
-        || input.contextFence.expected.version !== 1
-        || contextRevision === null
+        quoteMissions === null ||
+        input.contextFence.expected.version !== 1 ||
+        contextRevision === null
       ) {
         return {
           status: 'failed',
@@ -372,9 +404,7 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
         contextDigest: input.contextFence.expected.digest,
         signal: input.signal,
       };
-      let preparation: Awaited<
-        ReturnType<RealtimeQuoteMissionOrchestratorPort['prepare']>
-      >;
+      let preparation: Awaited<ReturnType<RealtimeQuoteMissionOrchestratorPort['prepare']>>;
       try {
         preparation = await requestContext.run(
           {
@@ -394,6 +424,71 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
       if (preparation.status === 'failed') return preparation;
       preparedMission = preparation.prepared;
       semanticMission = preparation.prepared.semanticContext;
+    }
+
+    if (
+      input.agentMissionAuthority !== undefined &&
+      admittedMissionKinds.includes(CUSTOMER_CONTACT_MISSION_KIND_V1)
+    ) {
+      const contextRevision = input.contextFence.expected.revision;
+      const customerContactMissions = this.customerContactMissions;
+      if (
+        customerContactMissions === null ||
+        input.contextFence.expected.version !== 1 ||
+        contextRevision === null
+      ) {
+        return {
+          status: 'failed',
+          canonicalSpeech: 'Je ne peux pas sécuriser la mission. Rien n’a été exécuté.',
+        };
+      }
+      // Même discipline que le devis : l'écran est relu AVANT toute préparation de mission.
+      const beforeContact = await this.revalidateContext(input);
+      if (beforeContact === 'aborted') return { status: 'aborted' };
+      if (beforeContact === 'failed') {
+        return { status: 'failed', canonicalSpeech: CONTEXT_UNAVAILABLE_SPEECH };
+      }
+      customerContactRequest = {
+        authority: input.agentMissionAuthority,
+        turnId: input.turnId,
+        transcript: input.transcript,
+        history: input.history,
+        contextRevision,
+        contextDigest: input.contextFence.expected.digest,
+        signal: input.signal,
+      };
+      let contactPreparation: Awaited<ReturnType<RealtimeJarvisMissionOrchestratorPort['prepare']>>;
+      try {
+        contactPreparation = await requestContext.run(
+          {
+            correlationId: `bob-live-turn-${input.turnId}`,
+            principal: { userId: input.userId, companyId: input.companyId },
+          },
+          () => customerContactMissions.prepare(customerContactRequest!),
+        );
+      } catch {
+        if (input.signal.aborted) return { status: 'aborted' };
+        return {
+          status: 'failed',
+          canonicalSpeech: 'Je rencontre un souci temporaire. Rien n’a été exécuté.',
+        };
+      }
+      if (input.signal.aborted) return { status: 'aborted' };
+      if (contactPreparation.status === 'failed') {
+        // ADDITIVITE (SPEC_U1D §3, revue C3-P0) : une panne du vertical fiche client
+        // DEGRADE la lentille, elle ne tue jamais le tour — le devis et le chemin global
+        // restent servis exactement comme avant l'existence de ce vertical.
+        input.trace?.record({
+          eventKind: 'provider_failed',
+          turnId: input.turnId,
+          stage: 'planner',
+          outcome: 'unavailable',
+          failureClass: 'unknown',
+        });
+      } else {
+        preparedCustomerContact = contactPreparation.prepared;
+        customerContactContext = contactPreparation.prepared.semanticContext;
+      }
     }
 
     if (this.semanticPlanner === null) {
@@ -423,13 +518,13 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
               : { confirmedTimeZone: input.confirmedTimeZone }),
           },
         },
-        () => this.persistence.runWithTenant(
-          input.companyId,
-          () => executor.prepareRealtimeSemanticHost({
-            ...(input.context === undefined ? {} : { context: input.context }),
-            admittedMissionKinds,
-          }),
-        ),
+        () =>
+          this.persistence.runWithTenant(input.companyId, () =>
+            executor.prepareRealtimeSemanticHost({
+              ...(input.context === undefined ? {} : { context: input.context }),
+              admittedMissionKinds,
+            }),
+          ),
       );
       if (!preparedHost.ok) {
         input.trace?.record({
@@ -474,30 +569,36 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
               : { confirmedTimeZone: input.confirmedTimeZone }),
           },
         },
-        () => this.semanticPlanner!.plan({
-          transcript: input.transcript,
-          history: input.history.slice(-MAX_REALTIME_PLANNER_HISTORY_TURNS),
-          ...(input.context === undefined ? {} : { context: input.context }),
-          screen:
-            input.context === undefined
-            || input.contextFence.expected.revision === null
-              ? null
-              : {
-                  route: input.context.screen.name,
-                  revision: input.contextFence.expected.revision,
-                  digest: input.contextFence.expected.digest,
-                },
-          quoteMission: semanticMission,
-          hostManifest,
-          missionCapabilities:
-            preparedMission?.availableCapabilities ?? Object.freeze([]),
-          locale: 'fr-FR',
-          // Préférence conversationnelle explicitement confirmée et figée au bootstrap. Un
-          // transport N-1 sans claim reste null : jamais de repli sur le fuseau légal Paris.
-          timeZone: input.confirmedTimeZone?.timeZone ?? null,
-          now: this.now().toISOString(),
-          signal: input.signal,
-        }),
+        () =>
+          this.semanticPlanner!.plan({
+            transcript: input.transcript,
+            history: input.history.slice(-MAX_REALTIME_PLANNER_HISTORY_TURNS),
+            ...(input.context === undefined ? {} : { context: input.context }),
+            screen:
+              input.context === undefined || input.contextFence.expected.revision === null
+                ? null
+                : {
+                    route: input.context.screen.name,
+                    revision: input.contextFence.expected.revision,
+                    digest: input.contextFence.expected.digest,
+                  },
+            quoteMission: semanticMission,
+            ...(admittedMissionKinds.length === 0 ? {} : { admittedMissionKinds }),
+            ...(customerContactContext === undefined
+              ? {}
+              : { customerContactMission: customerContactContext }),
+            hostManifest,
+            missionCapabilities: Object.freeze([
+              ...(preparedMission?.availableCapabilities ?? []),
+              ...(preparedCustomerContact?.availableCapabilities ?? []),
+            ]),
+            locale: 'fr-FR',
+            // Préférence conversationnelle explicitement confirmée et figée au bootstrap. Un
+            // transport N-1 sans claim reste null : jamais de repli sur le fuseau légal Paris.
+            timeZone: input.confirmedTimeZone?.timeZone ?? null,
+            now: this.now().toISOString(),
+            signal: input.signal,
+          }),
       );
     } catch {
       if (input.signal.aborted) return { status: 'aborted' };
@@ -519,11 +620,73 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
       return { status: 'failed', canonicalSpeech: SEMANTIC_PLANNER_FAILURE };
     }
 
+    if (
+      planning.status === 'mission_frame' &&
+      planning.missionKind === CUSTOMER_CONTACT_MISSION_KIND_V1
+    ) {
+      const customerContactMissions = this.customerContactMissions;
+      if (
+        customerContactRequest === null ||
+        preparedCustomerContact === null ||
+        customerContactMissions === null ||
+        !admittedMissionKinds.includes(CUSTOMER_CONTACT_MISSION_KIND_V1)
+      ) {
+        return {
+          status: 'failed',
+          canonicalSpeech: 'Je ne peux pas sécuriser la mission. Rien n’a été exécuté.',
+        };
+      }
+      const contextBeforeContact = await this.revalidateContext(input);
+      if (contextBeforeContact === 'aborted') return { status: 'aborted' };
+      if (contextBeforeContact === 'failed') {
+        return { status: 'failed', canonicalSpeech: CONTEXT_UNAVAILABLE_SPEECH };
+      }
+      let contactOutcome: Awaited<ReturnType<RealtimeJarvisMissionOrchestratorPort['runPlanned']>>;
+      try {
+        contactOutcome = await requestContext.run(
+          {
+            correlationId: `bob-live-turn-${input.turnId}`,
+            principal: { userId: input.userId, companyId: input.companyId },
+          },
+          () =>
+            customerContactMissions.runPlanned({
+              request: customerContactRequest!,
+              prepared: preparedCustomerContact!,
+              frame: planning.frame,
+            }),
+        );
+      } catch {
+        if (input.signal.aborted) return { status: 'aborted' };
+        return {
+          status: 'failed',
+          canonicalSpeech: 'Je rencontre un souci temporaire. Rien n’a été exécuté.',
+        };
+      }
+      if (input.signal.aborted) return { status: 'aborted' };
+      if (contactOutcome.status === 'failed') return contactOutcome;
+      const contextAfterContact = await this.revalidateContext(input);
+      if (contextAfterContact === 'aborted') return { status: 'aborted' };
+      if (contextAfterContact === 'failed') {
+        return { status: 'failed', canonicalSpeech: CONTEXT_UNAVAILABLE_SPEECH };
+      }
+      return {
+        status: 'ready',
+        turnId: input.turnId,
+        canonicalSpeech: contactOutcome.canonicalSpeech,
+        kind: 'answer',
+        speechPurpose: contactOutcome.speechPurpose,
+        speechSource: 'card_body',
+        hasTenantContext: true,
+        contextVersion: input.contextFence.expected,
+      };
+    }
+
     if (planning.status === 'mission_frame') {
       if (
-        missionRequest === null
-        || preparedMission === null
-        || this.quoteMissions === null
+        missionRequest === null ||
+        preparedMission === null ||
+        this.quoteMissions === null ||
+        !admittedMissionKinds.includes(QUOTE_CREATION_MISSION_KIND_V1)
       ) {
         return {
           status: 'failed',
@@ -535,20 +698,19 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
       if (currentContextBeforeMission === 'failed') {
         return { status: 'failed', canonicalSpeech: CONTEXT_UNAVAILABLE_SPEECH };
       }
-      let missionOutcome: Awaited<
-        ReturnType<RealtimeQuoteMissionOrchestratorPort['runPlanned']>
-      >;
+      let missionOutcome: Awaited<ReturnType<RealtimeQuoteMissionOrchestratorPort['runPlanned']>>;
       try {
         missionOutcome = await requestContext.run(
           {
             correlationId: `bob-live-turn-${input.turnId}`,
             principal: { userId: input.userId, companyId: input.companyId },
           },
-          () => this.quoteMissions!.runPlanned({
-            request: missionRequest!,
-            prepared: preparedMission!,
-            frame: planning.frame,
-          }),
+          () =>
+            this.quoteMissions!.runPlanned({
+              request: missionRequest!,
+              prepared: preparedMission!,
+              frame: planning.frame,
+            }),
         );
       } catch {
         if (input.signal.aborted) return { status: 'aborted' };
@@ -617,21 +779,22 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
               : { confirmedTimeZone: input.confirmedTimeZone }),
           },
         },
-        () => this.persistence.runWithTenant(
-          input.companyId,
-          () => executor.askBobWithPlan(payload, planning.plan, {
-            signal: input.signal,
-            requiredProvider: this.requiredProvider,
-            plannerDurationMs: planning.plannerDurationMs,
-            ...(admittedMissionKinds.length === 0
-              ? {}
-              : { admittedMissionKinds }),
-          }),
-        ),
+        () =>
+          this.persistence.runWithTenant(input.companyId, () =>
+            executor.askBobWithPlan(payload, planning.plan, {
+              signal: input.signal,
+              requiredProvider: this.requiredProvider,
+              plannerDurationMs: planning.plannerDurationMs,
+              ...(admittedMissionKinds.length === 0 ? {} : { admittedMissionKinds }),
+            }),
+          ),
       );
     } catch {
       if (input.signal.aborted) return { status: 'aborted' };
-      return { status: 'failed', canonicalSpeech: 'Je rencontre un souci temporaire. Rien n’a été exécuté.' };
+      return {
+        status: 'failed',
+        canonicalSpeech: 'Je rencontre un souci temporaire. Rien n’a été exécuté.',
+      };
     }
     if (input.signal.aborted) return { status: 'aborted' };
     const currentContext = await this.revalidateContext(input);
@@ -643,19 +806,20 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
 
     const speech = canonicalSpeech(result.value);
     if (!speech.text) {
-      return { status: 'failed', canonicalSpeech: 'Je n’ai pas de réponse fiable à te donner pour le moment.' };
+      return {
+        status: 'failed',
+        canonicalSpeech: 'Je n’ai pas de réponse fiable à te donner pour le moment.',
+      };
     }
     const pending = result.value.pending;
     const navigate = isAllowedAgentNavigationRoute(result.value.navigate)
       ? result.value.navigate
       : undefined;
-    if (
-      input.agentMissionAuthority !== undefined
-      && navigate === '/devis/new'
-    ) {
+    if (input.agentMissionAuthority !== undefined && navigate === '/devis/new') {
       return {
         status: 'failed',
-        canonicalSpeech: 'Je ne peux pas ouvrir un devis sans mission vérifiée. Rien n’a été exécuté.',
+        canonicalSpeech:
+          'Je ne peux pas ouvrir un devis sans mission vérifiée. Rien n’a été exécuté.',
       };
     }
     return {

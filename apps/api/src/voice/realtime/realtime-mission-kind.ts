@@ -1,31 +1,33 @@
 import {
+  CUSTOMER_CONTACT_MISSION_KIND_V1,
   MISSION_KIND_IDS,
   QUOTE_CREATION_MISSION_KIND_V1,
   isMissionKindId,
   type MissionKind,
   type MissionKindId,
 } from '@bob/core';
-import type {
-  RealtimeQuoteMissionOrchestratorPort,
-} from './realtime-quote-mission-orchestrator';
+import type { RealtimeJarvisMissionOrchestratorPort } from './realtime-jarvis-mission-orchestrator';
+import type { RealtimeQuoteMissionOrchestratorPort } from './realtime-quote-mission-orchestrator';
 
 export interface QuoteCreationMissionKindV1
-extends MissionKind, RealtimeQuoteMissionOrchestratorPort {
+  extends MissionKind, RealtimeQuoteMissionOrchestratorPort {
   readonly id: typeof QUOTE_CREATION_MISSION_KIND_V1;
+}
+
+export interface CustomerContactMissionKindV1
+  extends MissionKind, RealtimeJarvisMissionOrchestratorPort {
+  readonly id: typeof CUSTOMER_CONTACT_MISSION_KIND_V1;
 }
 
 export interface RealtimeMissionKindById {
   readonly [QUOTE_CREATION_MISSION_KIND_V1]: QuoteCreationMissionKindV1;
+  readonly [CUSTOMER_CONTACT_MISSION_KIND_V1]: CustomerContactMissionKindV1;
 }
 
-export type RegisteredRealtimeMissionKind =
-  RealtimeMissionKindById[MissionKindId];
+export type RegisteredRealtimeMissionKind = RealtimeMissionKindById[MissionKindId];
 
 export type RealtimeMissionKindRegistryErrorCode =
-  | 'invalid_adapter'
-  | 'unsupported_id'
-  | 'duplicate_id'
-  | 'missing_id';
+  'invalid_adapter' | 'unsupported_id' | 'duplicate_id' | 'missing_id';
 
 export class RealtimeMissionKindRegistryError extends Error {
   constructor(
@@ -68,6 +70,21 @@ function captureMissionKind(candidate: unknown): RegisteredRealtimeMissionKind {
       const capturedRunPlanned = runPlanned.bind(
         candidate,
       ) as RealtimeQuoteMissionOrchestratorPort['runPlanned'];
+      Object.freeze(capturedPrepare);
+      Object.freeze(capturedRunPlanned);
+      return Object.freeze({
+        id,
+        prepare: capturedPrepare,
+        runPlanned: capturedRunPlanned,
+      });
+    }
+    case CUSTOMER_CONTACT_MISSION_KIND_V1: {
+      const capturedPrepare = prepare.bind(
+        candidate,
+      ) as RealtimeJarvisMissionOrchestratorPort['prepare'];
+      const capturedRunPlanned = runPlanned.bind(
+        candidate,
+      ) as RealtimeJarvisMissionOrchestratorPort['runPlanned'];
       Object.freeze(capturedPrepare);
       Object.freeze(capturedRunPlanned);
       return Object.freeze({

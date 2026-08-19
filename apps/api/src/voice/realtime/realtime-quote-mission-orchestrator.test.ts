@@ -1,9 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import {
-  planRealtimeSemanticTurn,
-  type LlmPort,
-  type LlmToolCall,
-} from '@bob/ai';
+import { planRealtimeSemanticTurn, type LlmPort, type LlmToolCall } from '@bob/ai';
+import { CUSTOMER_CONTACT_MISSION_KIND_V1 } from '@bob/core';
 import type {
   AgentMissionViewV1,
   DecideQuoteAgentMissionOutput,
@@ -36,8 +33,7 @@ const PROOF = Object.freeze({
 const PROOF_V2 = Object.freeze({ ...PROOF, protocolVersion: 2 });
 const SESSION_ID = '20000000-0000-4000-8000-000000000001';
 const TURN_ID = '10000000-0000-4000-8000-000000000001';
-const COMPOSITE_TRANSCRIPT =
-  'Prends le deuxième, puis ajoute deux heures de déplacement.';
+const COMPOSITE_TRANSCRIPT = 'Prends le deuxième, puis ajoute deux heures de déplacement.';
 const COMPOSITE_REMAINDER = 'puis ajoute deux heures de déplacement.';
 const LINE_ARGUMENTS = Object.freeze({
   service_reference: 'Main-d’œuvre plomberie',
@@ -71,12 +67,10 @@ const EMPTY_PRESENTATION = Object.freeze({
   proposal: null,
 }) satisfies QuoteAgentMissionPresentationV1;
 
-function plannerResumeForSnapshot(
-  snapshot: {
-    readonly mission: AgentMissionViewV1 | null;
-    readonly presentation: QuoteAgentMissionPresentationV1 | null;
-  },
-): QuoteAgentMissionPlannerResumeV2 {
+function plannerResumeForSnapshot(snapshot: {
+  readonly mission: AgentMissionViewV1 | null;
+  readonly presentation: QuoteAgentMissionPresentationV1 | null;
+}): QuoteAgentMissionPlannerResumeV2 {
   if (snapshot.mission === null || snapshot.presentation === null) {
     return Object.freeze({
       resume: Object.freeze({ mission: null, presentation: null }),
@@ -87,9 +81,10 @@ function plannerResumeForSnapshot(
   }
   const draft = snapshot.mission.payload.draft;
   if (draft === null) throw new Error('fixture mission V2 sans brouillon');
-  const customerDecision = snapshot.mission.payload.decision?.kind === 'customer'
-    ? snapshot.mission.payload.decision
-    : null;
+  const customerDecision =
+    snapshot.mission.payload.decision?.kind === 'customer'
+      ? snapshot.mission.payload.decision
+      : null;
   const resume = Object.freeze({
     mission: Object.freeze({
       id: snapshot.mission.id,
@@ -104,42 +99,42 @@ function plannerResumeForSnapshot(
     draft: Object.freeze({
       ...draft,
       step:
-        snapshot.mission.phase === 'awaiting_customer'
-        || snapshot.mission.phase === 'awaiting_customer_choice'
+        snapshot.mission.phase === 'awaiting_customer' ||
+        snapshot.mission.phase === 'awaiting_customer_choice'
           ? ('client' as const)
           : ('lignes' as const),
     }),
     customerChoices: Object.freeze(
-      customerDecision?.candidates.map((candidate, index) => Object.freeze({
-        status: 'available' as const,
-        choiceId: candidate.choiceId,
-        label: `Client ${index + 1}`,
-      })) ?? [],
+      customerDecision?.candidates.map((candidate, index) =>
+        Object.freeze({
+          status: 'available' as const,
+          choiceId: candidate.choiceId,
+          label: `Client ${index + 1}`,
+        }),
+      ) ?? [],
     ),
     presentation: snapshot.presentation,
   });
   const pending = snapshot.presentation.pendingLine;
   return Object.freeze({
     resume,
-    currentLine: pending === null
-      ? null
-      : Object.freeze({
-          pendingLineId: pending.pendingLineId,
-          expectedWorkRevision: pending.expectedWorkRevision,
-          serviceReference: 'Main-d’œuvre plomberie',
-          category: 'labor' as const,
-          quantityMilli: 2_000,
-          unit: 'heure',
-          unitPriceCents:
-            snapshot.mission.phase === 'awaiting_line_details' ? null : 5_500,
-          requestedVatRate: 20 as const,
-          priceBasis:
-            snapshot.mission.phase === 'awaiting_line_details'
-              ? null
-              : 'per_unit' as const,
-          housingOlderThan2y: null,
-          energyRenovation: null,
-        }),
+    currentLine:
+      pending === null
+        ? null
+        : Object.freeze({
+            pendingLineId: pending.pendingLineId,
+            expectedWorkRevision: pending.expectedWorkRevision,
+            serviceReference: 'Main-d’œuvre plomberie',
+            category: 'labor' as const,
+            quantityMilli: 2_000,
+            unit: 'heure',
+            unitPriceCents: snapshot.mission.phase === 'awaiting_line_details' ? null : 5_500,
+            requestedVatRate: 20 as const,
+            priceBasis:
+              snapshot.mission.phase === 'awaiting_line_details' ? null : ('per_unit' as const),
+            housingOlderThan2y: null,
+            energyRenovation: null,
+          }),
     confirmedLineCount: 0,
     pendingLineCount: pending === null ? 0 : 1,
   });
@@ -164,25 +159,31 @@ function presentationForMission(
         pendingLineId: decision.pendingLineId,
         expectedDraft: decision.expectedDraft,
         expectedWorkRevision: decision.expectedWorkRevision,
-        choices: Object.freeze(decision.candidates.map((candidate) => Object.freeze({
-          choiceId: candidate.choiceId,
-          catalogueItemId: candidate.catalogueItemId,
-          expectedCatalogueRevision: candidate.expectedCatalogueRevision,
-        }))),
+        choices: Object.freeze(
+          decision.candidates.map((candidate) =>
+            Object.freeze({
+              choiceId: candidate.choiceId,
+              catalogueItemId: candidate.catalogueItemId,
+              expectedCatalogueRevision: candidate.expectedCatalogueRevision,
+            }),
+          ),
+        ),
         freeLineChoiceId: decision.freeLineChoiceId,
         choiceSetHash: decision.choiceSetHash,
       }),
-      catalogueChoices: Object.freeze(decision.candidates.map((candidate, index) => (
-        Object.freeze({
-          choiceId: candidate.choiceId,
-          available: true,
-          label: `Prestation ${index + 1}`,
-          category: 'labor' as const,
-          unit: 'heure',
-          unitPriceCents: 5_500,
-          vatRate: 20 as const,
-        })
-      ))),
+      catalogueChoices: Object.freeze(
+        decision.candidates.map((candidate, index) =>
+          Object.freeze({
+            choiceId: candidate.choiceId,
+            available: true,
+            label: `Prestation ${index + 1}`,
+            category: 'labor' as const,
+            unit: 'heure',
+            unitPriceCents: 5_500,
+            vatRate: 20 as const,
+          }),
+        ),
+      ),
       freeLineChoiceId: decision.freeLineChoiceId,
     });
   }
@@ -255,10 +256,7 @@ function llm(call: LlmToolCall): LlmPort {
 
 function toolCall(
   action:
-    | 'start_quote_creation'
-    | 'set_customer_reference'
-    | 'select_presented_customer'
-    | 'unrelated',
+    'start_quote_creation' | 'set_customer_reference' | 'select_presented_customer' | 'unrelated',
   customerReference: string | null,
   choiceOrdinal: number | null,
   extra: Readonly<Record<string, unknown>> = {},
@@ -281,9 +279,7 @@ function toolCallV2(operation: Readonly<Record<string, unknown>>): LlmToolCall {
   };
 }
 
-function mission(
-  overrides: Partial<AgentMissionViewV1> = {},
-): AgentMissionViewV1 {
+function mission(overrides: Partial<AgentMissionViewV1> = {}): AgentMissionViewV1 {
   return {
     id: '30000000-0000-4000-8000-000000000001',
     kind: 'quote_creation',
@@ -368,7 +364,7 @@ function cataloguePresentationWithUnavailableOrdinal(
   return Object.freeze({
     ...presentation,
     catalogueChoices: Object.freeze(
-      presentation.catalogueChoices.map((choice, index) => (
+      presentation.catalogueChoices.map((choice, index) =>
         index + 1 === ordinal
           ? Object.freeze({
               ...choice,
@@ -379,8 +375,8 @@ function cataloguePresentationWithUnavailableOrdinal(
               unitPriceCents: null,
               vatRate: null,
             })
-          : choice
-      )),
+          : choice,
+      ),
     ),
   });
 }
@@ -442,11 +438,9 @@ function harness(input: {
   readonly current?: AgentMissionViewV1 | null;
   readonly currentPresentation?: QuoteAgentMissionPresentationV1 | null;
   readonly currentAfterUnderstanding?: AgentMissionViewV1 | null;
-  readonly currentPresentationAfterUnderstanding?:
-    QuoteAgentMissionPresentationV1 | null;
+  readonly currentPresentationAfterUnderstanding?: QuoteAgentMissionPresentationV1 | null;
   readonly currentAfterDecision?: AgentMissionViewV1 | null;
-  readonly currentPresentationAfterDecision?:
-    QuoteAgentMissionPresentationV1 | null;
+  readonly currentPresentationAfterDecision?: QuoteAgentMissionPresentationV1 | null;
   readonly started?: AgentMissionViewV1;
   readonly startFailure?: 'conflict' | 'line_limit_reached' | 'throws';
   readonly decided?: AgentMissionViewV1;
@@ -455,22 +449,21 @@ function harness(input: {
   readonly decisionFailure?: 'conflict' | 'line_limit_reached' | 'throws';
   readonly stageValue?: StageQuoteAgentMissionLinesServiceOutput;
   readonly stageFailure?: 'conflict' | 'line_limit_reached' | 'throws';
-  readonly catalogueChoiceValue?:
-    DecideQuoteAgentMissionCatalogueChoiceServiceOutput;
+  readonly catalogueChoiceValue?: DecideQuoteAgentMissionCatalogueChoiceServiceOutput;
   readonly catalogueChoiceFailure?: 'conflict' | 'line_limit_reached' | 'throws';
   readonly patchValue?: PatchQuoteAgentMissionLineServiceOutput;
   readonly patchFailure?: 'conflict' | 'throws';
-  readonly pendingLineCancellationValue?:
-    CancelQuoteAgentMissionPendingLineServiceOutput;
+  readonly pendingLineCancellationValue?: CancelQuoteAgentMissionPendingLineServiceOutput;
   readonly pendingLineCancellationFailure?: 'conflict' | 'throws';
   readonly lineDecisionValue?: DecideQuoteAgentMissionLineProposalServiceOutput;
   readonly lineDecisionFailure?: 'conflict' | 'throws';
 }) {
   let currentReadCount = 0;
   const getCurrent = vi.fn<RealtimeQuoteMissionGateway['getCurrent']>(async () => {
-    const selected = currentReadCount > 0 && 'currentAfterDecision' in input
-      ? input.currentAfterDecision ?? null
-      : input.current ?? null;
+    const selected =
+      currentReadCount > 0 && 'currentAfterDecision' in input
+        ? (input.currentAfterDecision ?? null)
+        : (input.current ?? null);
     currentReadCount += 1;
     return {
       ok: true,
@@ -482,30 +475,24 @@ function harness(input: {
     readonly mission: AgentMissionViewV1 | null;
     readonly presentation: QuoteAgentMissionPresentationV1 | null;
   } | null = null;
-  const getCurrentV2 = vi.fn<
-    RealtimeQuoteMissionGateway['getCurrentV2']
-  >(async () => {
+  const getCurrentV2 = vi.fn<RealtimeQuoteMissionGateway['getCurrentV2']>(async () => {
     const isUnderstandingRefresh = currentV2ReadCount === 1;
     const isPostDecisionRefresh = currentV2ReadCount >= 2;
     const selected = isPostDecisionRefresh
-      ? (
-          'currentAfterDecision' in input
-            ? input.currentAfterDecision ?? null
-            : input.decided ?? input.current ?? null
-        )
+      ? 'currentAfterDecision' in input
+        ? (input.currentAfterDecision ?? null)
+        : (input.decided ?? input.current ?? null)
       : isUnderstandingRefresh && 'currentAfterUnderstanding' in input
-        ? input.currentAfterUnderstanding ?? null
-        : input.current ?? null;
+        ? (input.currentAfterUnderstanding ?? null)
+        : (input.current ?? null);
     const selectedPresentation = isPostDecisionRefresh
-      ? (
-          'currentPresentationAfterDecision' in input
-            ? input.currentPresentationAfterDecision ?? null
-            : presentationForMission(selected)
-        )
+      ? 'currentPresentationAfterDecision' in input
+        ? (input.currentPresentationAfterDecision ?? null)
+        : presentationForMission(selected)
       : isUnderstandingRefresh && 'currentPresentationAfterUnderstanding' in input
-        ? input.currentPresentationAfterUnderstanding ?? null
+        ? (input.currentPresentationAfterUnderstanding ?? null)
         : 'currentPresentation' in input
-          ? input.currentPresentation ?? null
+          ? (input.currentPresentation ?? null)
           : presentationForMission(selected);
     currentV2ReadCount += 1;
     lastV2Snapshot = {
@@ -517,24 +504,24 @@ function harness(input: {
       value: lastV2Snapshot,
     };
   });
-  const getCurrentPlannerResumeV2 = vi.fn<
-    RealtimeQuoteMissionGateway['getCurrentPlannerResumeV2']
-  >(async () => {
-    if (lastV2Snapshot === null) {
-      throw new Error('resume planner lu avant le snapshot capability');
-    }
-    return {
-      ok: true,
-      value: plannerResumeForSnapshot(lastV2Snapshot),
-    };
-  });
-  const startFromVoiceTurn = vi.fn<RealtimeQuoteMissionGateway['startFromVoiceTurn']>(
+  const getCurrentPlannerResumeV2 = vi.fn<RealtimeQuoteMissionGateway['getCurrentPlannerResumeV2']>(
     async () => {
-      if (input.startFailure === 'throws') throw new Error('response lost');
-      if (input.startFailure !== undefined) {
-        return {
-          ok: false,
-          error: input.startFailure === 'line_limit_reached'
+      if (lastV2Snapshot === null) {
+        throw new Error('resume planner lu avant le snapshot capability');
+      }
+      return {
+        ok: true,
+        value: plannerResumeForSnapshot(lastV2Snapshot),
+      };
+    },
+  );
+  const startFromVoiceTurn = vi.fn<RealtimeQuoteMissionGateway['startFromVoiceTurn']>(async () => {
+    if (input.startFailure === 'throws') throw new Error('response lost');
+    if (input.startFailure !== undefined) {
+      return {
+        ok: false,
+        error:
+          input.startFailure === 'line_limit_reached'
             ? {
                 kind: 'conflict',
                 entity: 'agent_mission_quote_draft',
@@ -545,129 +532,130 @@ function harness(input: {
                 entity: 'agent_mission',
                 reason: 'stale_revision',
               },
+      };
+    }
+    return {
+      ok: true,
+      value: {
+        outcome: 'created',
+        startOutcome: 'no_slot',
+        mission: input.started ?? mission(),
+      },
+    };
+  });
+  const decideFromVoiceTurn = vi.fn<RealtimeQuoteMissionGateway['decideFromVoiceTurn']>(
+    async () => {
+      if (input.decisionFailure === 'throws') {
+        throw new Error('response lost');
+      }
+      if (input.decisionFailure === 'conflict') {
+        return {
+          ok: false,
+          error: {
+            kind: 'conflict',
+            entity: 'agent_mission_decision',
+            reason: 'revision_mismatch',
+          },
         };
+      }
+      if (input.decisionFailure === 'line_limit_reached') {
+        return {
+          ok: false,
+          error: {
+            kind: 'conflict',
+            entity: 'agent_mission_quote_draft',
+            reason: 'line_limit_reached',
+          },
+        };
+      }
+      const outcome = input.decisionOutcome ?? 'selected';
+      const missionView =
+        input.decided ??
+        mission({
+          phase: 'awaiting_lines',
+          revision: 4,
+          payload: {
+            schema: 'bob.agent-mission.quote-creation',
+            version: 1,
+            draft: {
+              sessionId: 'draft-session-1',
+              slotRevision: 2,
+              contentRevision: 1,
+            },
+            decision: null,
+            stagedCustomerResolution: null,
+          },
+        });
+      let value: DecideQuoteAgentMissionOutput;
+      if (outcome === 'presented') {
+        value = { outcome, effect: { kind: outcome, candidateCount: 2 }, mission: missionView };
+      } else if (outcome === 'not_found') {
+        value = { outcome, effect: { kind: outcome, result: 'none' }, mission: missionView };
+      } else if (outcome === 'invalidated') {
+        value = {
+          outcome,
+          effect: { kind: outcome, reason: 'candidate_unavailable' },
+          mission: missionView,
+        };
+      } else if (outcome === 'replayed') {
+        value = {
+          outcome,
+          effect: input.replayEffect ?? { kind: 'selected' },
+          mission: missionView,
+        };
+      } else {
+        value = { outcome, effect: { kind: outcome }, mission: missionView };
       }
       return {
         ok: true,
-        value: {
-          outcome: 'created',
-          startOutcome: 'no_slot',
-          mission: input.started ?? mission(),
+        value,
+      };
+    },
+  );
+  const stageLinesFromVoiceTurn = vi.fn<RealtimeQuoteMissionGateway['stageLinesFromVoiceTurn']>(
+    async () => {
+      if (input.stageFailure === 'throws') throw new Error('response lost');
+      if (input.stageFailure === 'conflict') {
+        return {
+          ok: false,
+          error: {
+            kind: 'conflict',
+            entity: 'agent_mission',
+            reason: 'stale_revision',
+          },
+        };
+      }
+      if (input.stageFailure === 'line_limit_reached') {
+        return {
+          ok: false,
+          error: {
+            kind: 'conflict',
+            entity: 'agent_mission_quote_draft',
+            reason: 'line_limit_reached',
+          },
+        };
+      }
+      const detailsMission = mission({ phase: 'awaiting_line_details', revision: 5 });
+      return {
+        ok: true,
+        value: input.stageValue ?? {
+          outcome: 'staged',
+          mission: detailsMission,
+          stagedCount: 1,
+          firstQueueOrdinal: 1,
+          lastQueueOrdinal: 1,
+          continuation: {
+            outcome: 'details_requested',
+            pendingLineId: '60000000-0000-4000-8000-000000000001',
+            presentedChoiceCount: 0,
+            requiredFact: 'unit_price',
+            proposalId: null,
+          },
+          presentation: presentationForMission(detailsMission)!,
         },
       };
     },
   );
-  const decideFromVoiceTurn = vi.fn<
-    RealtimeQuoteMissionGateway['decideFromVoiceTurn']
-  >(async () => {
-    if (input.decisionFailure === 'throws') {
-      throw new Error('response lost');
-    }
-    if (input.decisionFailure === 'conflict') {
-      return {
-        ok: false,
-        error: {
-          kind: 'conflict',
-          entity: 'agent_mission_decision',
-          reason: 'revision_mismatch',
-        },
-      };
-    }
-    if (input.decisionFailure === 'line_limit_reached') {
-      return {
-        ok: false,
-        error: {
-          kind: 'conflict',
-          entity: 'agent_mission_quote_draft',
-          reason: 'line_limit_reached',
-        },
-      };
-    }
-    const outcome = input.decisionOutcome ?? 'selected';
-    const missionView = input.decided ?? mission({
-      phase: 'awaiting_lines',
-      revision: 4,
-      payload: {
-        schema: 'bob.agent-mission.quote-creation',
-        version: 1,
-        draft: {
-          sessionId: 'draft-session-1',
-          slotRevision: 2,
-          contentRevision: 1,
-        },
-        decision: null,
-        stagedCustomerResolution: null,
-      },
-    });
-    let value: DecideQuoteAgentMissionOutput;
-    if (outcome === 'presented') {
-      value = { outcome, effect: { kind: outcome, candidateCount: 2 }, mission: missionView };
-    } else if (outcome === 'not_found') {
-      value = { outcome, effect: { kind: outcome, result: 'none' }, mission: missionView };
-    } else if (outcome === 'invalidated') {
-      value = {
-        outcome,
-        effect: { kind: outcome, reason: 'candidate_unavailable' },
-        mission: missionView,
-      };
-    } else if (outcome === 'replayed') {
-      value = {
-        outcome,
-        effect: input.replayEffect ?? { kind: 'selected' },
-        mission: missionView,
-      };
-    } else {
-      value = { outcome, effect: { kind: outcome }, mission: missionView };
-    }
-    return {
-      ok: true,
-      value,
-    };
-  });
-  const stageLinesFromVoiceTurn = vi.fn<
-    RealtimeQuoteMissionGateway['stageLinesFromVoiceTurn']
-  >(async () => {
-    if (input.stageFailure === 'throws') throw new Error('response lost');
-    if (input.stageFailure === 'conflict') {
-      return {
-        ok: false,
-        error: {
-          kind: 'conflict',
-          entity: 'agent_mission',
-          reason: 'stale_revision',
-        },
-      };
-    }
-    if (input.stageFailure === 'line_limit_reached') {
-      return {
-        ok: false,
-        error: {
-          kind: 'conflict',
-          entity: 'agent_mission_quote_draft',
-          reason: 'line_limit_reached',
-        },
-      };
-    }
-    const detailsMission = mission({ phase: 'awaiting_line_details', revision: 5 });
-    return {
-      ok: true,
-      value: input.stageValue ?? {
-        outcome: 'staged',
-        mission: detailsMission,
-        stagedCount: 1,
-        firstQueueOrdinal: 1,
-        lastQueueOrdinal: 1,
-        continuation: {
-          outcome: 'details_requested',
-          pendingLineId: '60000000-0000-4000-8000-000000000001',
-          presentedChoiceCount: 0,
-          requiredFact: 'unit_price',
-          proposalId: null,
-        },
-        presentation: presentationForMission(detailsMission)!,
-      },
-    };
-  });
   const decideCatalogueChoiceFromVoiceTurn = vi.fn<
     RealtimeQuoteMissionGateway['decideCatalogueChoiceFromVoiceTurn']
   >(async () => {
@@ -713,39 +701,39 @@ function harness(input: {
       },
     };
   });
-  const patchLineFromVoiceTurn = vi.fn<
-    RealtimeQuoteMissionGateway['patchLineFromVoiceTurn']
-  >(async () => {
-    if (input.patchFailure === 'throws') throw new Error('response lost');
-    if (input.patchFailure === 'conflict') {
+  const patchLineFromVoiceTurn = vi.fn<RealtimeQuoteMissionGateway['patchLineFromVoiceTurn']>(
+    async () => {
+      if (input.patchFailure === 'throws') throw new Error('response lost');
+      if (input.patchFailure === 'conflict') {
+        return {
+          ok: false,
+          error: {
+            kind: 'conflict',
+            entity: 'agent_mission',
+            reason: 'stale_revision',
+          },
+        };
+      }
+      const confirmationMission = lineConfirmationMission();
       return {
-        ok: false,
-        error: {
-          kind: 'conflict',
-          entity: 'agent_mission',
-          reason: 'stale_revision',
+        ok: true,
+        value: input.patchValue ?? {
+          outcome: 'patched',
+          pendingLineId: '60000000-0000-4000-8000-000000000001',
+          workRevisionAfter: 3,
+          mission: confirmationMission,
+          continuation: {
+            outcome: 'proposal_presented',
+            pendingLineId: '60000000-0000-4000-8000-000000000001',
+            presentedChoiceCount: 0,
+            requiredFact: null,
+            proposalId: '70000000-0000-4000-8000-000000000001',
+          },
+          presentation: presentationForMission(confirmationMission)!,
         },
       };
-    }
-    const confirmationMission = lineConfirmationMission();
-    return {
-      ok: true,
-      value: input.patchValue ?? {
-        outcome: 'patched',
-        pendingLineId: '60000000-0000-4000-8000-000000000001',
-        workRevisionAfter: 3,
-        mission: confirmationMission,
-        continuation: {
-          outcome: 'proposal_presented',
-          pendingLineId: '60000000-0000-4000-8000-000000000001',
-          presentedChoiceCount: 0,
-          requiredFact: null,
-          proposalId: '70000000-0000-4000-8000-000000000001',
-        },
-        presentation: presentationForMission(confirmationMission)!,
-      },
-    };
-  });
+    },
+  );
   const cancelPendingLineFromVoiceTurn = vi.fn<
     RealtimeQuoteMissionGateway['cancelPendingLineFromVoiceTurn']
   >(async () => {
@@ -878,12 +866,18 @@ function harness(input: {
         now: '2026-07-30T12:00:00.000Z',
         signal: request.signal,
       });
-      if (planning.status !== 'mission_frame') {
+      // U1-d : le planner peut désormais rendre une frame d'un AUTRE kind — ce harnais devis
+      // n'en connaît qu'un, il refuse tout le reste sans jamais l'exécuter.
+      if (
+        planning.status !== 'mission_frame' ||
+        planning.missionKind === CUSTOMER_CONTACT_MISSION_KIND_V1
+      ) {
         return {
           status: 'failed',
-          canonicalSpeech: planning.status === 'rejected'
-            ? 'Je n’ai pas pu sécuriser cette demande. Rien n’a été exécuté. Reformule-la simplement.'
-            : 'Ce tour ne relève pas de la mission devis.',
+          canonicalSpeech:
+            planning.status === 'rejected'
+              ? 'Je n’ai pas pu sécuriser cette demande. Rien n’a été exécuté. Reformule-la simplement.'
+              : 'Ce tour ne relève pas de la mission devis.',
         };
       }
       return engine.runPlanned({
@@ -1077,14 +1071,14 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
     });
     expect(h.decideFromVoiceTurn).toHaveBeenCalledWith(
       expect.objectContaining({
-      missionId: current.id,
-      expectedMissionRevision: 3,
-      decision: {
-        action: 'choose_presented_option',
-        decisionId: '40000000-0000-4000-8000-000000000001',
-        choiceSetRevision: 3,
-        choiceId: '50000000-0000-4000-8000-000000000002',
-      },
+        missionId: current.id,
+        expectedMissionRevision: 3,
+        decision: {
+          action: 'choose_presented_option',
+          decisionId: '40000000-0000-4000-8000-000000000001',
+          choiceSetRevision: 3,
+          choiceId: '50000000-0000-4000-8000-000000000002',
+        },
       }),
     );
     expect(h.decideFromVoiceTurn.mock.calls[0]?.[0].decision).not.toHaveProperty('customerId');
@@ -1312,10 +1306,11 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
       }),
     });
 
-    const outcome = await h.orchestrator.run(inputV2(
-      new AbortController().signal,
-      [{ role: 'bob', text: 'Historique récent utile au planner V2.' }],
-    ));
+    const outcome = await h.orchestrator.run(
+      inputV2(new AbortController().signal, [
+        { role: 'bob', text: 'Historique récent utile au planner V2.' },
+      ]),
+    );
 
     expect(outcome).toMatchObject({
       status: 'ready',
@@ -1331,9 +1326,7 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
       lines: [LINE_CANDIDATE],
     });
     const llmMessages = vi.mocked(h.model.complete).mock.calls[0]?.[0];
-    expect(JSON.stringify(llmMessages)).toContain(
-      'Historique récent utile au planner V2.',
-    );
+    expect(JSON.stringify(llmMessages)).toContain('Historique récent utile au planner V2.');
   });
 
   it('V2 annonce aussi la capacité lors du démarrage sur un brouillon déjà plein', async () => {
@@ -1596,8 +1589,7 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
 
   it('V2 refuse sans mutation un ordinal catalogue devenu indisponible', async () => {
     const current = catalogueMission();
-    const currentPresentation =
-      cataloguePresentationWithUnavailableOrdinal(current, 1);
+    const currentPresentation = cataloguePresentationWithUnavailableOrdinal(current, 1);
     const h = harness({
       call: toolCallV2({
         kind: 'select_presented_choice',
@@ -1685,8 +1677,7 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
     expect(h.getCurrentV2).toHaveBeenCalledTimes(2);
     expect(h.model.complete).toHaveBeenCalledTimes(1);
     expect(h.patchLineFromVoiceTurn).toHaveBeenCalledTimes(1);
-    const plannerMessages =
-      vi.mocked(h.model.complete).mock.calls[0]?.[0] ?? [];
+    const plannerMessages = vi.mocked(h.model.complete).mock.calls[0]?.[0] ?? [];
     expect(plannerMessages).toHaveLength(2);
     const plannerContext = plannerMessages[0]?.content ?? '';
     expect(plannerContext).toContain('"label":"Main-d’œuvre plomberie"');
@@ -1694,9 +1685,7 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
     expect(plannerContext).toContain('"unit":"heure"');
     expect(plannerContext).toContain('"unitPriceDecimal":null');
     expect(plannerContext).toContain('"vatRate":"20"');
-    expect(plannerMessages[1]?.content).toContain(
-      '"schema":"bob.semantic-current-utterance"',
-    );
+    expect(plannerMessages[1]?.content).toContain('"schema":"bob.semantic-current-utterance"');
     expect(outcome).toMatchObject({
       status: 'handled',
       speechPurpose: 'structured_choice',
@@ -1735,12 +1724,8 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
       },
     });
     expect(h.getCurrentV2).toHaveBeenCalledTimes(2);
-    const modelInput = JSON.stringify(
-      vi.mocked(h.model.complete).mock.calls[0]?.[0],
-    );
-    expect(modelInput).not.toContain(
-      '60000000-0000-4000-8000-000000000001',
-    );
+    const modelInput = JSON.stringify(vi.mocked(h.model.complete).mock.calls[0]?.[0]);
+    expect(modelInput).not.toContain('60000000-0000-4000-8000-000000000001');
     expect(modelInput).not.toContain('Heure de main-d’œuvre plomberie');
   });
 
@@ -1822,9 +1807,7 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
 
     expect(outcome).toHaveProperty(
       'canonicalSpeech',
-      expect.stringContaining(
-        'La ligne est retirée de la mission. Le devis n’a pas été modifié.',
-      ),
+      expect.stringContaining('La ligne est retirée de la mission. Le devis n’a pas été modifié.'),
     );
     expect(h.cancelPendingLineFromVoiceTurn).toHaveBeenCalledWith({
       authorization: { owner: OWNER, proof: PROOF_V2 },
@@ -1841,12 +1824,8 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
       expectedWorkRevision: 2,
     });
     expect(h.decideLineProposalFromVoiceTurn).not.toHaveBeenCalled();
-    const modelInput = JSON.stringify(
-      vi.mocked(h.model.complete).mock.calls[0]?.[0],
-    );
-    expect(modelInput).not.toContain(
-      '60000000-0000-4000-8000-000000000001',
-    );
+    const modelInput = JSON.stringify(vi.mocked(h.model.complete).mock.calls[0]?.[0]);
+    expect(modelInput).not.toContain('60000000-0000-4000-8000-000000000001');
   });
 
   it('V2 converge sur l’état réel si la réponse réseau de l’annulation est perdue', async () => {
@@ -1925,13 +1904,9 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
       },
       diffHash: 'f'.repeat(64),
     });
-    const modelInput = JSON.stringify(
-      vi.mocked(h.model.complete).mock.calls[0]?.[0],
-    );
+    const modelInput = JSON.stringify(vi.mocked(h.model.complete).mock.calls[0]?.[0]);
     expect(modelInput).toContain('Main-d’œuvre plomberie');
-    expect(modelInput).not.toContain(
-      '70000000-0000-4000-8000-000000000001',
-    );
+    expect(modelInput).not.toContain('70000000-0000-4000-8000-000000000001');
   });
 
   it('V2 ne prononce jamais un faux succès quand une confirmation invalidée est rejouée', async () => {
@@ -1965,9 +1940,7 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
       canonicalSpeech: 'Quel prix unitaire dois-je appliquer à cette ligne ?',
       speechPurpose: 'structured_choice',
     });
-    expect(
-      outcome.status === 'handled' ? outcome.canonicalSpeech : '',
-    ).not.toContain('ajoutée');
+    expect(outcome.status === 'handled' ? outcome.canonicalSpeech : '').not.toContain('ajoutée');
   });
 
   it('V2 distingue modifier de supprimer et consomme le choix edit_line', async () => {
@@ -2015,9 +1988,9 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
       'canonicalSpeech',
       expect.stringContaining('La ligne reste dans la mission'),
     );
-    expect(
-      h.decideLineProposalFromVoiceTurn.mock.calls[0]?.[0].choiceId,
-    ).toBe('50000000-0000-4000-8000-000000000021');
+    expect(h.decideLineProposalFromVoiceTurn.mock.calls[0]?.[0].choiceId).toBe(
+      '50000000-0000-4000-8000-000000000021',
+    );
   });
 
   it('V2 annule seulement la ligne courante avec le choix cancel_line', async () => {
@@ -2061,9 +2034,9 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
       'canonicalSpeech',
       expect.stringContaining('La ligne est retirée de la mission'),
     );
-    expect(
-      h.decideLineProposalFromVoiceTurn.mock.calls[0]?.[0].choiceId,
-    ).toBe('50000000-0000-4000-8000-000000000022');
+    expect(h.decideLineProposalFromVoiceTurn.mock.calls[0]?.[0].choiceId).toBe(
+      '50000000-0000-4000-8000-000000000022',
+    );
   });
 
   it('V2 relit une réponse perdue avec sa projection V2, jamais le langage M1-C', async () => {
@@ -2121,8 +2094,7 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
         },
       }),
       currentAfterDecision: converged,
-      currentPresentationAfterDecision:
-        cataloguePresentationWithUnavailableOrdinal(converged, 1),
+      currentPresentationAfterDecision: cataloguePresentationWithUnavailableOrdinal(converged, 1),
       stageFailure: 'throws',
     });
 

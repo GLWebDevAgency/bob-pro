@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { MISTRAL_CONVERSATION_PROTOCOL } from '@bob/ai';
+import { QUOTE_CREATION_MISSION_KIND_V1 } from '@bob/core';
 import type { AppError, Result } from '@bob/core';
 import { Metrics } from '../../observability/metrics';
 import {
@@ -58,7 +59,8 @@ import {
 } from './realtime-agent-mission-admission';
 import type { BobLiveRuntimeReadinessPort } from './realtime-readiness';
 
-const OFFER_SDP = 'v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n';
+const OFFER_SDP =
+  'v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n';
 const AUDITED_BOOTSTRAP_BINDING = {
   configVersion: BOB_REALTIME_CONFIG_VERSION,
   speechDelivery: 'audited-signed-url-v1',
@@ -117,8 +119,11 @@ const MISTRAL_SETTINGS: RealtimeVoiceSettings = {
 
 const ADMISSION_POLICY: RealtimeAdmissionPolicy = {
   globalCapacity: {
-    providerId: 'openai', providerModel: 'gpt-realtime-2.1',
-    globalMaxSessions: 1_000, providerMaxSessions: 1_000, configVersion: 1,
+    providerId: 'openai',
+    providerModel: 'gpt-realtime-2.1',
+    globalMaxSessions: 1_000,
+    providerMaxSessions: 1_000,
+    configVersion: 1,
   },
   userLimitPerMinute: 3,
   userLimitPerHour: 30,
@@ -130,7 +135,10 @@ const ADMISSION_POLICY: RealtimeAdmissionPolicy = {
   reaperLeaseSeconds: 30,
 };
 
-function admission(userLimitPerMinute = 3, now: () => number = Date.now): InMemoryRealtimeAdmission {
+function admission(
+  userLimitPerMinute = 3,
+  now: () => number = Date.now,
+): InMemoryRealtimeAdmission {
   return new InMemoryRealtimeAdmission({ ...ADMISSION_POLICY, userLimitPerMinute }, now);
 }
 
@@ -167,7 +175,10 @@ function sidebandStub(
     detachedSettle?: (outcome: 'confirmed' | 'provider_failed' | 'unconfirmed') => void;
   } = {},
 ): RealtimeSidebandControl {
-  const sessions = new Map<string, NonNullable<Parameters<RealtimeSidebandControl['attach']>[0]['lifecycle']>>();
+  const sessions = new Map<
+    string,
+    NonNullable<Parameters<RealtimeSidebandControl['attach']>[0]['lifecycle']>
+  >();
   return {
     attach: vi.fn(async (input) => {
       if (!input.lifecycle) return;
@@ -221,19 +232,29 @@ function runAsPrincipal<T>(
 
 function tracedAdmission(base: RealtimeAdmissionPort, order: string[]): RealtimeAdmissionPort {
   return {
-    reserve: async (input) => { order.push('reserve'); return base.reserve(input); },
-    bindProvider: async (input) => { order.push('bind'); return base.bindProvider(input); },
-    activate: async (input) => { order.push('activate'); return base.activate(input); },
+    reserve: async (input) => {
+      order.push('reserve');
+      return base.reserve(input);
+    },
+    bindProvider: async (input) => {
+      order.push('bind');
+      return base.bindProvider(input);
+    },
+    activate: async (input) => {
+      order.push('activate');
+      return base.activate(input);
+    },
     renew: (input) => base.renew(input),
-    release: async (input) => { order.push('release'); return base.release(input); },
+    release: async (input) => {
+      order.push('release');
+      return base.release(input);
+    },
     claimExpired: (input) => base.claimExpired(input),
     resolveSession: async (input) => {
       order.push('resolve');
       return base.resolveSession(input);
     },
-    acknowledgeAgentMissionBootstrap: (input) => (
-      base.acknowledgeAgentMissionBootstrap(input)
-    ),
+    acknowledgeAgentMissionBootstrap: (input) => base.acknowledgeAgentMissionBootstrap(input),
     claimTermination: (input) => base.claimTermination(input),
     completeReaping: (input) => base.completeReaping(input),
     updateContext: (input) => base.updateContext(input),
@@ -244,7 +265,9 @@ function tracedAdmission(base: RealtimeAdmissionPort, order: string[]): Realtime
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => { resolve = done; });
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
   return { promise, resolve };
 }
 
@@ -271,13 +294,14 @@ function missionCapableAdmission(
       if (!result.allowed) return result;
       return {
         ...result,
-        agentMissionProof: binding === null
-          ? null
-          : {
-              protocolVersion: binding.protocolVersion,
-              capabilityHash: binding.capabilityHash,
-              releaseFlagVersion: binding.releaseFlagVersion,
-            },
+        agentMissionProof:
+          binding === null
+            ? null
+            : {
+                protocolVersion: binding.protocolVersion,
+                capabilityHash: binding.capabilityHash,
+                releaseFlagVersion: binding.releaseFlagVersion,
+              },
       };
     },
   };
@@ -291,20 +315,28 @@ function missionGate(
     available: vi.fn(async () => true),
     prepare: vi.fn(async (input) => {
       if (input.negotiation.requested !== requested) {
-        return { capability: null, binding: null } as const;
+        return { capability: null, binding: null, admittedKinds: [] } as const;
       }
       if (requested !== 'v1' && requested !== 'v2') {
-        return { capability: null, binding: null } as const;
+        return { capability: null, binding: null, admittedKinds: [] } as const;
       }
       const common = {
         capabilityHash: hashRealtimeAgentMissionCapability(capability),
         releaseEnvironment: 'staging' as const,
         releaseFlagVersion: 7,
-        principalBindingHash: agentMissionPrincipalBindingHash(
-          input.companyId,
-          input.userId,
-        ),
+        principalBindingHash: agentMissionPrincipalBindingHash(input.companyId, input.userId),
       };
+      const admittedKinds = [
+        Object.freeze({
+          missionKindId: QUOTE_CREATION_MISSION_KIND_V1,
+          releaseFlagKey:
+            requested === 'v2'
+              ? ('bob.agent_missions.quote.m2a' as const)
+              : ('bob.agent_missions.quote.v1' as const),
+          releaseEnvironment: 'staging' as const,
+          releaseFlagVersion: 7,
+        }),
+      ];
       if (requested === 'v2') {
         return {
           capability,
@@ -313,6 +345,7 @@ function missionGate(
             protocolVersion: 2,
             releaseFlagKey: 'bob.agent_missions.quote.m2a',
           },
+          admittedKinds,
         } as const;
       }
       return {
@@ -322,14 +355,13 @@ function missionGate(
           protocolVersion: 1,
           releaseFlagKey: 'bob.agent_missions.quote.v1',
         },
+        admittedKinds,
       } as const;
     }),
   };
 }
 
-function faultyMissionGate(
-  capability: string,
-): RealtimeAgentMissionAdmissionGate {
+function faultyMissionGate(capability: string): RealtimeAgentMissionAdmissionGate {
   return {
     available: vi.fn(async () => true),
     // Double volontairement fautif : il attache V1 même lorsque le client a omis/refusé Mission.
@@ -342,11 +374,16 @@ function faultyMissionGate(
         releaseFlagKey: 'bob.agent_missions.quote.v1' as const,
         releaseEnvironment: 'staging' as const,
         releaseFlagVersion: 7,
-        principalBindingHash: agentMissionPrincipalBindingHash(
-          input.companyId,
-          input.userId,
-        ),
+        principalBindingHash: agentMissionPrincipalBindingHash(input.companyId, input.userId),
       },
+      admittedKinds: [
+        Object.freeze({
+          missionKindId: QUOTE_CREATION_MISSION_KIND_V1,
+          releaseFlagKey: 'bob.agent_missions.quote.v1' as const,
+          releaseEnvironment: 'staging' as const,
+          releaseFlagVersion: 7,
+        }),
+      ],
     })),
   };
 }
@@ -432,61 +469,59 @@ describe('RealtimeVoiceService', () => {
     expect(settle).toHaveBeenCalledWith(expectedSettlement);
   });
 
-  it.each([
-    'entitlement_unconfirmed',
-    'entitlement_revoked',
-    'incompatible_route',
-  ] as const)(
+  it.each(['entitlement_unconfirmed', 'entitlement_revoked', 'incompatible_route'] as const)(
     'journalise la policy %s seulement après validation du propriétaire',
     async (closeReason) => {
-    const provider: OpenAiRealtimeCallProvider = {
-      createCall: successfulProviderCreate(`rtc_client_diagnostic_${closeReason}`),
-      hangupCall: vi.fn(async () => undefined),
-    };
-    const logger = loggerStub();
-    const sideband = sidebandStub();
-    const service = new RealtimeVoiceService(
-      SETTINGS,
-      provider,
-      admission(),
-      sideband,
-      new Metrics(),
-      logger,
-      undefined,
-      entitled(),
-      undefined,
-      undefined,
-      undefined,
-      TEST_SPEECH_SOURCE_POLICY,
-    );
-    const created = await runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      sdp: OFFER_SDP,
-    }));
-    if (!created.ok) throw new Error('Realtime session fixture unavailable.');
-    const diagnostic = {
-      version: 1 as const,
-      terminationSource: 'policy' as const,
-      lastSuccessfulCheckpoint: 'bootstrap_acknowledged' as const,
-      closeReason,
-    };
+      const provider: OpenAiRealtimeCallProvider = {
+        createCall: successfulProviderCreate(`rtc_client_diagnostic_${closeReason}`),
+        hangupCall: vi.fn(async () => undefined),
+      };
+      const logger = loggerStub();
+      const sideband = sidebandStub();
+      const service = new RealtimeVoiceService(
+        SETTINGS,
+        provider,
+        admission(),
+        sideband,
+        new Metrics(),
+        logger,
+        undefined,
+        entitled(),
+        undefined,
+        undefined,
+        undefined,
+        TEST_SPEECH_SOURCE_POLICY,
+      );
+      const created = await runAsPrincipal(() =>
+        service.createCall({
+          ...AUDITED_BOOTSTRAP_BINDING,
+          sdp: OFFER_SDP,
+        }),
+      );
+      if (!created.ok) throw new Error('Realtime session fixture unavailable.');
+      const diagnostic = {
+        version: 1 as const,
+        terminationSource: 'policy' as const,
+        lastSuccessfulCheckpoint: 'bootstrap_acknowledged' as const,
+        closeReason,
+      };
 
-    await expect(runAsPrincipal(() => service.hangup(
-      created.value.sessionHandle,
-      diagnostic,
-    ))).resolves.toEqual({ ok: true, value: { ended: true } });
+      await expect(
+        runAsPrincipal(() => service.hangup(created.value.sessionHandle, diagnostic)),
+      ).resolves.toEqual({ ok: true, value: { ended: true } });
 
-    expect(logger.audit).toHaveBeenCalledWith('bob.live.client.termination', {
-      sessionHandle: created.value.sessionHandle,
-      ...diagnostic,
-    });
-    expect(sideband.fenceAndDetachSession).toHaveBeenCalledWith({
-      userId: 'user-1',
-      companyId: 'company-1',
-      sessionHandle: created.value.sessionHandle,
-      reason: 'policy',
-    });
-  });
+      expect(logger.audit).toHaveBeenCalledWith('bob.live.client.termination', {
+        sessionHandle: created.value.sessionHandle,
+        ...diagnostic,
+      });
+      expect(sideband.fenceAndDetachSession).toHaveBeenCalledWith({
+        userId: 'user-1',
+        companyId: 'company-1',
+        sessionHandle: created.value.sessionHandle,
+        reason: 'policy',
+      });
+    },
+  );
 
   it('refuse un diagnostic client libre avant toute terminaison', async () => {
     const durable = admission();
@@ -501,22 +536,25 @@ describe('RealtimeVoiceService', () => {
       logger,
     );
 
-    await expect(runAsPrincipal(() => service.hangup(
-      '00000000-0000-4000-8000-000000000001',
-      {
-        version: 1,
-        terminationSource: 'policy',
-        lastSuccessfulCheckpoint: 'bootstrap_acknowledged',
-        closeReason: 'texte_libre_interdit',
-      },
-    ))).resolves.toEqual({
+    await expect(
+      runAsPrincipal(() =>
+        service.hangup('00000000-0000-4000-8000-000000000001', {
+          version: 1,
+          terminationSource: 'policy',
+          lastSuccessfulCheckpoint: 'bootstrap_acknowledged',
+          closeReason: 'texte_libre_interdit',
+        }),
+      ),
+    ).resolves.toEqual({
       ok: false,
       error: {
         kind: 'validation',
-        issues: [{
-          field: 'diagnostic',
-          message: 'Le diagnostic terminal Bob Live est invalide.',
-        }],
+        issues: [
+          {
+            field: 'diagnostic',
+            message: 'Le diagnostic terminal Bob Live est invalide.',
+          },
+        ],
       },
     });
     expect(claimTermination).not.toHaveBeenCalled();
@@ -545,22 +583,20 @@ describe('RealtimeVoiceService', () => {
       undefined,
       TEST_SPEECH_SOURCE_POLICY,
     );
-    const created = await runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      sdp: OFFER_SDP,
-    }));
+    const created = await runAsPrincipal(() =>
+      service.createCall({
+        ...AUDITED_BOOTSTRAP_BINDING,
+        sdp: OFFER_SDP,
+      }),
+    );
     if (!created.ok) throw new Error('Realtime session fixture unavailable.');
 
-    await expect(runAsPrincipal(() => service.hangup(
-      created.value.sessionHandle,
-      {},
-    ))).resolves.toEqual({ ok: true, value: { ended: true } });
+    await expect(
+      runAsPrincipal(() => service.hangup(created.value.sessionHandle, {})),
+    ).resolves.toEqual({ ok: true, value: { ended: true } });
 
     expect(claimTermination).toHaveBeenCalledOnce();
-    expect(logger.audit).not.toHaveBeenCalledWith(
-      'bob.live.client.termination',
-      expect.anything(),
-    );
+    expect(logger.audit).not.toHaveBeenCalledWith('bob.live.client.termination', expect.anything());
   });
 
   it('ne journalise aucun diagnostic pour un handle inconnu ou déjà terminé', async () => {
@@ -574,20 +610,18 @@ describe('RealtimeVoiceService', () => {
       logger,
     );
 
-    await expect(runAsPrincipal(() => service.hangup(
-      '00000000-0000-4000-8000-000000000076',
-      {
-        version: 1,
-        terminationSource: 'automatic_failure',
-        lastSuccessfulCheckpoint: 'bootstrap_acknowledged',
-        failureCode: 'remote_description_rejected',
-      },
-    ))).resolves.toEqual({ ok: true, value: { ended: true } });
+    await expect(
+      runAsPrincipal(() =>
+        service.hangup('00000000-0000-4000-8000-000000000076', {
+          version: 1,
+          terminationSource: 'automatic_failure',
+          lastSuccessfulCheckpoint: 'bootstrap_acknowledged',
+          failureCode: 'remote_description_rejected',
+        }),
+      ),
+    ).resolves.toEqual({ ok: true, value: { ended: true } });
 
-    expect(logger.audit).not.toHaveBeenCalledWith(
-      'bob.live.client.termination',
-      expect.anything(),
-    );
+    expect(logger.audit).not.toHaveBeenCalledWith('bob.live.client.termination', expect.anything());
   });
 
   it('acquitte le bootstrap Mission avec l’identité dérivée et une métrique bornée', async () => {
@@ -618,38 +652,34 @@ describe('RealtimeVoiceService', () => {
       logger,
     );
 
-    await expect(runAsPrincipal(() => service.acknowledgeAgentMissionBootstrap(
-      '20000000-0000-4000-8000-000000000001',
-      capability,
-    ))).resolves.toEqual({
+    await expect(
+      runAsPrincipal(() =>
+        service.acknowledgeAgentMissionBootstrap(
+          '20000000-0000-4000-8000-000000000001',
+          capability,
+        ),
+      ),
+    ).resolves.toEqual({
       ok: true,
       value: { acknowledged: true, replayed: false },
     });
     expect(acknowledgeAgentMissionBootstrap).toHaveBeenCalledWith({
       companyId: 'company-1',
-      subjectHashCandidates: [admissionSubjectHash(
-        SETTINGS.safetySecret!,
-        'company-1',
-        'user-1',
-      )],
-      principalBindingHash: agentMissionPrincipalBindingHash(
-        'company-1',
-        'user-1',
-      ),
+      subjectHashCandidates: [admissionSubjectHash(SETTINGS.safetySecret!, 'company-1', 'user-1')],
+      principalBindingHash: agentMissionPrincipalBindingHash('company-1', 'user-1'),
       sessionId: '20000000-0000-4000-8000-000000000001',
       protocolVersion: 1,
       capabilityHash: hashRealtimeAgentMissionCapability(capability),
     });
-    expect(logger.audit).toHaveBeenCalledWith(
-      'bob.live.agent_mission.bootstrap_receipt',
-      { outcome: 'acknowledged' },
-    );
+    expect(logger.audit).toHaveBeenCalledWith('bob.live.agent_mission.bootstrap_receipt', {
+      outcome: 'acknowledged',
+    });
     const metric = (await metrics.registry.getMetricsAsJSON()).find(
       (candidate) => candidate.name === 'bob_agent_mission_bootstrap_receipts_total',
     );
-    expect(metric?.values).toEqual(expect.arrayContaining([
-      expect.objectContaining({ labels: { outcome: 'acknowledged' } }),
-    ]));
+    expect(metric?.values).toEqual(
+      expect.arrayContaining([expect.objectContaining({ labels: { outcome: 'acknowledged' } })]),
+    );
     expect(JSON.stringify(vi.mocked(logger.audit).mock.calls)).not.toContain(capability);
   });
 
@@ -657,161 +687,176 @@ describe('RealtimeVoiceService', () => {
     ['hash_mismatch', 'forbidden', 'refused'],
     ['expired', 'forbidden', 'refused'],
     ['unavailable', 'unavailable', 'error'],
-  ] as const)('ferme le reçu %s sans exposer sa cause publique', async (
-    reason,
-    errorKind,
-    metricOutcome,
-  ) => {
-    const capability = `bam1_${Buffer.alloc(32, 9).toString('base64url')}`;
-    const durable = {
-      ...tracedAdmission(admission(), []),
-      acknowledgeAgentMissionBootstrap: vi
-        .fn<RealtimeAdmissionPort['acknowledgeAgentMissionBootstrap']>()
-        .mockResolvedValue({ ok: false, reason }),
-    };
-    const metrics = new Metrics();
-    const service = new RealtimeVoiceService(
-      SETTINGS,
-      { createCall: vi.fn(), hangupCall: vi.fn() },
-      durable,
-      sidebandStub(),
-      metrics,
-      loggerStub(),
-    );
+  ] as const)(
+    'ferme le reçu %s sans exposer sa cause publique',
+    async (reason, errorKind, metricOutcome) => {
+      const capability = `bam1_${Buffer.alloc(32, 9).toString('base64url')}`;
+      const durable = {
+        ...tracedAdmission(admission(), []),
+        acknowledgeAgentMissionBootstrap: vi
+          .fn<RealtimeAdmissionPort['acknowledgeAgentMissionBootstrap']>()
+          .mockResolvedValue({ ok: false, reason }),
+      };
+      const metrics = new Metrics();
+      const service = new RealtimeVoiceService(
+        SETTINGS,
+        { createCall: vi.fn(), hangupCall: vi.fn() },
+        durable,
+        sidebandStub(),
+        metrics,
+        loggerStub(),
+      );
 
-    await expect(runAsPrincipal(() => service.acknowledgeAgentMissionBootstrap(
-      '20000000-0000-4000-8000-000000000001',
-      capability,
-    ))).resolves.toMatchObject({
-      ok: false,
-      error: { kind: errorKind },
-    });
-    const metric = (await metrics.registry.getMetricsAsJSON()).find(
-      (candidate) => candidate.name === 'bob_agent_mission_bootstrap_receipts_total',
-    );
-    expect(metric?.values).toEqual(expect.arrayContaining([
-      expect.objectContaining({ labels: { outcome: metricOutcome } }),
-    ]));
-  });
+      await expect(
+        runAsPrincipal(() =>
+          service.acknowledgeAgentMissionBootstrap(
+            '20000000-0000-4000-8000-000000000001',
+            capability,
+          ),
+        ),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { kind: errorKind },
+      });
+      const metric = (await metrics.registry.getMetricsAsJSON()).find(
+        (candidate) => candidate.name === 'bob_agent_mission_bootstrap_receipts_total',
+      );
+      expect(metric?.values).toEqual(
+        expect.arrayContaining([expect.objectContaining({ labels: { outcome: metricOutcome } })]),
+      );
+    },
+  );
 
   it('borne les labels de négociation Mission sans secret, hash ni identité', () => {
     const capability = `bam1_${Buffer.alloc(32, 7).toString('base64url')}`;
-    expect(agentMissionNegotiationMetricLabels(
-      { agentMissionProtocolVersion: 1 },
-      'openai',
-      negotiationResult({
-        agentMissionProtocolVersion: 1,
-        agentMissionCapability: capability,
-      }),
-    )).toEqual({
+    expect(
+      agentMissionNegotiationMetricLabels(
+        { agentMissionProtocolVersion: 1 },
+        'openai',
+        negotiationResult({
+          agentMissionProtocolVersion: 1,
+          agentMissionCapability: capability,
+        }),
+      ),
+    ).toEqual({
       requested: 'v1',
       outcome: 'accepted',
       provider: 'openai',
       transport: 'webrtc',
     });
     const capabilityV2 = `bam2_${Buffer.alloc(32, 8).toString('base64url')}`;
-    expect(agentMissionNegotiationMetricLabels(
-      { agentMissionProtocolVersion: 2 },
-      'openai',
-      negotiationResult({
-        agentMissionProtocolVersion: 2,
-        agentMissionCapability: capabilityV2,
-      }),
-    )).toEqual({
+    expect(
+      agentMissionNegotiationMetricLabels(
+        { agentMissionProtocolVersion: 2 },
+        'openai',
+        negotiationResult({
+          agentMissionProtocolVersion: 2,
+          agentMissionCapability: capabilityV2,
+        }),
+      ),
+    ).toEqual({
       requested: 'v2',
       outcome: 'accepted',
       provider: 'openai',
       transport: 'webrtc',
     });
-    expect(agentMissionNegotiationMetricLabels(
-      { agentMissionProtocolVersion: 2 },
-      'openai',
-      negotiationResult({
-        agentMissionProtocolVersion: 1,
-        agentMissionCapability: capability,
-      }),
-    )).toEqual({
+    expect(
+      agentMissionNegotiationMetricLabels(
+        { agentMissionProtocolVersion: 2 },
+        'openai',
+        negotiationResult({
+          agentMissionProtocolVersion: 1,
+          agentMissionCapability: capability,
+        }),
+      ),
+    ).toEqual({
       requested: 'v2',
       outcome: 'refused',
       provider: 'openai',
       transport: 'webrtc',
     });
-    expect(agentMissionNegotiationMetricLabels(
-      { agentMissionProtocolVersion: 1 },
-      'openai',
-      negotiationResult({
-        agentMissionProtocolVersion: null,
-        agentMissionCapability: null,
-      }),
-    )).toEqual({
+    expect(
+      agentMissionNegotiationMetricLabels(
+        { agentMissionProtocolVersion: 1 },
+        'openai',
+        negotiationResult({
+          agentMissionProtocolVersion: null,
+          agentMissionCapability: null,
+        }),
+      ),
+    ).toEqual({
       requested: 'v1',
       outcome: 'refused',
       provider: 'openai',
       transport: 'webrtc',
     });
-    expect(agentMissionNegotiationMetricLabels(
-      {},
-      'openai',
-      negotiationResult({}),
-    )).toEqual({
+    expect(agentMissionNegotiationMetricLabels({}, 'openai', negotiationResult({}))).toEqual({
       requested: 'omitted',
       outcome: 'historical',
       provider: 'openai',
       transport: 'webrtc',
     });
-    expect(agentMissionNegotiationMetricLabels(
-      { agentMissionProtocolVersion: null },
-      'openai',
-      negotiationResult({
-        agentMissionProtocolVersion: null,
-        agentMissionCapability: null,
-      }),
-    )).toEqual({
+    expect(
+      agentMissionNegotiationMetricLabels(
+        { agentMissionProtocolVersion: null },
+        'openai',
+        negotiationResult({
+          agentMissionProtocolVersion: null,
+          agentMissionCapability: null,
+        }),
+      ),
+    ).toEqual({
       requested: 'null',
       outcome: 'historical',
       provider: 'openai',
       transport: 'webrtc',
     });
-    expect(agentMissionNegotiationMetricLabels(
-      { agentMissionProtocolVersion: 99 },
-      'openai',
-      {
+    expect(
+      agentMissionNegotiationMetricLabels({ agentMissionProtocolVersion: 99 }, 'openai', {
         ok: false,
         error: {
           kind: 'validation',
-          issues: [{
-            field: 'agentMissionProtocolVersion',
-            message: 'unsupported',
-          }],
+          issues: [
+            {
+              field: 'agentMissionProtocolVersion',
+              message: 'unsupported',
+            },
+          ],
         },
-      },
-    )).toEqual({
+      }),
+    ).toEqual({
       requested: 'unknown',
       outcome: 'refused',
       provider: 'openai',
       transport: 'webrtc',
     });
-    expect(agentMissionNegotiationMetricLabels(
-      { agentMissionProtocolVersion: 1 },
-      'mistral',
-      negotiationResult({
-        agentMissionProtocolVersion: null,
-        agentMissionCapability: null,
-      }),
-    )).toEqual({
+    expect(
+      agentMissionNegotiationMetricLabels(
+        { agentMissionProtocolVersion: 1 },
+        'mistral',
+        negotiationResult({
+          agentMissionProtocolVersion: null,
+          agentMissionCapability: null,
+        }),
+      ),
+    ).toEqual({
       requested: 'v1',
       outcome: 'refused',
       provider: 'mistral',
       transport: 'mistral_pcm',
     });
-    expect(JSON.stringify(agentMissionNegotiationMetricLabels(
-      { agentMissionProtocolVersion: 1 },
-      'openai',
-      negotiationResult({
-        agentMissionProtocolVersion: 1,
-        agentMissionCapability: capability,
-      }),
-    ))).not.toContain(capability);
+    expect(
+      JSON.stringify(
+        agentMissionNegotiationMetricLabels(
+          { agentMissionProtocolVersion: 1 },
+          'openai',
+          negotiationResult({
+            agentMissionProtocolVersion: 1,
+            agentMissionCapability: capability,
+          }),
+        ),
+      ),
+    ).not.toContain(capability);
   });
 
   it('rend la capability V1 uniquement après la preuve durable corrélée et avant aucun provider', async () => {
@@ -847,11 +892,13 @@ describe('RealtimeVoiceService', () => {
       gate,
     );
 
-    const result = await runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      agentMissionProtocolVersion: 1,
-      sdp: OFFER_SDP,
-    }));
+    const result = await runAsPrincipal(() =>
+      service.createCall({
+        ...AUDITED_BOOTSTRAP_BINDING,
+        agentMissionProtocolVersion: 1,
+        sdp: OFFER_SDP,
+      }),
+    );
 
     expect(result).toMatchObject({
       ok: true,
@@ -861,13 +908,15 @@ describe('RealtimeVoiceService', () => {
       },
     });
     expect(order.indexOf('reserve')).toBeLessThan(order.indexOf('provider'));
-    expect(gate.prepare).toHaveBeenCalledWith(expect.objectContaining({
-      providerId: 'openai',
-      transport: 'webrtc',
-      speechDelivery: 'audited-signed-url-v1',
-      companyId: 'company-1',
-      userId: 'user-1',
-    }));
+    expect(gate.prepare).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerId: 'openai',
+        transport: 'webrtc',
+        speechDelivery: 'audited-signed-url-v1',
+        companyId: 'company-1',
+        userId: 'user-1',
+      }),
+    );
     const serialized = JSON.stringify(result);
     expect(serialized.match(/bam1_[A-Za-z0-9_-]{43}/gu)).toEqual([capability]);
     if (result.ok) {
@@ -882,10 +931,7 @@ describe('RealtimeVoiceService', () => {
       hangupCall: vi.fn(async () => undefined),
     };
     const entitlements = entitled();
-    const gate = missionGate(
-      `bam2_${Buffer.alloc(32, 75).toString('base64url')}`,
-      'v2',
-    );
+    const gate = missionGate(`bam2_${Buffer.alloc(32, 75).toString('base64url')}`, 'v2');
     const service = new RealtimeVoiceService(
       SETTINGS,
       provider,
@@ -906,11 +952,12 @@ describe('RealtimeVoiceService', () => {
     );
 
     const result = await runAsPrincipal(
-      () => service.createCall({
-        ...AUDITED_BOOTSTRAP_BINDING,
-        agentMissionProtocolVersion: 2,
-        sdp: OFFER_SDP,
-      }),
+      () =>
+        service.createCall({
+          ...AUDITED_BOOTSTRAP_BINDING,
+          agentMissionProtocolVersion: 2,
+          sdp: OFFER_SDP,
+        }),
       {
         userId: 'user-1',
         companyId: 'company-1',
@@ -966,11 +1013,13 @@ describe('RealtimeVoiceService', () => {
       missionGate(capability),
     );
 
-    const created = await runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      agentMissionProtocolVersion: 1,
-      sdp: OFFER_SDP,
-    }));
+    const created = await runAsPrincipal(() =>
+      service.createCall({
+        ...AUDITED_BOOTSTRAP_BINDING,
+        agentMissionProtocolVersion: 1,
+        sdp: OFFER_SDP,
+      }),
+    );
     if (!created.ok) throw new Error('bootstrap Mission attendu');
     const turnId = '10000000-0000-4000-8000-000000000077';
     await attached?.turn?.run({
@@ -991,10 +1040,7 @@ describe('RealtimeVoiceService', () => {
         subjectHashCandidates: [
           admissionSubjectHash(SETTINGS.safetySecret!, 'company-1', 'user-1'),
         ],
-        principalBindingHash: agentMissionPrincipalBindingHash(
-          'company-1',
-          'user-1',
-        ),
+        principalBindingHash: agentMissionPrincipalBindingHash('company-1', 'user-1'),
         capabilityHash: hashRealtimeAgentMissionCapability(capability),
       },
       realtimeSessionId: created.value.sessionHandle,
@@ -1054,10 +1100,12 @@ describe('RealtimeVoiceService', () => {
   });
 
   it('valide strictement l’epoch et le curseur du ticket de reprise', () => {
-    expect(parseRealtimeResumeTicketBody({
-      missionConnectionEpoch: 3,
-      nextServerSequence: 42,
-    })).toEqual({
+    expect(
+      parseRealtimeResumeTicketBody({
+        missionConnectionEpoch: 3,
+        nextServerSequence: 42,
+      }),
+    ).toEqual({
       ok: true,
       value: { missionConnectionEpoch: 3, nextServerSequence: 42 },
     });
@@ -1067,10 +1115,11 @@ describe('RealtimeVoiceService', () => {
       { missionConnectionEpoch: 1, nextServerSequence: -0 },
       { missionConnectionEpoch: 1, nextServerSequence: 0, companyId: 'attacker' },
       { missionConnectionEpoch: 1, nextServerSequence: 0x1_0000_0001 },
-    ]) expect(parseRealtimeResumeTicketBody(body)).toMatchObject({
-      ok: false,
-      error: { kind: 'validation' },
-    });
+    ])
+      expect(parseRealtimeResumeTicketBody(body)).toMatchObject({
+        ok: false,
+        error: { kind: 'validation' },
+      });
   });
 
   it('émet uniquement une capacité terminale liée au principal et atteste sa completion', async () => {
@@ -1108,10 +1157,18 @@ describe('RealtimeVoiceService', () => {
     );
     const signal = new AbortController().signal;
 
-    await expect(runAsPrincipal(() => service.requestResumeTicket(sessionHandle, {
-      missionConnectionEpoch: 3,
-      nextServerSequence: 8,
-    }, signal))).resolves.toEqual({
+    await expect(
+      runAsPrincipal(() =>
+        service.requestResumeTicket(
+          sessionHandle,
+          {
+            missionConnectionEpoch: 3,
+            nextServerSequence: 8,
+          },
+          signal,
+        ),
+      ),
+    ).resolves.toEqual({
       ok: true,
       value: {
         status: 'issued',
@@ -1127,19 +1184,17 @@ describe('RealtimeVoiceService', () => {
         resumeNextServerSequence: 8,
       },
     });
-    expect(issue).toHaveBeenCalledWith(expect.objectContaining({
-      companyId: 'company-1',
-      subjectHash: admissionSubjectHash(
-        MISTRAL_SETTINGS.safetySecret!,
-        'company-1',
-        'user-1',
-      ),
-      subjectKeyVersion: MISTRAL_SETTINGS.subjectKeyVersion,
-      sessionHandle,
-      clientAcceptedMissionConnectionEpoch: 3,
-      resumeNextServerSequence: 8,
-      signal,
-    }));
+    expect(issue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId: 'company-1',
+        subjectHash: admissionSubjectHash(MISTRAL_SETTINGS.safetySecret!, 'company-1', 'user-1'),
+        subjectKeyVersion: MISTRAL_SETTINGS.subjectKeyVersion,
+        sessionHandle,
+        clientAcceptedMissionConnectionEpoch: 3,
+        resumeNextServerSequence: 8,
+        signal,
+      }),
+    );
 
     issue.mockResolvedValueOnce({
       status: 'terminal_complete',
@@ -1153,10 +1208,18 @@ describe('RealtimeVoiceService', () => {
         closedAt: '2026-07-19T12:00:00.000Z',
       },
     });
-    await expect(runAsPrincipal(() => service.requestResumeTicket(sessionHandle, {
-      missionConnectionEpoch: 4,
-      nextServerSequence: 12,
-    }, signal))).resolves.toEqual({
+    await expect(
+      runAsPrincipal(() =>
+        service.requestResumeTicket(
+          sessionHandle,
+          {
+            missionConnectionEpoch: 4,
+            nextServerSequence: 12,
+          },
+          signal,
+        ),
+      ),
+    ).resolves.toEqual({
       ok: true,
       value: {
         status: 'terminal_complete',
@@ -1169,10 +1232,9 @@ describe('RealtimeVoiceService', () => {
         closedAt: '2026-07-19T12:00:00.000Z',
       },
     });
-    expect(logger.audit).toHaveBeenCalledWith(
-      'bob.live.mistral.resume.terminal_complete',
-      { sessionHandle },
-    );
+    expect(logger.audit).toHaveBeenCalledWith('bob.live.mistral.resume.terminal_complete', {
+      sessionHandle,
+    });
 
     issue.mockResolvedValueOnce({
       status: 'terminal_complete',
@@ -1186,10 +1248,18 @@ describe('RealtimeVoiceService', () => {
         closedAt: '2026-07-19T12:00:00.000Z',
       },
     });
-    await expect(runAsPrincipal(() => service.requestResumeTicket(sessionHandle, {
-      missionConnectionEpoch: 4,
-      nextServerSequence: 12,
-    }, signal))).resolves.toMatchObject({
+    await expect(
+      runAsPrincipal(() =>
+        service.requestResumeTicket(
+          sessionHandle,
+          {
+            missionConnectionEpoch: 4,
+            nextServerSequence: 12,
+          },
+          signal,
+        ),
+      ),
+    ).resolves.toMatchObject({
       ok: false,
       error: { kind: 'unavailable', service: 'bob-live-mistral-resume' },
     });
@@ -1205,10 +1275,18 @@ describe('RealtimeVoiceService', () => {
         closedAt: '2026-07-19T12:00:00.000Z',
       },
     });
-    await expect(runAsPrincipal(() => service.requestResumeTicket(sessionHandle, {
-      missionConnectionEpoch: 4,
-      nextServerSequence: 12,
-    }, signal))).resolves.toMatchObject({
+    await expect(
+      runAsPrincipal(() =>
+        service.requestResumeTicket(
+          sessionHandle,
+          {
+            missionConnectionEpoch: 4,
+            nextServerSequence: 12,
+          },
+          signal,
+        ),
+      ),
+    ).resolves.toMatchObject({
       ok: false,
       error: { kind: 'unavailable', service: 'bob-live-mistral-resume' },
     });
@@ -1228,16 +1306,14 @@ describe('RealtimeVoiceService', () => {
       ],
     };
     const issue = vi.fn<MistralConversationResumeAuthority['issue']>(async (input) => {
-      expect(input.subjectHash).toBe(admissionSubjectHash(
-        currentSecret,
-        'company-1',
-        'user-1',
-      ));
+      expect(input.subjectHash).toBe(admissionSubjectHash(currentSecret, 'company-1', 'user-1'));
       expect(input.subjectKeyVersion).toBe(8);
-      expect(input.historicalSubjectBindings).toEqual([{
-        subjectHash: admissionSubjectHash(previousSecret, 'company-1', 'user-1'),
-        subjectKeyVersion: 7,
-      }]);
+      expect(input.historicalSubjectBindings).toEqual([
+        {
+          subjectHash: admissionSubjectHash(previousSecret, 'company-1', 'user-1'),
+          subjectKeyVersion: 7,
+        },
+      ]);
       return {
         status: 'terminal_complete',
         receipt: {
@@ -1267,10 +1343,18 @@ describe('RealtimeVoiceService', () => {
       resumeAuthority(issue),
     );
 
-    await expect(runAsPrincipal(() => service.requestResumeTicket(sessionHandle, {
-      missionConnectionEpoch: 4,
-      nextServerSequence: 12,
-    }, new AbortController().signal))).resolves.toMatchObject({
+    await expect(
+      runAsPrincipal(() =>
+        service.requestResumeTicket(
+          sessionHandle,
+          {
+            missionConnectionEpoch: 4,
+            nextServerSequence: 12,
+          },
+          new AbortController().signal,
+        ),
+      ),
+    ).resolves.toMatchObject({
       ok: true,
       value: { status: 'terminal_complete', sessionHandle },
     });
@@ -1294,41 +1378,54 @@ describe('RealtimeVoiceService', () => {
       },
     }));
     const authority = resumeAuthority(issue);
-    const createService = (settings: RealtimeVoiceSettings) => new RealtimeVoiceService(
-      settings,
-      { createCall: vi.fn(), hangupCall: vi.fn(async () => undefined) },
-      admission(),
-      sidebandStub(),
-      new Metrics(),
-      loggerStub(),
-      undefined,
-      entitled(),
-      undefined,
-      undefined,
-      undefined,
-      TEST_SPEECH_SOURCE_POLICY,
-      authority,
-    );
+    const createService = (settings: RealtimeVoiceSettings) =>
+      new RealtimeVoiceService(
+        settings,
+        { createCall: vi.fn(), hangupCall: vi.fn(async () => undefined) },
+        admission(),
+        sidebandStub(),
+        new Metrics(),
+        loggerStub(),
+        undefined,
+        entitled(),
+        undefined,
+        undefined,
+        undefined,
+        TEST_SPEECH_SOURCE_POLICY,
+        authority,
+      );
     const body = { missionConnectionEpoch: 3, nextServerSequence: 8 };
 
-    await expect(runAsPrincipal(() => createService(MISTRAL_SETTINGS).requestResumeTicket(
-      sessionHandle,
-      body,
-      new AbortController().signal,
-    ))).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
+    await expect(
+      runAsPrincipal(() =>
+        createService(MISTRAL_SETTINGS).requestResumeTicket(
+          sessionHandle,
+          body,
+          new AbortController().signal,
+        ),
+      ),
+    ).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
 
     issue.mockResolvedValueOnce({ status: 'forbidden' });
-    await expect(runAsPrincipal(() => createService(MISTRAL_SETTINGS).requestResumeTicket(
-      sessionHandle,
-      body,
-      new AbortController().signal,
-    ))).resolves.toMatchObject({ ok: false, error: { kind: 'not_found' } });
+    await expect(
+      runAsPrincipal(() =>
+        createService(MISTRAL_SETTINGS).requestResumeTicket(
+          sessionHandle,
+          body,
+          new AbortController().signal,
+        ),
+      ),
+    ).resolves.toMatchObject({ ok: false, error: { kind: 'not_found' } });
 
-    await expect(runAsPrincipal(() => createService(SETTINGS).requestResumeTicket(
-      sessionHandle,
-      body,
-      new AbortController().signal,
-    ))).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
+    await expect(
+      runAsPrincipal(() =>
+        createService(SETTINGS).requestResumeTicket(
+          sessionHandle,
+          body,
+          new AbortController().signal,
+        ),
+      ),
+    ).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
   });
 
   it('ferme une connexion Mistral locale lors du hangup explicite', async () => {
@@ -1436,20 +1533,22 @@ describe('RealtimeVoiceService', () => {
       TEST_SPEECH_SOURCE_POLICY,
     );
 
-    const result = await runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      agentMissionProtocolVersion: null,
-      sessionHandle: '00000000-0000-4000-8000-000000000042',
-      context: {
-        version: 1,
-        revision: 1,
+    const result = await runAsPrincipal(() =>
+      service.createCall({
+        ...AUDITED_BOOTSTRAP_BINDING,
+        agentMissionProtocolVersion: null,
+        sessionHandle: '00000000-0000-4000-8000-000000000042',
         context: {
-          screen: { name: '/today', instanceId: 'today-1' },
-          entities: [],
-          capabilities: ['screen.read'],
+          version: 1,
+          revision: 1,
+          context: {
+            screen: { name: '/today', instanceId: 'today-1' },
+            entities: [],
+            capabilities: ['screen.read'],
+          },
         },
-      },
-    }));
+      }),
+    );
 
     expect(result).toMatchObject({
       ok: true,
@@ -1535,12 +1634,14 @@ describe('RealtimeVoiceService', () => {
     };
 
     const config = await runAsPrincipal(() => service.publicConfig());
-    const result = await runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      agentMissionProtocolVersion: 1,
-      sessionHandle: '00000000-0000-4000-8000-000000000031',
-      context,
-    }));
+    const result = await runAsPrincipal(() =>
+      service.createCall({
+        ...AUDITED_BOOTSTRAP_BINDING,
+        agentMissionProtocolVersion: 1,
+        sessionHandle: '00000000-0000-4000-8000-000000000031',
+        context,
+      }),
+    );
 
     expect(config).toMatchObject({
       available: true,
@@ -1566,28 +1667,31 @@ describe('RealtimeVoiceService', () => {
       },
     });
     expect(JSON.stringify(result)).not.toContain(String(MISTRAL_SETTINGS.apiKey));
-    expect(issue).toHaveBeenCalledWith(expect.objectContaining({
-      userId: 'user-1',
-      companyId: 'company-1',
-      subjectKeyVersion: 7,
-      plan: 'business',
-      contextSchemaVersion: 1,
-      contextRevision: 3,
-      context: context.context,
-    }));
+    expect(issue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'user-1',
+        companyId: 'company-1',
+        subjectKeyVersion: 7,
+        plan: 'business',
+        contextSchemaVersion: 1,
+        contextRevision: 3,
+        context: context.context,
+      }),
+    );
     expect(provider.createCall).not.toHaveBeenCalled();
     expect(sideband.attach).not.toHaveBeenCalled();
-    await expect(runAsPrincipal(() => service.updateContext(
-      '00000000-0000-4000-8000-000000000031',
-      {
-        version: 1,
-        revision: 4,
-        context: {
-          ...context.context,
-          screen: { name: '/devis/new', instanceId: 'quote-new-2' },
-        },
-      },
-    ))).resolves.toMatchObject({
+    await expect(
+      runAsPrincipal(() =>
+        service.updateContext('00000000-0000-4000-8000-000000000031', {
+          version: 1,
+          revision: 4,
+          context: {
+            ...context.context,
+            screen: { name: '/devis/new', instanceId: 'quote-new-2' },
+          },
+        }),
+      ),
+    ).resolves.toMatchObject({
       ok: true,
       value: {
         revision: 4,
@@ -1655,12 +1759,14 @@ describe('RealtimeVoiceService', () => {
       },
     };
 
-    const result = await runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      protocol: MISTRAL_CONVERSATION_PROTOCOL,
-      sessionHandle: '00000000-0000-4000-8000-000000000033',
-      context,
-    }));
+    const result = await runAsPrincipal(() =>
+      service.createCall({
+        ...AUDITED_BOOTSTRAP_BINDING,
+        protocol: MISTRAL_CONVERSATION_PROTOCOL,
+        sessionHandle: '00000000-0000-4000-8000-000000000033',
+        context,
+      }),
+    );
 
     await expect(runAsPrincipal(() => service.publicConfig())).resolves.toMatchObject({
       transport: 'mistral-pcm',
@@ -1683,14 +1789,16 @@ describe('RealtimeVoiceService', () => {
     if (!result.ok) throw new Error('bootstrap Mistral v2 attendu');
     expect(result.value).not.toHaveProperty('agentMissionProtocolVersion');
     expect(result.value).not.toHaveProperty('agentMissionCapability');
-    expect(issue).toHaveBeenCalledWith(expect.objectContaining({
-      userId: 'user-1',
-      subjectKeyVersion: 7,
-      plan: 'business',
-      contextSchemaVersion: 1,
-      contextRevision: 4,
-      context: context.context,
-    }));
+    expect(issue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'user-1',
+        subjectKeyVersion: 7,
+        plan: 'business',
+        contextSchemaVersion: 1,
+        contextRevision: 4,
+        context: context.context,
+      }),
+    );
     expect(v1Issue).not.toHaveBeenCalled();
     expect(provider.createCall).not.toHaveBeenCalled();
   });
@@ -1720,11 +1828,15 @@ describe('RealtimeVoiceService', () => {
       },
     );
 
-    await expect(runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      protocol: MISTRAL_CONVERSATION_PROTOCOL,
-      context: { version: 1, revision: 1, context: {} },
-    }))).resolves.toMatchObject({
+    await expect(
+      runAsPrincipal(() =>
+        service.createCall({
+          ...AUDITED_BOOTSTRAP_BINDING,
+          protocol: MISTRAL_CONVERSATION_PROTOCOL,
+          context: { version: 1, revision: 1, context: {} },
+        }),
+      ),
+    ).resolves.toMatchObject({
       ok: false,
       error: { kind: 'unavailable', service: 'bob-live-mistral-v2-live-runtime' },
     });
@@ -1763,11 +1875,15 @@ describe('RealtimeVoiceService', () => {
       { liveTurnsAvailable: false },
     );
 
-    await expect(runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      protocol: MISTRAL_CONVERSATION_PROTOCOL,
-      context: { version: 1, revision: 1, context: {} },
-    }))).resolves.toMatchObject({
+    await expect(
+      runAsPrincipal(() =>
+        service.createCall({
+          ...AUDITED_BOOTSTRAP_BINDING,
+          protocol: MISTRAL_CONVERSATION_PROTOCOL,
+          context: { version: 1, revision: 1, context: {} },
+        }),
+      ),
+    ).resolves.toMatchObject({
       ok: false,
       error: { kind: 'unavailable', service: 'bob-live-mistral-v2-live-runtime' },
     });
@@ -1781,13 +1897,21 @@ describe('RealtimeVoiceService', () => {
   });
 
   it('rejette un bootstrap Mistral sans contexte exact et libère le bail si le ticket échoue', async () => {
-    expect(parseMistralRealtimeCallBody({ sdp: OFFER_SDP, context: {} }))
-      .toMatchObject({ ok: false, error: { kind: 'validation' } });
-    expect(parseMistralRealtimeCallBody({ context: { version: 1, revision: 1, context: {} }, model: 'evil' }))
-      .toMatchObject({ ok: false, error: { kind: 'validation' } });
-    expect(parseMistralRealtimeCallBody({
-      context: { version: 1, revision: 1, context: {} },
-    })).toMatchObject({
+    expect(parseMistralRealtimeCallBody({ sdp: OFFER_SDP, context: {} })).toMatchObject({
+      ok: false,
+      error: { kind: 'validation' },
+    });
+    expect(
+      parseMistralRealtimeCallBody({
+        context: { version: 1, revision: 1, context: {} },
+        model: 'evil',
+      }),
+    ).toMatchObject({ ok: false, error: { kind: 'validation' } });
+    expect(
+      parseMistralRealtimeCallBody({
+        context: { version: 1, revision: 1, context: {} },
+      }),
+    ).toMatchObject({
       ok: true,
       value: {
         wireContract: 'v3-legacy',
@@ -1796,20 +1920,26 @@ describe('RealtimeVoiceService', () => {
         protocol: 'bob.mistral-pcm.v1',
       },
     });
-    expect(parseMistralRealtimeCallBody({
-      context: { version: 1, revision: 1, context: {} },
-      configVersion: BOB_REALTIME_CONFIG_VERSION,
-    })).toMatchObject({ ok: false, error: { kind: 'validation' } });
-    expect(parseMistralRealtimeCallBody({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      protocol: MISTRAL_CONVERSATION_PROTOCOL,
-      context: { version: 1, revision: 1, context: {} },
-    })).toMatchObject({ ok: true, value: { protocol: MISTRAL_CONVERSATION_PROTOCOL } });
-    expect(parseMistralRealtimeCallBody({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      protocol: 'bob.mistral-pcm.v3',
-      context: { version: 1, revision: 1, context: {} },
-    })).toMatchObject({ ok: false, error: { kind: 'validation' } });
+    expect(
+      parseMistralRealtimeCallBody({
+        context: { version: 1, revision: 1, context: {} },
+        configVersion: BOB_REALTIME_CONFIG_VERSION,
+      }),
+    ).toMatchObject({ ok: false, error: { kind: 'validation' } });
+    expect(
+      parseMistralRealtimeCallBody({
+        ...AUDITED_BOOTSTRAP_BINDING,
+        protocol: MISTRAL_CONVERSATION_PROTOCOL,
+        context: { version: 1, revision: 1, context: {} },
+      }),
+    ).toMatchObject({ ok: true, value: { protocol: MISTRAL_CONVERSATION_PROTOCOL } });
+    expect(
+      parseMistralRealtimeCallBody({
+        ...AUDITED_BOOTSTRAP_BINDING,
+        protocol: 'bob.mistral-pcm.v3',
+        context: { version: 1, revision: 1, context: {} },
+      }),
+    ).toMatchObject({ ok: false, error: { kind: 'validation' } });
 
     const durable = admission();
     const release = vi.spyOn(durable, 'release');
@@ -1829,11 +1959,15 @@ describe('RealtimeVoiceService', () => {
       undefined,
       TEST_SPEECH_SOURCE_POLICY,
     );
-    await expect(runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      sessionHandle: '00000000-0000-4000-8000-000000000032',
-      context: { version: 1, revision: 1, context: {} },
-    }))).resolves.toMatchObject({
+    await expect(
+      runAsPrincipal(() =>
+        service.createCall({
+          ...AUDITED_BOOTSTRAP_BINDING,
+          sessionHandle: '00000000-0000-4000-8000-000000000032',
+          context: { version: 1, revision: 1, context: {} },
+        }),
+      ),
+    ).resolves.toMatchObject({
       ok: false,
       error: { kind: 'unavailable', service: 'mistral-realtime-ingress' },
     });
@@ -1860,12 +1994,14 @@ describe('RealtimeVoiceService', () => {
       TEST_SPEECH_SOURCE_POLICY,
     );
 
-    const result = await runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      sdp: OFFER_SDP,
-      agentMissionProtocolVersion: null,
-      sessionHandle: '00000000-0000-4000-8000-000000000001',
-    }));
+    const result = await runAsPrincipal(() =>
+      service.createCall({
+        ...AUDITED_BOOTSTRAP_BINDING,
+        sdp: OFFER_SDP,
+        agentMissionProtocolVersion: null,
+        sessionHandle: '00000000-0000-4000-8000-000000000001',
+      }),
+    );
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('bootstrap attendu');
@@ -1904,10 +2040,12 @@ describe('RealtimeVoiceService', () => {
         },
       },
     });
-    await expect(runAsPrincipal(() => service.hangup(result.value.sessionHandle))).resolves.toEqual({
-      ok: true,
-      value: { ended: true },
-    });
+    await expect(runAsPrincipal(() => service.hangup(result.value.sessionHandle))).resolves.toEqual(
+      {
+        ok: true,
+        value: { ended: true },
+      },
+    );
   });
 
   it('sert un client N-1 en audited sans ajouter le discriminant v4 à la réponse wire', async () => {
@@ -1941,10 +2079,12 @@ describe('RealtimeVoiceService', () => {
       },
     });
 
-    const result = await runAsPrincipal(() => service.createCall({
-      sdp: OFFER_SDP,
-      sessionHandle: '00000000-0000-4000-8000-000000000003',
-    }));
+    const result = await runAsPrincipal(() =>
+      service.createCall({
+        sdp: OFFER_SDP,
+        sessionHandle: '00000000-0000-4000-8000-000000000003',
+      }),
+    );
     expect(result).toMatchObject({
       ok: true,
       value: {
@@ -1998,12 +2138,14 @@ describe('RealtimeVoiceService', () => {
       transport: 'webrtc',
       speechDelivery: 'openai-native-webrtc-v1',
     });
-    const result = await runAsPrincipal(() => service.createCall({
-      ...NATIVE_BOOTSTRAP_BINDING,
-      sdp: OFFER_SDP,
-      agentMissionProtocolVersion: 2,
-      sessionHandle: '00000000-0000-4000-8000-000000000002',
-    }));
+    const result = await runAsPrincipal(() =>
+      service.createCall({
+        ...NATIVE_BOOTSTRAP_BINDING,
+        sdp: OFFER_SDP,
+        agentMissionProtocolVersion: 2,
+        sessionHandle: '00000000-0000-4000-8000-000000000002',
+      }),
+    );
 
     expect(result).toMatchObject({
       ok: true,
@@ -2017,11 +2159,13 @@ describe('RealtimeVoiceService', () => {
     if (result.ok) expect(result.value).not.toHaveProperty('speechSourcePolicy');
     expect(policyForSession).not.toHaveBeenCalled();
     expect(provider.createCall).toHaveBeenCalledOnce();
-    expect(sideband.attach).toHaveBeenCalledWith(expect.objectContaining({
-      speechDelivery: 'openai-native-webrtc-v1',
-      plan: 'business',
-      subjectKeyVersion: SETTINGS.subjectKeyVersion,
-    }));
+    expect(sideband.attach).toHaveBeenCalledWith(
+      expect.objectContaining({
+        speechDelivery: 'openai-native-webrtc-v1',
+        plan: 'business',
+        subjectKeyVersion: SETTINGS.subjectKeyVersion,
+      }),
+    );
     const call = vi.mocked(provider.createCall).mock.calls[0]?.[0];
     expect(call?.session).toMatchObject({
       output_modalities: ['audio'],
@@ -2078,11 +2222,15 @@ describe('RealtimeVoiceService', () => {
         NATIVE_RUNTIME_READY,
       );
 
-      await expect(runAsPrincipal(() => service.createCall({
-        ...NATIVE_BOOTSTRAP_BINDING,
-        agentMissionProtocolVersion: 2,
-        sdp,
-      }))).resolves.toMatchObject({
+      await expect(
+        runAsPrincipal(() =>
+          service.createCall({
+            ...NATIVE_BOOTSTRAP_BINDING,
+            agentMissionProtocolVersion: 2,
+            sdp,
+          }),
+        ),
+      ).resolves.toMatchObject({
         ok: false,
         error: {
           kind: 'validation',
@@ -2134,11 +2282,15 @@ describe('RealtimeVoiceService', () => {
         NATIVE_RUNTIME_READY,
       );
 
-      await expect(runAsPrincipal(() => service.createCall({
-        ...NATIVE_BOOTSTRAP_BINDING,
-        ...mission,
-        sdp: OFFER_SDP,
-      }))).resolves.toMatchObject({
+      await expect(
+        runAsPrincipal(() =>
+          service.createCall({
+            ...NATIVE_BOOTSTRAP_BINDING,
+            ...mission,
+            sdp: OFFER_SDP,
+          }),
+        ),
+      ).resolves.toMatchObject({
         ok: false,
         error: {
           kind: 'validation',
@@ -2180,11 +2332,15 @@ describe('RealtimeVoiceService', () => {
       NATIVE_RUNTIME_READY,
     );
 
-    await expect(runAsPrincipal(() => service.createCall({
-      ...NATIVE_BOOTSTRAP_BINDING,
-      agentMissionProtocolVersion: 2,
-      sdp: OFFER_SDP,
-    }))).resolves.toMatchObject({
+    await expect(
+      runAsPrincipal(() =>
+        service.createCall({
+          ...NATIVE_BOOTSTRAP_BINDING,
+          agentMissionProtocolVersion: 2,
+          sdp: OFFER_SDP,
+        }),
+      ),
+    ).resolves.toMatchObject({
       ok: false,
       error: { kind: 'unavailable', service: 'bob-live-agent-mission-admission' },
     });
@@ -2212,7 +2368,11 @@ describe('RealtimeVoiceService', () => {
       undefined,
       undefined,
       undefined,
-      { check: vi.fn(async () => { throw new Error('native_runtime_unavailable'); }) },
+      {
+        check: vi.fn(async () => {
+          throw new Error('native_runtime_unavailable');
+        }),
+      },
     );
 
     await expect(runAsPrincipal(() => service.publicConfig())).resolves.toMatchObject({
@@ -2259,8 +2419,10 @@ describe('RealtimeVoiceService', () => {
   it('sépare une panne Mission native de la métrique entitlement', async () => {
     const metrics = new Metrics();
     const gate: RealtimeAgentMissionAdmissionGate = {
-      available: vi.fn(async () => { throw new Error('flag_backend_unavailable'); }),
-      prepare: vi.fn(async () => ({ capability: null, binding: null })),
+      available: vi.fn(async () => {
+        throw new Error('flag_backend_unavailable');
+      }),
+      prepare: vi.fn(async () => ({ capability: null, binding: null, admittedKinds: [] })),
     };
     const service = new RealtimeVoiceService(
       { ...SETTINGS, speechDelivery: 'openai-native-webrtc-v1' },
@@ -2296,11 +2458,15 @@ describe('RealtimeVoiceService', () => {
 
   it('préserve le config audited N-1 sans sonder runtime ni Mission native', async () => {
     const runtimeReadiness: BobLiveRuntimeReadinessPort = {
-      check: vi.fn(async () => { throw new Error('must_not_probe_audited'); }),
+      check: vi.fn(async () => {
+        throw new Error('must_not_probe_audited');
+      }),
     };
     const gate: RealtimeAgentMissionAdmissionGate = {
-      available: vi.fn(async () => { throw new Error('must_not_probe_mission'); }),
-      prepare: vi.fn(async () => ({ capability: null, binding: null })),
+      available: vi.fn(async () => {
+        throw new Error('must_not_probe_mission');
+      }),
+      prepare: vi.fn(async () => ({ capability: null, binding: null, admittedKinds: [] })),
     };
     const service = new RealtimeVoiceService(
       SETTINGS,
@@ -2392,13 +2558,21 @@ describe('RealtimeVoiceService', () => {
       undefined,
       undefined,
       undefined,
-      { policyForSession: () => { throw new Error('storage unavailable'); } },
+      {
+        policyForSession: () => {
+          throw new Error('storage unavailable');
+        },
+      },
     );
 
-    await expect(runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      sdp: OFFER_SDP,
-    }))).resolves.toMatchObject({
+    await expect(
+      runAsPrincipal(() =>
+        service.createCall({
+          ...AUDITED_BOOTSTRAP_BINDING,
+          sdp: OFFER_SDP,
+        }),
+      ),
+    ).resolves.toMatchObject({
       ok: false,
       error: { kind: 'unavailable', service: 'bob-live-speech' },
     });
@@ -2407,7 +2581,10 @@ describe('RealtimeVoiceService', () => {
   });
 
   it('refuse avant tout appel fournisseur lorsque Bob Live est désactivé', async () => {
-    const provider: OpenAiRealtimeCallProvider = { createCall: vi.fn(), hangupCall: vi.fn(async () => undefined) };
+    const provider: OpenAiRealtimeCallProvider = {
+      createCall: vi.fn(),
+      hangupCall: vi.fn(async () => undefined),
+    };
     const service = new RealtimeVoiceService(
       { ...SETTINGS, enabled: false },
       provider,
@@ -2424,10 +2601,12 @@ describe('RealtimeVoiceService', () => {
     );
 
     const config = await runAsPrincipal(() => service.publicConfig());
-    const result = await runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      sdp: OFFER_SDP,
-    }));
+    const result = await runAsPrincipal(() =>
+      service.createCall({
+        ...AUDITED_BOOTSTRAP_BINDING,
+        sdp: OFFER_SDP,
+      }),
+    );
 
     expect(config).toMatchObject({ available: false, availabilityReason: 'disabled' });
     expect(result).toMatchObject({ ok: false, error: { kind: 'forbidden' } });
@@ -2464,10 +2643,12 @@ describe('RealtimeVoiceService', () => {
     );
 
     const config = await runAsPrincipal(() => service.publicConfig());
-    const result = await runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      sdp: OFFER_SDP,
-    }));
+    const result = await runAsPrincipal(() =>
+      service.createCall({
+        ...AUDITED_BOOTSTRAP_BINDING,
+        sdp: OFFER_SDP,
+      }),
+    );
 
     expect(config).toMatchObject({ available: false, availabilityReason: 'not_entitled' });
     expect(result).toMatchObject({ ok: false, error: { kind: 'forbidden' } });
@@ -2491,13 +2672,19 @@ describe('RealtimeVoiceService', () => {
       new Metrics(),
       loggerStub(),
       undefined,
-      { check: vi.fn(async () => { throw new Error('subscription unavailable'); }) },
+      {
+        check: vi.fn(async () => {
+          throw new Error('subscription unavailable');
+        }),
+      },
     );
 
-    const result = await runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      sdp: OFFER_SDP,
-    }));
+    const result = await runAsPrincipal(() =>
+      service.createCall({
+        ...AUDITED_BOOTSTRAP_BINDING,
+        sdp: OFFER_SDP,
+      }),
+    );
 
     expect(result).toMatchObject({
       ok: false,
@@ -2523,10 +2710,14 @@ describe('RealtimeVoiceService', () => {
       loggerStub(),
     );
 
-    await expect(runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      sdp: OFFER_SDP,
-    }))).resolves.toMatchObject({
+    await expect(
+      runAsPrincipal(() =>
+        service.createCall({
+          ...AUDITED_BOOTSTRAP_BINDING,
+          sdp: OFFER_SDP,
+        }),
+      ),
+    ).resolves.toMatchObject({
       ok: false,
       error: { kind: 'unavailable', service: 'bob-live-entitlement' },
     });
@@ -2535,34 +2726,44 @@ describe('RealtimeVoiceService', () => {
   });
 
   it('rejette tout paramètre client qui tenterait de choisir modèle, prompt ou outils', () => {
-    const result = parseRealtimeCallBody({ sdp: OFFER_SDP, model: 'evil', tools: [{ name: 'pay' }] });
+    const result = parseRealtimeCallBody({
+      sdp: OFFER_SDP,
+      model: 'evil',
+      tools: [{ name: 'pay' }],
+    });
     expect(result).toMatchObject({ ok: false, error: { kind: 'validation' } });
   });
 
   it('distingue la négociation Mission explicite sur les bootstraps WebRTC et Mistral', () => {
-    expect(parseRealtimeCallBody({
-      sdp: OFFER_SDP,
-      agentMissionProtocolVersion: null,
-    })).toMatchObject({
+    expect(
+      parseRealtimeCallBody({
+        sdp: OFFER_SDP,
+        agentMissionProtocolVersion: null,
+      }),
+    ).toMatchObject({
       ok: true,
       value: {
         agentMissionNegotiation: { requested: 'null', protocolVersion: null },
       },
     });
-    expect(parseRealtimeCallBody({
-      ...NATIVE_BOOTSTRAP_BINDING,
-      sdp: OFFER_SDP,
-      agentMissionProtocolVersion: 1,
-    })).toMatchObject({
+    expect(
+      parseRealtimeCallBody({
+        ...NATIVE_BOOTSTRAP_BINDING,
+        sdp: OFFER_SDP,
+        agentMissionProtocolVersion: 1,
+      }),
+    ).toMatchObject({
       ok: true,
       value: {
         agentMissionNegotiation: { requested: 'v1', protocolVersion: 1 },
       },
     });
-    expect(parseMistralRealtimeCallBody({
-      context: { version: 1, revision: 1, context: {} },
-      agentMissionProtocolVersion: 1,
-    })).toMatchObject({
+    expect(
+      parseMistralRealtimeCallBody({
+        context: { version: 1, revision: 1, context: {} },
+        agentMissionProtocolVersion: 1,
+      }),
+    ).toMatchObject({
       ok: true,
       value: {
         agentMissionNegotiation: { requested: 'v1', protocolVersion: 1 },
@@ -2571,20 +2772,24 @@ describe('RealtimeVoiceService', () => {
   });
 
   it('refuse une version Mission inconnue au lieu de la rabattre sur le parcours historique', () => {
-    expect(parseRealtimeCallBody({
-      sdp: OFFER_SDP,
-      agentMissionProtocolVersion: 3,
-    })).toMatchObject({
+    expect(
+      parseRealtimeCallBody({
+        sdp: OFFER_SDP,
+        agentMissionProtocolVersion: 3,
+      }),
+    ).toMatchObject({
       ok: false,
       error: {
         kind: 'validation',
         issues: [{ field: 'agentMissionProtocolVersion' }],
       },
     });
-    expect(parseMistralRealtimeCallBody({
-      context: { version: 1, revision: 1, context: {} },
-      agentMissionProtocolVersion: '1',
-    })).toMatchObject({
+    expect(
+      parseMistralRealtimeCallBody({
+        context: { version: 1, revision: 1, context: {} },
+        agentMissionProtocolVersion: '1',
+      }),
+    ).toMatchObject({
       ok: false,
       error: {
         kind: 'validation',
@@ -2594,21 +2799,35 @@ describe('RealtimeVoiceService', () => {
   });
 
   it('rejette un contexte versionné incomplet ou enrichi de champs inconnus', () => {
-    expect(parseRealtimeContextBody({ version: 2, revision: 1, context: {} })).toMatchObject({ ok: false });
-    expect(parseRealtimeContextBody({ version: 1, revision: 0, context: {} })).toMatchObject({ ok: false });
-    expect(parseRealtimeContextBody({ version: 1, revision: 1, context: {}, providerCallId: 'rtc_leak' }))
-      .toMatchObject({ ok: false });
-    expect(parseRealtimeControlAcknowledgementBody({
-      turnId: '00000000-0000-4000-8000-000000000001',
-      contextRevision: 1,
-      contextDigest: 'a'.repeat(64),
-      bob_response_nonce: 'provider-secret',
-    })).toMatchObject({ ok: false, error: { kind: 'validation' } });
-    expect(parseRealtimeControlAcknowledgementBody({
-      turnId: 'rogue',
-      contextRevision: 1,
-      contextDigest: 'a'.repeat(64),
-    })).toMatchObject({ ok: false, error: { kind: 'validation' } });
+    expect(parseRealtimeContextBody({ version: 2, revision: 1, context: {} })).toMatchObject({
+      ok: false,
+    });
+    expect(parseRealtimeContextBody({ version: 1, revision: 0, context: {} })).toMatchObject({
+      ok: false,
+    });
+    expect(
+      parseRealtimeContextBody({
+        version: 1,
+        revision: 1,
+        context: {},
+        providerCallId: 'rtc_leak',
+      }),
+    ).toMatchObject({ ok: false });
+    expect(
+      parseRealtimeControlAcknowledgementBody({
+        turnId: '00000000-0000-4000-8000-000000000001',
+        contextRevision: 1,
+        contextDigest: 'a'.repeat(64),
+        bob_response_nonce: 'provider-secret',
+      }),
+    ).toMatchObject({ ok: false, error: { kind: 'validation' } });
+    expect(
+      parseRealtimeControlAcknowledgementBody({
+        turnId: 'rogue',
+        contextRevision: 1,
+        contextDigest: 'a'.repeat(64),
+      }),
+    ).toMatchObject({ ok: false, error: { kind: 'validation' } });
   });
 
   it('applique le quota par utilisateur avant de consommer le fournisseur', async () => {
@@ -2632,16 +2851,20 @@ describe('RealtimeVoiceService', () => {
       TEST_SPEECH_SOURCE_POLICY,
     );
 
-    const first = await runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      sdp: OFFER_SDP,
-    }));
+    const first = await runAsPrincipal(() =>
+      service.createCall({
+        ...AUDITED_BOOTSTRAP_BINDING,
+        sdp: OFFER_SDP,
+      }),
+    );
     if (!first.ok) throw new Error('First bootstrap should be admitted.');
     await runAsPrincipal(() => service.hangup(first.value.sessionHandle));
-    const second = await runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      sdp: OFFER_SDP,
-    }));
+    const second = await runAsPrincipal(() =>
+      service.createCall({
+        ...AUDITED_BOOTSTRAP_BINDING,
+        sdp: OFFER_SDP,
+      }),
+    );
 
     expect(first.ok).toBe(true);
     expect(second).toMatchObject({ ok: false, error: { kind: 'rate_limited' } });
@@ -2678,10 +2901,12 @@ describe('RealtimeVoiceService', () => {
       TEST_SPEECH_SOURCE_POLICY,
     );
 
-    const first = await runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      sdp: OFFER_SDP,
-    }));
+    const first = await runAsPrincipal(() =>
+      service.createCall({
+        ...AUDITED_BOOTSTRAP_BINDING,
+        sdp: OFFER_SDP,
+      }),
+    );
     const second = await runAsPrincipal(
       () => service.createCall({ ...AUDITED_BOOTSTRAP_BINDING, sdp: OFFER_SDP }),
       { userId: 'user-2', companyId: 'company-1' },
@@ -2717,10 +2942,12 @@ describe('RealtimeVoiceService', () => {
       TEST_SPEECH_SOURCE_POLICY,
     );
 
-    const result = await runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      sdp: OFFER_SDP,
-    }));
+    const result = await runAsPrincipal(() =>
+      service.createCall({
+        ...AUDITED_BOOTSTRAP_BINDING,
+        sdp: OFFER_SDP,
+      }),
+    );
 
     expect(result).toEqual({
       ok: false,
@@ -2764,10 +2991,12 @@ describe('RealtimeVoiceService', () => {
       TEST_SPEECH_SOURCE_POLICY,
     );
 
-    const result = await runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      sdp: OFFER_SDP,
-    }));
+    const result = await runAsPrincipal(() =>
+      service.createCall({
+        ...AUDITED_BOOTSTRAP_BINDING,
+        sdp: OFFER_SDP,
+      }),
+    );
 
     expect(result).toEqual({
       ok: false,
@@ -2817,9 +3046,9 @@ describe('RealtimeVoiceService', () => {
       loggerStub(),
     );
 
-    await expect(runAsPrincipal(() => service.hangup(
-      '00000000-0000-4000-8000-000000000099',
-    ))).resolves.toEqual({
+    await expect(
+      runAsPrincipal(() => service.hangup('00000000-0000-4000-8000-000000000099')),
+    ).resolves.toEqual({
       ok: false,
       error: {
         kind: 'unavailable',
@@ -2831,12 +3060,14 @@ describe('RealtimeVoiceService', () => {
     expect(settle).toHaveBeenCalledOnce();
     expect(settle).toHaveBeenCalledWith('unconfirmed');
     const providerErrors = await metrics.bobLiveProviderErrors.get();
-    expect(providerErrors.values).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        labels: { class: 'explicit_hangup_pending_reaper' },
-        value: 1,
-      }),
-    ]));
+    expect(providerErrors.values).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          labels: { class: 'explicit_hangup_pending_reaper' },
+          value: 1,
+        }),
+      ]),
+    );
     expect(pendingAdmission.claimTermination).toHaveBeenCalledOnce();
   });
 
@@ -2859,9 +3090,9 @@ describe('RealtimeVoiceService', () => {
       loggerStub(),
     );
 
-    await expect(runAsPrincipal(() => service.hangup(
-      '00000000-0000-4000-8000-000000000098',
-    ))).resolves.toMatchObject({
+    await expect(
+      runAsPrincipal(() => service.hangup('00000000-0000-4000-8000-000000000098')),
+    ).resolves.toMatchObject({
       ok: false,
       error: { kind: 'unavailable', service: 'bob-live-hangup', retryAfterSeconds: 10 },
     });
@@ -2897,11 +3128,15 @@ describe('RealtimeVoiceService', () => {
       ok: true,
       value: { ended: true },
     });
-    await expect(runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      sdp: OFFER_SDP,
-      sessionHandle: handle,
-    }))).resolves.toMatchObject({
+    await expect(
+      runAsPrincipal(() =>
+        service.createCall({
+          ...AUDITED_BOOTSTRAP_BINDING,
+          sdp: OFFER_SDP,
+          sessionHandle: handle,
+        }),
+      ),
+    ).resolves.toMatchObject({
       ok: false,
       error: { kind: 'conflict', entity: 'realtime_session' },
     });
@@ -2929,18 +3164,36 @@ describe('RealtimeVoiceService', () => {
       }),
     };
     const service = new RealtimeVoiceService(
-      SETTINGS, provider, durable, sideband, new Metrics(), loggerStub(), undefined, entitled(),
-      undefined, undefined, undefined, TEST_SPEECH_SOURCE_POLICY,
+      SETTINGS,
+      provider,
+      durable,
+      sideband,
+      new Metrics(),
+      loggerStub(),
+      undefined,
+      entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
     );
 
-    const result = await runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      sdp: OFFER_SDP,
-    }));
+    const result = await runAsPrincipal(() =>
+      service.createCall({
+        ...AUDITED_BOOTSTRAP_BINDING,
+        sdp: OFFER_SDP,
+      }),
+    );
 
     expect(result.ok).toBe(true);
-    expect(order.slice(0, 6))
-      .toEqual(['reserve', 'provider', 'bind', 'sideband', 'activate', 'resolve']);
+    expect(order.slice(0, 6)).toEqual([
+      'reserve',
+      'provider',
+      'bind',
+      'sideband',
+      'activate',
+      'resolve',
+    ]);
     expect(order.filter((step) => step === 'bind')).toHaveLength(1);
     if (result.ok) await runAsPrincipal(() => service.hangup(result.value.sessionHandle));
   });
@@ -3002,12 +3255,14 @@ describe('RealtimeVoiceService', () => {
       missionGate(capability),
     );
 
-    const bootstrap = runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      agentMissionProtocolVersion: 1,
-      sdp: OFFER_SDP,
-      sessionHandle: handle,
-    }));
+    const bootstrap = runAsPrincipal(() =>
+      service.createCall({
+        ...AUDITED_BOOTSTRAP_BINDING,
+        agentMissionProtocolVersion: 1,
+        sdp: OFFER_SDP,
+        sessionHandle: handle,
+      }),
+    );
     await attached.promise;
     await expect(runAsPrincipal(() => service.hangup(handle))).resolves.toEqual({
       ok: true,
@@ -3047,14 +3302,26 @@ describe('RealtimeVoiceService', () => {
     };
     const sideband = sidebandStub();
     const service = new RealtimeVoiceService(
-      SETTINGS, provider, durable, sideband, new Metrics(), loggerStub(), undefined, entitled(),
-      undefined, undefined, undefined, TEST_SPEECH_SOURCE_POLICY,
+      SETTINGS,
+      provider,
+      durable,
+      sideband,
+      new Metrics(),
+      loggerStub(),
+      undefined,
+      entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
     );
 
-    const result = await runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      sdp: OFFER_SDP,
-    }));
+    const result = await runAsPrincipal(() =>
+      service.createCall({
+        ...AUDITED_BOOTSTRAP_BINDING,
+        sdp: OFFER_SDP,
+      }),
+    );
 
     expect(result).toMatchObject({ ok: false, error: { kind: 'dependency' } });
     expect(provider.hangupCall).toHaveBeenCalledOnce();
@@ -3094,11 +3361,15 @@ describe('RealtimeVoiceService', () => {
       TEST_SPEECH_SOURCE_POLICY,
     );
 
-    await expect(runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      sdp: OFFER_SDP,
-      sessionHandle: handle,
-    }))).resolves.toMatchObject({
+    await expect(
+      runAsPrincipal(() =>
+        service.createCall({
+          ...AUDITED_BOOTSTRAP_BINDING,
+          sdp: OFFER_SDP,
+          sessionHandle: handle,
+        }),
+      ),
+    ).resolves.toMatchObject({
       ok: false,
       error: { kind: 'dependency', cause: 'provider_invalid_sdp' },
     });
@@ -3108,12 +3379,14 @@ describe('RealtimeVoiceService', () => {
     expect(order.indexOf('hangup')).toBeLessThan(order.indexOf('release'));
     expect(order.filter((event) => event === 'release')).toHaveLength(1);
     const subjectHash = admissionSubjectHash(SETTINGS.safetySecret!, 'company-1', 'user-1');
-    await expect(durable.claimTermination({
-      companyId: 'company-1',
-      subjectHashCandidates: [subjectHash],
-      principalBindingHash: subjectHash,
-      sessionId: handle,
-    })).resolves.toEqual({ ok: true, claim: null, pending: false });
+    await expect(
+      durable.claimTermination({
+        companyId: 'company-1',
+        subjectHashCandidates: [subjectHash],
+        principalBindingHash: subjectHash,
+        sessionId: handle,
+      }),
+    ).resolves.toEqual({ ok: true, claim: null, pending: false });
   });
 
   it('conserve au reaper le bail lié quand la compensation post-bind reste incertaine', async () => {
@@ -3124,10 +3397,7 @@ describe('RealtimeVoiceService', () => {
     const provider: OpenAiRealtimeCallProvider = {
       createCall: vi.fn(async (input) => {
         await input.onCallCreated('rtc_cleanup_unconfirmed');
-        throw new RealtimeProviderCleanupError(
-          'provider_invalid_sdp',
-          'provider_hangup_timeout',
-        );
+        throw new RealtimeProviderCleanupError('provider_invalid_sdp', 'provider_hangup_timeout');
       }),
       hangupCall: vi.fn(async () => undefined),
     };
@@ -3147,11 +3417,15 @@ describe('RealtimeVoiceService', () => {
       TEST_SPEECH_SOURCE_POLICY,
     );
 
-    await expect(runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      sdp: OFFER_SDP,
-      sessionHandle: handle,
-    }))).resolves.toMatchObject({
+    await expect(
+      runAsPrincipal(() =>
+        service.createCall({
+          ...AUDITED_BOOTSTRAP_BINDING,
+          sdp: OFFER_SDP,
+          sessionHandle: handle,
+        }),
+      ),
+    ).resolves.toMatchObject({
       ok: false,
       error: { kind: 'dependency', cause: 'provider_invalid_sdp' },
     });
@@ -3171,11 +3445,13 @@ describe('RealtimeVoiceService', () => {
     now += 16_000;
     await expect(base.claimExpired({ companyId: 'company-1' })).resolves.toMatchObject({
       ok: true,
-      claims: [expect.objectContaining({
-        sessionId: handle,
-        providerId: 'openai',
-        providerCallId: 'rtc_cleanup_unconfirmed',
-      })],
+      claims: [
+        expect.objectContaining({
+          sessionId: handle,
+          providerId: 'openai',
+          providerCallId: 'rtc_cleanup_unconfirmed',
+        }),
+      ],
     });
   });
 
@@ -3216,20 +3492,26 @@ describe('RealtimeVoiceService', () => {
       TEST_SPEECH_SOURCE_POLICY,
     );
 
-    await expect(runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      sdp: OFFER_SDP,
-      sessionHandle: handle,
-    }))).resolves.toMatchObject({
+    await expect(
+      runAsPrincipal(() =>
+        service.createCall({
+          ...AUDITED_BOOTSTRAP_BINDING,
+          sdp: OFFER_SDP,
+          sessionHandle: handle,
+        }),
+      ),
+    ).resolves.toMatchObject({
       ok: false,
       error: { kind: 'dependency', cause: 'provider_invalid_sdp' },
     });
 
     expect(hangupCall).toHaveBeenCalledOnce();
     expect(release).toHaveBeenCalledOnce();
-    expect(release).toHaveBeenCalledWith(expect.objectContaining({
-      providerTermination: 'confirmed',
-    }));
+    expect(release).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerTermination: 'confirmed',
+      }),
+    );
     expect(base.snapshot().leases).toEqual([
       expect.objectContaining({
         sessionId: handle,
@@ -3238,12 +3520,14 @@ describe('RealtimeVoiceService', () => {
       }),
     ]);
     const providerErrors = await metrics.bobLiveProviderErrors.get();
-    expect(providerErrors.values).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        labels: { class: 'admission_release_failed_after_provider_termination' },
-        value: 1,
-      }),
-    ]));
+    expect(providerErrors.values).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          labels: { class: 'admission_release_failed_after_provider_termination' },
+          value: 1,
+        }),
+      ]),
+    );
     expect(logger.warn).toHaveBeenCalledWith(
       'bob.live.bootstrap.cleanup.failed class=admission_release_failed_after_provider_termination',
       'BobLive',
@@ -3263,15 +3547,30 @@ describe('RealtimeVoiceService', () => {
       hangupCall: vi.fn(async () => undefined),
     };
     const service = new RealtimeVoiceService(
-      SETTINGS, provider, durable, sidebandStub(), new Metrics(), loggerStub(), undefined, entitled(),
-      undefined, undefined, undefined, TEST_SPEECH_SOURCE_POLICY,
+      SETTINGS,
+      provider,
+      durable,
+      sidebandStub(),
+      new Metrics(),
+      loggerStub(),
+      undefined,
+      entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
     );
     const controller = new AbortController();
-    const running = runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      sdp: OFFER_SDP,
-      sessionHandle: handle,
-    }, controller.signal));
+    const running = runAsPrincipal(() =>
+      service.createCall(
+        {
+          ...AUDITED_BOOTSTRAP_BINDING,
+          sdp: OFFER_SDP,
+          sessionHandle: handle,
+        },
+        controller.signal,
+      ),
+    );
     await vi.waitFor(() => expect(provider.createCall).toHaveBeenCalledOnce());
 
     controller.abort();
@@ -3281,13 +3580,14 @@ describe('RealtimeVoiceService', () => {
     expect(provider.hangupCall).toHaveBeenCalledOnce();
     expect(provider.hangupCall).toHaveBeenCalledWith('rtc_aborted_bootstrap');
     const subjectHash = admissionSubjectHash(SETTINGS.safetySecret!, 'company-1', 'user-1');
-    await expect(durable.claimTermination({
-      companyId: 'company-1',
-      subjectHashCandidates: [subjectHash],
-      principalBindingHash: subjectHash,
-      sessionId: handle,
-    }))
-      .resolves.toEqual({ ok: true, claim: null, pending: false });
+    await expect(
+      durable.claimTermination({
+        companyId: 'company-1',
+        subjectHashCandidates: [subjectHash],
+        principalBindingHash: subjectHash,
+        sessionId: handle,
+      }),
+    ).resolves.toEqual({ ok: true, claim: null, pending: false });
   });
 
   it('termine par handle opaque depuis une autre réplique sans révéler les sessions étrangères', async () => {
@@ -3314,12 +3614,19 @@ describe('RealtimeVoiceService', () => {
       createCall: vi.fn(),
       hangupCall: vi.fn(async () => undefined),
     };
-    const service = new RealtimeVoiceService(SETTINGS, provider, durable, sidebandStub(), new Metrics(), loggerStub());
-
-    const hidden = await runAsPrincipal(
-      () => service.hangup(handle),
-      { userId: 'user-2', companyId: 'company-1' },
+    const service = new RealtimeVoiceService(
+      SETTINGS,
+      provider,
+      durable,
+      sidebandStub(),
+      new Metrics(),
+      loggerStub(),
     );
+
+    const hidden = await runAsPrincipal(() => service.hangup(handle), {
+      userId: 'user-2',
+      companyId: 'company-1',
+    });
     expect(hidden).toEqual({ ok: true, value: { ended: true } });
     expect(provider.hangupCall).not.toHaveBeenCalled();
 
@@ -3335,11 +3642,7 @@ describe('RealtimeVoiceService', () => {
     const handle = '00000000-0000-4000-8000-000000000011';
     const previousSecret = 'previous-subject-secret-at-least-32-chars';
     const currentSecret = 'current-subject-secret-at-least-32-chars!!';
-    const historicalSubjectHash = admissionSubjectHash(
-      previousSecret,
-      'company-1',
-      'user-1',
-    );
+    const historicalSubjectHash = admissionSubjectHash(previousSecret, 'company-1', 'user-1');
     const durable = admission();
     const reserved = await durable.reserve({
       companyId: 'company-1',
@@ -3421,11 +3724,13 @@ describe('RealtimeVoiceService', () => {
       undefined,
       TEST_SPEECH_SOURCE_POLICY,
     );
-    const created = await runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      sdp: OFFER_SDP,
-      sessionHandle: handle,
-    }));
+    const created = await runAsPrincipal(() =>
+      service.createCall({
+        ...AUDITED_BOOTSTRAP_BINDING,
+        sdp: OFFER_SDP,
+        sessionHandle: handle,
+      }),
+    );
     expect(created.ok).toBe(true);
 
     const context = {
@@ -3435,11 +3740,15 @@ describe('RealtimeVoiceService', () => {
     };
     const preparedContext = prepareRealtimeContext({ version: 1, revision: 4, context });
     if (preparedContext === null) throw new Error('contexte canonique attendu');
-    await expect(runAsPrincipal(() => service.updateContext(handle, {
-      version: 1,
-      revision: 4,
-      context,
-    }))).resolves.toEqual({
+    await expect(
+      runAsPrincipal(() =>
+        service.updateContext(handle, {
+          version: 1,
+          revision: 4,
+          context,
+        }),
+      ),
+    ).resolves.toEqual({
       ok: true,
       value: { revision: 4, contextDigest: preparedContext.digest },
     });
@@ -3451,10 +3760,12 @@ describe('RealtimeVoiceService', () => {
       digest: preparedContext.digest,
     });
 
-    await expect(runAsPrincipal(
-      () => service.updateContext(handle, { version: 1, revision: 5, context }),
-      { userId: 'user-2', companyId: 'company-1' },
-    )).resolves.toMatchObject({ ok: false, error: { kind: 'not_found' } });
+    await expect(
+      runAsPrincipal(() => service.updateContext(handle, { version: 1, revision: 5, context }), {
+        userId: 'user-2',
+        companyId: 'company-1',
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { kind: 'not_found' } });
 
     const signal = new AbortController().signal;
     const turnId = deriveRealtimeTurnId(handle, 'item-context-turn');
@@ -3464,14 +3775,16 @@ describe('RealtimeVoiceService', () => {
       history: [],
       signal,
     });
-    expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({
-      turnId,
-      userId: 'user-1',
-      companyId: 'company-1',
-      transcript: 'Résume cette facture.',
-      context,
-      signal,
-    }));
+    expect(runTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        turnId,
+        userId: 'user-1',
+        companyId: 'company-1',
+        transcript: 'Résume cette facture.',
+        context,
+        signal,
+      }),
+    );
     const turnInput = runTurn.mock.calls[0]?.[0];
     if (!turnInput) throw new Error('tour attendu');
     expect(turnInput).not.toHaveProperty('agentMissionAuthority');
@@ -3484,11 +3797,15 @@ describe('RealtimeVoiceService', () => {
       ...context,
       screen: { name: '/devis/new', instanceId: 'quote-new-1' },
     };
-    await expect(runAsPrincipal(() => service.updateContext(handle, {
-      version: 1,
-      revision: 5,
-      context: nextContext,
-    }))).resolves.toEqual({
+    await expect(
+      runAsPrincipal(() =>
+        service.updateContext(handle, {
+          version: 1,
+          revision: 5,
+          context: nextContext,
+        }),
+      ),
+    ).resolves.toEqual({
       ok: true,
       value: { revision: 5, contextDigest: expect.stringMatching(/^[a-f0-9]{64}$/) },
     });
@@ -3502,9 +3819,7 @@ describe('RealtimeVoiceService', () => {
   it('n’acquitte OpenAI qu’après l’application sideband exacte et ferme toute réponse ambiguë', async () => {
     const handle = '00000000-0000-4000-8000-000000000021';
     const durable = admission();
-    const application = deferred<Awaited<
-      ReturnType<RealtimeSidebandControl['contextChanged']>
-    >>();
+    const application = deferred<Awaited<ReturnType<RealtimeSidebandControl['contextChanged']>>>();
     const contextChanged = vi
       .fn<RealtimeSidebandControl['contextChanged']>()
       .mockImplementationOnce(() => application.promise);
@@ -3529,11 +3844,15 @@ describe('RealtimeVoiceService', () => {
       undefined,
       TEST_SPEECH_SOURCE_POLICY,
     );
-    await expect(runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      sdp: OFFER_SDP,
-      sessionHandle: handle,
-    }))).resolves.toMatchObject({ ok: true });
+    await expect(
+      runAsPrincipal(() =>
+        service.createCall({
+          ...AUDITED_BOOTSTRAP_BINDING,
+          sdp: OFFER_SDP,
+          sessionHandle: handle,
+        }),
+      ),
+    ).resolves.toMatchObject({ ok: true });
 
     const context = {
       screen: { name: '/devis/new', instanceId: 'quote-new-context-1' },
@@ -3543,11 +3862,13 @@ describe('RealtimeVoiceService', () => {
     const prepared = prepareRealtimeContext({ version: 1, revision: 1, context });
     if (!prepared) throw new Error('contexte canonique attendu');
     let settled = false;
-    const pending = runAsPrincipal(() => service.updateContext(handle, {
-      version: 1,
-      revision: 1,
-      context,
-    })).finally(() => {
+    const pending = runAsPrincipal(() =>
+      service.updateContext(handle, {
+        version: 1,
+        revision: 1,
+        context,
+      }),
+    ).finally(() => {
       settled = true;
     });
     await vi.waitFor(() => expect(contextChanged).toHaveBeenCalledOnce());
@@ -3569,40 +3890,52 @@ describe('RealtimeVoiceService', () => {
       revision: 1,
       digest: prepared.digest,
     });
-    await expect(runAsPrincipal(() => service.updateContext(handle, {
-      version: 1,
-      revision: 2,
-      context: {
-        ...context,
-        screen: { name: '/devis/new', instanceId: 'quote-new-context-2' },
-      },
-    }))).resolves.toMatchObject({
+    await expect(
+      runAsPrincipal(() =>
+        service.updateContext(handle, {
+          version: 1,
+          revision: 2,
+          context: {
+            ...context,
+            screen: { name: '/devis/new', instanceId: 'quote-new-context-2' },
+          },
+        }),
+      ),
+    ).resolves.toMatchObject({
       ok: false,
       error: { kind: 'unavailable', service: 'bob-live-context-application' },
     });
 
     contextChanged.mockRejectedValueOnce(new Error('sideband_unavailable'));
-    await expect(runAsPrincipal(() => service.updateContext(handle, {
-      version: 1,
-      revision: 3,
-      context: {
-        ...context,
-        screen: { name: '/devis/new', instanceId: 'quote-new-context-3' },
-      },
-    }))).resolves.toMatchObject({
+    await expect(
+      runAsPrincipal(() =>
+        service.updateContext(handle, {
+          version: 1,
+          revision: 3,
+          context: {
+            ...context,
+            screen: { name: '/devis/new', instanceId: 'quote-new-context-3' },
+          },
+        }),
+      ),
+    ).resolves.toMatchObject({
       ok: false,
       error: { kind: 'unavailable', service: 'bob-live-context-application' },
     });
 
     contextChanged.mockResolvedValueOnce({ status: 'superseded' });
-    await expect(runAsPrincipal(() => service.updateContext(handle, {
-      version: 1,
-      revision: 4,
-      context: {
-        ...context,
-        screen: { name: '/devis/new', instanceId: 'quote-new-context-4' },
-      },
-    }))).resolves.toMatchObject({
+    await expect(
+      runAsPrincipal(() =>
+        service.updateContext(handle, {
+          version: 1,
+          revision: 4,
+          context: {
+            ...context,
+            screen: { name: '/devis/new', instanceId: 'quote-new-context-4' },
+          },
+        }),
+      ),
+    ).resolves.toMatchObject({
       ok: false,
       error: { kind: 'conflict', entity: 'realtime_context' },
     });
@@ -3612,14 +3945,18 @@ describe('RealtimeVoiceService', () => {
       [6, 'rejected'],
     ] as const) {
       contextChanged.mockResolvedValueOnce({ status });
-      await expect(runAsPrincipal(() => service.updateContext(handle, {
-        version: 1,
-        revision,
-        context: {
-          ...context,
-          screen: { name: '/devis/new', instanceId: `quote-new-context-${revision}` },
-        },
-      }))).resolves.toMatchObject({
+      await expect(
+        runAsPrincipal(() =>
+          service.updateContext(handle, {
+            version: 1,
+            revision,
+            context: {
+              ...context,
+              screen: { name: '/devis/new', instanceId: `quote-new-context-${revision}` },
+            },
+          }),
+        ),
+      ).resolves.toMatchObject({
         ok: false,
         error: { kind: 'unavailable', service: 'bob-live-context-application' },
       });
@@ -3653,11 +3990,13 @@ describe('RealtimeVoiceService', () => {
       undefined,
       TEST_SPEECH_SOURCE_POLICY,
     );
-    await runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      sdp: OFFER_SDP,
-      sessionHandle: handle,
-    }));
+    await runAsPrincipal(() =>
+      service.createCall({
+        ...AUDITED_BOOTSTRAP_BINDING,
+        sdp: OFFER_SDP,
+        sessionHandle: handle,
+      }),
+    );
     const context = {
       screen: { name: '/devis/new', instanceId: 'quote-new-retry' },
       entities: [],
@@ -3666,11 +4005,15 @@ describe('RealtimeVoiceService', () => {
     const prepared = prepareRealtimeContext({ version: 1, revision: 1, context });
     if (!prepared) throw new Error('contexte canonique attendu');
 
-    await expect(runAsPrincipal(() => service.updateContext(handle, {
-      version: 1,
-      revision: 1,
-      context,
-    }))).resolves.toMatchObject({
+    await expect(
+      runAsPrincipal(() =>
+        service.updateContext(handle, {
+          version: 1,
+          revision: 1,
+          context,
+        }),
+      ),
+    ).resolves.toMatchObject({
       ok: false,
       error: { kind: 'unavailable', service: 'bob-live-context-application' },
     });
@@ -3679,23 +4022,31 @@ describe('RealtimeVoiceService', () => {
       revision: 1,
       digest: prepared.digest,
     });
-    await expect(runAsPrincipal(() => service.updateContext(handle, {
-      version: 1,
-      revision: 1,
-      context,
-    }))).resolves.toEqual({
+    await expect(
+      runAsPrincipal(() =>
+        service.updateContext(handle, {
+          version: 1,
+          revision: 1,
+          context,
+        }),
+      ),
+    ).resolves.toEqual({
       ok: true,
       value: { revision: 1, contextDigest: prepared.digest },
     });
     expect(contextChanged).toHaveBeenCalledTimes(2);
-    await expect(runAsPrincipal(() => service.updateContext(handle, {
-      version: 1,
-      revision: 1,
-      context: {
-        ...context,
-        screen: { name: '/devis/new', instanceId: 'quote-new-retry-conflict' },
-      },
-    }))).resolves.toMatchObject({
+    await expect(
+      runAsPrincipal(() =>
+        service.updateContext(handle, {
+          version: 1,
+          revision: 1,
+          context: {
+            ...context,
+            screen: { name: '/devis/new', instanceId: 'quote-new-retry-conflict' },
+          },
+        }),
+      ),
+    ).resolves.toMatchObject({
       ok: false,
       error: { kind: 'conflict', entity: 'realtime_context' },
     });
@@ -3750,37 +4101,47 @@ describe('RealtimeVoiceService', () => {
       { issue: vi.fn(), consume: consumeControl } as unknown as RealtimeDurableControlPort,
       TEST_SPEECH_SOURCE_POLICY,
     );
-    const created = await runAsPrincipal(() => service.createCall({
-      ...AUDITED_BOOTSTRAP_BINDING,
-      sdp: OFFER_SDP,
-      sessionHandle: handle,
-    }));
+    const created = await runAsPrincipal(() =>
+      service.createCall({
+        ...AUDITED_BOOTSTRAP_BINDING,
+        sdp: OFFER_SDP,
+        sessionHandle: handle,
+      }),
+    );
     expect(created.ok).toBe(true);
     const context = {
       screen: { name: '/cloture', instanceId: 'closing-1' },
       entities: [],
       capabilities: ['screen.read' as const],
     };
-    await expect(runAsPrincipal(() => service.updateContext(handle, {
-      version: 1,
-      revision: 1,
-      context,
-    }))).resolves.toEqual({
+    await expect(
+      runAsPrincipal(() =>
+        service.updateContext(handle, {
+          version: 1,
+          revision: 1,
+          context,
+        }),
+      ),
+    ).resolves.toEqual({
       ok: true,
       value: { revision: 1, contextDigest: expect.stringMatching(/^[a-f0-9]{64}$/) },
     });
     const candidate = { turnId, acknowledgementId, contextRevision: 1, contextDigest };
 
-    await expect(runAsPrincipal(() => service.acknowledgeControl(handle, candidate))).resolves.toEqual({
+    await expect(
+      runAsPrincipal(() => service.acknowledgeControl(handle, candidate)),
+    ).resolves.toEqual({
       ok: true,
       value: { ...candidate, kind: 'answer', navigate: '/cloture' },
     });
-    expect(consumeControl).toHaveBeenCalledWith(expect.objectContaining({
-      companyId: 'company-1',
-      subjectHash: expect.stringMatching(/^[a-f0-9]{64}$/),
-      sessionId: handle,
-      ...candidate,
-    }));
+    expect(consumeControl).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId: 'company-1',
+        subjectHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        sessionId: handle,
+        ...candidate,
+      }),
+    );
 
     consumeControl.mockResolvedValueOnce({
       status: 'approved',
@@ -3795,35 +4156,46 @@ describe('RealtimeVoiceService', () => {
         nonce: 'provider-controlled',
       },
     } as never);
-    await expect(runAsPrincipal(() => service.acknowledgeControl(handle, candidate)))
-      .resolves.toMatchObject({ ok: false, error: { kind: 'not_found' } });
+    await expect(
+      runAsPrincipal(() => service.acknowledgeControl(handle, candidate)),
+    ).resolves.toMatchObject({ ok: false, error: { kind: 'not_found' } });
 
-    const blockedRead = vi.spyOn(durable, 'readContext')
+    const blockedRead = vi
+      .spyOn(durable, 'readContext')
       .mockImplementationOnce(() => new Promise(() => undefined));
     const abortedRequest = new AbortController();
-    const blockedAcknowledgement = runAsPrincipal(
-      () => service.acknowledgeControl(handle, candidate, abortedRequest.signal),
+    const blockedAcknowledgement = runAsPrincipal(() =>
+      service.acknowledgeControl(handle, candidate, abortedRequest.signal),
     );
     await vi.waitFor(() => expect(blockedRead).toHaveBeenCalledTimes(1));
     abortedRequest.abort();
-    await expect(blockedAcknowledgement)
-      .resolves.toMatchObject({ ok: false, error: { kind: 'not_found' } });
+    await expect(blockedAcknowledgement).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'not_found' },
+    });
     blockedRead.mockRestore();
 
-    await expect(runAsPrincipal(
-      () => service.acknowledgeControl(handle, candidate),
-      { userId: 'user-2', companyId: 'company-1' },
-    )).resolves.toMatchObject({ ok: false, error: { kind: 'not_found' } });
-    await expect(runAsPrincipal(() => service.updateContext(handle, {
-      version: 1,
-      revision: 2,
-      context: { ...context, screen: { name: '/home', instanceId: 'home-2' } },
-    }))).resolves.toEqual({
+    await expect(
+      runAsPrincipal(() => service.acknowledgeControl(handle, candidate), {
+        userId: 'user-2',
+        companyId: 'company-1',
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { kind: 'not_found' } });
+    await expect(
+      runAsPrincipal(() =>
+        service.updateContext(handle, {
+          version: 1,
+          revision: 2,
+          context: { ...context, screen: { name: '/home', instanceId: 'home-2' } },
+        }),
+      ),
+    ).resolves.toEqual({
       ok: true,
       value: { revision: 2, contextDigest: expect.stringMatching(/^[a-f0-9]{64}$/) },
     });
-    await expect(runAsPrincipal(() => service.acknowledgeControl(handle, candidate)))
-      .resolves.toMatchObject({ ok: false, error: { kind: 'not_found' } });
+    await expect(
+      runAsPrincipal(() => service.acknowledgeControl(handle, candidate)),
+    ).resolves.toMatchObject({ ok: false, error: { kind: 'not_found' } });
     await runAsPrincipal(() => service.hangup(handle));
   });
 });

@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto';
-import type { ReleaseFlagEnvironment } from '@bob/core';
+import type {
+  CUSTOMER_CONTACT_MISSION_KIND_V1,
+  QUOTE_CREATION_MISSION_KIND_V1,
+  ReleaseFlagEnvironment,
+} from '@bob/core';
 import { resolveBobLiveEnv, type Env } from '../../config/env';
 import type { RealtimeGlobalCapacityExpectation } from './realtime-capacity';
-import type {
-  AgentMissionProtocolVersion,
-} from './realtime-agent-mission-negotiation';
+import type { AgentMissionProtocolVersion } from './realtime-agent-mission-negotiation';
 import type { RealtimeContextSnapshot } from './realtime-context';
 export {
   prepareRealtimeContext,
@@ -14,7 +16,8 @@ export {
 } from './realtime-context';
 
 const SUBJECT_HASH_PATTERN = /^[a-f0-9]{64}$/;
-const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SESSION_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TENANT_ID_PATTERN = /^[A-Za-z0-9-]{1,64}$/;
 const PROVIDER_CALL_ID_PATTERN = /^[A-Za-z0-9._:-]{1,200}$/;
 const REALTIME_PROVIDER_IDS = ['openai', 'mistral'] as const;
@@ -24,6 +27,9 @@ export const REALTIME_AGENT_MISSION_QUOTE_V1_RELEASE_FLAG_KEY =
   'bob.agent_missions.quote.v1' as const;
 export const REALTIME_AGENT_MISSION_QUOTE_M2A_RELEASE_FLAG_KEY =
   'bob.agent_missions.quote.m2a' as const;
+/** Vertical fiche client (U1-d) — flag évalué PAR KIND, OFF par défaut. */
+export const REALTIME_AGENT_MISSION_CUSTOMER_CONTACT_V1_RELEASE_FLAG_KEY =
+  'bob.agent_missions.customer_contact.v1' as const;
 /** Compatibilité source V1 ; les nouveaux appels choisissent leur clé par protocole. */
 export const REALTIME_AGENT_MISSION_QUOTE_RELEASE_FLAG_KEY =
   REALTIME_AGENT_MISSION_QUOTE_V1_RELEASE_FLAG_KEY;
@@ -90,20 +96,29 @@ export function realtimeAdmissionPolicyFromEnv(env: Env): RealtimeAdmissionPolic
 }
 
 export function validateRealtimeAdmissionPolicy(policy: RealtimeAdmissionPolicy): void {
-  const positiveIntegers = Object.entries(policy).filter(([key, value]) => (
-    key !== 'globalCapacity' && (!Number.isInteger(value) || (value as number) <= 0)
-  ));
+  const positiveIntegers = Object.entries(policy).filter(
+    ([key, value]) =>
+      key !== 'globalCapacity' && (!Number.isInteger(value) || (value as number) <= 0),
+  );
   if (positiveIntegers.length > 0) {
-    throw new Error(`Invalid realtime admission policy: ${positiveIntegers.map(([key]) => key).join(', ')}`);
+    throw new Error(
+      `Invalid realtime admission policy: ${positiveIntegers.map(([key]) => key).join(', ')}`,
+    );
   }
   if (policy.userLimitPerHour < policy.userLimitPerMinute) {
-    throw new Error('Realtime user hourly quota must be greater than or equal to the minute quota.');
+    throw new Error(
+      'Realtime user hourly quota must be greater than or equal to the minute quota.',
+    );
   }
   if (policy.tenantLimitPerMinute < policy.userLimitPerMinute) {
-    throw new Error('Realtime tenant minute quota must be greater than or equal to the user minute quota.');
+    throw new Error(
+      'Realtime tenant minute quota must be greater than or equal to the user minute quota.',
+    );
   }
   if (policy.tenantLimitPerHour < policy.userLimitPerHour) {
-    throw new Error('Realtime tenant hourly quota must be greater than or equal to the user hourly quota.');
+    throw new Error(
+      'Realtime tenant hourly quota must be greater than or equal to the user hourly quota.',
+    );
   }
   if (policy.heartbeatSeconds >= policy.activeLeaseSeconds) {
     throw new Error('Realtime heartbeat must be shorter than the active lease.');
@@ -111,19 +126,20 @@ export function validateRealtimeAdmissionPolicy(policy: RealtimeAdmissionPolicy)
   if (policy.globalCapacity !== null) {
     const capacity = policy.globalCapacity;
     if (
-      !isRealtimeProviderId(capacity.providerId)
-      || capacity.providerModel.trim().length < 1
-      || capacity.providerModel.length > 100
-      || !Number.isInteger(capacity.globalMaxSessions)
-      || capacity.globalMaxSessions < 1
-      || capacity.globalMaxSessions > 1_000
-      || !Number.isInteger(capacity.providerMaxSessions)
-      || capacity.providerMaxSessions < capacity.globalMaxSessions
-      || capacity.providerMaxSessions > 10_000
-      || !Number.isInteger(capacity.configVersion)
-      || capacity.configVersion < 1
-      || capacity.configVersion > POSTGRES_INTEGER_MAX
-    ) throw new Error('Invalid realtime global capacity policy.');
+      !isRealtimeProviderId(capacity.providerId) ||
+      capacity.providerModel.trim().length < 1 ||
+      capacity.providerModel.length > 100 ||
+      !Number.isInteger(capacity.globalMaxSessions) ||
+      capacity.globalMaxSessions < 1 ||
+      capacity.globalMaxSessions > 1_000 ||
+      !Number.isInteger(capacity.providerMaxSessions) ||
+      capacity.providerMaxSessions < capacity.globalMaxSessions ||
+      capacity.providerMaxSessions > 10_000 ||
+      !Number.isInteger(capacity.configVersion) ||
+      capacity.configVersion < 1 ||
+      capacity.configVersion > POSTGRES_INTEGER_MAX
+    )
+      throw new Error('Invalid realtime global capacity policy.');
   }
 }
 
@@ -153,8 +169,7 @@ export interface RealtimeReapingClaim {
 }
 
 export type RealtimeReapingBatchResult =
-  | { ok: true; claims: RealtimeReapingClaim[] }
-  | { ok: false; reason: 'unavailable' };
+  { ok: true; claims: RealtimeReapingClaim[] } | { ok: false; reason: 'unavailable' };
 
 export type RealtimeTerminationClaimResult =
   | { ok: true; claim: RealtimeReapingClaim | null; pending: boolean }
@@ -204,6 +219,27 @@ export type RealtimeAgentMissionAdmissionBinding =
       protocolVersion: 2;
       releaseFlagKey: typeof REALTIME_AGENT_MISSION_QUOTE_M2A_RELEASE_FLAG_KEY;
     });
+
+/**
+ * Admission d'un MissionKind sur la session (U1-d) — variante SCOPÉE PAR KIND, volontairement
+ * distincte du binding de lease ci-dessus : le writer N-1 de `reserve` scelle la lease avec la
+ * clé de flag devis et n'est pas élargi ici. Ce descripteur ne voyage donc PAS jusqu'à l'INSERT :
+ * il dit seulement quels kinds l'admission a ouverts pour CE tour, avec la version de flag
+ * réellement évaluée (traçabilité §19.3).
+ */
+export type RealtimeAgentMissionKindBinding =
+  | {
+      readonly missionKindId: typeof QUOTE_CREATION_MISSION_KIND_V1;
+      readonly releaseFlagKey: RealtimeAgentMissionQuoteReleaseFlagKey;
+      readonly releaseEnvironment: ReleaseFlagEnvironment;
+      readonly releaseFlagVersion: number;
+    }
+  | {
+      readonly missionKindId: typeof CUSTOMER_CONTACT_MISSION_KIND_V1;
+      readonly releaseFlagKey: typeof REALTIME_AGENT_MISSION_CUSTOMER_CONTACT_V1_RELEASE_FLAG_KEY;
+      readonly releaseEnvironment: ReleaseFlagEnvironment;
+      readonly releaseFlagVersion: number;
+    };
 
 export interface RealtimeAdmissionReserveInput {
   companyId: string;
@@ -259,8 +295,7 @@ export interface RealtimeAdmissionSessionLookupInput {
   sessionId: string;
 }
 
-export interface RealtimeAgentMissionBootstrapAcknowledgementInput
-extends RealtimeAdmissionSessionLookupInput {
+export interface RealtimeAgentMissionBootstrapAcknowledgementInput extends RealtimeAdmissionSessionLookupInput {
   /** Version dérivée côté serveur du préfixe bam* présenté, jamais choisie par le client JSON. */
   protocolVersion: AgentMissionProtocolVersion;
   /** SHA-256 canonique de la capability présentée ; le secret brut ne traverse jamais le port. */
@@ -287,8 +322,7 @@ export type RealtimeAgentMissionBootstrapAcknowledgementResult =
     };
 
 export type RealtimeSessionIdentityResolution =
-  | { ok: true; identity: RealtimeContextIdentity | null }
-  | { ok: false; reason: 'unavailable' };
+  { ok: true; identity: RealtimeContextIdentity | null } | { ok: false; reason: 'unavailable' };
 
 export interface RealtimeContextUpdateInput extends RealtimeContextIdentity {
   version: number;
@@ -307,10 +341,12 @@ export type RealtimeContextReadResult =
 
 export interface RealtimeAdmissionPort {
   reserve(input: RealtimeAdmissionReserveInput): Promise<RealtimeAdmissionResult>;
-  bindProvider(input: RealtimeLeaseCredential & {
-    providerId: RealtimeProviderId;
-    providerCallId: string;
-  }): Promise<RealtimeAdmissionMutationResult>;
+  bindProvider(
+    input: RealtimeLeaseCredential & {
+      providerId: RealtimeProviderId;
+      providerCallId: string;
+    },
+  ): Promise<RealtimeAdmissionMutationResult>;
   activate(input: RealtimeLeaseCredential): Promise<RealtimeAdmissionMutationResult>;
   renew(input: RealtimeLeaseCredential): Promise<RealtimeAdmissionMutationResult>;
   release(input: RealtimeReleaseInput): Promise<RealtimeAdmissionMutationResult>;
@@ -334,10 +370,12 @@ export interface RealtimeAdmissionPort {
   claimTermination(
     input: RealtimeAdmissionSessionLookupInput,
   ): Promise<RealtimeTerminationClaimResult>;
-  completeReaping(input: Omit<
-  RealtimeReapingClaim,
-    'providerId' | 'providerCallId' | 'reaperLeaseExpiresAt' | 'hardExpiryProof'
-  >): Promise<RealtimeAdmissionMutationResult>;
+  completeReaping(
+    input: Omit<
+      RealtimeReapingClaim,
+      'providerId' | 'providerCallId' | 'reaperLeaseExpiresAt' | 'hardExpiryProof'
+    >,
+  ): Promise<RealtimeAdmissionMutationResult>;
   /** Publie le dernier écran sur un bail vivant déjà lié au provider. */
   updateContext(input: RealtimeContextUpdateInput): Promise<RealtimeContextUpdateResult>;
   /** Le cerveau ne lit le contexte qu'après activation complète de la session. */
@@ -384,31 +422,34 @@ export function isRealtimeDatabaseHardExpiryProof(
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const proof = value as Record<string, unknown>;
   if (
-    Object.keys(proof).length !== 9
-    || proof.source !== 'database_hard_expiry'
-    || typeof proof.companyId !== 'string'
-    || !isRealtimeCompanyId(proof.companyId)
-    || typeof proof.subjectHash !== 'string'
-    || !isRealtimeSubjectHash(proof.subjectHash)
-    || typeof proof.sessionId !== 'string'
-    || !isRealtimeSessionId(proof.sessionId)
-    || typeof proof.providerId !== 'string'
-    || !isRealtimeProviderId(proof.providerId)
-    || typeof proof.providerCallId !== 'string'
-    || !isRealtimeProviderCallId(proof.providerCallId)
-    || typeof proof.hardExpiresAt !== 'string'
-    || typeof proof.databaseObservedAt !== 'string'
-    || !Number.isSafeInteger(proof.leaseVersion)
-    || (proof.leaseVersion as number) < 1
-    || (proof.leaseVersion as number) > POSTGRES_INTEGER_MAX
-  ) return false;
+    Object.keys(proof).length !== 9 ||
+    proof.source !== 'database_hard_expiry' ||
+    typeof proof.companyId !== 'string' ||
+    !isRealtimeCompanyId(proof.companyId) ||
+    typeof proof.subjectHash !== 'string' ||
+    !isRealtimeSubjectHash(proof.subjectHash) ||
+    typeof proof.sessionId !== 'string' ||
+    !isRealtimeSessionId(proof.sessionId) ||
+    typeof proof.providerId !== 'string' ||
+    !isRealtimeProviderId(proof.providerId) ||
+    typeof proof.providerCallId !== 'string' ||
+    !isRealtimeProviderCallId(proof.providerCallId) ||
+    typeof proof.hardExpiresAt !== 'string' ||
+    typeof proof.databaseObservedAt !== 'string' ||
+    !Number.isSafeInteger(proof.leaseVersion) ||
+    (proof.leaseVersion as number) < 1 ||
+    (proof.leaseVersion as number) > POSTGRES_INTEGER_MAX
+  )
+    return false;
   const hardExpiresAt = Date.parse(proof.hardExpiresAt);
   const databaseObservedAt = Date.parse(proof.databaseObservedAt);
-  return Number.isFinite(hardExpiresAt)
-    && Number.isFinite(databaseObservedAt)
-    && new Date(hardExpiresAt).toISOString() === proof.hardExpiresAt
-    && new Date(databaseObservedAt).toISOString() === proof.databaseObservedAt
-    && databaseObservedAt >= hardExpiresAt;
+  return (
+    Number.isFinite(hardExpiresAt) &&
+    Number.isFinite(databaseObservedAt) &&
+    new Date(hardExpiresAt).toISOString() === proof.hardExpiresAt &&
+    new Date(databaseObservedAt).toISOString() === proof.databaseObservedAt &&
+    databaseObservedAt >= hardExpiresAt
+  );
 }
 
 export function isRealtimeLeaseCredential(input: RealtimeLeaseCredential): boolean {
@@ -420,8 +461,10 @@ function validIdentity(input: { companyId: string; subjectHash: string }): boole
 }
 
 function validCredential(input: RealtimeLeaseCredential): boolean {
-  return validIdentity(input)
-    && SESSION_ID_PATTERN.test(input.sessionId)
-    && input.leaseToken.length >= 32
-    && input.leaseToken.length <= 128;
+  return (
+    validIdentity(input) &&
+    SESSION_ID_PATTERN.test(input.sessionId) &&
+    input.leaseToken.length >= 32 &&
+    input.leaseToken.length <= 128
+  );
 }

@@ -1,10 +1,12 @@
 import { Module, type Provider } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
+import { planRealtimeSemanticTurn, type SttPort } from '@bob/ai';
 import {
-  planRealtimeSemanticTurn,
-  type SttPort,
-} from '@bob/ai';
-import { QUOTE_CREATION_MISSION_KIND_V1 } from '@bob/core';
+  CUSTOMER_CONTACT_MISSION_KIND_V1,
+  QUOTE_CREATION_MISSION_KIND_V1,
+  type JarvisAdmissionUnitOfWorkPort,
+  type JarvisProposalPayloadStorePort,
+} from '@bob/core';
 import {
   buildLlmForProvider,
   buildRealtimeSpeechAuditStt,
@@ -53,8 +55,12 @@ import {
   type RealtimeSemanticPlannerPort,
 } from './realtime-agent-turn';
 import { RealtimeQuoteMissionOrchestrator } from './realtime-quote-mission-orchestrator';
+import { RealtimeJarvisMissionOrchestrator } from './realtime-jarvis-mission-orchestrator';
 import { QuoteCreationMissionKindAdapter } from './quote-creation-mission-kind.adapter';
+import { CustomerContactMissionKindAdapter } from './customer-contact-mission-kind.adapter';
 import { RealtimeMissionKindRegistry } from './realtime-mission-kind';
+import { JARVIS_ADMISSION, JARVIS_PROPOSAL_PAYLOAD_STORE } from '../../jarvis/jarvis.tokens';
+import { JarvisModule } from '../../jarvis/jarvis.module';
 import { RealtimeBackendEntitlementAdapter } from './realtime-entitlement';
 import { RealtimeSpeechDeliveryService } from './realtime-speech-delivery';
 import {
@@ -132,10 +138,7 @@ import {
   REALTIME_SPEECH_SOURCE_POLICY,
   BOB_LIVE_RUNTIME_READINESS,
 } from './realtime.tokens';
-import {
-  type OpenAiRealtimeCallProvider,
-  type RealtimeVoiceSettings,
-} from './realtime.types';
+import { type OpenAiRealtimeCallProvider, type RealtimeVoiceSettings } from './realtime.types';
 import { realtimeVoiceSettingsProvider } from './realtime-settings.provider';
 import {
   AuditedBobLiveRuntimeReadiness,
@@ -189,16 +192,17 @@ interface RealtimeNativeSpeechRuntime {
   readonly authority: OpenAiNativeSpeechAuthority;
 }
 
-type RealtimeSpeechRuntime = RealtimeCommonSpeechRuntime & (
-  | {
-      readonly audited: RealtimeAuditedSpeechRuntime;
-      readonly native?: never;
-    }
-  | {
-      readonly audited?: never;
-      readonly native: RealtimeNativeSpeechRuntime;
-    }
-);
+type RealtimeSpeechRuntime = RealtimeCommonSpeechRuntime &
+  (
+    | {
+        readonly audited: RealtimeAuditedSpeechRuntime;
+        readonly native?: never;
+      }
+    | {
+        readonly audited?: never;
+        readonly native: RealtimeNativeSpeechRuntime;
+      }
+  );
 
 function buildRealtimeCommonSpeechRuntime(
   persistence: Persistence,
@@ -227,10 +231,10 @@ export function buildRealtimeSpeechRuntime(
   if (!live.enabled) return null;
   if (live.speechDelivery === 'openai-native-webrtc-v1') {
     if (
-      live.provider !== 'openai'
-      || !live.subjectHmacKeyRing
-      || !live.proofKeyRing
-      || !live.usageHmacSecret
+      live.provider !== 'openai' ||
+      !live.subjectHmacKeyRing ||
+      !live.proofKeyRing ||
+      !live.usageHmacSecret
     ) {
       throw new Error('Bob Live OpenAI native speech runtime is incompletely configured.');
     }
@@ -252,11 +256,11 @@ export function buildRealtimeSpeechRuntime(
   }
 
   if (
-    !live.proofSecret
-    || !live.controlEncryptionSecret
-    || !live.usageHmacSecret
-    || !env.SUPABASE_URL
-    || !env.SUPABASE_SERVICE_ROLE_KEY
+    !live.proofSecret ||
+    !live.controlEncryptionSecret ||
+    !live.usageHmacSecret ||
+    !env.SUPABASE_URL ||
+    !env.SUPABASE_SERVICE_ROLE_KEY
   ) {
     throw new Error('Bob Live audited speech runtime is incompletely configured.');
   }
@@ -272,8 +276,7 @@ export function buildRealtimeSpeechRuntime(
   if (!tts || !auditStt) {
     throw new Error('Bob Live audited speech providers are unavailable.');
   }
-  const deploymentControls = auditStt as SttPort
-    & Partial<LocalWhisperAuditDeploymentProbePort>;
+  const deploymentControls = auditStt as SttPort & Partial<LocalWhisperAuditDeploymentProbePort>;
   if (typeof deploymentControls.proveDeploymentControls !== 'function') {
     throw new Error('Bob Live local Whisper deployment proof is unavailable.');
   }
@@ -348,10 +351,11 @@ export async function buildVerifiedRealtimeSpeechRuntime(
 ): Promise<RealtimeSpeechRuntime | null> {
   const live = resolveBobLiveEnv(env);
   if (
-    !live.enabled
-    || live.provider !== 'openai'
-    || live.speechDelivery !== 'openai-native-webrtc-v1'
-  ) return buildRealtimeSpeechRuntime(persistence, env);
+    !live.enabled ||
+    live.provider !== 'openai' ||
+    live.speechDelivery !== 'openai-native-webrtc-v1'
+  )
+    return buildRealtimeSpeechRuntime(persistence, env);
   if (!live.subjectHmacKeyRing || !live.proofKeyRing) {
     throw new Error('Bob Live OpenAI native keyrings are incompletely configured.');
   }
@@ -380,13 +384,14 @@ const realtimeGlobalCapacityMonitorProvider: Provider = {
     inspector: ReturnType<Persistence['createRealtimeGlobalCapacityInspector']>,
     metrics: Metrics,
     logger: AppLogger,
-  ) => new RealtimeGlobalCapacityMonitor(
-    settings.enabled,
-    resolveBobLiveEnv(loadEnv()).globalCapacity,
-    inspector,
-    metrics,
-    logger,
-  ),
+  ) =>
+    new RealtimeGlobalCapacityMonitor(
+      settings.enabled,
+      resolveBobLiveEnv(loadEnv()).globalCapacity,
+      inspector,
+      metrics,
+      logger,
+    ),
 };
 
 const openAiProvider: Provider = {
@@ -402,9 +407,7 @@ const mistralRealtimeTerminationAuthorityProvider: Provider = {
   provide: MISTRAL_REALTIME_TERMINATION_AUTHORITY,
   inject: [REALTIME_VOICE_SETTINGS],
   useFactory: (settings: RealtimeVoiceSettings) =>
-    settings.provider === 'mistral'
-      ? new MistralRealtimeTerminationAuthority()
-      : null,
+    settings.provider === 'mistral' ? new MistralRealtimeTerminationAuthority() : null,
 };
 
 /**
@@ -423,10 +426,9 @@ export function buildRealtimeProviderTerminationRegistry(
     adapters.push(realtimeProviderTerminationAdapter('openai', openAi));
   }
   if (mistral || conversation) {
-    adapters.push(new MistralConversationTerminationRouter(
-      mistral,
-      conversation?.termination ?? null,
-    ));
+    adapters.push(
+      new MistralConversationTerminationRouter(mistral, conversation?.termination ?? null),
+    );
   }
   return new RealtimeProviderTerminationRegistry(adapters);
 }
@@ -450,13 +452,11 @@ const providerTerminationRegistryProvider: Provider = {
 const admissionProvider: Provider = {
   provide: REALTIME_ADMISSION,
   inject: [PERSISTENCE, BOB_LIVE_RUNTIME_READINESS],
-  useFactory: (
-    persistence: Persistence,
-    readiness: BobLiveRuntimeReadinessPort,
-  ) => gateRealtimeAdmissionOnBobLiveReadiness(
-    persistence.createRealtimeAdmission(realtimeAdmissionPolicyFromEnv(loadEnv())),
-    readiness,
-  ),
+  useFactory: (persistence: Persistence, readiness: BobLiveRuntimeReadinessPort) =>
+    gateRealtimeAdmissionOnBobLiveReadiness(
+      persistence.createRealtimeAdmission(realtimeAdmissionPolicyFromEnv(loadEnv())),
+      readiness,
+    ),
 };
 
 const agentMissionAdmissionProvider: Provider = {
@@ -606,8 +606,7 @@ export function buildMistralConversationBootstrapReaperOptions(
 const mistralConversationBootstrapReaperProvider: Provider = {
   provide: MISTRAL_CONVERSATION_BOOTSTRAP_REAPER,
   inject: [PERSISTENCE],
-  useFactory: (persistence: Persistence) =>
-    persistence.createMistralConversationBootstrapReaper(),
+  useFactory: (persistence: Persistence) => persistence.createMistralConversationBootstrapReaper(),
 };
 
 const mistralConversationBootstrapReaperOptionsProvider: Provider = {
@@ -726,11 +725,24 @@ const sidebandProvider: Provider = {
 
 const realtimeMissionKindRegistryProvider: Provider = {
   provide: REALTIME_MISSION_KIND_REGISTRY,
-  inject: [AgentMissionService],
-  useFactory: (missions: AgentMissionService) =>
+  inject: [
+    AgentMissionService,
+    // Vague B : les providers du vertical Jarvis n'existent pas encore. L'injection OPTIONNELLE
+    // garde le boot vert et l'adaptateur fail-closed — jamais un kind absent du registre.
+    { token: JARVIS_ADMISSION, optional: true },
+    { token: JARVIS_PROPOSAL_PAYLOAD_STORE, optional: true },
+  ],
+  useFactory: (
+    missions: AgentMissionService,
+    jarvisAdmission?: JarvisAdmissionUnitOfWorkPort | null,
+    proposalPayloads?: JarvisProposalPayloadStorePort | null,
+  ) =>
     new RealtimeMissionKindRegistry([
-      new QuoteCreationMissionKindAdapter(
-        new RealtimeQuoteMissionOrchestrator(missions),
+      new QuoteCreationMissionKindAdapter(new RealtimeQuoteMissionOrchestrator(missions)),
+      new CustomerContactMissionKindAdapter(
+        jarvisAdmission === undefined || jarvisAdmission === null
+          ? null
+          : new RealtimeJarvisMissionOrchestrator(jarvisAdmission, proposalPayloads ?? null),
       ),
     ]),
 };
@@ -738,16 +750,13 @@ const realtimeMissionKindRegistryProvider: Provider = {
 const realtimeSemanticPlannerProvider: Provider = {
   provide: REALTIME_SEMANTIC_PLANNER,
   inject: [REALTIME_VOICE_SETTINGS],
-  useFactory: (
-    settings: RealtimeVoiceSettings,
-  ): RealtimeSemanticPlannerPort | null => {
+  useFactory: (settings: RealtimeVoiceSettings): RealtimeSemanticPlannerPort | null => {
     const llm = buildLlmForProvider(settings.provider);
     return llm === undefined
       ? null
       : Object.freeze({
-          plan: (
-            input: Parameters<RealtimeSemanticPlannerPort['plan']>[0],
-          ) => planRealtimeSemanticTurn(llm, input),
+          plan: (input: Parameters<RealtimeSemanticPlannerPort['plan']>[0]) =>
+            planRealtimeSemanticTurn(llm, input),
         });
   },
 };
@@ -767,15 +776,18 @@ const realtimeAgentTurnProvider: Provider = {
     moduleRef: ModuleRef,
     missionKinds: RealtimeMissionKindRegistry,
     semanticPlanner: RealtimeSemanticPlannerPort | null,
-  ) => new RealtimeBobAgentTurnAdapter(
-    persistence,
-    settings.provider,
-    // Résolution tardive : RealtimeVoiceModule est enfant d'AppModule, qui possède BackendService.
-    // `strict:false` traverse le conteneur sans introduire un cycle de modules Nest.
-    () => moduleRef.get(BackendService, { strict: false }),
-    missionKinds.get(QUOTE_CREATION_MISSION_KIND_V1),
-    semanticPlanner,
-  ),
+  ) =>
+    new RealtimeBobAgentTurnAdapter(
+      persistence,
+      settings.provider,
+      // Résolution tardive : RealtimeVoiceModule est enfant d'AppModule, qui possède BackendService.
+      // `strict:false` traverse le conteneur sans introduire un cycle de modules Nest.
+      () => moduleRef.get(BackendService, { strict: false }),
+      missionKinds.get(QUOTE_CREATION_MISSION_KIND_V1),
+      semanticPlanner,
+      undefined,
+      missionKinds.get(CUSTOMER_CONTACT_MISSION_KIND_V1),
+    ),
 };
 
 const realtimeEntitlementProvider: Provider = {
@@ -802,10 +814,7 @@ const openAiNativeSpeechMaintenanceProvider: Provider = {
 const realtimeSpeechDeliveryProvider: Provider = {
   provide: RealtimeSpeechDeliveryService,
   inject: [AppLogger, REALTIME_SPEECH_RUNTIME],
-  useFactory: (
-    logger: AppLogger,
-    speech: RealtimeSpeechRuntime | null,
-  ) => {
+  useFactory: (logger: AppLogger, speech: RealtimeSpeechRuntime | null) => {
     const env = loadEnv();
     const live = resolveBobLiveEnv(env);
     const audited = speech?.audited;
@@ -826,17 +835,15 @@ const realtimeSpeechDeliveryProvider: Provider = {
 const openAiNativeSpeechAcknowledgementProvider: Provider = {
   provide: OpenAiNativeSpeechAcknowledgementService,
   inject: [AppLogger, REALTIME_SPEECH_RUNTIME],
-  useFactory: (
-    logger: AppLogger,
-    speech: RealtimeSpeechRuntime | null,
-  ) => {
+  useFactory: (logger: AppLogger, speech: RealtimeSpeechRuntime | null) => {
     const live = resolveBobLiveEnv(loadEnv());
     return new OpenAiNativeSpeechAcknowledgementService(
       speech?.native?.authority ?? null,
       {
-        enabled: live.enabled
-          && live.provider === 'openai'
-          && live.speechDelivery === 'openai-native-webrtc-v1',
+        enabled:
+          live.enabled &&
+          live.provider === 'openai' &&
+          live.speechDelivery === 'openai-native-webrtc-v1',
         subjectHmacKeyRing: live.subjectHmacKeyRing,
       },
       logger,
@@ -852,7 +859,11 @@ const realtimeSpeechSourcePolicyProvider: Provider = {
 };
 
 @Module({
-  imports: [PersistenceModule, AgentMissionModule],
+  // `JarvisModule` EXPORTE `JARVIS_ADMISSION` : sans cet import, l'injection optionnelle du
+  // registre de kinds resterait nulle et l'adaptateur `customer_contact` fail-closed à jamais
+  // (TODO de câblage laissé par la vague A). Le magasin PII, lui, n'a pas encore de liaison :
+  // son jeton reste non fourni et l'adaptateur s'en passe fermé.
+  imports: [PersistenceModule, AgentMissionModule, JarvisModule],
   controllers: [RealtimeVoiceController],
   providers: [
     realtimeVoiceSettingsProvider,

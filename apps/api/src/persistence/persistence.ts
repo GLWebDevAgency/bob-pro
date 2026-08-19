@@ -28,6 +28,7 @@ import type {
   FiscalProfileRepository,
   InvoiceRepository,
   Invoice,
+  JarvisProposalPayloadStorePort,
   Payment,
   PaymentRepository,
   PublicAccessTokenRepository,
@@ -180,6 +181,13 @@ export interface Persistence {
    * doubles qui ne peuvent pas prouver RLS, verrou distribué et horloge PostgreSQL.
    */
   createAgentMissionUnitOfWork(): AgentMissionUnitOfWorkPort | null;
+  /**
+   * Magasin PII scellé des propositions Jarvis (§5.5). Même doctrine que l'UoW ci-dessus :
+   * `null` est fail-closed pour tout adapter qui ne sait prouver ni RLS owner-scopée, ni sceau
+   * recalculé des deux côtés, ni rétention décidée par la base. Un double qui rendrait une
+   * demi-implémentation ferait croire à une charge scellée là où il n'y a qu'une mémoire.
+   */
+  createJarvisProposalPayloadStore(): JarvisProposalPayloadStorePort | null;
   /**
    * Snapshot froid JWT+RLS des missions Jarvis. `null` reste fail-closed pour tout adapter qui
    * ne peut pas prouver READ ONLY + REPEATABLE READ + scoping owner.

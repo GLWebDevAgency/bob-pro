@@ -312,6 +312,9 @@ CREATE TYPE public."LineCategory" AS ENUM (
   'disbursement',
   'subscription'
 );
+-- Jarvis U1-d : l'executeur d'effet ecrit la fiche client par le use case CANONIQUE
+-- (Customer.of + PrismaCustomerRepository) ; le type legal du client est un enum en production.
+CREATE TYPE public."CustomerType" AS ENUM ('b2c', 'b2b', 'b2g');
 
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE EXTENSION IF NOT EXISTS unaccent;
@@ -447,6 +450,32 @@ CREATE TABLE public.customers (
   "id" TEXT PRIMARY KEY,
   "companyId" TEXT NOT NULL,
   "name" TEXT NOT NULL,
+  -- Jarvis U1-d : la preuve d'effet ECRIT reellement une fiche par le use case canonique, donc
+  -- par le mapper Prisma reel — le harnais porte les colonnes que ce mapper ecrit. Elles sont
+  -- NULLABLE ici (plusieurs sont NOT NULL en production) parce que les inserts N-1 du harnais
+  -- ne posent que id/companyId/name : le harnais reste un SOUS-ENSEMBLE de la release, jamais
+  -- une surface plus permissive sur ce qu'il prouve.
+  "type" public."CustomerType",
+  "siren" CHAR(9),
+  "siret" CHAR(14),
+  "tvaIntracom" TEXT,
+  "isInternational" BOOLEAN NOT NULL DEFAULT false,
+  "addrLine1" TEXT,
+  "addrZip" TEXT,
+  "addrCity" TEXT,
+  "email" TEXT,
+  "phone" TEXT,
+  "contactName" TEXT,
+  "ptLabel" TEXT,
+  "paymentTermsDays" INTEGER,
+  "paymentTermsEndOfMonth" BOOLEAN,
+  "paymentTermsLabel" TEXT,
+  "billingChannelType" TEXT,
+  "billingChorusServiceCode" TEXT,
+  "billingPortailNom" TEXT,
+  "billingPortailUrl" TEXT,
+  "requiresPurchaseOrder" BOOLEAN,
+  "isSubcontractingBtp" BOOLEAN NOT NULL DEFAULT false,
   CONSTRAINT customers_company_fkey
     FOREIGN KEY ("companyId") REFERENCES public.companies("id") ON DELETE RESTRICT,
   CONSTRAINT uniq_customer_id_company UNIQUE ("id", "companyId")
@@ -572,6 +601,10 @@ GRANT SELECT, UPDATE ON TABLE public.companies TO bob_app;
 -- SELECT ... FOR SHARE exige aussi un privilège UPDATE ; une colonne suffit à reproduire ce
 -- droit sans élargir le harnais aux mutations client (la release réelle accorde déjà UPDATE).
 GRANT SELECT, UPDATE ("id") ON TABLE public.customers TO bob_app;
+-- Jarvis U1-d : l'executeur d'effet cree et edite la fiche client par le use case canonique.
+-- La release REELLE accorde deja ces droits au role applicatif (ecran Clients, outil vocal
+-- creer_client) : le harnais reproduit ce droit exact, il ne l'invente pas.
+GRANT INSERT, UPDATE ON TABLE public.customers TO bob_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.catalogue_prestations TO bob_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.quote_draft_slots TO bob_app;
 GRANT SELECT ON TABLE public.release_flags, public.release_flag_subjects TO bob_app;
@@ -5125,6 +5158,11 @@ esac
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
   -f "$ROOT_DIR/apps/api/prisma/migrations/20260819000200_jarvis_foreground_backstop/migration.sql"
 
+# Jarvis U1-d (SPEC_U1D_CALLERS_REELS_20260819) : magasin PII des payloads de proposition.
+# Table neuve, owner-scopee, immuable (aucune policy UPDATE) et purgeable par retention.
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260819100000_jarvis_proposal_payloads/migration.sql"
+
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
 SET ROLE bob_schema_owner;
 GRANT USAGE ON SCHEMA public TO bob_cert_auditor;
@@ -5152,6 +5190,11 @@ GRANT SELECT ON TABLE public.jarvis_work_items TO bob_cert_auditor;
 -- ci-dessus ; la base est jetable.
 GRANT UPDATE ON TABLE public.jarvis_work_items TO bob_cert_auditor;
 GRANT SELECT, INSERT ON TABLE public.companies, public.customers TO bob_cert_auditor;
+-- Jarvis U1-d : l'auditeur relit les charges scellees, VIEILLIT leur retention et ALTERE leur
+-- contenu au repos pour prouver que le sceau recalcule detecte l'un et l'autre (greffe G4).
+-- Concession de certification uniquement — le role applicatif, lui, n'a AUCUN droit d'UPDATE
+-- sur cette table (immuabilite) ; la base est jetable.
+GRANT SELECT, UPDATE ON TABLE public.jarvis_proposal_payloads TO bob_cert_auditor;
 RESET ROLE;
 SQL
 
@@ -5171,7 +5214,10 @@ pnpm --filter @bob/api exec vitest run \
   src/persistence/prisma/agent-mission.persistence.postgres.test.ts \
   src/persistence/prisma/jarvis-run-expand.postgres.test.ts \
   src/persistence/prisma/jarvis-work-items.persistence.postgres.test.ts \
-  src/persistence/prisma/jarvis-admission.postgres.test.ts
+  src/persistence/prisma/jarvis-admission.postgres.test.ts \
+  src/persistence/prisma/jarvis-proposal-payloads.postgres.test.ts \
+  src/jobs/jarvis-customer-effect.executor.postgres.test.ts \
+  src/persistence/prisma/jarvis-oracles.postgres.test.ts
 
 # Cycle de rotation réel, après les tests métier qui utilisent volontairement la version 1.
 # La preuve couvre deux connexions concurrentes, les snapshots après verrou, le retrait N-1 et

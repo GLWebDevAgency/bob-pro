@@ -27,18 +27,18 @@ import {
   PrismaAgentMissionResumeUnitOfWork,
   PrismaAgentMissionUnitOfWork,
 } from './agent-mission.persistence';
+import { PrismaJarvisProposalPayloadStore } from './jarvis-proposal-payloads.persistence';
 import type {
   AgentMissionResumeUnitOfWorkPort,
   AgentMissionResumeV2UnitOfWorkPort,
   AgentMissionUnitOfWorkPort,
+  JarvisProposalPayloadStorePort,
 } from '@bob/core';
 import type {
   AgentMissionFingerprintKeyBinding,
   AgentMissionFingerprintKeyVersionAuthority,
 } from '../../agent-missions/agent-mission-fingerprint-key-version';
-import {
-  PrismaAgentMissionFingerprintKeyVersionAuthority,
-} from './agent-mission-fingerprint-key-version.prisma';
+import { PrismaAgentMissionFingerprintKeyVersionAuthority } from './agent-mission-fingerprint-key-version.prisma';
 import { PrismaVoiceTraceRepository } from '../voice-traces';
 import { PrismaRealtimeVoiceTraceRepository } from './realtime-voice-trace.prisma';
 import type { RealtimeVoiceTraceAuthorities } from '../../voice/realtime/realtime-voice-trace.repository';
@@ -106,9 +106,7 @@ import {
   type MistralConversationTerminalReplayAuthorities,
 } from '../../voice/realtime/mistral-conversation-terminal-replay';
 import { PrismaMistralConversationDurableAuthority } from '../../voice/realtime/mistral-conversation-authority.prisma';
-import {
-  DEFAULT_MISTRAL_CONVERSATION_RESUME_TICKET_POLICY,
-} from '../../voice/realtime/mistral-conversation-resume-ticket';
+import { DEFAULT_MISTRAL_CONVERSATION_RESUME_TICKET_POLICY } from '../../voice/realtime/mistral-conversation-resume-ticket';
 import { PrismaMistralConversationResumeAuthority } from '../../voice/realtime/mistral-conversation-resume-ticket.prisma';
 import { PrismaMistralConversationKeyVersionAuthority } from '../../voice/realtime/mistral-conversation-key-version.prisma';
 import { PrismaMistralConversationBootstrapTicketAuthority } from '../../voice/realtime/mistral-conversation-bootstrap-ticket.prisma';
@@ -116,13 +114,9 @@ import type { MistralConversationAdmissionPolicy } from '../../voice/realtime/mi
 import { PrismaMistralConversationAdmissionAuthority } from '../../voice/realtime/mistral-conversation-admission.prisma';
 import { PrismaMistralConversationBootstrapReaper } from '../../voice/realtime/mistral-conversation-bootstrap-reaper.prisma';
 import type { MistralConversationBootstrapReaperPort } from '../../voice/realtime/mistral-conversation-bootstrap-reaper';
-import {
-  PrismaBobLiveSubjectHmacKeyVersionAuthority,
-} from '../../voice/realtime/mistral-conversation-subject-key-version.prisma';
+import { PrismaBobLiveSubjectHmacKeyVersionAuthority } from '../../voice/realtime/mistral-conversation-subject-key-version.prisma';
 import type { BobLiveSubjectHmacKeyRingAdmission } from '../../voice/realtime/mistral-conversation-subject-key-version';
-import {
-  PrismaOpenAiNativeKeyVersionAuthority,
-} from '../../voice/realtime/openai-native-proof-key-version.prisma';
+import { PrismaOpenAiNativeKeyVersionAuthority } from '../../voice/realtime/openai-native-proof-key-version.prisma';
 import type {
   OpenAiNativeKeyVersionAuthorityPort,
   OpenAiNativeProofKeyRingAdmission,
@@ -181,6 +175,16 @@ export class PrismaPersistence implements Persistence {
 
   createAgentMissionUnitOfWork(): AgentMissionUnitOfWorkPort {
     return new PrismaAgentMissionUnitOfWork(this.prisma);
+  }
+
+  /**
+   * Magasin PII des propositions Jarvis (§5.5) — LE MÊME client que le reste de la persistance :
+   * les GUC de la ligne cible (`withIsolatedOwner` + `app.current_agent_mission_id`) et les
+   * policies RLS de la migration s'appliquent donc telles quelles, sans second pool ni seconde
+   * identité de connexion.
+   */
+  createJarvisProposalPayloadStore(): JarvisProposalPayloadStorePort {
+    return new PrismaJarvisProposalPayloadStore(this.prisma);
   }
 
   createAgentMissionResumeUnitOfWork(): AgentMissionResumeUnitOfWorkPort {
@@ -291,15 +295,14 @@ export class PrismaPersistence implements Persistence {
         // Aucun réglage d'environnement ne peut élargir ce plancher de sécurité.
         liveTakeoverEnabled: false,
       },
-      ...(identityKeys ? {
-        reconciliationKeys: keys,
-        reconciliationIdentityKeys: identityKeys,
-      } : {}),
+      ...(identityKeys
+        ? {
+            reconciliationKeys: keys,
+            reconciliationIdentityKeys: identityKeys,
+          }
+        : {}),
     });
-    const admission = new PrismaMistralConversationAdmissionAuthority(
-      this.prisma,
-      admissionPolicy,
-    );
+    const admission = new PrismaMistralConversationAdmissionAuthority(this.prisma, admissionPolicy);
     const initialBootstrap = identityKeys
       ? new PrismaMistralConversationBootstrapTicketAuthority(
           this.prisma,
@@ -403,5 +406,4 @@ export class PrismaPersistence implements Persistence {
   ): Promise<T> {
     return this.prisma.withCabinetInvitation(userId, verifiedEmail, tokenHash, () => fn());
   }
-
 }

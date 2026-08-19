@@ -8,8 +8,10 @@ import type {
   RealtimeSemanticPlannerResult,
 } from '@bob/ai';
 import {
+  CUSTOMER_CONTACT_MISSION_KIND_V1,
   QUOTE_CREATION_MISSION_KIND_V1,
   type AppError,
+  type CustomerContactSemanticFrameV1,
   type Result,
 } from '@bob/core';
 import { getPrincipal } from '../../observability/logger';
@@ -28,6 +30,11 @@ import type {
   RealtimeQuoteMissionOrchestratorPort,
   RealtimeQuoteMissionPreparedTurn,
 } from './realtime-quote-mission-orchestrator';
+import type {
+  RealtimeJarvisMissionOrchestrationOutcome,
+  RealtimeJarvisMissionOrchestratorPort,
+  RealtimeJarvisMissionPreparedTurn,
+} from './realtime-jarvis-mission-orchestrator';
 
 function run(overrides: Partial<AgentRun> = {}): AgentRun {
   return {
@@ -99,11 +106,7 @@ const LEGACY_HOST_MANIFEST = Object.freeze({
 
 const MISSION_HOST_MANIFEST = Object.freeze({
   ...LEGACY_HOST_MANIFEST,
-  globalToolNames: [
-    'factures_impayees',
-    'ouvrir_cloture',
-    'aide_capacites',
-  ] as const,
+  globalToolNames: ['factures_impayees', 'ouvrir_cloture', 'aide_capacites'] as const,
 }) satisfies RealtimeSemanticHostManifest;
 
 function missionPort(
@@ -124,12 +127,15 @@ function missionPort(
   return { prepare, runPlanned };
 }
 
-function harness(options: {
-  readonly result?: Result<AgentRun, AppError>;
-  readonly requiredProvider?: 'openai' | 'mistral';
-  readonly quoteMissions?: RealtimeQuoteMissionOrchestratorPort | null;
-  readonly planning?: RealtimeSemanticPlannerResult;
-} = {}) {
+function harness(
+  options: {
+    readonly result?: Result<AgentRun, AppError>;
+    readonly requiredProvider?: 'openai' | 'mistral';
+    readonly quoteMissions?: RealtimeQuoteMissionOrchestratorPort | null;
+    readonly customerContactMissions?: RealtimeJarvisMissionOrchestratorPort | null;
+    readonly planning?: RealtimeSemanticPlannerResult;
+  } = {},
+) {
   const result = options.result ?? {
     ok: true as const,
     value: run({ navigate: '/devis/new' }),
@@ -139,8 +145,8 @@ function harness(options: {
     plan: globalPlan(),
     plannerDurationMs: 12,
   };
-  const runWithTenant = vi.fn(
-    async (_companyId: string, operation: () => Promise<unknown>) => operation(),
+  const runWithTenant = vi.fn(async (_companyId: string, operation: () => Promise<unknown>) =>
+    operation(),
   );
   const askBobWithPlan = vi.fn<RealtimeBobAgentExecutor['askBobWithPlan']>(
     async (_payload: AgentAskPayload, _plan, _execution) => result,
@@ -149,19 +155,16 @@ function harness(options: {
     RealtimeBobAgentExecutor['prepareRealtimeSemanticHost']
   >(async (input) => ({
     ok: true,
-    value: input.admittedMissionKinds.length === 0
-      ? LEGACY_HOST_MANIFEST
-      : MISSION_HOST_MANIFEST,
+    value: input.admittedMissionKinds.length === 0 ? LEGACY_HOST_MANIFEST : MISSION_HOST_MANIFEST,
   }));
-  const planner = vi.fn<RealtimeSemanticPlannerPort['plan']>(
-    async () => planning,
-  );
+  const planner = vi.fn<RealtimeSemanticPlannerPort['plan']>(async () => planning);
   const persistence = { runWithTenant } as unknown as Persistence;
   const executor: RealtimeBobAgentExecutor = {
     prepareRealtimeSemanticHost,
     askBobWithPlan,
   };
   const quoteMissions = options.quoteMissions ?? null;
+  const customerContactMissions = options.customerContactMissions ?? null;
   return {
     adapter: new RealtimeBobAgentTurnAdapter(
       persistence,
@@ -170,12 +173,14 @@ function harness(options: {
       quoteMissions,
       { plan: planner },
       () => new Date('2026-07-30T12:00:00.000Z'),
+      customerContactMissions,
     ),
     runWithTenant,
     prepareRealtimeSemanticHost,
     askBobWithPlan,
     planner,
     quoteMissions,
+    customerContactMissions,
   };
 }
 
@@ -243,6 +248,8 @@ function missionInput(
 ) {
   return {
     ...input(signal, fence),
+    // U1-d : les kinds admis viennent de l'admission de session, plus d'une liste codée en dur.
+    admittedMissionKinds: [QUOTE_CREATION_MISSION_KIND_V1],
     agentMissionAuthority: {
       owner: { companyId: 'company-1', ownerUserId: 'user-1' },
       proof: {
@@ -260,10 +267,12 @@ describe('RealtimeBobAgentTurnAdapter — planner unique', () => {
   it('refuse un turnId non idempotent avant planner, tenant ou domaine', async () => {
     const h = harness();
 
-    await expect(h.adapter.run({
-      ...input(),
-      turnId: 'not-a-command-id',
-    })).resolves.toEqual({
+    await expect(
+      h.adapter.run({
+        ...input(),
+        turnId: 'not-a-command-id',
+      }),
+    ).resolves.toEqual({
       status: 'failed',
       canonicalSpeech: 'Je ne peux pas sécuriser ce tour. Rien n’a été exécuté.',
     });
@@ -315,33 +324,37 @@ describe('RealtimeBobAgentTurnAdapter — planner unique', () => {
       hasTenantContext: true,
     });
     expect(h.planner).toHaveBeenCalledOnce();
-    expect(h.prepareRealtimeSemanticHost.mock.invocationCallOrder[0])
-      .toBeLessThan(h.planner.mock.invocationCallOrder[0]!);
-    expect(h.planner.mock.invocationCallOrder[0])
-      .toBeLessThan(h.askBobWithPlan.mock.invocationCallOrder[0]!);
-    expect(h.planner).toHaveBeenCalledWith(expect.objectContaining({
-      transcript: 'Ouvre un nouveau devis',
-      quoteMission: {
-        missionAlias: null,
-        missionRevision: 0,
-        confirmedLineCount: 0,
-        pendingLineCount: 0,
-        pendingDecisionKind: null,
-        protocolVersion: null,
-        phase: 'unavailable',
-        presentedChoices: [],
-      },
-      screen: {
-        route: '/home',
-        revision: 1,
-        digest: contextVersion.digest,
-      },
-      hostManifest: LEGACY_HOST_MANIFEST,
-      missionCapabilities: [],
-      locale: 'fr-FR',
-      timeZone: 'Europe/Paris',
-      now: '2026-07-30T12:00:00.000Z',
-    }));
+    expect(h.prepareRealtimeSemanticHost.mock.invocationCallOrder[0]).toBeLessThan(
+      h.planner.mock.invocationCallOrder[0]!,
+    );
+    expect(h.planner.mock.invocationCallOrder[0]).toBeLessThan(
+      h.askBobWithPlan.mock.invocationCallOrder[0]!,
+    );
+    expect(h.planner).toHaveBeenCalledWith(
+      expect.objectContaining({
+        transcript: 'Ouvre un nouveau devis',
+        quoteMission: {
+          missionAlias: null,
+          missionRevision: 0,
+          confirmedLineCount: 0,
+          pendingLineCount: 0,
+          pendingDecisionKind: null,
+          protocolVersion: null,
+          phase: 'unavailable',
+          presentedChoices: [],
+        },
+        screen: {
+          route: '/home',
+          revision: 1,
+          digest: contextVersion.digest,
+        },
+        hostManifest: LEGACY_HOST_MANIFEST,
+        missionCapabilities: [],
+        locale: 'fr-FR',
+        timeZone: 'Europe/Paris',
+        now: '2026-07-30T12:00:00.000Z',
+      }),
+    );
     expect(h.runWithTenant).toHaveBeenCalledWith('company-1', expect.any(Function));
     expect(h.askBobWithPlan).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -369,7 +382,12 @@ describe('RealtimeBobAgentTurnAdapter — planner unique', () => {
 
     const plannerInput = h.planner.mock.calls[0]?.[0];
     expect(plannerInput?.history.map((turn) => turn.text)).toEqual([
-      'tour-3', 'tour-4', 'tour-5', 'tour-6', 'tour-7', 'tour-8',
+      'tour-3',
+      'tour-4',
+      'tour-5',
+      'tour-6',
+      'tour-7',
+      'tour-8',
     ]);
     expect(plannerInput?.timeZone).toBe('Europe/Paris');
   });
@@ -441,9 +459,9 @@ describe('RealtimeBobAgentTurnAdapter — planner unique', () => {
       return validation === 1 ? contextVersion : changedContext;
     });
 
-    await expect(
-      h.adapter.run(missionInput(undefined, contextFence(revalidate))),
-    ).resolves.toEqual({ status: 'aborted' });
+    await expect(h.adapter.run(missionInput(undefined, contextFence(revalidate)))).resolves.toEqual(
+      { status: 'aborted' },
+    );
 
     expect(missions.prepare).toHaveBeenCalledOnce();
     expect(h.planner).toHaveBeenCalledOnce();
@@ -497,16 +515,12 @@ describe('RealtimeBobAgentTurnAdapter — planner unique', () => {
     });
     expect(missions.prepare).toHaveBeenCalledOnce();
     expect(missions.runPlanned).not.toHaveBeenCalled();
-    expect(h.askBobWithPlan).toHaveBeenCalledWith(
-      expect.any(Object),
-      plan,
-      {
-        signal: expect.any(AbortSignal),
-        requiredProvider: 'openai',
-        admittedMissionKinds: [QUOTE_CREATION_MISSION_KIND_V1],
-        plannerDurationMs: 14,
-      },
-    );
+    expect(h.askBobWithPlan).toHaveBeenCalledWith(expect.any(Object), plan, {
+      signal: expect.any(AbortSignal),
+      requiredProvider: 'openai',
+      admittedMissionKinds: [QUOTE_CREATION_MISSION_KIND_V1],
+      plannerDurationMs: 14,
+    });
   });
 
   it('n’exécute aucun plan global si le contexte change pendant le planner', async () => {
@@ -520,9 +534,9 @@ describe('RealtimeBobAgentTurnAdapter — planner unique', () => {
     const changedContext = { ...contextVersion, revision: 2 };
     const revalidate = vi.fn(async () => changedContext);
 
-    await expect(
-      h.adapter.run(input(undefined, contextFence(revalidate))),
-    ).resolves.toEqual({ status: 'aborted' });
+    await expect(h.adapter.run(input(undefined, contextFence(revalidate)))).resolves.toEqual({
+      status: 'aborted',
+    });
 
     expect(h.planner).toHaveBeenCalledOnce();
     expect(h.askBobWithPlan).not.toHaveBeenCalled();
@@ -693,20 +707,22 @@ describe('RealtimeBobAgentTurnAdapter — planner unique', () => {
   });
 
   it('qualifie explicitement la provenance des réponses', () => {
-    expect(classifyRealtimeAgentSpeechPurpose(run({ intent: 'aide' }), false))
-      .toBe('generic_assistance');
-    expect(classifyRealtimeAgentSpeechPurpose(
-      run({ intent: 'unknown', naturalBody: 'Avec plaisir.' }),
-      false,
-    )).toBe('business_answer');
-    expect(classifyRealtimeAgentSpeechPurpose(run({ intent: 'aide' }), true))
-      .toBe('business_answer');
-    expect(classifyRealtimeAgentSpeechPurpose(
-      run({ choices: [{ label: 'A', value: 'a' }] }),
-      false,
-    )).toBe('structured_choice');
-    expect(classifyRealtimeAgentSpeechPurpose(run({ kind: 'done' }), false))
-      .toBe('action_result');
+    expect(classifyRealtimeAgentSpeechPurpose(run({ intent: 'aide' }), false)).toBe(
+      'generic_assistance',
+    );
+    expect(
+      classifyRealtimeAgentSpeechPurpose(
+        run({ intent: 'unknown', naturalBody: 'Avec plaisir.' }),
+        false,
+      ),
+    ).toBe('business_answer');
+    expect(classifyRealtimeAgentSpeechPurpose(run({ intent: 'aide' }), true)).toBe(
+      'business_answer',
+    );
+    expect(
+      classifyRealtimeAgentSpeechPurpose(run({ choices: [{ label: 'A', value: 'a' }] }), false),
+    ).toBe('structured_choice');
+    expect(classifyRealtimeAgentSpeechPurpose(run({ kind: 'done' }), false)).toBe('action_result');
   });
 
   it('borne toute erreur interne et n’expose jamais sa cause', async () => {
@@ -730,13 +746,14 @@ describe('RealtimeBobAgentTurnAdapter — planner unique', () => {
     const controller = new AbortController();
     const h = harness();
     h.planner.mockImplementationOnce(
-      async (plannerInput) => new Promise<RealtimeSemanticPlannerResult>((_resolve, reject) => {
-        plannerInput.signal?.addEventListener(
-          'abort',
-          () => reject(plannerInput.signal?.reason),
-          { once: true },
-        );
-      }),
+      async (plannerInput) =>
+        new Promise<RealtimeSemanticPlannerResult>((_resolve, reject) => {
+          plannerInput.signal?.addEventListener(
+            'abort',
+            () => reject(plannerInput.signal?.reason),
+            { once: true },
+          );
+        }),
     );
 
     const outcome = h.adapter.run(input(controller.signal));
@@ -754,11 +771,9 @@ describe('RealtimeBobAgentTurnAdapter — planner unique', () => {
     h.askBobWithPlan.mockImplementationOnce((_payload, _plan, execution) => {
       propagatedSignal = execution.signal;
       return new Promise<Result<AgentRun, AppError>>((_resolve, reject) => {
-        execution.signal.addEventListener(
-          'abort',
-          () => reject(execution.signal.reason),
-          { once: true },
-        );
+        execution.signal.addEventListener('abort', () => reject(execution.signal.reason), {
+          once: true,
+        });
       });
     });
 
@@ -794,7 +809,10 @@ describe('RealtimeBobAgentTurnAdapter — planner unique', () => {
     });
 
     const outcome = await h.adapter.run(
-      input(undefined, contextFence(async () => changed)),
+      input(
+        undefined,
+        contextFence(async () => changed),
+      ),
     );
 
     expect(outcome).toEqual({ status: 'aborted' });
@@ -806,16 +824,165 @@ describe('RealtimeBobAgentTurnAdapter — planner unique', () => {
     const h = harness();
 
     const outcome = await h.adapter.run(
-      input(undefined, contextFence(async () => {
-        throw new Error('database unavailable');
-      })),
+      input(
+        undefined,
+        contextFence(async () => {
+          throw new Error('database unavailable');
+        }),
+      ),
     );
 
     expect(outcome).toEqual({
       status: 'failed',
-      canonicalSpeech:
-        'Je ne peux pas vérifier le contexte de cet écran. Rien n’a été exécuté.',
+      canonicalSpeech: 'Je ne peux pas vérifier le contexte de cet écran. Rien n’a été exécuté.',
     });
     expect(outcome).not.toHaveProperty('navigate');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U1-d — routage PAR KIND : la fiche client n'existe que si l'admission l'a ouverte
+// ---------------------------------------------------------------------------
+
+const CONTACT_FRAME: CustomerContactSemanticFrameV1 = Object.freeze({
+  schema: 'bob.semantic.customer-contact',
+  version: 1,
+  operation: Object.freeze({ kind: 'open_customer_creation' }),
+  model: 'gpt-test',
+});
+
+const CONTACT_PREPARED = Object.freeze({
+  missionKind: CUSTOMER_CONTACT_MISSION_KIND_V1,
+  runId: '60000000-0000-4000-8000-000000000001',
+  expectedRevision: 0,
+  state: null,
+  semanticContext: Object.freeze({
+    runAlias: null,
+    runRevision: 0,
+    phase: 'inactive',
+    intentMode: null,
+    presentedDuplicateCount: 0,
+    proposalPresented: false,
+  }),
+  availableCapabilities: Object.freeze(['customer_contact.run.open']),
+}) satisfies RealtimeJarvisMissionPreparedTurn;
+
+function contactPort(
+  outcome: RealtimeJarvisMissionOrchestrationOutcome = {
+    status: 'handled',
+    canonicalSpeech: 'J’ouvre une nouvelle fiche client.',
+    speechPurpose: 'action_result',
+  },
+): RealtimeJarvisMissionOrchestratorPort & {
+  readonly prepare: ReturnType<typeof vi.fn>;
+  readonly runPlanned: ReturnType<typeof vi.fn>;
+} {
+  const prepare = vi.fn(async () => ({
+    status: 'prepared' as const,
+    prepared: CONTACT_PREPARED,
+  }));
+  const runPlanned = vi.fn(async () => outcome);
+  return { prepare, runPlanned };
+}
+
+describe('RealtimeBobAgentTurnAdapter — customer_contact@1 (U1-d)', () => {
+  it('prépare et exécute la fiche client quand le kind est admis', async () => {
+    const contact = contactPort();
+    const h = harness({
+      customerContactMissions: contact,
+      planning: {
+        status: 'mission_frame',
+        missionKind: CUSTOMER_CONTACT_MISSION_KIND_V1,
+        frame: CONTACT_FRAME,
+        plannerDurationMs: 9,
+      },
+    });
+
+    await expect(
+      h.adapter.run({
+        ...missionInput(),
+        admittedMissionKinds: [CUSTOMER_CONTACT_MISSION_KIND_V1],
+      }),
+    ).resolves.toMatchObject({
+      status: 'ready',
+      canonicalSpeech: 'J’ouvre une nouvelle fiche client.',
+      speechPurpose: 'action_result',
+    });
+    expect(contact.prepare).toHaveBeenCalledOnce();
+    expect(contact.runPlanned).toHaveBeenCalledOnce();
+    expect(h.askBobWithPlan).not.toHaveBeenCalled();
+    // La lentille et les capacités partent au planner, jamais une liste écrite en dur.
+    expect(h.planner.mock.calls[0]?.[0]).toMatchObject({
+      admittedMissionKinds: [CUSTOMER_CONTACT_MISSION_KIND_V1],
+      customerContactMission: CONTACT_PREPARED.semanticContext,
+      missionCapabilities: ['customer_contact.run.open'],
+    });
+  });
+
+  it('n’exécute JAMAIS une frame fiche client si le kind n’est pas admis', async () => {
+    const contact = contactPort();
+    const h = harness({
+      customerContactMissions: contact,
+      planning: {
+        status: 'mission_frame',
+        missionKind: CUSTOMER_CONTACT_MISSION_KIND_V1,
+        frame: CONTACT_FRAME,
+        plannerDurationMs: 9,
+      },
+    });
+
+    await expect(
+      h.adapter.run({
+        ...missionInput(),
+        admittedMissionKinds: [QUOTE_CREATION_MISSION_KIND_V1],
+      }),
+    ).resolves.toEqual({
+      status: 'failed',
+      canonicalSpeech: 'Je ne peux pas sécuriser la mission. Rien n’a été exécuté.',
+    });
+    expect(contact.prepare).not.toHaveBeenCalled();
+    expect(contact.runPlanned).not.toHaveBeenCalled();
+  });
+
+  it('laisse le chemin devis intact quand seule la fiche client est admise', async () => {
+    const missions = missionPort();
+    const contact = contactPort();
+    const h = harness({
+      quoteMissions: missions,
+      customerContactMissions: contact,
+      planning: {
+        status: 'mission_frame',
+        frame: MISSION_FRAME,
+        plannerDurationMs: 4,
+      },
+    });
+
+    await expect(
+      h.adapter.run({
+        ...missionInput(),
+        admittedMissionKinds: [CUSTOMER_CONTACT_MISSION_KIND_V1],
+      }),
+    ).resolves.toEqual({
+      status: 'failed',
+      canonicalSpeech: 'Je ne peux pas sécuriser la mission. Rien n’a été exécuté.',
+    });
+    expect(missions.prepare).not.toHaveBeenCalled();
+    expect(missions.runPlanned).not.toHaveBeenCalled();
+    expect(contact.runPlanned).not.toHaveBeenCalled();
+  });
+
+  it('échoue fermé si la fiche client est admise sans orchestrateur câblé', async () => {
+    const h = harness({ customerContactMissions: null });
+
+    await expect(
+      h.adapter.run({
+        ...missionInput(),
+        admittedMissionKinds: [CUSTOMER_CONTACT_MISSION_KIND_V1],
+      }),
+    ).resolves.toEqual({
+      status: 'failed',
+      canonicalSpeech: 'Je ne peux pas sécuriser la mission. Rien n’a été exécuté.',
+    });
+    expect(h.planner).not.toHaveBeenCalled();
   });
 });

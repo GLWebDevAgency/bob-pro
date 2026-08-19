@@ -32,6 +32,7 @@ DECLARE
     'agent_mission_fingerprint_key_version_floors',
     'agent_mission_fingerprint_key_bindings',
     'jarvis_work_items',
+    'jarvis_proposal_payloads',
     'documents',
     'document_analyses',
     'document_folders',
@@ -270,6 +271,31 @@ CREATE POLICY agent_missions_owner_update ON agent_missions FOR UPDATE
     "companyId" = current_setting('app.current_company_id', true)
     AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
     AND "id"::text = nullif(current_setting('app.current_agent_mission_id', true), '')
+  );
+
+DROP POLICY IF EXISTS jarvis_proposal_payloads_owner_select ON jarvis_proposal_payloads;
+DROP POLICY IF EXISTS jarvis_proposal_payloads_owner_insert ON jarvis_proposal_payloads;
+DROP POLICY IF EXISTS jarvis_proposal_payloads_retention_delete ON jarvis_proposal_payloads;
+CREATE POLICY jarvis_proposal_payloads_owner_select ON jarvis_proposal_payloads FOR SELECT
+  USING (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
+  );
+-- Écriture épinglée au run courant (patron jarvis_work_items) ; AUCUNE policy UPDATE :
+-- un payload scellé est immuable, une correction est une nouvelle proposition. DELETE borné
+-- à la rétention échue sous les mêmes GUC owner — le droit d'effacer ne vaut que pour du PII
+-- périmé (§5.5).
+CREATE POLICY jarvis_proposal_payloads_owner_insert ON jarvis_proposal_payloads FOR INSERT
+  WITH CHECK (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
+    AND "runId"::text = nullif(current_setting('app.current_agent_mission_id', true), '')
+  );
+CREATE POLICY jarvis_proposal_payloads_retention_delete ON jarvis_proposal_payloads FOR DELETE
+  USING (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
+    AND "retentionExpiresAt" <= statement_timestamp()
   );
 
 DROP POLICY IF EXISTS jarvis_work_items_owner_select ON jarvis_work_items;

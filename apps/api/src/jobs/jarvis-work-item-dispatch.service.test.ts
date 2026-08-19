@@ -11,6 +11,11 @@
  * (revue C10) ; fakes NON complaisants (revue C19) : authorize/storeResult peuvent rendre
  * false et le worker S'ARRÊTE — aucun exécuteur après une autorisation perdue, aucun
  * signal après un storeResult refusé.
+ *
+ * U1-d (revue C9) : le ROUTAGE de la réconciliation d'une reprise `authorized` — reçu trouvé
+ * ⇒ persistance + observation sans rejeu ; absence prouvée ou action idempotente ⇒ nouvel appel
+ * avec le MÊME effectId ; indécidable (verdict ou exception) ⇒ `outcome_unknown` motivé plutôt
+ * qu'une lease renouvelée à vie ; exécuteur sans réconciliation ⇒ rien n'est clos.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -45,7 +50,10 @@ import {
   jarvisEffectExecutorKey,
   jarvisNotificationEffectDedupeKey,
   type JarvisDispatchRunDirectoryPort,
+  type JarvisEffectExecutionInput,
+  type JarvisEffectExecutionOutcome,
   type JarvisEffectExecutor,
+  type JarvisEffectReconciliation,
 } from './jarvis-work-item-dispatch.service';
 
 // ---------------------------------------------------------------------------
@@ -575,19 +583,182 @@ describe('JarvisWorkItemDispatchService — orchestration §5.3 (fakes, zéro Po
     expect(summary).toMatchObject({ unknown: 1, signalled: 1, claimed: 0, failures: 0 });
   });
 
-  it('authorized repris avec un exécuteur ENREGISTRÉ ⇒ fail-closed : aucune clôture inventée (réconciliation U1-d)', async () => {
+  it('authorized repris, exécuteur enregistré SANS réconciliation ⇒ fail-closed : aucune clôture inventée', async () => {
     const h = harnessWithExecutor(sha256Hex('jamais-execute'));
     h.repository.reclaimable = [leaseFixture({ leaseFence: 4n })];
 
     const summary = await h.service.runAllCompanies();
 
-    // L'issue est indécidable ICI : ni exécution, ni règlement, ni signal — la ligne reste
-    // authorized sous sa lease renouvelée jusqu'à la réconciliation par effectId (U1-d).
+    // Sans lecture par effectId, rien ici ne peut trancher : ni exécution, ni règlement, ni
+    // signal — la ligne reste authorized sous sa lease renouvelée (l'exécuteur doit exposer sa
+    // réconciliation avant d'être enregistré).
     expect(h.calls).not.toContain('executor.execute');
     expect(h.calls).not.toContain('repo.storeResult');
     expect(h.admission.admitted).toHaveLength(0);
     expect(h.repository.signalAppliedInputs).toHaveLength(0);
     expect(summary).toMatchObject({ unknown: 0, signalled: 0, failures: 0 });
+  });
+
+  it('réconciliation `landed` ⇒ le reçu trouvé est persisté et signalé, SANS rejouer l’effet (revue C9)', async () => {
+    const landedDigest = sha256Hex('effet-deja-atterri');
+    const h = harnessWithReconciler({
+      kind: 'landed',
+      outcome: { status: 'succeeded', resultDigest: landedDigest },
+    });
+    h.repository.reclaimable = [leaseFixture({ leaseFence: 4n })];
+
+    const summary = await h.service.runAllCompanies();
+
+    expect(h.calls).toContain('executor.reconcileEffect');
+    // L'effet est DÉJÀ parti : le rejouer serait un doublon.
+    expect(h.calls).not.toContain('executor.execute');
+    expect(h.repository.storeInputs).toEqual([
+      {
+        id: 'wi_1',
+        leaseToken: LEASE_TOKEN,
+        leaseFence: 4n,
+        status: 'succeeded',
+        resultDigest: landedDigest,
+      },
+    ]);
+    expect(h.admission.admitted[0]?.command).toEqual({
+      type: 'record_effect_receipt',
+      effectId: EFFECT_ID,
+      receipt: { kind: 'succeeded', resultDigest: landedDigest },
+    });
+    expect(h.repository.signalAppliedInputs).toEqual([
+      { id: 'wi_1', leaseFence: 4n, resultDigest: landedDigest },
+    ]);
+    expect(summary).toMatchObject({ executed: 1, unknown: 0, signalled: 1, failures: 0 });
+  });
+
+  it('réconciliation `not_landed` ⇒ NOUVEL appel avec le MÊME effectId, puis résultat signalé', async () => {
+    const replayDigest = sha256Hex('rejeu-du-meme-effet');
+    const h = harnessWithReconciler(
+      { kind: 'not_landed' },
+      { status: 'succeeded', resultDigest: replayDigest },
+    );
+    h.repository.reclaimable = [leaseFixture({ leaseFence: 4n })];
+
+    const summary = await h.service.runAllCompanies();
+
+    expect(h.calls).toEqual([
+      'repo.listPendingSignals',
+      'repo.reclaimExpiredAuthorized',
+      'executor.reconcileEffect',
+      'executor.execute',
+      'repo.storeResult',
+      'admission.read',
+      'admission.admit',
+      'repo.markSignalApplied',
+      'repo.claimDue',
+    ]);
+    // Le rejeu porte le MÊME effectId : jamais un second effet, jamais un nouvel identifiant.
+    expect(h.execute.mock.calls[0]?.[0]?.lease.effectId).toBe(EFFECT_ID);
+    // Jamais un retour à `authorize` : `authorized` est le point de non-retour.
+    expect(h.calls).not.toContain('repo.authorize');
+    expect(h.repository.storeInputs[0]).toMatchObject({
+      leaseFence: 4n,
+      status: 'succeeded',
+      resultDigest: replayDigest,
+    });
+    expect(summary).toMatchObject({ executed: 1, signalled: 1, claimed: 0, failures: 0 });
+  });
+
+  it('réconciliation `safe_to_replay` (action idempotente) ⇒ rejeu du même effectId', async () => {
+    const replayDigest = sha256Hex('rejeu-idempotent');
+    const h = harnessWithReconciler(
+      { kind: 'safe_to_replay' },
+      { status: 'succeeded', resultDigest: replayDigest },
+    );
+    h.repository.reclaimable = [leaseFixture({ leaseFence: 4n })];
+
+    await h.service.runAllCompanies();
+
+    expect(h.execute).toHaveBeenCalledOnce();
+    expect(h.execute.mock.calls[0]?.[0]?.lease.effectId).toBe(EFFECT_ID);
+    expect(h.repository.storeInputs[0]).toMatchObject({ resultDigest: replayDigest });
+  });
+
+  it('réconciliation `undecidable` ⇒ outcome_unknown MOTIVÉ et signalé — jamais une lease renouvelée à vie', async () => {
+    const h = harnessWithReconciler({ kind: 'undecidable' });
+    h.repository.reclaimable = [leaseFixture({ leaseFence: 4n })];
+
+    const summary = await h.service.runAllCompanies();
+
+    const expectedDigest = sha256Hex(
+      JSON.stringify([
+        'bob.jarvis.dispatch.outcome-unknown.v1',
+        EFFECT_ID,
+        'reconciliation_undecidable',
+      ]),
+    );
+    expect(h.calls).not.toContain('executor.execute');
+    expect(h.repository.storeInputs).toEqual([
+      {
+        id: 'wi_1',
+        leaseToken: LEASE_TOKEN,
+        leaseFence: 4n,
+        status: 'outcome_unknown',
+        resultDigest: expectedDigest,
+      },
+    ]);
+    expect(h.repository.signalAppliedInputs).toEqual([
+      { id: 'wi_1', leaseFence: 4n, resultDigest: expectedDigest },
+    ]);
+    expect(summary).toMatchObject({ unknown: 1, signalled: 1, failures: 0 });
+  });
+
+  it('réconciliation qui LÈVE ⇒ indécidable (aucune absence prouvée), jamais un rejeu à l’aveugle', async () => {
+    const h = harnessWithReconciler(new Error('autorité muette'));
+    h.repository.reclaimable = [leaseFixture({ leaseFence: 4n })];
+
+    const summary = await h.service.runAllCompanies();
+
+    expect(h.calls).not.toContain('executor.execute');
+    expect(h.repository.storeInputs[0]).toMatchObject({
+      status: 'outcome_unknown',
+      resultDigest: sha256Hex(
+        JSON.stringify([
+          'bob.jarvis.dispatch.outcome-unknown.v1',
+          EFFECT_ID,
+          'reconciliation_undecidable',
+        ]),
+      ),
+    });
+    expect(summary).toMatchObject({ unknown: 1, signalled: 1 });
+  });
+
+  it('rejeu réconcilié qui LÈVE ⇒ outcome_unknown executor_error, résultat tout de même persisté', async () => {
+    const h = harnessWithReconciler({ kind: 'not_landed' }, new Error('provider en panne'));
+    h.repository.reclaimable = [leaseFixture({ leaseFence: 4n })];
+
+    const summary = await h.service.runAllCompanies();
+
+    expect(h.calls).toContain('executor.execute');
+    expect(h.repository.storeInputs[0]).toMatchObject({
+      status: 'outcome_unknown',
+      resultDigest: sha256Hex(
+        JSON.stringify(['bob.jarvis.dispatch.outcome-unknown.v1', EFFECT_ID, 'executor_error']),
+      ),
+    });
+    expect(summary).toMatchObject({ unknown: 1, signalled: 1, failures: 0 });
+  });
+
+  it('storeResult REFUSÉ après réconciliation ⇒ aucun signal indû (fence repris par un successeur)', async () => {
+    const h = harnessWithReconciler({
+      kind: 'landed',
+      outcome: { status: 'succeeded', resultDigest: sha256Hex('reçu-trouve') },
+    });
+    h.repository.reclaimable = [leaseFixture({ leaseFence: 4n })];
+    h.repository.storeResultResult = false;
+
+    const summary = await h.service.runAllCompanies();
+
+    expect(h.calls).toContain('repo.storeResult');
+    expect(h.admission.admitted).toHaveLength(0);
+    expect(h.repository.signalAppliedInputs).toHaveLength(0);
+    expect(summary).toMatchObject({ executed: 0, unknown: 0, signalled: 0, failures: 0 });
   });
 
   it('autorisation PERDUE (authorize rend false) ⇒ HALT avant I/O, route no-effect fencée (revues C12+C19)', async () => {
@@ -778,6 +949,40 @@ describe('JarvisWorkItemDispatchService — orchestration §5.3 (fakes, zéro Po
 function harnessWithExecutor(resultDigest: string): Harness {
   const calls: string[] = [];
   const { executor } = recordingExecutor(calls, resultDigest);
+  return harnessWith(calls, executor);
+}
+
+/**
+ * Harness avec un exécuteur qui SAIT réconcilier son effet par `effectId` (revue C9) : le
+ * verdict est scripté, l'exécution éventuelle aussi — un `Error` en position de verdict ou de
+ * résultat fait LEVER l'appel correspondant.
+ */
+function harnessWithReconciler(
+  verdict: JarvisEffectReconciliation | Error,
+  execution: JarvisEffectExecutionOutcome | Error = {
+    status: 'succeeded',
+    resultDigest: sha256Hex('rejeu-reconcilie'),
+  },
+): Harness & {
+  readonly execute: ReturnType<typeof vi.fn>;
+  readonly reconcile: ReturnType<typeof vi.fn>;
+} {
+  const calls: string[] = [];
+  const execute = vi.fn(async (_input: JarvisEffectExecutionInput) => {
+    calls.push('executor.execute');
+    if (execution instanceof Error) throw execution;
+    return execution;
+  });
+  const reconcile = vi.fn(async (_input: JarvisEffectExecutionInput) => {
+    calls.push('executor.reconcileEffect');
+    if (verdict instanceof Error) throw verdict;
+    return verdict;
+  });
+  const base = harnessWith(calls, { execute, reconcileEffect: reconcile });
+  return { ...base, execute, reconcile };
+}
+
+function harnessWith(calls: string[], executor: JarvisEffectExecutor): Harness {
   const executors = new Map<string, JarvisEffectExecutor>([
     [jarvisEffectExecutorKey(OPEN_ACTION.actionId, OPEN_ACTION.version), executor],
   ]);

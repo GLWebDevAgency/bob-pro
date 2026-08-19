@@ -29,6 +29,15 @@ export interface JarvisAdmissionOwner {
  */
 export type JarvisAdmissionAuthority =
   | { readonly source: 'realtime_capability'; readonly proof: AgentMissionRealtimeAuthorityProof }
+  | {
+      /**
+       * Canal tactile authentifié (U1-d, §14) : le hash de liaison du principal est dérivé
+       * SERVEUR du bearer authentifié — jamais fourni par le client — et stampé pour
+       * l'audit. Le tap vit SANS lease Realtime : un run parké se reprend à l'écran.
+       */
+      readonly source: 'authenticated_principal';
+      readonly principalBindingHash: string;
+    }
   | { readonly source: 'certification_fixture' };
 
 /**
@@ -47,6 +56,17 @@ export interface JarvisUserAdmissionEnvelope extends JarvisAdmissionOwner {
   readonly authority: JarvisAdmissionAuthority;
   readonly command: unknown;
   readonly canonicalInputDigest: string;
+  /**
+   * Corrélation realtime — OBLIGATOIRE quand l'autorité est `realtime_capability` : le
+   * journal exige qu'une commande vocale porte sa session, son tour et le contexte
+   * d'écran acquitté (CHECK de corrélation). Absente pour le canal tactile.
+   */
+  readonly realtimeCorrelation?: {
+    readonly realtimeSessionId: string;
+    readonly turnId: string;
+    readonly contextRevision: number;
+    readonly contextDigest: string;
+  };
   readonly occurredAt: Instant;
 }
 
