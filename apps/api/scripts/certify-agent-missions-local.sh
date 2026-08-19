@@ -5113,6 +5113,18 @@ esac
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
   -f "$ROOT_DIR/apps/api/prisma/migrations/20260818200100_jarvis_run_validate/migration.sql"
 
+# Jarvis U1-c (SPEC_U1C_ADMISSION_DISPATCH_20260818) : CHECK quote-shaped rendus
+# kind-conditionnels (expand NOT VALID puis validate separe), puis backstop de
+# premier plan elargi aux statuts non-liberants. Meme deployer non-superuser ;
+# les preuves writer N-1 reelles qui suivent (fingerprint floor + writer barrier)
+# rejouent sur l'etat POST-U1-c et prouvent la branche quote intacte.
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260819000000_jarvis_admission_expand/migration.sql"
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260819000100_jarvis_admission_validate/migration.sql"
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260819000200_jarvis_foreground_backstop/migration.sql"
+
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
 SET ROLE bob_schema_owner;
 GRANT USAGE ON SCHEMA public TO bob_cert_auditor;
@@ -5134,6 +5146,11 @@ GRANT DELETE ON TABLE public.realtime_session_leases TO bob_cert_auditor;
 -- meme precedent que le DELETE leases ci-dessus ; la base est jetable.
 GRANT DELETE ON TABLE public.agent_missions TO bob_cert_auditor;
 GRANT SELECT ON TABLE public.jarvis_work_items TO bob_cert_auditor;
+-- Jarvis U1-c : le harnais §19.2 vieillit les leases PAR L'AUDITEUR (UPDATE de
+-- leaseExpiresAt) pour prouver qu'une ligne authorized n'est jamais reprise ni
+-- re-prepared. Concession de certification uniquement, même précédent que les DELETE
+-- ci-dessus ; la base est jetable.
+GRANT UPDATE ON TABLE public.jarvis_work_items TO bob_cert_auditor;
 GRANT SELECT, INSERT ON TABLE public.companies, public.customers TO bob_cert_auditor;
 RESET ROLE;
 SQL
@@ -5152,7 +5169,9 @@ RUN_AGENT_MISSION_POSTGRES_CERT=true \
 AGENT_MISSION_CERT_DATABASE_IS_DISPOSABLE=true \
 pnpm --filter @bob/api exec vitest run \
   src/persistence/prisma/agent-mission.persistence.postgres.test.ts \
-  src/persistence/prisma/jarvis-run-expand.postgres.test.ts
+  src/persistence/prisma/jarvis-run-expand.postgres.test.ts \
+  src/persistence/prisma/jarvis-work-items.persistence.postgres.test.ts \
+  src/persistence/prisma/jarvis-admission.postgres.test.ts
 
 # Cycle de rotation réel, après les tests métier qui utilisent volontairement la version 1.
 # La preuve couvre deux connexions concurrentes, les snapshots après verrou, le retrait N-1 et

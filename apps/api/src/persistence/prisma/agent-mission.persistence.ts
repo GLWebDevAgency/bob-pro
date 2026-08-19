@@ -1,5 +1,19 @@
 import { timingSafeEqual } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
+import type {
+  JarvisAdmissionOwner,
+  JarvisAdmissionResult,
+  JarvisRunEnvelope,
+  JarvisStatelessReadResult,
+  JarvisSystemAdmissionEnvelope,
+  JarvisUserAdmissionEnvelope,
+} from '@bob/core';
+import {
+  readJarvisRunById,
+  runJarvisAdmissionInTransaction,
+  runJarvisSystemAdmissionInTransaction,
+  type JarvisAdmissionDeps,
+} from './jarvis-admission.persistence';
 import {
   AGENT_MISSION_PROTOCOL_V1,
   AGENT_MISSION_PROTOCOL_M2A,
@@ -69,11 +83,7 @@ const OWNER_TRANSACTION_OPTIONS = {
 
 const SHA256_HEX = /^[0-9a-f]{64}$/u;
 const MAX_SUBJECT_HASH_CANDIDATES = 32;
-const QUOTE_VAT_REGIMES = new Set([
-  'franchise',
-  'reel_simpl',
-  'reel_normal',
-] as const);
+const QUOTE_VAT_REGIMES = new Set(['franchise', 'reel_simpl', 'reel_normal'] as const);
 const QUOTE_VAT_TRADES = new Set([
   'plombier',
   'electricien',
@@ -218,10 +228,10 @@ function canonicalAgentMissionResumeCatalogueRecord(
     vatRate: canonicalPrismaVatRate(row.vatRate),
   });
   if (
-    prestation === null
-    || !Number.isSafeInteger(row.revision)
-    || row.revision < 1
-    || row.revision > 2_147_483_647
+    prestation === null ||
+    !Number.isSafeInteger(row.revision) ||
+    row.revision < 1 ||
+    row.revision > 2_147_483_647
   ) {
     throw new Error('AGENT_MISSION_RESUME_CATALOGUE_ROW_CORRUPT');
   }
@@ -235,12 +245,10 @@ function canonicalCustomerName(value: string): string {
   return normalizeCustomerName(value) ?? value;
 }
 
-function canonicalPersistedAgentMissionProtocolVersion(
-  value: number,
-): AgentMissionProtocolVersion {
+function canonicalPersistedAgentMissionProtocolVersion(value: number): AgentMissionProtocolVersion {
   if (
-    !Number.isSafeInteger(value)
-    || !(AGENT_MISSION_PROTOCOL_VERSIONS as readonly number[]).includes(value)
+    !Number.isSafeInteger(value) ||
+    !(AGENT_MISSION_PROTOCOL_VERSIONS as readonly number[]).includes(value)
   ) {
     throw new Error('AGENT_MISSION_PROTOCOL_VERSION_CORRUPT');
   }
@@ -258,27 +266,27 @@ type AgentMissionAuthorityResolution =
       readonly reason: AgentMissionCapabilityRejectionReason;
     };
 
-function canonicalAuthorityProof(
-  proof: AgentMissionRealtimeAuthorityProof,
-): {
+function canonicalAuthorityProof(proof: AgentMissionRealtimeAuthorityProof): {
   readonly protocolVersion: AgentMissionProtocolVersion;
   readonly subjectHashCandidates: readonly string[];
   readonly principalBindingHash: string;
   readonly capabilityHash: string;
 } | null {
   if (
-    !AGENT_MISSION_PROTOCOL_VERSIONS.includes(proof.protocolVersion)
-    || !Array.isArray(proof.subjectHashCandidates)
-    || proof.subjectHashCandidates.length < 1
-    || proof.subjectHashCandidates.length > MAX_SUBJECT_HASH_CANDIDATES
-    || !SHA256_HEX.test(proof.principalBindingHash)
-    || !SHA256_HEX.test(proof.capabilityHash)
-  ) return null;
+    !AGENT_MISSION_PROTOCOL_VERSIONS.includes(proof.protocolVersion) ||
+    !Array.isArray(proof.subjectHashCandidates) ||
+    proof.subjectHashCandidates.length < 1 ||
+    proof.subjectHashCandidates.length > MAX_SUBJECT_HASH_CANDIDATES ||
+    !SHA256_HEX.test(proof.principalBindingHash) ||
+    !SHA256_HEX.test(proof.capabilityHash)
+  )
+    return null;
   const subjectHashCandidates = [...proof.subjectHashCandidates];
   if (
-    subjectHashCandidates.some((candidate) => !SHA256_HEX.test(candidate))
-    || new Set(subjectHashCandidates).size !== subjectHashCandidates.length
-  ) return null;
+    subjectHashCandidates.some((candidate) => !SHA256_HEX.test(candidate)) ||
+    new Set(subjectHashCandidates).size !== subjectHashCandidates.length
+  )
+    return null;
   subjectHashCandidates.sort();
   return Object.freeze({
     protocolVersion: proof.protocolVersion,
@@ -291,9 +299,11 @@ function canonicalAuthorityProof(
 function exactCapabilityHash(expected: string, actual: string): boolean {
   const expectedBytes = Buffer.from(expected, 'hex');
   const actualBytes = Buffer.from(actual, 'hex');
-  return expectedBytes.byteLength === 32
-    && actualBytes.byteLength === 32
-    && timingSafeEqual(expectedBytes, actualBytes);
+  return (
+    expectedBytes.byteLength === 32 &&
+    actualBytes.byteLength === 32 &&
+    timingSafeEqual(expectedBytes, actualBytes)
+  );
 }
 
 function postgresErrorCode(error: unknown): string | null {
@@ -317,13 +327,13 @@ function prismaTransactionTimeout(error: unknown): boolean {
     readonly meta?: { readonly error?: unknown };
   };
   const detail = candidate.meta?.error;
-  return typeof detail === 'string'
-    && (
-      detail === 'Unable to start a transaction in the given time.'
-      || /^(?:Transaction already closed: )?A (?:query|commit|rollback) cannot be executed on an expired transaction\./u.test(
+  return (
+    typeof detail === 'string' &&
+    (detail === 'Unable to start a transaction in the given time.' ||
+      /^(?:Transaction already closed: )?A (?:query|commit|rollback) cannot be executed on an expired transaction\./u.test(
         detail,
-      )
-    );
+      ))
+  );
 }
 
 function foregroundUnavailableReason(
@@ -357,13 +367,12 @@ function rethrowForegroundTransactionFailure(error: unknown): never {
   throw error;
 }
 
-async function mapForegroundTransactionFailure<R>(
-  operation: () => Promise<R>,
-): Promise<
-  R | {
-    readonly status: 'foreground_unavailable';
-    readonly reason: AgentMissionForegroundUnavailableReason;
-  }
+export async function mapForegroundTransactionFailure<R>(operation: () => Promise<R>): Promise<
+  | R
+  | {
+      readonly status: 'foreground_unavailable';
+      readonly reason: AgentMissionForegroundUnavailableReason;
+    }
 > {
   try {
     return await operation();
@@ -385,16 +394,18 @@ function validAuthorityLeaseAt(
   databaseNow: Date,
   protocolVersion: AgentMissionProtocolVersion,
 ): boolean {
-  return row.state === 'active'
-    && row.leaseExpiresAt.getTime() > databaseNow.getTime()
-    && row.hardExpiresAt.getTime() > databaseNow.getTime()
-    && row.agentMissionProtocolVersion === protocolVersion
-    && row.agentMissionProtocolBoundAt instanceof Date
-    && row.agentMissionBootstrapAcknowledgedAt instanceof Date
-    && typeof row.agentMissionCapabilityHash === 'string'
-    && SHA256_HEX.test(row.agentMissionCapabilityHash)
-    && Number.isSafeInteger(row.agentMissionReleaseFlagVersion)
-    && (row.agentMissionReleaseFlagVersion ?? 0) >= 1;
+  return (
+    row.state === 'active' &&
+    row.leaseExpiresAt.getTime() > databaseNow.getTime() &&
+    row.hardExpiresAt.getTime() > databaseNow.getTime() &&
+    row.agentMissionProtocolVersion === protocolVersion &&
+    row.agentMissionProtocolBoundAt instanceof Date &&
+    row.agentMissionBootstrapAcknowledgedAt instanceof Date &&
+    typeof row.agentMissionCapabilityHash === 'string' &&
+    SHA256_HEX.test(row.agentMissionCapabilityHash) &&
+    Number.isSafeInteger(row.agentMissionReleaseFlagVersion) &&
+    (row.agentMissionReleaseFlagVersion ?? 0) >= 1
+  );
 }
 
 function rejectedAuthorityReason(
@@ -402,17 +413,19 @@ function rejectedAuthorityReason(
   databaseNow: Date,
 ): AgentMissionCapabilityRejectionReason {
   if (rows.length === 0) return 'not_found';
-  if (rows.some((row) => (
-    row.state === 'active'
-    && (
-      row.leaseExpiresAt.getTime() <= databaseNow.getTime()
-      || row.hardExpiresAt.getTime() <= databaseNow.getTime()
+  if (
+    rows.some(
+      (row) =>
+        row.state === 'active' &&
+        (row.leaseExpiresAt.getTime() <= databaseNow.getTime() ||
+          row.hardExpiresAt.getTime() <= databaseNow.getTime()),
     )
-  ))) return 'expired';
+  )
+    return 'expired';
   return 'state';
 }
 
-function toInputJson(value: unknown): Prisma.InputJsonValue {
+export function toInputJson(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 }
 
@@ -475,9 +488,7 @@ function eventFromRow(row: AgentMissionEventRow): AgentMissionEvent {
     retentionExpiresAt: row.retentionExpiresAt.toISOString(),
   });
   if (!result.ok) {
-    throw new Error(
-      `AGENT_MISSION_EVENT_ROW_CORRUPT:${result.error.field}:${result.error.reason}`,
-    );
+    throw new Error(`AGENT_MISSION_EVENT_ROW_CORRUPT:${result.error.field}:${result.error.reason}`);
   }
   return result.value;
 }
@@ -506,19 +517,12 @@ function quoteDraftFromRow(row: QuoteDraftSlotRow): AgentMissionQuoteDraftSlot {
   };
 }
 
-function quoteLineWorkFromRow(
-  row: AgentMissionQuoteLineWorkRow,
-): AgentMissionQuoteLineWork {
-  const quantityMilli = row.quantityMilli === null
-    ? null
-    : Number(row.quantityMilli);
-  const requestedVatRate = row.requestedVatRate === null
-    ? null
-    : canonicalPrismaVatRate(row.requestedVatRate);
+function quoteLineWorkFromRow(row: AgentMissionQuoteLineWorkRow): AgentMissionQuoteLineWork {
+  const quantityMilli = row.quantityMilli === null ? null : Number(row.quantityMilli);
+  const requestedVatRate =
+    row.requestedVatRate === null ? null : canonicalPrismaVatRate(row.requestedVatRate);
   if (row.requestedVatRate !== null && requestedVatRate === null) {
-    throw new Error(
-      'AGENT_MISSION_QUOTE_LINE_WORK_ROW_CORRUPT:requestedVatRate:invalid_value',
-    );
+    throw new Error('AGENT_MISSION_QUOTE_LINE_WORK_ROW_CORRUPT:requestedVatRate:invalid_value');
   }
   const parsed = parseAgentMissionQuoteLineWork({
     id: row.id,
@@ -542,10 +546,8 @@ function quoteLineWorkFromRow(
     requiredFact: row.requiredFact,
     catalogueItemId: row.catalogueItemId,
     expectedCatalogueRevision: row.expectedCatalogueRevision,
-    catalogueCategoryOverrideConfirmed:
-      row.catalogueCategoryOverrideConfirmed,
-    catalogueUnitOverrideConfirmed:
-      row.catalogueUnitOverrideConfirmed,
+    catalogueCategoryOverrideConfirmed: row.catalogueCategoryOverrideConfirmed,
+    catalogueUnitOverrideConfirmed: row.catalogueUnitOverrideConfirmed,
     proposalId: row.proposalId,
     proposalRevision: row.proposalRevision,
     proposalDiffHash: row.proposalDiffHash,
@@ -554,15 +556,13 @@ function quoteLineWorkFromRow(
   });
   if (!parsed.ok) {
     throw new Error(
-      `AGENT_MISSION_QUOTE_LINE_WORK_ROW_CORRUPT:${parsed.error.field}:${
-        parsed.error.reason
-      }`,
+      `AGENT_MISSION_QUOTE_LINE_WORK_ROW_CORRUPT:${parsed.error.field}:${parsed.error.reason}`,
     );
   }
   return parsed.value;
 }
 
-async function setMissionContext(
+export async function setMissionContext(
   transaction: Prisma.TransactionClient,
   missionId: string,
 ): Promise<void> {
@@ -595,13 +595,31 @@ async function lockActiveQuoteMissionForWork(
   return rows.length === 1;
 }
 
-async function setTransactionTimeouts(
-  transaction: Prisma.TransactionClient,
-): Promise<void> {
+export async function setTransactionTimeouts(transaction: Prisma.TransactionClient): Promise<void> {
   await transaction.$executeRaw`
     SELECT
       set_config('lock_timeout', '5s', true),
       set_config('statement_timeout', '10s', true)
+  `;
+}
+
+// Jarvis U1-c : la même clé owner-kind.v1, paramétrée par le kind — octets identiques
+// au legacy pour quote_creation (jarvisKindOwnerLockKey('quote_creation') ≡ clé historique).
+export async function acquireJarvisKindOwnerLock(
+  transaction: Prisma.TransactionClient,
+  owner: AgentMissionOwner,
+  kind: string,
+): Promise<void> {
+  const ownerLockKey = [
+    'bob.agent-mission.owner-kind.v1',
+    owner.companyId,
+    owner.ownerUserId,
+    kind,
+  ].join('\u001f');
+  await transaction.$queryRaw<Array<{ locked: boolean }>>`
+    SELECT (
+      pg_advisory_xact_lock(hashtextextended(${ownerLockKey}, 0)) IS NULL
+    ) AS "locked"
   `;
 }
 
@@ -615,14 +633,12 @@ function quoteCreationOwnerLockKey(owner: AgentMissionOwner): string {
 }
 
 function missionForegroundOwnerLockKey(owner: AgentMissionOwner): string {
-  return [
-    'bob.agent-mission.owner-foreground.v2',
-    owner.companyId,
-    owner.ownerUserId,
-  ].join('\u001f');
+  return ['bob.agent-mission.owner-foreground.v2', owner.companyId, owner.ownerUserId].join(
+    '\u001f',
+  );
 }
 
-async function acquireMissionForegroundOwnerLock(
+export async function acquireMissionForegroundOwnerLock(
   transaction: Prisma.TransactionClient,
   owner: AgentMissionOwner,
 ): Promise<void> {
@@ -659,9 +675,7 @@ async function acquireAgentMissionPrincipalLock(
   `;
 }
 
-async function databaseClock(
-  transaction: Prisma.TransactionClient,
-): Promise<Date> {
+export async function databaseClock(transaction: Prisma.TransactionClient): Promise<Date> {
   const rows = await transaction.$queryRaw<Array<{ now: Date }>>`
     SELECT clock_timestamp() AS "now"
   `;
@@ -725,7 +739,7 @@ async function lockAuthorityLeaseRows(
   `;
 }
 
-async function resolveAgentMissionAuthority(
+export async function resolveAgentMissionAuthority(
   transaction: Prisma.TransactionClient,
   owner: AgentMissionOwner,
   proof: AgentMissionRealtimeAuthorityProof,
@@ -743,22 +757,10 @@ async function resolveAgentMissionAuthority(
     );
   }
   const rows = lockRows
-    ? await lockAuthorityLeaseRows(
-        transaction,
-        owner.companyId,
-        canonical.subjectHashCandidates,
-      )
-    : await readAuthorityLeaseRows(
-        transaction,
-        owner.companyId,
-        canonical.subjectHashCandidates,
-      );
+    ? await lockAuthorityLeaseRows(transaction, owner.companyId, canonical.subjectHashCandidates)
+    : await readAuthorityLeaseRows(transaction, owner.companyId, canonical.subjectHashCandidates);
   const now = await databaseClock(transaction);
-  const eligible = rows.filter((row) => validAuthorityLeaseAt(
-    row,
-    now,
-    canonical.protocolVersion,
-  ));
+  const eligible = rows.filter((row) => validAuthorityLeaseAt(row, now, canonical.protocolVersion));
   if (eligible.length === 0) {
     return {
       status: 'rejected',
@@ -770,18 +772,15 @@ async function resolveAgentMissionAuthority(
   }
   const lease = eligible[0]!;
   if (
-    lease.agentMissionCapabilityHash === null
-    || !exactCapabilityHash(
-      canonical.capabilityHash,
-      lease.agentMissionCapabilityHash,
-    )
+    lease.agentMissionCapabilityHash === null ||
+    !exactCapabilityHash(canonical.capabilityHash, lease.agentMissionCapabilityHash)
   ) {
     return { status: 'rejected', reason: 'hash_mismatch' };
   }
   return { status: 'authorized', lease, databaseNow: now };
 }
 
-async function lockOpenCompanyForMissionWrite(
+export async function lockOpenCompanyForMissionWrite(
   transaction: Prisma.TransactionClient,
   companyId: string,
 ): Promise<'open' | 'missing' | 'closed'> {
@@ -802,9 +801,11 @@ class PrismaAgentMissionReadRepository implements AgentMissionReadRepositoryPort
     protected readonly expectedProtocolVersion: AgentMissionProtocolVersion,
   ) {}
 
-  async findActive(input: AgentMissionOwner & {
-    readonly kind: 'quote_creation';
-  }): Promise<AgentMission | null> {
+  async findActive(
+    input: AgentMissionOwner & {
+      readonly kind: 'quote_creation';
+    },
+  ): Promise<AgentMission | null> {
     const row = await this.transaction.agentMission.findFirst({
       where: {
         companyId: input.companyId,
@@ -861,9 +862,11 @@ class PrismaAgentMissionReadRepository implements AgentMissionReadRepositoryPort
     return lookup;
   }
 
-  async findById(input: AgentMissionOwner & {
-    readonly missionId: string;
-  }): Promise<AgentMissionLookup | null> {
+  async findById(
+    input: AgentMissionOwner & {
+      readonly missionId: string;
+    },
+  ): Promise<AgentMissionLookup | null> {
     const reference = await this.transaction.agentMission.findFirst({
       where: {
         id: input.missionId,
@@ -906,10 +909,13 @@ class PrismaAgentMissionReadRepository implements AgentMissionReadRepositoryPort
 
 class PrismaAgentMissionRepository
   extends PrismaAgentMissionReadRepository
-  implements AgentMissionRepositoryPort {
-  async findActiveForUpdate(input: AgentMissionOwner & {
-    readonly kind: 'quote_creation';
-  }): Promise<AgentMission | null> {
+  implements AgentMissionRepositoryPort
+{
+  async findActiveForUpdate(
+    input: AgentMissionOwner & {
+      readonly kind: 'quote_creation';
+    },
+  ): Promise<AgentMission | null> {
     // Sous FORCE RLS, SELECT ... FOR UPDATE doit aussi satisfaire la policy UPDATE, laquelle
     // exige la capability exacte de la mission. L'advisory lock owner+kind est déjà possédé par
     // l'UoW : on peut donc découvrir l'UUID via la policy SELECT, poser la capability, puis
@@ -941,9 +947,7 @@ class PrismaAgentMissionRepository
     return rows[0] === undefined ? null : missionFromRow(rows[0]);
   }
 
-  async findForegroundForUpdate(
-    input: AgentMissionOwner,
-  ): Promise<AgentMissionForeground | null> {
+  async findForegroundForUpdate(input: AgentMissionOwner): Promise<AgentMissionForeground | null> {
     // Le verrou foreground global est possédé par l'UoW. La première lecture ne parse aucun
     // payload : un binaire K2 peut donc voir un futur kind sans l'interpréter comme un devis.
     const visible = await this.transaction.agentMission.findMany({
@@ -1013,9 +1017,11 @@ class PrismaAgentMissionRepository
     return { status: 'known', mission: missionFromRow(row) };
   }
 
-  async findByIdForUpdate(input: AgentMissionOwner & {
-    readonly missionId: string;
-  }): Promise<AgentMissionLookup | null> {
+  async findByIdForUpdate(
+    input: AgentMissionOwner & {
+      readonly missionId: string;
+    },
+  ): Promise<AgentMissionLookup | null> {
     await setMissionContext(this.transaction, input.missionId);
     const reference = await this.transaction.agentMission.findFirst({
       where: {
@@ -1056,9 +1062,7 @@ class PrismaAgentMissionRepository
       LIMIT 1
       FOR UPDATE
     `;
-    return rows[0] === undefined
-      ? null
-      : { status: 'known', mission: missionFromRow(rows[0]) };
+    return rows[0] === undefined ? null : { status: 'known', mission: missionFromRow(rows[0]) };
   }
 
   async insert(mission: AgentMission): Promise<'inserted' | 'conflict'> {
@@ -1068,27 +1072,28 @@ class PrismaAgentMissionRepository
     }
     await setMissionContext(this.transaction, snapshot.id);
     const inserted = await this.transaction.agentMission.createMany({
-      data: [{
-        id: snapshot.id,
-        companyId: snapshot.companyId,
-        ownerUserId: snapshot.ownerUserId,
-        protocolVersion: snapshot.protocolVersion,
-        kind: snapshot.kind,
-        status: snapshot.status,
-        phase: snapshot.phase,
-        revision: snapshot.revision,
-        payloadVersion: snapshot.payloadVersion,
-        payload: toInputJson(snapshot.payload),
-        currentBinding: snapshot.currentBinding === null
-          ? Prisma.DbNull
-          : toInputJson(snapshot.currentBinding),
-        idleExpiresAt: new Date(snapshot.idleExpiresAt),
-        hardExpiresAt: new Date(snapshot.hardExpiresAt),
-        terminalAt: snapshot.terminalAt === null ? null : new Date(snapshot.terminalAt),
-        retentionExpiresAt: new Date(snapshot.retentionExpiresAt),
-        createdAt: new Date(snapshot.createdAt),
-        updatedAt: new Date(snapshot.updatedAt),
-      }],
+      data: [
+        {
+          id: snapshot.id,
+          companyId: snapshot.companyId,
+          ownerUserId: snapshot.ownerUserId,
+          protocolVersion: snapshot.protocolVersion,
+          kind: snapshot.kind,
+          status: snapshot.status,
+          phase: snapshot.phase,
+          revision: snapshot.revision,
+          payloadVersion: snapshot.payloadVersion,
+          payload: toInputJson(snapshot.payload),
+          currentBinding:
+            snapshot.currentBinding === null ? Prisma.DbNull : toInputJson(snapshot.currentBinding),
+          idleExpiresAt: new Date(snapshot.idleExpiresAt),
+          hardExpiresAt: new Date(snapshot.hardExpiresAt),
+          terminalAt: snapshot.terminalAt === null ? null : new Date(snapshot.terminalAt),
+          retentionExpiresAt: new Date(snapshot.retentionExpiresAt),
+          createdAt: new Date(snapshot.createdAt),
+          updatedAt: new Date(snapshot.updatedAt),
+        },
+      ],
       skipDuplicates: true,
     });
     if (inserted.count === 1) return 'inserted';
@@ -1118,9 +1123,8 @@ class PrismaAgentMissionRepository
         revision: snapshot.revision,
         payloadVersion: snapshot.payloadVersion,
         payload: toInputJson(snapshot.payload),
-        currentBinding: snapshot.currentBinding === null
-          ? Prisma.DbNull
-          : toInputJson(snapshot.currentBinding),
+        currentBinding:
+          snapshot.currentBinding === null ? Prisma.DbNull : toInputJson(snapshot.currentBinding),
         idleExpiresAt: new Date(snapshot.idleExpiresAt),
         hardExpiresAt: new Date(snapshot.hardExpiresAt),
         terminalAt: snapshot.terminalAt === null ? null : new Date(snapshot.terminalAt),
@@ -1138,9 +1142,11 @@ class PrismaAgentMissionEventRepository implements AgentMissionEventRepositoryPo
     private readonly expectedProtocolVersion: AgentMissionProtocolVersion,
   ) {}
 
-  async findByCommandId(input: AgentMissionOwner & {
-    readonly commandId: string;
-  }): Promise<AgentMissionEventLookup | null> {
+  async findByCommandId(
+    input: AgentMissionOwner & {
+      readonly commandId: string;
+    },
+  ): Promise<AgentMissionEventLookup | null> {
     const reference = await this.transaction.agentMissionEvent.findFirst({
       where: {
         companyId: input.companyId,
@@ -1232,8 +1238,7 @@ class PrismaAgentMissionEventRepository implements AgentMissionEventRepositoryPo
   }
 }
 
-class PrismaAgentMissionQuoteDraftRepository
-implements AgentMissionQuoteDraftRepositoryPort {
+class PrismaAgentMissionQuoteDraftRepository implements AgentMissionQuoteDraftRepositoryPort {
   constructor(private readonly transaction: Prisma.TransactionClient) {}
 
   async getForUpdate(owner: AgentMissionOwner): Promise<AgentMissionQuoteDraftSlot | null> {
@@ -1248,27 +1253,33 @@ implements AgentMissionQuoteDraftRepositoryPort {
     return rows[0] === undefined ? null : quoteDraftFromRow(rows[0]);
   }
 
-  async create(input: AgentMissionOwner & {
-    readonly payload: QuoteDraftPayloadV1;
-  }): Promise<AgentMissionQuoteDraftSlot | null> {
+  async create(
+    input: AgentMissionOwner & {
+      readonly payload: QuoteDraftPayloadV1;
+    },
+  ): Promise<AgentMissionQuoteDraftSlot | null> {
     const inserted = await this.transaction.quoteDraftSlot.createMany({
-      data: [{
-        companyId: input.companyId,
-        ownerUserId: input.ownerUserId,
-        revision: 1,
-        payloadVersion: 1,
-        payload: toInputJson(input.payload),
-      }],
+      data: [
+        {
+          companyId: input.companyId,
+          ownerUserId: input.ownerUserId,
+          revision: 1,
+          payloadVersion: 1,
+          payload: toInputJson(input.payload),
+        },
+      ],
       skipDuplicates: true,
     });
     return inserted.count === 1 ? this.getForUpdate(input) : null;
   }
 
-  async claim(input: AgentMissionOwner & {
-    readonly missionId: string;
-    readonly expectedSlotRevision: number;
-    readonly expectedDraftSessionId: string;
-  }): Promise<AgentMissionQuoteDraftSlot | null> {
+  async claim(
+    input: AgentMissionOwner & {
+      readonly missionId: string;
+      readonly expectedSlotRevision: number;
+      readonly expectedDraftSessionId: string;
+    },
+  ): Promise<AgentMissionQuoteDraftSlot | null> {
     await setMissionContext(this.transaction, input.missionId);
     const rows = await this.transaction.$queryRaw<QuoteDraftSlotRow[]>`
       UPDATE public.quote_draft_slots
@@ -1283,9 +1294,11 @@ implements AgentMissionQuoteDraftRepositoryPort {
     return rows[0] === undefined ? null : quoteDraftFromRow(rows[0]);
   }
 
-  async release(input: AgentMissionOwner & {
-    readonly missionId: string;
-  }): Promise<boolean> {
+  async release(
+    input: AgentMissionOwner & {
+      readonly missionId: string;
+    },
+  ): Promise<boolean> {
     await setMissionContext(this.transaction, input.missionId);
     const rows = await this.transaction.$queryRaw<Array<{ companyId: string }>>`
       UPDATE public.quote_draft_slots
@@ -1298,13 +1311,15 @@ implements AgentMissionQuoteDraftRepositoryPort {
     return rows.length === 1;
   }
 
-  async selectCustomerCas(input: AgentMissionOwner & {
-    readonly missionId: string;
-    readonly expectedSlotRevision: number;
-    readonly expectedDraftSessionId: string;
-    readonly expectedDraftContentRevision: number;
-    readonly payload: QuoteDraftPayloadV1;
-  }): Promise<AgentMissionQuoteDraftSlot | null> {
+  async selectCustomerCas(
+    input: AgentMissionOwner & {
+      readonly missionId: string;
+      readonly expectedSlotRevision: number;
+      readonly expectedDraftSessionId: string;
+      readonly expectedDraftContentRevision: number;
+      readonly payload: QuoteDraftPayloadV1;
+    },
+  ): Promise<AgentMissionQuoteDraftSlot | null> {
     await setMissionContext(this.transaction, input.missionId);
     const payloadJson = JSON.stringify(input.payload);
     const rows = await this.transaction.$queryRaw<QuoteDraftSlotRow[]>`
@@ -1330,21 +1345,22 @@ implements AgentMissionQuoteDraftRepositoryPort {
     return rows[0] === undefined ? null : quoteDraftFromRow(rows[0]);
   }
 
-  async appendLineCas(input: AgentMissionOwner & {
-    readonly missionId: string;
-    readonly expectedSlotRevision: number;
-    readonly expectedDraftSessionId: string;
-    readonly expectedDraftContentRevision: number;
-    readonly payload: QuoteDraftPayloadV1;
-  }): Promise<AgentMissionQuoteDraftSlot | null> {
+  async appendLineCas(
+    input: AgentMissionOwner & {
+      readonly missionId: string;
+      readonly expectedSlotRevision: number;
+      readonly expectedDraftSessionId: string;
+      readonly expectedDraftContentRevision: number;
+      readonly payload: QuoteDraftPayloadV1;
+    },
+  ): Promise<AgentMissionQuoteDraftSlot | null> {
     const payload = parseQuoteDraftPayload(input.payload);
     if (
-      !payload.ok
-      || payload.value.draft.sessionId !== input.expectedDraftSessionId
-      || payload.value.draft.contentRevision
-        !== input.expectedDraftContentRevision + 1
-      || payload.value.draft.step !== 'lignes'
-      || payload.value.draft.customer === null
+      !payload.ok ||
+      payload.value.draft.sessionId !== input.expectedDraftSessionId ||
+      payload.value.draft.contentRevision !== input.expectedDraftContentRevision + 1 ||
+      payload.value.draft.step !== 'lignes' ||
+      payload.value.draft.customer === null
     ) {
       return null;
     }
@@ -1381,9 +1397,7 @@ function quoteLineWorkForPersistence(
   const parsed = parseAgentMissionQuoteLineWork(workItem);
   if (!parsed.ok) {
     throw new Error(
-      `AGENT_MISSION_QUOTE_LINE_WORK_INPUT_INVALID:${parsed.error.field}:${
-        parsed.error.reason
-      }`,
+      `AGENT_MISSION_QUOTE_LINE_WORK_INPUT_INVALID:${parsed.error.field}:${parsed.error.reason}`,
     );
   }
   return parsed.value;
@@ -1404,24 +1418,19 @@ function quoteLineWorkCreateData(
     catalogueResolution: workItem.catalogueResolution,
     serviceReference: workItem.serviceReference,
     category: workItem.category,
-    quantityMilli: workItem.quantityMilli === null
-      ? null
-      : BigInt(workItem.quantityMilli),
+    quantityMilli: workItem.quantityMilli === null ? null : BigInt(workItem.quantityMilli),
     unit: workItem.unit,
     unitPriceCents: workItem.unitPriceCents,
-    requestedVatRate: workItem.requestedVatRate === null
-      ? null
-      : new Prisma.Decimal(workItem.requestedVatRate),
+    requestedVatRate:
+      workItem.requestedVatRate === null ? null : new Prisma.Decimal(workItem.requestedVatRate),
     priceBasis: workItem.priceBasis,
     housingOlderThan2y: workItem.housingOlderThan2y,
     energyRenovation: workItem.energyRenovation,
     requiredFact: workItem.requiredFact,
     catalogueItemId: workItem.catalogueItemId,
     expectedCatalogueRevision: workItem.expectedCatalogueRevision,
-    catalogueCategoryOverrideConfirmed:
-      workItem.catalogueCategoryOverrideConfirmed,
-    catalogueUnitOverrideConfirmed:
-      workItem.catalogueUnitOverrideConfirmed,
+    catalogueCategoryOverrideConfirmed: workItem.catalogueCategoryOverrideConfirmed,
+    catalogueUnitOverrideConfirmed: workItem.catalogueUnitOverrideConfirmed,
     proposalId: workItem.proposalId,
     proposalRevision: workItem.proposalRevision,
     proposalDiffHash: workItem.proposalDiffHash,
@@ -1430,8 +1439,7 @@ function quoteLineWorkCreateData(
   };
 }
 
-class PrismaAgentMissionQuoteLineWorkRepository
-implements AgentMissionQuoteLineWorkRepositoryPort {
+class PrismaAgentMissionQuoteLineWorkRepository implements AgentMissionQuoteLineWorkRepositoryPort {
   constructor(
     private readonly transaction: Prisma.TransactionClient,
     private readonly expectedProtocolVersion: AgentMissionProtocolVersion,
@@ -1440,11 +1448,10 @@ implements AgentMissionQuoteLineWorkRepositoryPort {
   async listForUpdate(
     input: AgentMissionOwner & { readonly missionId: string },
   ): Promise<readonly AgentMissionQuoteLineWork[]> {
-    if (!await lockActiveQuoteMissionForWork(
-      this.transaction,
-      input,
-      this.expectedProtocolVersion,
-    )) return [];
+    if (
+      !(await lockActiveQuoteMissionForWork(this.transaction, input, this.expectedProtocolVersion))
+    )
+      return [];
     const rows = await this.transaction.$queryRaw<AgentMissionQuoteLineWorkRow[]>`
       SELECT ${QUOTE_LINE_WORK_COLUMNS}
       FROM public.agent_mission_quote_line_work
@@ -1463,11 +1470,10 @@ implements AgentMissionQuoteLineWorkRepositoryPort {
       readonly workItemId: string;
     },
   ): Promise<AgentMissionQuoteLineWork | null> {
-    if (!await lockActiveQuoteMissionForWork(
-      this.transaction,
-      input,
-      this.expectedProtocolVersion,
-    )) return null;
+    if (
+      !(await lockActiveQuoteMissionForWork(this.transaction, input, this.expectedProtocolVersion))
+    )
+      return null;
     const rows = await this.transaction.$queryRaw<AgentMissionQuoteLineWorkRow[]>`
       SELECT ${QUOTE_LINE_WORK_COLUMNS}
       FROM public.agent_mission_quote_line_work
@@ -1488,22 +1494,22 @@ implements AgentMissionQuoteLineWorkRepositoryPort {
     },
   ): Promise<'inserted' | 'conflict'> {
     if (input.workItems.length === 0) return 'inserted';
-    if (!await lockActiveQuoteMissionForWork(
-      this.transaction,
-      input,
-      this.expectedProtocolVersion,
-    )) return 'conflict';
+    if (
+      !(await lockActiveQuoteMissionForWork(this.transaction, input, this.expectedProtocolVersion))
+    )
+      return 'conflict';
 
     const canonical = input.workItems.map(quoteLineWorkForPersistence);
     if (
-      canonical.some((item) => (
-        item.companyId !== input.companyId
-        || item.ownerUserId !== input.ownerUserId
-        || item.missionId !== input.missionId
-        || item.revision !== 1
-      ))
-      || new Set(canonical.map((item) => item.id)).size !== canonical.length
-      || new Set(canonical.map((item) => item.ordinal)).size !== canonical.length
+      canonical.some(
+        (item) =>
+          item.companyId !== input.companyId ||
+          item.ownerUserId !== input.ownerUserId ||
+          item.missionId !== input.missionId ||
+          item.revision !== 1,
+      ) ||
+      new Set(canonical.map((item) => item.id)).size !== canonical.length ||
+      new Set(canonical.map((item) => item.ordinal)).size !== canonical.length
     ) {
       throw new Error('AGENT_MISSION_QUOTE_LINE_WORK_INSERT_SCOPE_INVALID');
     }
@@ -1525,9 +1531,7 @@ implements AgentMissionQuoteLineWorkRepositoryPort {
     // Prisma ne fournit pas de transaction imbriquée dans une interactive transaction. Ce
     // savepoint rend néanmoins le contrat `conflict` atomique : une collision UUID globale ne
     // peut jamais laisser un sous-ensemble des lignes inséré.
-    await this.transaction.$executeRawUnsafe(
-      'SAVEPOINT bob_agent_mission_quote_line_work_insert',
-    );
+    await this.transaction.$executeRawUnsafe('SAVEPOINT bob_agent_mission_quote_line_work_insert');
     try {
       await this.transaction.agentMissionQuoteLineWork.createMany({
         data: canonical.map(quoteLineWorkCreateData),
@@ -1556,21 +1560,23 @@ implements AgentMissionQuoteLineWorkRepositoryPort {
   }): Promise<'updated' | 'revision_conflict'> {
     const workItem = quoteLineWorkForPersistence(input.workItem);
     if (
-      !Number.isSafeInteger(input.expectedRevision)
-      || input.expectedRevision < 1
-      || workItem.revision !== input.expectedRevision + 1
+      !Number.isSafeInteger(input.expectedRevision) ||
+      input.expectedRevision < 1 ||
+      workItem.revision !== input.expectedRevision + 1
     ) {
       throw new Error('AGENT_MISSION_QUOTE_LINE_WORK_CAS_REVISION_INVALID');
     }
-    if (!await lockActiveQuoteMissionForWork(
-      this.transaction,
-      {
-        companyId: workItem.companyId,
-        ownerUserId: workItem.ownerUserId,
-        missionId: workItem.missionId,
-      },
-      this.expectedProtocolVersion,
-    )) {
+    if (
+      !(await lockActiveQuoteMissionForWork(
+        this.transaction,
+        {
+          companyId: workItem.companyId,
+          ownerUserId: workItem.ownerUserId,
+          missionId: workItem.missionId,
+        },
+        this.expectedProtocolVersion,
+      ))
+    ) {
       return 'revision_conflict';
     }
     const updated = await this.transaction.agentMissionQuoteLineWork.updateMany({
@@ -1590,24 +1596,19 @@ implements AgentMissionQuoteLineWorkRepositoryPort {
         catalogueResolution: workItem.catalogueResolution,
         serviceReference: workItem.serviceReference,
         category: workItem.category,
-        quantityMilli: workItem.quantityMilli === null
-          ? null
-          : BigInt(workItem.quantityMilli),
+        quantityMilli: workItem.quantityMilli === null ? null : BigInt(workItem.quantityMilli),
         unit: workItem.unit,
         unitPriceCents: workItem.unitPriceCents,
-        requestedVatRate: workItem.requestedVatRate === null
-          ? null
-          : new Prisma.Decimal(workItem.requestedVatRate),
+        requestedVatRate:
+          workItem.requestedVatRate === null ? null : new Prisma.Decimal(workItem.requestedVatRate),
         priceBasis: workItem.priceBasis,
         housingOlderThan2y: workItem.housingOlderThan2y,
         energyRenovation: workItem.energyRenovation,
         requiredFact: workItem.requiredFact,
         catalogueItemId: workItem.catalogueItemId,
         expectedCatalogueRevision: workItem.expectedCatalogueRevision,
-        catalogueCategoryOverrideConfirmed:
-          workItem.catalogueCategoryOverrideConfirmed,
-        catalogueUnitOverrideConfirmed:
-          workItem.catalogueUnitOverrideConfirmed,
+        catalogueCategoryOverrideConfirmed: workItem.catalogueCategoryOverrideConfirmed,
+        catalogueUnitOverrideConfirmed: workItem.catalogueUnitOverrideConfirmed,
         proposalId: workItem.proposalId,
         proposalRevision: workItem.proposalRevision,
         proposalDiffHash: workItem.proposalDiffHash,
@@ -1624,11 +1625,10 @@ implements AgentMissionQuoteLineWorkRepositoryPort {
       readonly expectedRevision: number;
     },
   ): Promise<'deleted' | 'not_found' | 'revision_conflict'> {
-    if (!await lockActiveQuoteMissionForWork(
-      this.transaction,
-      input,
-      this.expectedProtocolVersion,
-    )) return 'not_found';
+    if (
+      !(await lockActiveQuoteMissionForWork(this.transaction, input, this.expectedProtocolVersion))
+    )
+      return 'not_found';
     const rows = await this.transaction.$queryRaw<Array<{ readonly revision: number }>>`
       SELECT "revision"
       FROM public.agent_mission_quote_line_work
@@ -1654,14 +1654,11 @@ implements AgentMissionQuoteLineWorkRepositoryPort {
     return deleted.length === 1 ? 'deleted' : 'revision_conflict';
   }
 
-  async deleteAll(
-    input: AgentMissionOwner & { readonly missionId: string },
-  ): Promise<number> {
-    if (!await lockActiveQuoteMissionForWork(
-      this.transaction,
-      input,
-      this.expectedProtocolVersion,
-    )) return 0;
+  async deleteAll(input: AgentMissionOwner & { readonly missionId: string }): Promise<number> {
+    if (
+      !(await lockActiveQuoteMissionForWork(this.transaction, input, this.expectedProtocolVersion))
+    )
+      return 0;
     const deleted = await this.transaction.$queryRaw<Array<{ readonly id: string }>>`
       DELETE FROM public.agent_mission_quote_line_work
       WHERE "companyId" = ${input.companyId}
@@ -1674,7 +1671,8 @@ implements AgentMissionQuoteLineWorkRepositoryPort {
 }
 
 class PrismaAgentMissionCustomerRepository
-implements CustomerCandidateSearchPort, CustomerCandidateReadPort {
+  implements CustomerCandidateSearchPort, CustomerCandidateReadPort
+{
   constructor(private readonly transaction: Prisma.TransactionClient) {}
 
   async search(input: {
@@ -1720,12 +1718,14 @@ implements CustomerCandidateSearchPort, CustomerCandidateReadPort {
       LIMIT ${input.limit}
       FOR SHARE OF c
     `;
-    return rows.map((row) => Object.freeze({
-      customerId: row.customerId,
-      canonicalName: canonicalCustomerName(row.canonicalName),
-      matchKind: row.matchKind,
-      score: row.score,
-    }));
+    return rows.map((row) =>
+      Object.freeze({
+        customerId: row.customerId,
+        canonicalName: canonicalCustomerName(row.canonicalName),
+        matchKind: row.matchKind,
+        score: row.score,
+      }),
+    );
   }
 
   async findById(input: {
@@ -1762,10 +1762,12 @@ implements CustomerCandidateSearchPort, CustomerCandidateReadPort {
       ORDER BY c."id" ASC
       FOR SHARE
     `;
-    return rows.map((row) => Object.freeze({
-      ...row,
-      canonicalName: canonicalCustomerName(row.canonicalName),
-    }));
+    return rows.map((row) =>
+      Object.freeze({
+        ...row,
+        canonicalName: canonicalCustomerName(row.canonicalName),
+      }),
+    );
   }
 }
 
@@ -1799,10 +1801,12 @@ class PrismaAgentMissionResumeCustomerRepository {
         AND c."id" IN (${Prisma.join(input.customerIds)})
       ORDER BY c."id" ASC
     `;
-    return rows.map((row) => Object.freeze({
-      ...row,
-      canonicalName: canonicalCustomerName(row.canonicalName),
-    }));
+    return rows.map((row) =>
+      Object.freeze({
+        ...row,
+        canonicalName: canonicalCustomerName(row.canonicalName),
+      }),
+    );
   }
 }
 
@@ -1837,9 +1841,7 @@ class PrismaAgentMissionResumeCatalogueRepository {
     if (ids.length !== input.catalogueItemIds.length || ids.length > 6) {
       throw new Error('AGENT_MISSION_RESUME_CATALOGUE_INPUT_INVALID');
     }
-    const rows = await this.transaction.$queryRaw<
-      AgentMissionResumeCatalogueRow[]
-    >`
+    const rows = await this.transaction.$queryRaw<AgentMissionResumeCatalogueRow[]>`
       SELECT
         c."id",
         c."label",
@@ -1853,9 +1855,7 @@ class PrismaAgentMissionResumeCatalogueRepository {
         AND c."id" IN (${Prisma.join(ids)})
       ORDER BY c."id" ASC
     `;
-    return Object.freeze(
-      rows.map(canonicalAgentMissionResumeCatalogueRecord),
-    );
+    return Object.freeze(rows.map(canonicalAgentMissionResumeCatalogueRecord));
   }
 }
 
@@ -1871,18 +1871,18 @@ function canonicalAppliedRealtimeContext(
   databaseNow: Date,
 ): CanonicalAppliedRealtimeContext | null {
   if (
-    Number.isNaN(databaseNow.getTime())
-    || lease.contextSchemaVersion !== 1
-    || lease.contextRevision === null
-    || lease.contextAppliedRevision !== lease.contextRevision
-    || lease.contextDigest === null
-    || lease.contextAppliedDigest !== lease.contextDigest
-    || !(lease.contextUpdatedAt instanceof Date)
-    || !(lease.contextAppliedAt instanceof Date)
-    || lease.contextAppliedOwnerEpoch !== lease.sidebandOwnerEpoch
-    || lease.sidebandOwnerLeaseExpiresAt === null
-    || lease.sidebandOwnerLeaseExpiresAt.getTime() <= databaseNow.getTime()
-    || lease.contextPayload === null
+    Number.isNaN(databaseNow.getTime()) ||
+    lease.contextSchemaVersion !== 1 ||
+    lease.contextRevision === null ||
+    lease.contextAppliedRevision !== lease.contextRevision ||
+    lease.contextDigest === null ||
+    lease.contextAppliedDigest !== lease.contextDigest ||
+    !(lease.contextUpdatedAt instanceof Date) ||
+    !(lease.contextAppliedAt instanceof Date) ||
+    lease.contextAppliedOwnerEpoch !== lease.sidebandOwnerEpoch ||
+    lease.sidebandOwnerLeaseExpiresAt === null ||
+    lease.sidebandOwnerLeaseExpiresAt.getTime() <= databaseNow.getTime() ||
+    lease.contextPayload === null
   ) {
     return null;
   }
@@ -1892,10 +1892,10 @@ function canonicalAppliedRealtimeContext(
     context: lease.contextPayload,
   });
   if (
-    prepared === null
-    || !isDeepStrictEqual(lease.contextPayload, prepared.snapshot.context)
-    || prepared.digest !== lease.contextDigest
-    || prepared.digest !== lease.contextAppliedDigest
+    prepared === null ||
+    !isDeepStrictEqual(lease.contextPayload, prepared.snapshot.context) ||
+    prepared.digest !== lease.contextDigest ||
+    prepared.digest !== lease.contextAppliedDigest
   ) {
     return null;
   }
@@ -1914,20 +1914,17 @@ function authorizedRealtimeLease(
   const applied = canonicalAppliedRealtimeContext(lease, databaseNow);
   return Object.freeze({
     realtimeSessionId: lease.sessionId,
-    appliedContext: applied === null
-      ? null
-      : Object.freeze({ revision: applied.revision, digest: applied.digest }),
+    appliedContext:
+      applied === null
+        ? null
+        : Object.freeze({ revision: applied.revision, digest: applied.digest }),
   });
 }
 
-function canonicalQuoteVatContextRow(
-  row: QuoteVatContextRow,
-): QuoteVatDecisionContext {
+function canonicalQuoteVatContextRow(row: QuoteVatContextRow): QuoteVatDecisionContext {
   if (
-    !QUOTE_VAT_REGIMES.has(
-      row.companyVatRegime as 'franchise' | 'reel_simpl' | 'reel_normal',
-    )
-    || !QUOTE_VAT_TRADES.has(
+    !QUOTE_VAT_REGIMES.has(row.companyVatRegime as 'franchise' | 'reel_simpl' | 'reel_normal') ||
+    !QUOTE_VAT_TRADES.has(
       row.companyTrade as
         | 'plombier'
         | 'electricien'
@@ -1941,18 +1938,15 @@ function canonicalQuoteVatContextRow(
         | 'photographe'
         | 'coach'
         | 'autre',
-    )
-    || !QUOTE_VAT_CUSTOMER_TYPES.has(
-      row.customerType as 'b2c' | 'b2b' | 'b2g',
-    )
-    || typeof row.customerIsSubcontractingBtp !== 'boolean'
+    ) ||
+    !QUOTE_VAT_CUSTOMER_TYPES.has(row.customerType as 'b2c' | 'b2b' | 'b2g') ||
+    typeof row.customerIsSubcontractingBtp !== 'boolean'
   ) {
     throw new Error('AGENT_MISSION_QUOTE_VAT_CONTEXT_CORRUPT');
   }
   return Object.freeze({
     customerId: row.customerId,
-    companyVatRegime: row.companyVatRegime as
-      QuoteVatDecisionContext['companyVatRegime'],
+    companyVatRegime: row.companyVatRegime as QuoteVatDecisionContext['companyVatRegime'],
     companyTrade: row.companyTrade as QuoteVatDecisionContext['companyTrade'],
     customerType: row.customerType as QuoteVatDecisionContext['customerType'],
     customerIsSubcontractingBtp: row.customerIsSubcontractingBtp,
@@ -2012,8 +2006,7 @@ class PrismaAgentMissionResumeQuoteVatContextRepository {
   }
 }
 
-class PrismaAgentMissionQuoteScreenAuthority
-implements AgentMissionQuoteScreenAuthorityPort {
+class PrismaAgentMissionQuoteScreenAuthority implements AgentMissionQuoteScreenAuthorityPort {
   constructor(
     private readonly transaction: Prisma.TransactionClient,
     private readonly lease: AgentMissionAuthorityLeaseRow,
@@ -2026,11 +2019,11 @@ implements AgentMissionQuoteScreenAuthorityPort {
     const databaseNow = new Date(fences.databaseNow);
     const appliedContext = canonicalAppliedRealtimeContext(this.lease, databaseNow);
     if (
-      appliedContext === null
-      || fences.realtimeSessionId !== this.lease.sessionId
-      || appliedContext.revision !== fences.contextRevision
-      || appliedContext.digest !== fences.contextDigest
-      || appliedContext.screenName !== '/devis/new'
+      appliedContext === null ||
+      fences.realtimeSessionId !== this.lease.sessionId ||
+      appliedContext.revision !== fences.contextRevision ||
+      appliedContext.digest !== fences.contextDigest ||
+      appliedContext.screenName !== '/devis/new'
     ) {
       return { status: 'rejected', reason: 'context_stale' };
     }
@@ -2052,10 +2045,10 @@ implements AgentMissionQuoteScreenAuthorityPort {
       return { status: 'rejected', reason: 'unavailable' };
     }
     if (
-      draft.agentMissionId !== fences.missionId
-      || draft.payload.draft.sessionId !== fences.draftSessionId
-      || draft.revision !== fences.expectedDraftSlotRevision
-      || draft.payload.draft.contentRevision !== fences.expectedDraftContentRevision
+      draft.agentMissionId !== fences.missionId ||
+      draft.payload.draft.sessionId !== fences.draftSessionId ||
+      draft.revision !== fences.expectedDraftSlotRevision ||
+      draft.payload.draft.contentRevision !== fences.expectedDraftContentRevision
     ) {
       return { status: 'rejected', reason: 'draft_stale' };
     }
@@ -2088,10 +2081,7 @@ function createWriteTransaction(
     missions: new PrismaAgentMissionRepository(transaction, protocolVersion),
     events: new PrismaAgentMissionEventRepository(transaction, protocolVersion),
     quoteDrafts: new PrismaAgentMissionQuoteDraftRepository(transaction),
-    quoteLineWork: new PrismaAgentMissionQuoteLineWorkRepository(
-      transaction,
-      protocolVersion,
-    ),
+    quoteLineWork: new PrismaAgentMissionQuoteLineWorkRepository(transaction, protocolVersion),
     quoteScreen: new PrismaAgentMissionQuoteScreenAuthority(transaction, lease),
     customers: new PrismaAgentMissionCustomerRepository(transaction),
     catalogueCandidates: new PrismaCatalogueCandidateSearch(transaction),
@@ -2110,38 +2100,35 @@ export class PrismaAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort 
     if (canonicalAuthorityProof(authority) === null) {
       return Promise.resolve({ status: 'capability_rejected', reason: 'malformed' });
     }
-    return this.prisma.withIsolatedOwner(owner.companyId, owner.ownerUserId, async (transaction) => {
-      await setTransactionTimeouts(transaction);
-      const resolution = await resolveAgentMissionAuthority(
-        transaction,
-        owner,
-        authority,
-        false,
-      );
-      if (resolution.status === 'rejected') {
-        return { status: 'capability_rejected', reason: resolution.reason } as const;
-      }
-      const missions = new PrismaAgentMissionReadRepository(
-        transaction,
-        authority.protocolVersion,
-      );
-      const instant = resolution.databaseNow.toISOString();
-      return {
-        status: 'executed',
-        value: await work({
-          databaseNow: async () => instant,
-          realtime: authorizedRealtimeLease(
-            resolution.lease,
-            resolution.databaseNow,
-          ),
-          missions,
-        }),
-      } as const;
-    }, {
-      ...OWNER_TRANSACTION_OPTIONS,
-      readOnly: true,
-      isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
-    }) as Promise<AgentMissionReadExecution<T>>;
+    return this.prisma.withIsolatedOwner(
+      owner.companyId,
+      owner.ownerUserId,
+      async (transaction) => {
+        await setTransactionTimeouts(transaction);
+        const resolution = await resolveAgentMissionAuthority(transaction, owner, authority, false);
+        if (resolution.status === 'rejected') {
+          return { status: 'capability_rejected', reason: resolution.reason } as const;
+        }
+        const missions = new PrismaAgentMissionReadRepository(
+          transaction,
+          authority.protocolVersion,
+        );
+        const instant = resolution.databaseNow.toISOString();
+        return {
+          status: 'executed',
+          value: await work({
+            databaseNow: async () => instant,
+            realtime: authorizedRealtimeLease(resolution.lease, resolution.databaseNow),
+            missions,
+          }),
+        } as const;
+      },
+      {
+        ...OWNER_TRANSACTION_OPTIONS,
+        readOnly: true,
+        isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+      },
+    ) as Promise<AgentMissionReadExecution<T>>;
   }
 
   runQuoteCreationOwner<T>(
@@ -2176,12 +2163,14 @@ export class PrismaAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort 
             }
             return {
               status: 'executed',
-              value: await work(createWriteTransaction(
-                transaction,
-                resolution.lease,
-                resolution.databaseNow,
-                authority.protocolVersion,
-              )),
+              value: await work(
+                createWriteTransaction(
+                  transaction,
+                  resolution.lease,
+                  resolution.databaseNow,
+                  authority.protocolVersion,
+                ),
+              ),
             } as const;
           } catch (error) {
             rethrowForegroundTransactionFailure(error);
@@ -2189,6 +2178,66 @@ export class PrismaAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort 
         },
         { ...OWNER_TRANSACTION_OPTIONS, readOnly: false },
       ),
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Jarvis U1-c (SPEC_U1C §2) — méthodes fines : la chair vit dans
+  // jarvis-admission.persistence.ts, le UoW reste UNIQUE (spec §17).
+  // -------------------------------------------------------------------------
+
+  runJarvisAdmission(
+    envelope: JarvisUserAdmissionEnvelope,
+    deps: JarvisAdmissionDeps,
+  ): Promise<JarvisAdmissionResult> {
+    // Contention (lock/statement timeout, P2028) => statut typé, jamais une 500 brute.
+    return mapForegroundTransactionFailure(() =>
+      this.prisma.withIsolatedOwner(
+        envelope.companyId,
+        envelope.ownerUserId,
+        (transaction) => runJarvisAdmissionInTransaction(transaction, envelope, deps),
+        { ...OWNER_TRANSACTION_OPTIONS, readOnly: false },
+      ),
+    );
+  }
+
+  runJarvisSystemAdmission(
+    envelope: JarvisSystemAdmissionEnvelope,
+    deps: JarvisAdmissionDeps,
+  ): Promise<JarvisAdmissionResult> {
+    return mapForegroundTransactionFailure(() =>
+      this.prisma.withIsolatedOwner(
+        envelope.companyId,
+        envelope.ownerUserId,
+        (transaction) => runJarvisSystemAdmissionInTransaction(transaction, envelope, deps),
+        { ...OWNER_TRANSACTION_OPTIONS, readOnly: false },
+      ),
+    );
+  }
+
+  readJarvisStateless<T>(
+    owner: JarvisAdmissionOwner,
+    read: (view: {
+      readonly runById: (runId: string) => Promise<JarvisRunEnvelope | null>;
+    }) => Promise<T>,
+  ): Promise<JarvisStatelessReadResult<T>> {
+    return this.prisma.withIsolatedOwner(
+      owner.companyId,
+      owner.ownerUserId,
+      async (transaction) => {
+        await setTransactionTimeouts(transaction);
+        const readAt = await databaseClock(transaction);
+        const value = await read({
+          runById: (runId) => readJarvisRunById(transaction, owner, runId),
+        });
+        return { status: 'executed' as const, value, readAt: readAt.toISOString() };
+      },
+      {
+        ...OWNER_TRANSACTION_OPTIONS,
+        readOnly: true,
+        // §5.2 : run et horloge lus sur le MÊME snapshot (revue C7).
+        isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+      },
     );
   }
 }
@@ -2200,7 +2249,8 @@ export class PrismaAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort 
  * verrou SQL et ne fournit aucun port d'écriture au callback.
  */
 export class PrismaAgentMissionResumeUnitOfWork
-implements AgentMissionResumeUnitOfWorkPort, AgentMissionResumeV2UnitOfWorkPort {
+  implements AgentMissionResumeUnitOfWorkPort, AgentMissionResumeV2UnitOfWorkPort
+{
   constructor(private readonly prisma: PrismaService) {}
 
   readQuoteCreationOwner<T>(
@@ -2232,10 +2282,7 @@ implements AgentMissionResumeUnitOfWorkPort, AgentMissionResumeV2UnitOfWorkPort 
             databaseNow: async () => now.toISOString(),
             // Le wire de reprise publié reste V1 jusqu'au train mobile M2-A-3. Une mission V2
             // est donc détectée par sa seule colonne avant tout décodage de payload.
-            missions: new PrismaAgentMissionReadRepository(
-              transaction,
-              AGENT_MISSION_PROTOCOL_V1,
-            ),
+            missions: new PrismaAgentMissionReadRepository(transaction, AGENT_MISSION_PROTOCOL_V1),
             quoteDrafts: new PrismaAgentMissionResumeQuoteDraftRepository(transaction),
             customers: new PrismaAgentMissionResumeCustomerRepository(transaction),
           }),
@@ -2276,17 +2323,12 @@ implements AgentMissionResumeUnitOfWorkPort, AgentMissionResumeV2UnitOfWorkPort 
           status: 'executed',
           value: await work({
             databaseNow: async () => now.toISOString(),
-            missions: new PrismaAgentMissionReadRepository(
-              transaction,
-              AGENT_MISSION_PROTOCOL_M2A,
-            ),
+            missions: new PrismaAgentMissionReadRepository(transaction, AGENT_MISSION_PROTOCOL_M2A),
             quoteDrafts: new PrismaAgentMissionResumeQuoteDraftRepository(transaction),
             customers: new PrismaAgentMissionResumeCustomerRepository(transaction),
-            quoteLineWork:
-              new PrismaAgentMissionResumeQuoteLineWorkRepository(transaction),
+            quoteLineWork: new PrismaAgentMissionResumeQuoteLineWorkRepository(transaction),
             catalogue: new PrismaAgentMissionResumeCatalogueRepository(transaction),
-            quoteVatContext:
-              new PrismaAgentMissionResumeQuoteVatContextRepository(transaction),
+            quoteVatContext: new PrismaAgentMissionResumeQuoteVatContextRepository(transaction),
           }),
         } as const;
       },
