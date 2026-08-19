@@ -56,7 +56,20 @@ $bob_jarvis_trace_kind_owner$;
 DO $bob_jarvis_trace_kind_swap$
 DECLARE
   definition TEXT;
+  kinds TEXT[];
+  rendered TEXT;
 BEGIN
+  -- Source unique : le bloc ci-dessous est GENERE depuis MISSION_KIND_IDS de @bob/core
+  -- (scripts/generate-realtime-voice-trace-migration-values.mjs). La migration livree
+  -- 20260801050000 reste APPEND-ONLY : c'est ICI que la liste complete vit desormais,
+  -- et c'est ICI que les bases deja migrees recoivent le changement.
+  kinds := ARRAY[
+  -- REALTIME_TRACE_MISSION_KINDS_START
+      'quote_creation@1',
+      'customer_contact@1'
+    -- REALTIME_TRACE_MISSION_KINDS_END
+  ]::TEXT[];
+
   SELECT pg_catalog.pg_get_constraintdef(constraint_row.oid)
     INTO definition
     FROM pg_catalog.pg_constraint AS constraint_row
@@ -66,21 +79,24 @@ BEGIN
      AND relation.relname = 'realtime_voice_traces'
      AND constraint_row.conname = 'realtime_voice_trace_planner_shape_check';
 
-  -- Contrainte absente : rien a etendre (schema partiel), jamais une erreur.
+  -- Contrainte absente (schema partiel d'un harnais) : rien a etendre, jamais une erreur.
   IF definition IS NULL THEN
     RETURN;
   END IF;
 
-  -- Idempotence : si la liste porte deja le kind, la migration ne fait rien.
+  -- Deja etendue : no-op idempotent.
   IF position('customer_contact@1' IN definition) > 0 THEN
     RETURN;
   END IF;
 
   -- PostgreSQL normalise un IN a un seul element en EGALITE SIMPLE : la definition lue
-  -- porte donc « = 'quote_creation@1'::text » et non une liste. On remplace cette egalite
-  -- par un = ANY(ARRAY[...]) qui admet les deux kinds — jamais une substitution naive qui
-  -- produirait un record (bug reproduit en local avant tout push).
-  IF position('''quote_creation@1''' IN definition) = 0 THEN
+  -- porte « = 'quote_creation@1'::text ». On la remplace par un = ANY(ARRAY[...]) bati
+  -- depuis la liste generee — jamais une substitution naive qui produirait un record.
+  SELECT string_agg(format('%L::text', kind), ', ' ORDER BY ordinality)
+    INTO rendered
+    FROM unnest(kinds) WITH ORDINALITY AS entry(kind, ordinality);
+
+  IF position('= ''quote_creation@1''::text' IN definition) = 0 THEN
     RAISE EXCEPTION USING
       ERRCODE = '42804',
       MESSAGE = 'JARVIS_TRACE_KIND_ANCHOR_MISSING';
@@ -89,12 +105,7 @@ BEGIN
   definition := replace(
     definition,
     '= ''quote_creation@1''::text',
-    '= ANY (ARRAY[''quote_creation@1''::text, ''customer_contact@1''::text])'
-  );
-  definition := replace(
-    definition,
-    'IN (''quote_creation@1''::text)',
-    'IN (''quote_creation@1''::text, ''customer_contact@1''::text)'
+    format('= ANY (ARRAY[%s])', rendered)
   );
 
   IF position('customer_contact@1' IN definition) = 0 THEN
