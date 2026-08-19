@@ -504,7 +504,9 @@ describe.skipIf(!RUN_CERT)(
               `,
             { ...TRANSACTION_OPTIONS, readOnly: false },
           ),
-        ).rejects.toThrow();
+          // La règle NOMMÉE : aucune policy UPDATE n'existe sur jarvis_proposal_payloads
+          // (payload scellé IMMUABLE) — RLS refuse l'écriture (42501 / row-level security).
+        ).rejects.toThrow(/42501|row-level security|new row violates|permission denied/i);
 
         const row = await auditPayload(coordinates.runId, proposalId);
         expect(row?.fieldsDigest).toBe(input.fieldsDigest);
