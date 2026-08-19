@@ -10,6 +10,12 @@
  * - `GET /jarvis/runs/:runId` — lecture stateless §5.2 : le run projeté + la présentation serveur.
  *   `presentation: null` quand la recomposition ne revérifie pas `fieldsDigest` (greffe G4,
  *   fail-closed) : l'écran n'offre alors AUCUNE confirmation.
+ * - `GET /jarvis/runs/current` (lot U1-e §1) — la DÉCOUVERTE : le run NON TERMINAL de l'owner, ou
+ *   `{ run: null, presentation: null }`. Un run terminal servi par cette route est un contrat
+ *   CASSÉ, pas un run à reprendre : le décodage échoue plutôt que d'offrir une carte morte.
+ * - `POST /jarvis/runs` (lot U1-e §1) — ouverture d'un run de modification : seuls le `commandId`
+ *   mémoïsé et la cible traversent ; la révision de la cible, l'identité du run, l'action et la
+ *   révision de seed sont des faits serveur.
  *
  * Le wire ne transporte JAMAIS le `state` brut d'un run (il ne porte que des digests) : les champs
  * proposés viennent du payload store PII scellé, recomposés par la projection serveur. Toute clé
@@ -24,6 +30,7 @@ import {
   CUSTOMER_CONTACT_SENSITIVE_FIELDS,
   JARVIS_RUN_KINDS,
   JARVIS_RUN_STATUSES,
+  JARVIS_RUN_TERMINAL_STATUSES,
   isU1OpenAction,
   type CustomerContactConfirmationStatus,
   type CustomerContactPhase,
@@ -35,6 +42,8 @@ import type {
   CustomerContactPresentationV1,
   CustomerContactPresentedFieldV1,
   JarvisCommandReceiptView,
+  JarvisCurrentRunView,
+  JarvisOpenRunClientInput,
   JarvisRunCommandV1,
   JarvisRunSnapshotView,
   JarvisRunView,
@@ -73,6 +82,8 @@ const CONFIRMATION_KEYS = ['confirmationId', 'status', 'expiresAt', 'presentedAt
 const FIELD_KEYS = ['field', 'label', 'before', 'after', 'sensitiveField'] as const;
 const SNAPSHOT_KEYS = ['run', 'presentation'] as const;
 const RECEIPT_KEYS = ['outcome', 'run', 'presentation', 'eventSequence'] as const;
+const OPEN_INTENT_KEYS = ['mode', 'target'] as const;
+const OPEN_TARGET_KEYS = ['customerId'] as const;
 
 export const JARVIS_PRESENTATION_SCHEMA = 'bob.jarvis-run.customer-contact-presentation';
 export const JARVIS_PRESENTATION_VERSION = 1;
@@ -310,6 +321,25 @@ export function decodeJarvisRunSnapshot(value: unknown): JarvisRunSnapshotView |
   return presentation === null ? null : Object.freeze({ run, presentation });
 }
 
+/**
+ * Découverte (§1). Deux formes seulement : « aucun run » (les DEUX champs à `null`) ou un run
+ * NON TERMINAL. Un run terminal, ou une présentation servie sans run, sont des contrats cassés
+ * — jamais une carte à demi montrable : le décodage échoue FERMÉ et `req` en fait une erreur.
+ */
+export function decodeJarvisCurrentRun(value: unknown): JarvisCurrentRunView | null {
+  if (!isRecord(value) || !hasExactKeys(value, SNAPSHOT_KEYS)) return null;
+  if (value.run === null) {
+    return value.presentation === null ? Object.freeze({ run: null, presentation: null }) : null;
+  }
+  const run = decodeJarvisRun(value.run);
+  if (run === null) return null;
+  // Un run terminal n'a plus rien à reprendre : le rendre « courant » afficherait une carte morte.
+  if (run.terminalAt !== null || JARVIS_RUN_TERMINAL_STATUSES.has(run.status)) return null;
+  if (value.presentation === null) return Object.freeze({ run, presentation: null });
+  const presentation = decodeCustomerContactPresentation(value.presentation);
+  return presentation === null ? null : Object.freeze({ run, presentation });
+}
+
 export function decodeJarvisCommandReceipt(value: unknown): JarvisCommandReceiptView | null {
   if (
     !isRecord(value) ||
@@ -383,6 +413,32 @@ export function encodeJarvisRunCommand(value: unknown): JarvisRunCommandV1 | nul
     default:
       return null;
   }
+}
+
+/**
+ * Valide puis RECONSTRUIT l'intention d'ouverture : `{ mode: 'update', target: { customerId } }`
+ * et rien d'autre. L'écran n'ouvre QUE des modifications (une création naît de la voix ou du
+ * formulaire), et la RÉVISION de la cible n'a pas sa place ici — le client ne la possède pas,
+ * donc il ne l'affirme pas : c'est le serveur qui relit la fiche (§7.1/§8).
+ */
+export function encodeJarvisOpenRunIntent(
+  value: unknown,
+): JarvisOpenRunClientInput['intent'] | null {
+  if (!isRecord(value) || !hasExactKeys(value, OPEN_INTENT_KEYS) || value.mode !== 'update') {
+    return null;
+  }
+  const target = value.target;
+  if (
+    !isRecord(target) ||
+    !hasExactKeys(target, OPEN_TARGET_KEYS) ||
+    !isCanonicalUuid(target.customerId)
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    mode: 'update' as const,
+    target: Object.freeze({ customerId: target.customerId }),
+  });
 }
 
 /**

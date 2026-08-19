@@ -11,6 +11,7 @@ import {
   type JarvisProposalPayloadV1,
   type JarvisRunEnvelope,
   type JarvisStatelessReadResult,
+  type JarvisStatelessReadView,
   type JarvisUserAdmissionEnvelope,
 } from '@bob/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -21,8 +22,10 @@ import { agentMissionPrincipalBindingHash } from '../voice/realtime/realtime-age
 import {
   DisabledJarvisTapAuthority,
   DurableJarvisTapAuthority,
+  JARVIS_UNVERIFIED_TARGET_REVISION,
   JarvisRunController,
   computeJarvisTapCanonicalInputDigest,
+  deriveJarvisScreenRunId,
   jarvisAdmissionRefusal,
   jarvisTapAuthorityProvider,
   parseJarvisSubmitCommandBody,
@@ -41,6 +44,8 @@ const EFFECT_ID = '24000000-0000-4000-8000-000000000001';
 const TARGET_CUSTOMER_ID = '26000000-0000-4000-8000-000000000001';
 const WAKE_ID = '23000000-0000-4000-8000-000000000001';
 const PROPOSAL_HASH = 'd'.repeat(64);
+/** Sceau de la cible RELUE (§9.1) — distinct du digest des champs proposés, par construction. */
+const TARGET_SENSITIVE_DIGEST = 'e'.repeat(64);
 const READ_AT = '2026-08-19T10:00:00.000Z';
 
 const FIELDS: CustomerContactProposedFieldsV1 = Object.freeze({
@@ -74,6 +79,8 @@ function stateWith(overrides: Record<string, unknown> = {}): unknown {
       fieldsDigest: FIELDS_DIGEST,
       sensitiveDigest: SENSITIVE_DIGEST,
       targetRevision: null,
+      // Sceau de cible §9.1 : les deux moitiés vont ensemble — une création n'a pas de cible.
+      targetSensitiveDigest: null,
       proposalHash: PROPOSAL_HASH,
     },
     confirmation: {
@@ -123,6 +130,11 @@ class FakeAdmission implements JarvisAdmissionUnitOfWorkPort {
   constructor(
     private readonly result: JarvisAdmissionResult,
     private readonly run: JarvisRunEnvelope | null = null,
+    /**
+     * `null` = adaptateur SANS annuaire (la vue stateless n'expose alors que `runById`, exactement
+     * comme la persistance d'aujourd'hui) ; un objet = annuaire lié rendant ce run courant.
+     */
+    private readonly directory: { readonly currentRun: JarvisRunEnvelope | null } | null = null,
   ) {}
 
   runJarvisAdmission(envelope: JarvisUserAdmissionEnvelope): Promise<JarvisAdmissionResult> {
@@ -136,16 +148,18 @@ class FakeAdmission implements JarvisAdmissionUnitOfWorkPort {
 
   async readJarvisStateless<T>(
     owner: JarvisAdmissionOwner,
-    read: (view: {
-      readonly runById: (runId: string) => Promise<JarvisRunEnvelope | null>;
-    }) => Promise<T>,
+    read: (view: JarvisStatelessReadView) => Promise<T>,
   ): Promise<JarvisStatelessReadResult<T>> {
     this.reads.push(owner);
-    return {
-      status: 'executed',
-      value: await read({ runById: () => Promise.resolve(this.run) }),
-      readAt: READ_AT,
-    };
+    const directory = this.directory;
+    const view: JarvisStatelessReadView =
+      directory === null
+        ? { runById: () => Promise.resolve(this.run) }
+        : {
+            runById: () => Promise.resolve(this.run),
+            currentRun: () => Promise.resolve(directory.currentRun),
+          };
+    return { status: 'executed', value: await read(view), readAt: READ_AT };
   }
 }
 
@@ -216,6 +230,15 @@ function submitBody(overrides: Record<string, unknown> = {}): Record<string, unk
   };
 }
 
+/** Corps EXACT de l'ouverture depuis l'écran : le commandId mémoïsé et la cible, rien d'autre. */
+function openBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    commandId: COMMAND_ID,
+    intent: { mode: 'update', target: { customerId: TARGET_CUSTOMER_ID } },
+    ...overrides,
+  };
+}
+
 async function caught(work: () => Promise<unknown>): Promise<HttpException> {
   try {
     await work();
@@ -259,22 +282,27 @@ describe('autorité du canal tactile (greffe G1)', () => {
     expect(withoutTenant.ok).toBe(false);
   });
 
-  it('kill switch OFF : les DEUX routes rendent 503 sans jamais toucher à l’admission', async () => {
-    const admission = new FakeAdmission(admitted(runWith(null)), runWith(null));
+  it('kill switch OFF : les QUATRE routes rendent 503 sans jamais toucher à l’admission', async () => {
+    const admission = new FakeAdmission(admitted(runWith(null)), runWith(null), {
+      currentRun: runWith(null),
+    });
     const { controller: candidate } = controller({
       admission,
       authority: new DisabledJarvisTapAuthority(),
     });
 
     const post = await caught(() => asOwner(() => candidate.submitCommand(RUN_ID, submitBody())));
+    const open = await caught(() => asOwner(() => candidate.openRun(openBody())));
+    const current = await caught(() => asOwner(() => candidate.getCurrentRun()));
     const get = await caught(() => asOwner(() => candidate.getRun(RUN_ID)));
 
-    expect(post.getStatus()).toBe(503);
-    expect(post.getResponse()).toEqual({
-      ok: false,
-      error: { kind: 'unavailable', service: 'jarvis_tap_authority' },
-    });
-    expect(get.getStatus()).toBe(503);
+    for (const refusal of [post, open, current, get]) {
+      expect(refusal.getStatus()).toBe(503);
+      expect(refusal.getResponse()).toEqual({
+        ok: false,
+        error: { kind: 'unavailable', service: 'jarvis_tap_authority' },
+      });
+    }
     expect(admission.envelopes).toHaveLength(0);
     expect(admission.reads).toHaveLength(0);
   });
@@ -385,7 +413,7 @@ describe('enveloppe d’admission — les faits serveur restent serveur (G7)', (
     });
   });
 
-  it('confirme une CRÉATION avec `revalidated* = null` — le domaine l’exige littéralement', async () => {
+  it('transmet le confirm TEL QUEL — trois clés, jamais une cible que le client certifierait', async () => {
     const admission = new FakeAdmission(admitted(runWith(stateWith(), 5)), runWith(stateWith()));
     const { controller: candidate } = controller({ admission });
 
@@ -393,16 +421,20 @@ describe('enveloppe d’admission — les faits serveur restent serveur (G7)', (
       command: { type: 'confirm', confirmationId: CONFIRMATION_ID, proposalHash: PROPOSAL_HASH },
     })));
 
+    // U1-e §2 : le controller n'AJOUTE plus `revalidatedTargetRevision`/`revalidatedSensitiveDigest`.
+    // Les fabriquer ici serait deux fois faux (auto-certification + lecture hors transaction) ;
+    // l'admission relit la cible sous verrou. Le canal ne lit donc même plus le run pour ça.
     expect(admission.envelopes[0]?.command).toEqual({
       type: 'confirm',
       confirmationId: CONFIRMATION_ID,
       proposalHash: PROPOSAL_HASH,
-      revalidatedTargetRevision: null,
-      revalidatedSensitiveDigest: null,
     });
+    // Et il ne relit plus le run AVANT de soumettre : cette lecture-là n'existait que pour
+    // distinguer création et modification — la transaction le fait maintenant, sous verrou.
+    expect(admission.reads).toHaveLength(0);
   });
 
-  it('refuse FERMÉ la confirmation d’une MODIFICATION : la relecture de cible §7.1 manque', async () => {
+  it('la confirmation d’une MODIFICATION atteint l’admission : plus de refus 503 de canal', async () => {
     const updateState = stateWith({
       intent: { mode: 'update', target: { customerId: TARGET_CUSTOMER_ID, revision: 2 } },
       proposal: {
@@ -411,23 +443,27 @@ describe('enveloppe d’admission — les faits serveur restent serveur (G7)', (
         fieldsDigest: FIELDS_DIGEST,
         sensitiveDigest: SENSITIVE_DIGEST,
         targetRevision: 2,
+        targetSensitiveDigest: TARGET_SENSITIVE_DIGEST,
         proposalHash: PROPOSAL_HASH,
       },
     });
     const admission = new FakeAdmission(admitted(runWith(updateState)), runWith(updateState));
     const { controller: candidate } = controller({ admission });
 
-    const error = await caught(() => asOwner(() => candidate.submitCommand(RUN_ID, submitBody({
+    await asOwner(() => candidate.submitCommand(RUN_ID, submitBody({
       actionId: 'client-modifier',
       command: { type: 'confirm', confirmationId: CONFIRMATION_ID, proposalHash: PROPOSAL_HASH },
-    }))));
+    })));
 
-    expect(error.getStatus()).toBe(503);
-    expect(error.getResponse()).toEqual({
-      ok: false,
-      error: { kind: 'unavailable', service: 'jarvis_update_confirmation_revalidation' },
+    // Le canal ne s'oppose plus à la modification : c'est la TRANSACTION qui relit la cible et
+    // décide (consumed ou invalidated §9.1). Le corps transmis reste celui du wire, à l'octet.
+    expect(admission.envelopes).toHaveLength(1);
+    expect(admission.envelopes[0]?.actionId).toBe('client-modifier');
+    expect(admission.envelopes[0]?.command).toEqual({
+      type: 'confirm',
+      confirmationId: CONFIRMATION_ID,
+      proposalHash: PROPOSAL_HASH,
     });
-    expect(admission.envelopes).toHaveLength(0);
   });
 
   it('une transaction qui casse (keyring absent, base injoignable) reste une INDISPONIBILITÉ', async () => {
@@ -663,14 +699,318 @@ describe('présentation écran (greffe G4) — jamais une proposition non scell�
   });
 });
 
+describe('ouverture depuis l’écran (U1-e §1) — POST /jarvis/runs', () => {
+  const refusals: readonly (readonly [string, Record<string, unknown>, string])[] = [
+    ['clé inconnue', { ...openBody(), kind: 'customer_contact' }, 'kind'],
+    ['identité serveur refusée', { ...openBody(), runId: RUN_ID }, 'runId'],
+    ['révision de seed imposée', { ...openBody(), expectedRevision: 0 }, 'expectedRevision'],
+    ['commandId manquant', { intent: openBody().intent }, 'commandId'],
+    [
+      'commandId v8 (contrat user = v4)',
+      openBody({ commandId: '40000000-0000-8000-8000-000000000001' }),
+      'commandId',
+    ],
+    // L'écran n'ouvre QUE des modifications : une création naît de la voix ou du formulaire.
+    ['ouverture d’une création', openBody({ intent: { mode: 'create' } }), 'intent'],
+    [
+      'révision de cible affirmée par le client',
+      openBody({
+        intent: { mode: 'update', target: { customerId: TARGET_CUSTOMER_ID, revision: 2 } },
+      }),
+      'revision',
+    ],
+    [
+      'cible non canonique',
+      openBody({ intent: { mode: 'update', target: { customerId: 'client-1' } } }),
+      'customerId',
+    ],
+    ['cible absente', openBody({ intent: { mode: 'update' } }), 'target'],
+  ];
+
+  it.each(refusals)('refuse %s en 422 sans rien exécuter', async (_label, body, field) => {
+    const admission = new FakeAdmission(admitted(runWith(null)));
+    const { controller: candidate } = controller({ admission });
+
+    const error = await caught(() => asOwner(() => candidate.openRun(body)));
+
+    expect(error.getStatus()).toBe(422);
+    expect(JSON.stringify(error.getResponse())).toContain(field);
+    expect(admission.envelopes).toHaveLength(0);
+  });
+
+  it('stampe SERVEUR tout ce que le client ne peut pas prouver', async () => {
+    const admission = new FakeAdmission(admitted(runWith(null, 1)));
+    const { controller: candidate } = controller({ admission });
+
+    const receipt = await asOwner(() => candidate.openRun(openBody()));
+
+    const envelope = admission.envelopes[0];
+    const runId = deriveJarvisScreenRunId(
+      { companyId: COMPANY_ID, ownerUserId: OWNER_USER_ID },
+      COMMAND_ID,
+    );
+    expect(envelope).toMatchObject({
+      companyId: COMPANY_ID,
+      ownerUserId: OWNER_USER_ID,
+      kind: 'customer_contact',
+      definitionVersion: 1,
+      runId,
+      commandId: COMMAND_ID,
+      // 0 = SEMER : la seule route qui l'écrit. Le canal de commandes le refuse toujours (422).
+      expectedRevision: 0,
+      actionId: 'client-modifier',
+      actionVersion: 1,
+      authority: {
+        source: 'authenticated_principal',
+        principalBindingHash: agentMissionPrincipalBindingHash(COMPANY_ID, OWNER_USER_ID),
+      },
+    });
+    expect(envelope?.occurredAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u);
+    expect(envelope?.canonicalInputDigest).toBe(
+      computeJarvisTapCanonicalInputDigest({
+        runId,
+        commandId: COMMAND_ID,
+        command: {
+          type: 'start_run',
+          intent: {
+            mode: 'update',
+            target: {
+              customerId: TARGET_CUSTOMER_ID,
+              revision: JARVIS_UNVERIFIED_TARGET_REVISION,
+            },
+          },
+        },
+      }),
+    );
+    expect(receipt.outcome).toBe('admitted');
+  });
+
+  it('dérive l’identité du run du commandId mémoïsé : deux essais visent le MÊME run', async () => {
+    const admission = new FakeAdmission(admitted(runWith(null, 1)));
+    const { controller: candidate } = controller({ admission });
+    const otherCommandId = '30000000-0000-4000-8000-000000000002';
+
+    await asOwner(() => candidate.openRun(openBody()));
+    await asOwner(() => candidate.openRun(openBody()));
+    await asOwner(() => candidate.openRun(openBody({ commandId: otherCommandId })));
+
+    // L'ouverture soumet DEUX enveloppes (semis puis resolution de cible serveur, §8) :
+    // on compare les SEMIS entre eux, jamais un semis a une resolution.
+    const seeds = admission.envelopes.filter(
+      (envelope) => (envelope.command as { type?: string } | null)?.type === 'start_run',
+    );
+    const [first, second, third] = seeds;
+    // Reçu perdu, réseau coupé, écran remonté : le rejeu retombe sur le même run (zéro write §5.2).
+    expect(second?.runId).toBe(first?.runId);
+    expect(second?.canonicalInputDigest).toBe(first?.canonicalInputDigest);
+    // Un autre geste est un autre run : la dérivation n'est pas une constante déguisée.
+    expect(third?.runId).not.toBe(first?.runId);
+    expect(first?.runId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+    );
+  });
+
+  it('sème avec une révision de cible NON OPPOSABLE — jamais une preuve fabriquée', async () => {
+    const admission = new FakeAdmission(admitted(runWith(null, 1)));
+    const { controller: candidate } = controller({ admission });
+
+    await asOwner(() => candidate.openRun(openBody()));
+
+    // Le controller ne relit pas la fiche (une lecture hors transaction serait un TOCTOU) : il
+    // sème la révision minimale du domaine, que `record_customer_resolution` remplace par la
+    // révision RELUE avant que `stage_proposal` ne puisse sceller quoi que ce soit.
+    expect(admission.envelopes[0]?.command).toEqual({
+      type: 'start_run',
+      intent: {
+        mode: 'update',
+        target: { customerId: TARGET_CUSTOMER_ID, revision: JARVIS_UNVERIFIED_TARGET_REVISION },
+      },
+    });
+    expect(JARVIS_UNVERIFIED_TARGET_REVISION).toBe(1);
+  });
+
+  it('rend le reçu ORIGINAL sur rejeu, et projette les refus par le mapping fermé', async () => {
+    const replayed = new FakeAdmission({
+      status: 'replayed',
+      postimage: runWith(null, 1),
+      eventSequence: 1,
+      signalRestamped: false,
+    });
+    const { controller: replaying } = controller({ admission: replayed });
+    expect((await asOwner(() => replaying.openRun(openBody()))).outcome).toBe('replayed');
+
+    // Un run existe déjà à cette identité : `expectedRevision: 0` ne peut plus le semer.
+    const stale = new FakeAdmission({ status: 'stale_revision', actualRevision: 3 });
+    const { controller: refusing, logger } = controller({ admission: stale });
+    const error = await caught(() => asOwner(() => refusing.openRun(openBody())));
+
+    expect(error.getStatus()).toBe(409);
+    expect(error.getResponse()).toEqual({
+      ok: false,
+      error: { kind: 'conflict', entity: 'jarvis_run', reason: 'stale_revision' },
+    });
+    expect(logger.audit).toHaveBeenCalledWith(
+      'jarvis.tap.refused',
+      expect.objectContaining({
+        status: 'stale_revision',
+        commandType: 'start_run',
+      }),
+    );
+  });
+});
+
+describe('découverte (U1-e §1) — GET /jarvis/runs/current', () => {
+  it('rend le run non terminal de l’owner et sa présentation recomposée', async () => {
+    const run = runWith(stateWith(), 5);
+    const admission = new FakeAdmission(admitted(run), null, { currentRun: run });
+    const { controller: candidate } = controller({
+      admission,
+      payloads: new FakePayloads(sealedPayload()),
+    });
+
+    const current = await asOwner(() => candidate.getCurrentRun());
+
+    // Owner-scopée : la lecture porte l'identité dérivée du bearer, jamais un paramètre client.
+    expect(admission.reads).toEqual([{ companyId: COMPANY_ID, ownerUserId: OWNER_USER_ID }]);
+    expect(current.run).toEqual({
+      runId: RUN_ID,
+      kind: 'customer_contact',
+      definitionVersion: 1,
+      status: 'waiting_user',
+      revision: 5,
+      nextWakeAt: null,
+      terminalAt: null,
+    });
+    expect(current.presentation).toMatchObject({
+      phase: 'awaiting_confirmation',
+      intent: 'create',
+      proposal: { proposalId: PROPOSAL_ID, fieldsDigest: FIELDS_DIGEST },
+    });
+  });
+
+  it('aucun run : les DEUX champs sont nuls — jamais une carte orpheline', async () => {
+    const admission = new FakeAdmission(admitted(runWith(null)), null, { currentRun: null });
+    const { controller: candidate } = controller({
+      admission,
+      payloads: new FakePayloads(sealedPayload()),
+    });
+
+    expect(await asOwner(() => candidate.getCurrentRun())).toEqual({
+      run: null,
+      presentation: null,
+    });
+  });
+
+  it('un run TERMINAL n’est jamais courant : rien à reprendre à l’écran', async () => {
+    const terminal: JarvisRunEnvelope = {
+      kind: 'customer_contact',
+      runId: RUN_ID,
+      companyId: COMPANY_ID,
+      createdBy: OWNER_USER_ID,
+      definitionVersion: 1,
+      status: 'completed',
+      revision: 9,
+      stateVersion: 1,
+      state: stateWith({ phase: 'completed' }),
+      nextWakeAt: null,
+      terminalAt: '2026-08-19T10:03:00.000Z',
+    };
+    const admission = new FakeAdmission(admitted(terminal), null, { currentRun: terminal });
+    const { controller: candidate } = controller({
+      admission,
+      payloads: new FakePayloads(sealedPayload()),
+    });
+
+    expect(await asOwner(() => candidate.getCurrentRun())).toEqual({
+      run: null,
+      presentation: null,
+    });
+  });
+
+  it('digest divergent : le run sort, la présentation reste ABSENTE (fail-closed G4)', async () => {
+    const run = runWith(stateWith(), 5);
+    const admission = new FakeAdmission(admitted(run), null, { currentRun: run });
+    // Le magasin revérifie `fieldsDigest` et rend `null` sur divergence.
+    const { controller: candidate } = controller({ admission, payloads: new FakePayloads(null) });
+
+    const current = await asOwner(() => candidate.getCurrentRun());
+
+    expect(current.run).toMatchObject({ runId: RUN_ID });
+    expect(current.presentation).toBeNull();
+  });
+
+  it('la branche devis ne sort JAMAIS par ce canal (§17.1)', async () => {
+    // Enveloppe legacy `quote_creation` : le writer N-1 garde ses routes, la carte ne la voit pas.
+    const legacy = {
+      kind: 'quote_creation',
+      runId: RUN_ID,
+      companyId: COMPANY_ID,
+      createdBy: OWNER_USER_ID,
+      definitionVersion: 2,
+      status: 'waiting_user',
+      revision: 3,
+      snapshot: {},
+    } as unknown as JarvisRunEnvelope;
+    const admission = new FakeAdmission(admitted(legacy), null, { currentRun: legacy });
+    const { controller: candidate } = controller({ admission });
+
+    expect(await asOwner(() => candidate.getCurrentRun())).toEqual({
+      run: null,
+      presentation: null,
+    });
+  });
+
+  it('annuaire ABSENT : 503 nommé, jamais un « aucun run » non vérifié', async () => {
+    // Adaptateur sans annuaire : la vue stateless n'expose que `runById` (état d'aujourd'hui).
+    const admission = new FakeAdmission(admitted(runWith(null)), runWith(stateWith()));
+    const { controller: candidate } = controller({ admission });
+
+    const error = await caught(() => asOwner(() => candidate.getCurrentRun()));
+
+    expect(error.getStatus()).toBe(503);
+    expect(error.getResponse()).toEqual({
+      ok: false,
+      error: { kind: 'unavailable', service: 'jarvis_current_run_directory' },
+    });
+  });
+
+  it('sans adapter d’admission lié, la découverte refuse en 503 — jamais un 500 muet', async () => {
+    const { controller: candidate } = controller({ admission: null });
+    const error = await caught(() => asOwner(() => candidate.getCurrentRun()));
+    expect(error.getStatus()).toBe(503);
+    expect(error.getResponse()).toEqual({
+      ok: false,
+      error: { kind: 'unavailable', service: 'jarvis_admission' },
+    });
+  });
+});
+
 describe('bornes de route', () => {
   it('chiffre le débit PAR route (POST 10/10 s, GET 30/10 s)', () => {
     const post = JarvisRunController.prototype.submitCommand;
+    const open = JarvisRunController.prototype.openRun;
+    const current = JarvisRunController.prototype.getCurrentRun;
     const get = JarvisRunController.prototype.getRun;
 
     expect(Reflect.getMetadata('THROTTLER:LIMITdefault', post)).toBe(10);
     expect(Reflect.getMetadata('THROTTLER:TTLdefault', post)).toBe(10_000);
+    expect(Reflect.getMetadata('THROTTLER:LIMITdefault', open)).toBe(10);
+    expect(Reflect.getMetadata('THROTTLER:TTLdefault', open)).toBe(10_000);
+    expect(Reflect.getMetadata('THROTTLER:LIMITdefault', current)).toBe(30);
+    expect(Reflect.getMetadata('THROTTLER:TTLdefault', current)).toBe(10_000);
     expect(Reflect.getMetadata('THROTTLER:LIMITdefault', get)).toBe(30);
     expect(Reflect.getMetadata('THROTTLER:TTLdefault', get)).toBe(10_000);
+  });
+
+  it('déclare `runs/current` AVANT `runs/:runId` — Nest apparie dans l’ordre du prototype', () => {
+    const methods = Object.getOwnPropertyNames(JarvisRunController.prototype);
+    const current = methods.indexOf('getCurrentRun');
+    const byId = methods.indexOf('getRun');
+
+    expect(current).toBeGreaterThan(-1);
+    expect(byId).toBeGreaterThan(-1);
+    // Inverser ces deux déclarations ferait capturer le littéral « current » comme identifiant de
+    // run : la découverte répondrait 404 (« current » n'est pas un UUID canonique).
+    expect(current).toBeLessThan(byId);
   });
 });

@@ -127,13 +127,26 @@ export interface JarvisStatelessReadResult<T> {
   readonly readAt: Instant;
 }
 
+/**
+ * Ce qu'un lecteur stateless a le droit de demander — jamais un accès libre à la base.
+ *
+ * `runById` suppose que l'appelant CONNAÎT déjà l'identité du run (la voix la dérive de sa
+ * session, le tap la tient de l'écran). `currentRun` est l'annuaire owner-scopé du run NON
+ * TERMINAL, indispensable à la découverte depuis un appareil qui n'a rien à dériver (lot U1-e
+ * §1) : il est OPTIONNEL parce qu'un adaptateur qui ne sait pas énumérer ne doit pas en fournir
+ * une moitié — l'appelant le narrowe et échoue FERMÉ plutôt que de deviner un run. Même
+ * doctrine que la résolution fermée du UoW d'admission.
+ */
+export interface JarvisStatelessReadView {
+  readonly runById: (runId: string) => Promise<JarvisRunEnvelope | null>;
+  readonly currentRun?: () => Promise<JarvisRunEnvelope | null>;
+}
+
 export interface JarvisAdmissionUnitOfWorkPort {
   runJarvisAdmission(envelope: JarvisUserAdmissionEnvelope): Promise<JarvisAdmissionResult>;
   runJarvisSystemAdmission(envelope: JarvisSystemAdmissionEnvelope): Promise<JarvisAdmissionResult>;
   readJarvisStateless<T>(
     owner: JarvisAdmissionOwner,
-    read: (view: {
-      readonly runById: (runId: string) => Promise<JarvisRunEnvelope | null>;
-    }) => Promise<T>,
+    read: (view: JarvisStatelessReadView) => Promise<T>,
   ): Promise<JarvisStatelessReadResult<T>>;
 }

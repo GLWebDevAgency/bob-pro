@@ -1,11 +1,22 @@
 /**
  * Canal TACTILE d'un run Jarvis (spec §5.2/§5.4/§7.0/§7.1/§14 —
- * SPEC_U1D_CALLERS_REELS_20260819 §3 « TAP », greffes G1/G2/G4/G6) — lot U1-d.
+ * SPEC_U1D_CALLERS_REELS_20260819 §3 « TAP », greffes G1/G2/G4/G6) — lot U1-d,
+ * élargi par SPEC_U1E_PARCOURS_VISIBLE_20260819 §1 (découverte et ouverture depuis l'écran).
  *
- * Deux routes, pas une de plus :
+ * Quatre routes, pas une de plus :
  *   · `POST /jarvis/runs/:runId/commands` — un geste humain entre, LA transaction d'admission
  *     (§5.2) décide, un reçu fermé sort ;
- *   · `GET  /jarvis/runs/:runId`          — lecture stateless §5.2 : zéro verrou, zéro écriture.
+ *   · `POST /jarvis/runs`                — ouverture d'un run `customer_contact@1` de
+ *     MODIFICATION depuis l'écran : route DÉDIÉE, jamais un élargissement du canal de commandes
+ *     (un tap n'a toujours pas le droit de semer un run par `runs/:runId/commands`) ;
+ *   · `GET  /jarvis/runs/current`        — découverte : le run NON TERMINAL de l'owner, ou
+ *     `null`. Miroir exact de `agent-missions/current/quote-creation/resume` : sans elle,
+ *     l'appareil ne peut connaître aucun `runId` (la voix ne renvoie que la parole) ;
+ *   · `GET  /jarvis/runs/:runId`         — lecture stateless §5.2 : zéro verrou, zéro écriture.
+ *
+ * L'ORDRE de déclaration de ces méthodes est porteur : Nest apparie dans l'ordre du prototype,
+ * donc `runs/current` doit être déclarée AVANT `runs/:runId`, sinon le littéral « current » est
+ * capturé comme identifiant de run (et refusé en 404, faute d'être un UUID canonique).
  *
  * Ce que ce controller ne délègue à personne :
  * - **autorité (G1)** : `authenticated_principal`. Le tap vit SANS lease Realtime — §14 et le
@@ -47,10 +58,14 @@ import { Throttle } from '@nestjs/throttler';
 import {
   AGENT_MISSION_INT4_MAX,
   AGENT_MISSION_KIND,
+  CUSTOMER_CONTACT_ACTION_VERSION,
+  CUSTOMER_CONTACT_DEFINITION_VERSION,
   CUSTOMER_CONTACT_PROPOSED_FIELD_KEYS,
   CUSTOMER_CONTACT_SENSITIVE_FIELDS,
   CUSTOMER_CONTACT_SENSITIVE_FIELD_SOURCES,
+  CUSTOMER_CONTACT_UPDATE_ACTION_ID,
   JARVIS_RUN_KINDS,
+  JARVIS_RUN_TERMINAL_STATUSES,
   appConflict,
   appForbidden,
   appNotFound,
@@ -106,8 +121,9 @@ function refuse(error: AppError): never {
 
 export const JARVIS_TAP_AUTHORITY = Symbol('JARVIS_TAP_AUTHORITY');
 
-/** Les deux seules opérations du canal — union fermée, jamais un verbe libre. */
-export type JarvisTapOperation = 'submit_run_command' | 'read_run';
+/** Les quatre seules opérations du canal — union fermée, jamais un verbe libre. */
+export type JarvisTapOperation =
+  'submit_run_command' | 'open_run' | 'read_current_run' | 'read_run';
 
 export interface JarvisTapAuthorization {
   readonly operation: JarvisTapOperation;
@@ -349,6 +365,78 @@ export function parseJarvisSubmitCommandBody(value: unknown): JarvisSubmitComman
 }
 
 // ---------------------------------------------------------------------------
+// Ouverture depuis l'écran (§1 U1-e) — route dédiée, corps minuscule
+// ---------------------------------------------------------------------------
+
+/**
+ * `start_run` d'une MODIFICATION : la seule commande du canal écran qui SÈME un run. Elle reste
+ * hors de `JarvisTapCommand` à dessein — le canal `runs/:runId/commands` continue de refuser
+ * toute révision de seed (`expectedRevision >= 1`), et l'ouverture passe par sa route dédiée.
+ */
+export interface JarvisOpenRunCommand {
+  readonly type: 'start_run';
+  readonly intent: {
+    readonly mode: 'update';
+    readonly target: { readonly customerId: string; readonly revision: number };
+  };
+}
+
+/**
+ * Résolution de cible émise par le SERVEUR juste après le semis (§8). Elle n'est ni du canal
+ * tap (aucun humain ne l'émet) ni de l'ouverture : c'est le second maillon serveur, sans lequel
+ * un run ouvert depuis l'écran resterait parké en `resolving_customer`.
+ */
+export interface JarvisServerResolutionCommand {
+  readonly type: 'record_customer_resolution';
+  readonly resolution: {
+    readonly kind: 'target_verified';
+    readonly customerId: string;
+  };
+}
+
+/**
+ * Corps EXACT de l'ouverture. Le client n'apporte QUE ce qu'il possède : son `commandId` (§5.4,
+ * mémoïsé jusqu'au reçu) et l'identité de la fiche visée. Ni `kind`, ni `definitionVersion`, ni
+ * `actionId`, ni `expectedRevision`, ni `runId` : une route dédiée à `customer_contact@1` PINCE
+ * elle-même son action — laisser le client la choisir rouvrirait la borne G2 par la fenêtre.
+ */
+export interface JarvisOpenRunBody {
+  readonly commandId: string;
+  readonly intent: {
+    readonly mode: 'update';
+    readonly target: { readonly customerId: string };
+  };
+}
+
+export function parseJarvisOpenRunBody(value: unknown): JarvisOpenRunBody {
+  const body = exactBody(value, ['commandId', 'intent']);
+  if (!isCanonicalAgentMissionUserCommandId(body.commandId)) {
+    invalidBody('commandId', 'UUID v4 canonique requis.');
+  }
+  const candidate = jsonObject(body.intent);
+  if (candidate === null) invalidBody('intent', 'Intention JSON objet requise.');
+  // Le MODE est vérifié avant la forme : refuser une création faute de `target` nommerait la
+  // mauvaise règle. L'écran n'ouvre QUE des modifications — la création naît de la voix ou du
+  // formulaire client, et un `mode: 'create'` accepté ici sèmerait un run que personne ne
+  // saurait présenter.
+  if (candidate.mode !== 'update') {
+    invalidBody('intent.mode', 'Ouverture de modification requise.');
+  }
+  const intent = exactBody(candidate, ['mode', 'target']);
+  // La RÉVISION de la cible est absente du corps PAR CONSTRUCTION : l'appareil ne la possède pas
+  // (aucune projection client ne la porte) et ne pourrait donc que l'inventer. Un corps qui la
+  // porterait quand même est refusé comme clé inconnue.
+  const target = exactBody(intent.target, ['customerId']);
+  if (!isCanonicalAgentMissionUuid(target.customerId)) {
+    invalidBody('intent.target.customerId', 'UUID canonique requis.');
+  }
+  return {
+    commandId: body.commandId,
+    intent: { mode: 'update', target: { customerId: target.customerId } },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Digest canonique d'entrée (G7) — calculé SERVEUR, stable au retry du commandId
 // ---------------------------------------------------------------------------
 
@@ -357,7 +445,7 @@ const TAP_INPUT_NAMESPACE = 'bob.jarvis.customer-contact.tap-input.v1';
 export function computeJarvisTapCanonicalInputDigest(input: {
   readonly runId: string;
   readonly commandId: string;
-  readonly command: JarvisTapCommand;
+  readonly command: JarvisTapCommand | JarvisOpenRunCommand | JarvisServerResolutionCommand;
 }): string {
   return sha256Hex(JSON.stringify([
     TAP_INPUT_NAMESPACE,
@@ -366,6 +454,61 @@ export function computeJarvisTapCanonicalInputDigest(input: {
     input.command,
   ]));
 }
+
+// ---------------------------------------------------------------------------
+// Identité du run ouvert depuis l'écran — DÉRIVÉE, jamais tirée au sort
+// ---------------------------------------------------------------------------
+
+const SCREEN_RUN_NAMESPACE = 'bob.jarvis.customer-contact.screen-run.v1';
+
+/** UUID canonique de forme v4 dérivé d'un digest — patron exact de l'orchestrateur vocal. */
+function uuidFromDigest(digest: string): string {
+  const hex = digest.slice(0, 32);
+  const variant = ((Number.parseInt(hex.slice(16, 17), 16) & 0x3) | 0x8).toString(16);
+  const uuid = `${hex.slice(0, 12)}4${hex.slice(13, 16)}${variant}${hex.slice(17)}`;
+  return [
+    uuid.slice(0, 8),
+    uuid.slice(8, 12),
+    uuid.slice(12, 16),
+    uuid.slice(16, 20),
+    uuid.slice(20),
+  ].join('-');
+}
+
+/**
+ * Identité déterministe du run semé depuis un écran, dérivée de l'owner ET du `commandId`
+ * mémoïsé. Conséquence voulue : deux essais du MÊME geste (reçu perdu, réseau coupé, remontage)
+ * visent le MÊME `runId`, donc le second est un rejeu zéro-write (§5.2) et non un second run
+ * fantôme. Le client ne choisit jamais l'identité d'un run — c'est un fait serveur (§5.4), comme
+ * `occurredAt` et `canonicalInputDigest`.
+ */
+export function deriveJarvisScreenRunId(owner: JarvisAdmissionOwner, commandId: string): string {
+  return uuidFromDigest(
+    sha256Hex(`${SCREEN_RUN_NAMESPACE} ${owner.companyId} ${owner.ownerUserId} ${commandId}`),
+  );
+}
+
+/**
+ * Révision de cible d'une intention d'ouverture. Elle n'est PAS une preuve : ni l'appareil ni ce
+ * controller ne relisent la fiche (une lecture hors transaction serait un TOCTOU — §2 de la spec
+ * U1-e). Le domaine la remplace par la révision RELUE dès la résolution de cible
+ * (`record_customer_resolution` / `target_verified`), et `stage_proposal` refuse toute
+ * proposition qui ne scelle pas cette révision vérifiée (`target_revision_stale`) : aucune
+ * décision ne s'appuie jamais sur cette graine. Elle vaut le minimum légal du domaine.
+ */
+export const JARVIS_UNVERIFIED_TARGET_REVISION = 1;
+
+/**
+ * Révision d'un run JUSTE SEMÉ. Un semis part toujours de `expectedRevision = 0` et rend 1 :
+ * c'est un fait du moteur, pas une observation.
+ *
+ * POURQUOI UNE CONSTANTE ET NON LE POSTIMAGE RENDU. Le second maillon de l'ouverture (§8) doit
+ * porter la MÊME empreinte à l'admission et au rejeu — `expectedRevision` entre dans l'empreinte
+ * canonique de la commande. Or le postimage d'un semis REJOUÉ est le run TEL QU'IL EST (déjà
+ * résolu, révision 2) : s'y fier ferait muter l'empreinte au rejeu, le reçu ne serait plus
+ * reconnu, et une ouverture rejouée retomberait en conflit au lieu de rendre son reçu original.
+ */
+const JARVIS_SEEDED_RUN_REVISION = 1;
 
 // ---------------------------------------------------------------------------
 // Projection wire du run (§5.1) — le `state` durable ne sort JAMAIS
@@ -657,6 +800,22 @@ export interface JarvisRunSnapshotWire {
   readonly presentation: CustomerContactPresentationWire | null;
 }
 
+/**
+ * Découverte (§1) — miroir de `QuoteAgentMissionResumeView` : soit il y a un run à reprendre,
+ * soit il n'y en a pas. L'union interdit l'état bâtard « pas de run mais une présentation ».
+ */
+export type JarvisCurrentRunWire =
+  | { readonly run: null; readonly presentation: null }
+  | {
+      readonly run: JarvisRunWireView;
+      readonly presentation: CustomerContactPresentationWire | null;
+    };
+
+const NO_CURRENT_RUN: JarvisCurrentRunWire = Object.freeze({ run: null, presentation: null });
+
+/** Sentinelle de lecture : l'adaptateur lié ne sait pas énumérer (annuaire absent, §5.2). */
+const DIRECTORY_ABSENT = 'directory_absent' as const;
+
 /** State fiche client d'un run, ou `null` : un state illisible n'est JAMAIS interprété. */
 function customerContactStateOf(
   envelope: JarvisRunEnvelope | null,
@@ -702,7 +861,11 @@ export class JarvisRunController {
     if (!isCanonicalAgentMissionUuid(runId)) refuse(appNotFound('jarvis_run', runId));
     const body = parseJarvisSubmitCommandBody(value);
     const owner = authorization.value.owner;
-    const command = await this.domainCommand(admission, owner, runId, body.command);
+    // U1-e §2 — la commande part TELLE QUELLE : le canal tactile n'enrichit plus le confirm de
+    // la révision ni du digest revalidés de la cible. Les produire ici serait deux fois faux —
+    // le client s'auto-certifierait, et la lecture, faite hors de la transaction d'admission,
+    // laisserait une fenêtre TOCTOU. C'est l'admission qui relit la cible, sous verrou (§7.1).
+    const command: unknown = body.command;
 
     const envelope: JarvisUserAdmissionEnvelope = Object.freeze({
       companyId: owner.companyId,
@@ -742,6 +905,205 @@ export class JarvisRunController {
       presentation: await this.presentation(owner, result.postimage),
       eventSequence: result.eventSequence,
     };
+  }
+
+  /**
+   * Ouverture d'un run `customer_contact@1` de MODIFICATION depuis l'écran (§1). Tout ce qui
+   * n'est pas prouvable par le client est stampé SERVEUR : l'identité du run (dérivée du
+   * `commandId`), l'action et sa version (pincées par la route), la révision de seed (0), le
+   * digest d'entrée, l'horloge et l'autorité. Le rejeu du MÊME `commandId` retombe sur le MÊME
+   * run et rend le reçu original (`replayed`, zéro écriture).
+   *
+   * L'action reste pincée depuis @bob/core : la fermer (rollout G2) est opposé par l'admission
+   * (`action_refused`), le controller ne duplique pas une borne qu'il ne peut pas contredire.
+   */
+  @Post('runs')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 10, ttl: 10_000 } })
+  @Header('Cache-Control', 'private, no-store')
+  async openRun(@Body() value: unknown): Promise<JarvisCommandReceiptWire> {
+    const authorization = this.authority.prepare('open_run');
+    if (!authorization.ok) refuse(authorization.error);
+    const admission = this.requireAdmission();
+    const body = parseJarvisOpenRunBody(value);
+    const owner = authorization.value.owner;
+    const runId = deriveJarvisScreenRunId(owner, body.commandId);
+    const command: JarvisOpenRunCommand = Object.freeze({
+      type: 'start_run' as const,
+      intent: Object.freeze({
+        mode: 'update' as const,
+        target: Object.freeze({
+          customerId: body.intent.target.customerId,
+          revision: JARVIS_UNVERIFIED_TARGET_REVISION,
+        }),
+      }),
+    });
+
+    const envelope: JarvisUserAdmissionEnvelope = Object.freeze({
+      companyId: owner.companyId,
+      ownerUserId: owner.ownerUserId,
+      kind: 'customer_contact',
+      definitionVersion: CUSTOMER_CONTACT_DEFINITION_VERSION,
+      runId,
+      commandId: body.commandId,
+      // 0 = SEMER. C'est la seule route qui l'écrit ; le canal de commandes le refuse toujours.
+      expectedRevision: 0,
+      actionId: CUSTOMER_CONTACT_UPDATE_ACTION_ID,
+      actionVersion: CUSTOMER_CONTACT_ACTION_VERSION,
+      authority: authorization.value.authority,
+      command,
+      canonicalInputDigest: computeJarvisTapCanonicalInputDigest({
+        runId,
+        commandId: body.commandId,
+        command,
+      }),
+      occurredAt: new Date().toISOString(),
+    });
+
+    const result = await this.guarded('admission', () => admission.runJarvisAdmission(envelope));
+    if (result.status !== 'admitted' && result.status !== 'replayed') {
+      this.logger.audit('jarvis.tap.refused', {
+        runId,
+        status: result.status,
+        commandType: command.type,
+      });
+      refuse(jarvisAdmissionRefusal(result, { runId, companyId: owner.companyId }));
+    }
+    // §8 — L'AUTORITE D'UNE ENTITE NE VIENT JAMAIS DU CLIENT : le semis porte une revision
+    // non opposable ; le serveur enchaine donc IMMEDIATEMENT la resolution de cible, dont la
+    // revision et le digest sont relus SOUS VERROU par l'admission. Sans ce second maillon un
+    // run ouvert depuis l'ecran resterait parke en `resolving_customer` — aucune commande
+    // humaine ne peut l'en sortir (le canal tap ne porte pas `record_customer_resolution`).
+    // Le commandId est DERIVE du premier : le rejeu de l'ouverture rejoue les deux, zero-write.
+    const resolved = await this.resolveOpenedTarget(owner, {
+      runId,
+      seedCommandId: body.commandId,
+      customerId: body.intent.target.customerId,
+      authority: authorization.value.authority,
+      postimage: result.postimage,
+      seedOutcome: result.status,
+      seedEventSequence: result.eventSequence,
+    });
+    const run = projectJarvisRunView(resolved.postimage);
+    if (run === null) refuse(appConflict('jarvis_run', 'legacy_route_active'));
+    return {
+      outcome: resolved.outcome,
+      run,
+      presentation: await this.presentation(owner, resolved.postimage),
+      eventSequence: resolved.eventSequence,
+    };
+  }
+
+  /**
+   * Resolution de cible cote SERVEUR, juste apres le semis (§8). La revision passee ici est
+   * une graine : l'admission relit la fiche sous verrou et c'est SA lecture qui fait foi.
+   * Un echec laisse le run parke en `resolving_customer` — etat honnete, jamais une cible
+   * inventee : l'appelant recoit le postimage du semis et pourra rejouer.
+   */
+  private async resolveOpenedTarget(
+    owner: JarvisAdmissionOwner,
+    input: {
+      readonly runId: string;
+      readonly seedCommandId: string;
+      readonly customerId: string;
+      readonly authority: JarvisUserAdmissionEnvelope['authority'];
+      readonly postimage: JarvisRunEnvelope;
+      readonly seedOutcome: 'admitted' | 'replayed';
+      readonly seedEventSequence: number;
+    },
+  ): Promise<{
+    readonly postimage: JarvisRunEnvelope;
+    readonly outcome: 'admitted' | 'replayed';
+    readonly eventSequence: number;
+  }> {
+    const admission = this.requireAdmission();
+    const commandId = uuidFromDigest(
+      sha256Hex(`${SCREEN_RUN_NAMESPACE}:target-resolution ${input.runId} ${input.seedCommandId}`),
+    );
+    const command: JarvisServerResolutionCommand = Object.freeze({
+      type: 'record_customer_resolution' as const,
+      resolution: Object.freeze({
+        kind: 'target_verified' as const,
+        // AUCUNE revision : le domaine prend celle que l'admission RELIT SOUS VERROU (§8).
+        customerId: input.customerId,
+      }),
+    });
+    const envelope: JarvisUserAdmissionEnvelope = Object.freeze({
+      companyId: owner.companyId,
+      ownerUserId: owner.ownerUserId,
+      kind: 'customer_contact',
+      definitionVersion: CUSTOMER_CONTACT_DEFINITION_VERSION,
+      runId: input.runId,
+      commandId,
+      expectedRevision: JARVIS_SEEDED_RUN_REVISION,
+      actionId: CUSTOMER_CONTACT_UPDATE_ACTION_ID,
+      actionVersion: CUSTOMER_CONTACT_ACTION_VERSION,
+      authority: input.authority,
+      command,
+      canonicalInputDigest: computeJarvisTapCanonicalInputDigest({
+        runId: input.runId,
+        commandId,
+        command,
+      }),
+      occurredAt: new Date().toISOString(),
+    });
+    const result = await this.guarded('admission', () => admission.runJarvisAdmission(envelope));
+    if (result.status !== 'admitted' && result.status !== 'replayed') {
+      // Fail-closed HONNETE : le run existe, parke en resolving_customer. On rend le semis.
+      this.logger.audit('jarvis.tap.target_resolution_deferred', {
+        runId: input.runId,
+        status: result.status,
+      });
+      return {
+        postimage: input.postimage,
+        outcome: input.seedOutcome,
+        eventSequence: input.seedEventSequence,
+      };
+    }
+    return {
+      postimage: result.postimage,
+      outcome: result.status,
+      eventSequence: result.eventSequence,
+    };
+  }
+
+  /**
+   * Découverte (§1) : le run NON TERMINAL de l'owner, ou `null`. Sans elle, un appareil qui n'a
+   * rien dérivé (la voix ne renvoie que la parole) ne connaît AUCUN `runId` et la carte de
+   * confirmation reste invisible. Lecture stateless §5.2 comme sa sœur `runs/:runId` : zéro
+   * verrou, zéro écriture, jamais servie depuis un cache.
+   *
+   * DÉCLARÉE AVANT `runs/:runId` : Nest apparie dans l'ordre du prototype.
+   */
+  @Get('runs/current')
+  @Throttle({ default: { limit: 30, ttl: 10_000 } })
+  @Header('Cache-Control', 'private, no-store')
+  async getCurrentRun(): Promise<JarvisCurrentRunWire> {
+    const authorization = this.authority.prepare('read_current_run');
+    if (!authorization.ok) refuse(authorization.error);
+    const admission = this.requireAdmission();
+    const owner = authorization.value.owner;
+    const read = await this.guarded('lecture', () =>
+      admission.readJarvisStateless(owner, async (view) => {
+        const currentRun = view.currentRun;
+        // Annuaire absent : l'adaptateur lié ne sait pas énumérer. On échoue FERMÉ plutôt que
+        // de rendre `null`, qui affirmerait « aucun run en cours » sans l'avoir vérifié.
+        if (typeof currentRun !== 'function') return DIRECTORY_ABSENT;
+        return currentRun();
+      }),
+    );
+    const envelope = read.value;
+    if (envelope === DIRECTORY_ABSENT) refuse(appUnavailable('jarvis_current_run_directory'));
+    if (envelope === null) return NO_CURRENT_RUN;
+    // La branche devis garde ses routes legacy (§17.1) : elle ne sort jamais par ce canal.
+    const run = projectJarvisRunView(envelope);
+    if (run === null) return NO_CURRENT_RUN;
+    // Un run terminal n'est pas « courant » : l'écran n'a rien à y reprendre. La garde vit ICI,
+    // et pas seulement dans l'annuaire, pour que la loi soit vraie quel que soit l'adaptateur.
+    if (run.terminalAt !== null || JARVIS_RUN_TERMINAL_STATUSES.has(run.status)) {
+      return NO_CURRENT_RUN;
+    }
+    return { run, presentation: await this.presentation(owner, envelope) };
   }
 
   /** Lecture stateless §5.2 : zéro verrou, zéro écriture, jamais servie depuis un cache. */
@@ -789,37 +1151,6 @@ export class JarvisRunController {
       );
       refuse(appUnavailable('jarvis_admission'));
     }
-  }
-
-  /**
-   * §7.1 — consommer une confirmation de MODIFICATION exige la relecture de la cible juste avant
-   * l'écriture. Ce canal ne la possède pas encore : il refuse FERMÉ plutôt que de recopier la
-   * révision proposée, ce qui reviendrait à s'auto-certifier et à éteindre la garde §9.1. La
-   * création, elle, confirme avec `revalidated* = null` — le domaine l'exige littéralement.
-   */
-  private async domainCommand(
-    admission: JarvisAdmissionUnitOfWorkPort,
-    owner: JarvisAdmissionOwner,
-    runId: string,
-    command: JarvisTapCommand,
-  ): Promise<unknown> {
-    if (command.type !== 'confirm') return command;
-    const read = await this.guarded(
-      'lecture',
-      () => admission.readJarvisStateless(owner, (view) => view.runById(runId)),
-    );
-    const state = customerContactStateOf(read.value);
-    if (state === null) refuse(appNotFound('jarvis_run', runId));
-    if (state.intent.mode === 'update') {
-      refuse(appUnavailable('jarvis_update_confirmation_revalidation'));
-    }
-    return {
-      type: 'confirm' as const,
-      confirmationId: command.confirmationId,
-      proposalHash: command.proposalHash,
-      revalidatedTargetRevision: null,
-      revalidatedSensitiveDigest: null,
-    };
   }
 
   /**

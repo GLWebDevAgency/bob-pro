@@ -38,6 +38,10 @@ import {
 import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import {
+  JARVIS_PROPOSAL_PAYLOAD_PURGE_LIMIT_PER_OWNER,
+  JARVIS_PROPOSAL_PAYLOAD_PURGE_MAX_OWNERS_PER_TENANT,
+} from '../../jobs/jarvis-proposal-payload-purge.service';
 import { PrismaAgentMissionUnitOfWork } from './agent-mission.persistence';
 import type { JarvisAdmissionDeps } from './jarvis-admission.persistence';
 import { PrismaJarvisProposalPayloadStore } from './jarvis-proposal-payloads.persistence';
@@ -45,6 +49,18 @@ import { PrismaService } from './prisma.service';
 
 const RUN_CERT = process.env.RUN_AGENT_MISSION_POSTGRES_CERT === 'true';
 const DISPOSABLE = process.env.AGENT_MISSION_CERT_DATABASE_IS_DISPOSABLE === 'true';
+/**
+ * Jarvis U1-e §4 — les preuves de l'ANNUAIRE D'AUTORITÉ exigent un état que la migration seule ne
+ * produit pas : la fonction `list_jarvis_payload_retention_owners_v1` naît SECURITY INVOKER et ne
+ * devient utilisable qu'après le bloc `provision_jarvis_payload_retention_directory` de
+ * `release.sh` (bascule SECURITY DEFINER, rôle d'autorité, GRANT par colonne).
+ *
+ * Ce drapeau ne DÉSACTIVE donc pas une preuve : il déclare que la base sous test a bien reçu la
+ * migration 20260819210000 ET son provisionnement. Le `beforeAll` ci-dessous REFUSE d'exécuter
+ * quoi que ce soit si ce n'est pas vrai — un drapeau posé à tort échoue, il ne rend jamais vert.
+ */
+const DIRECTORY_CERT = process.env.JARVIS_PAYLOAD_RETENTION_DIRECTORY_CERT === 'true';
+const RETENTION_DIRECTORY_ROLE = 'bob_jarvis_payload_retention_directory';
 
 const TEST_TIMEOUT_MS = 60_000;
 const TRANSACTION_OPTIONS = { maxWaitMs: 5_000, timeoutMs: 15_000 } as const;
@@ -512,6 +528,219 @@ describe.skipIf(!RUN_CERT)(
         expect(row?.fieldsDigest).toBe(input.fieldsDigest);
       },
       TEST_TIMEOUT_MS,
+    );
+
+    /**
+     * Jarvis U1-e §4 — ANNUAIRE D'AUTORITÉ DES PROPRIÉTAIRES À PURGER.
+     *
+     * Sans lui, `JarvisProposalPayloadPurgeService` s'arrêtait sur `owner_directory_absent` : la
+     * question « qui, dans ce tenant, a du PII échu ? » n'avait AUCUNE réponse possible, puisque
+     * toutes les policies de la table sont owner-scopées et qu'elle est en FORCE RLS (preuve 6
+     * ci-dessus). Les quatre preuves qui suivent tiennent la promesse SANS élargir quoi que ce
+     * soit :
+     *
+     *  (D1) l'annuaire ne rend QUE des `ownerUserId`, dédoublonnés, bornés, et UNIQUEMENT ceux
+     *       dont une charge est DÉJÀ ÉCHUE — un propriétaire dont tout le PII est vivant reste
+     *       invisible, et un autre tenant n'apparaît jamais ;
+     *  (D2) l'autorité ne peut PAS lire le contenu : `payload` est hors de son GRANT par colonne,
+     *       et le rôle applicatif ne peut jamais devenir cette autorité ;
+     *  (D3) un rôle non autorisé ne peut pas appeler l'annuaire — refus NOMMÉ, pas une page vide ;
+     *  (D4) bout en bout : annuaire → purge → le PII échu a DISPARU, le vivant et celui d'un autre
+     *       propriétaire sont INTACTS, et l'annuaire ne rend plus le propriétaire purgé.
+     */
+    describe.skipIf(!DIRECTORY_CERT)(
+      'Jarvis U1-e — annuaire d’autorité des propriétaires à purger (§4)',
+      () => {
+        interface AuthorityAclRow {
+          readonly securityDefiner: boolean;
+          readonly owner: string;
+          readonly payloadReadable: boolean;
+          readonly ownerColumnReadable: boolean;
+          readonly companyColumnReadable: boolean;
+          readonly retentionColumnReadable: boolean;
+          readonly appCanBecomeAuthority: boolean;
+        }
+
+        async function authorityAcl(): Promise<AuthorityAclRow | undefined> {
+          const rows = await admin.$queryRaw<AuthorityAclRow[]>`
+            SELECT function.prosecdef AS "securityDefiner",
+                   owner.rolname AS "owner",
+                   pg_catalog.has_column_privilege(
+                     ${RETENTION_DIRECTORY_ROLE},
+                     'public.jarvis_proposal_payloads', 'payload', 'SELECT'
+                   ) AS "payloadReadable",
+                   pg_catalog.has_column_privilege(
+                     ${RETENTION_DIRECTORY_ROLE},
+                     'public.jarvis_proposal_payloads', 'ownerUserId', 'SELECT'
+                   ) AS "ownerColumnReadable",
+                   pg_catalog.has_column_privilege(
+                     ${RETENTION_DIRECTORY_ROLE},
+                     'public.jarvis_proposal_payloads', 'companyId', 'SELECT'
+                   ) AS "companyColumnReadable",
+                   pg_catalog.has_column_privilege(
+                     ${RETENTION_DIRECTORY_ROLE},
+                     'public.jarvis_proposal_payloads', 'retentionExpiresAt', 'SELECT'
+                   ) AS "retentionColumnReadable",
+                   pg_catalog.pg_has_role(
+                     ${process.env.APP_DATABASE_ROLE ?? 'bob_app'},
+                     ${RETENTION_DIRECTORY_ROLE}, 'SET'
+                   ) AS "appCanBecomeAuthority"
+              FROM pg_catalog.pg_proc AS function
+              JOIN pg_catalog.pg_roles AS owner ON owner.oid = function.proowner
+             WHERE function.oid =
+               'public.list_jarvis_payload_retention_owners_v1(text,integer)'::pg_catalog.regprocedure
+          `;
+          return rows[0];
+        }
+
+        beforeAll(async () => {
+          const acl = await authorityAcl();
+          if (acl === undefined || !acl.securityDefiner || acl.owner !== RETENTION_DIRECTORY_ROLE) {
+            throw new Error(
+              'JARVIS_PAYLOAD_RETENTION_DIRECTORY_CERT=true exige la migration 20260819210000 ET ' +
+                'provision_jarvis_payload_retention_directory (release.sh) sur cette base.',
+            );
+          }
+        }, 30_000);
+
+        it(
+          'preuve D1 & D2 — coordonnées ÉCHUES seulement, contenu inatteignable, autorité inaccessible',
+          async () => {
+            const acl = await authorityAcl();
+            // GRANT PAR COLONNE : trois coordonnées, jamais la charge.
+            expect(acl?.payloadReadable).toBe(false);
+            expect(acl?.ownerColumnReadable).toBe(true);
+            expect(acl?.companyColumnReadable).toBe(true);
+            expect(acl?.retentionColumnReadable).toBe(true);
+            // Le rôle applicatif exécute la fonction ; il ne DEVIENT jamais son definer.
+            expect(acl?.appCanBecomeAuthority).toBe(false);
+
+            const expiring = await seedRun(companyA);
+            const alive = await seedRun(companyA);
+            const neighbour = await seedRun(companyB);
+            const expiringProposal = randomUUID();
+            const secondExpiringProposal = randomUUID();
+            const fields = proposedFields();
+            for (const proposalId of [expiringProposal, secondExpiringProposal]) {
+              await expect(
+                store.sealProposalPayload(sealInput(expiring, proposalId, fields)),
+              ).resolves.toEqual({ status: 'sealed' });
+              await ageRetention(expiring.runId, proposalId);
+            }
+            await expect(
+              store.sealProposalPayload(sealInput(alive, randomUUID(), fields)),
+            ).resolves.toEqual({ status: 'sealed' });
+            const neighbourProposal = randomUUID();
+            await expect(
+              store.sealProposalPayload(sealInput(neighbour, neighbourProposal, fields)),
+            ).resolves.toEqual({ status: 'sealed' });
+            await ageRetention(neighbour.runId, neighbourProposal);
+
+            const owners = await store.listRetentionOwners(
+              companyA,
+              JARVIS_PROPOSAL_PAYLOAD_PURGE_MAX_OWNERS_PER_TENANT,
+            );
+
+            // DEUX charges échues du même propriétaire ⇒ UNE seule entrée.
+            expect(owners.filter((owner) => owner === expiring.ownerUserId)).toEqual([
+              expiring.ownerUserId,
+            ]);
+            // Un propriétaire dont tout le PII est VIVANT n'est pas énumérable par l'autorité.
+            expect(owners).not.toContain(alive.ownerUserId);
+            // Ni le voisin : la question est posée tenant par tenant.
+            expect(owners).not.toContain(neighbour.ownerUserId);
+            expect(new Set(owners).size).toBe(owners.length);
+            expect(owners.length).toBeLessThanOrEqual(
+              JARVIS_PROPOSAL_PAYLOAD_PURGE_MAX_OWNERS_PER_TENANT,
+            );
+            // La projection ne porte QUE des identifiants de propriétaire : aucune chaîne rendue
+            // n'est un fragment de la charge scellée (nom, e-mail, adresse de la fixture).
+            for (const owner of owners) {
+              expect(owner.startsWith('jarvis-payload-owner-')).toBe(true);
+            }
+
+            await expect(
+              store.listRetentionOwners(
+                companyB,
+                JARVIS_PROPOSAL_PAYLOAD_PURGE_MAX_OWNERS_PER_TENANT,
+              ),
+            ).resolves.toContain(neighbour.ownerUserId);
+          },
+          TEST_TIMEOUT_MS,
+        );
+
+        it(
+          'preuve D3 — un rôle non autorisé ne peut pas appeler l’annuaire, et les bornes sont dures',
+          async () => {
+            // L'auditeur de certification est BYPASSRLS : s'il pouvait exécuter la fonction, il
+            // énumérerait tout. La règle NOMMÉE est l'ACL EXECUTE (aucun grantee hors du rôle
+            // applicatif) — refus PostgreSQL 42501 « permission denied for function ».
+            await expect(
+              admin.$queryRaw`
+                SELECT * FROM public.list_jarvis_payload_retention_owners_v1(${companyA}, 50)
+              `,
+            ).rejects.toThrow(/permission denied for function|42501/iu);
+
+            // Bornes refusées AVANT toute lecture, côté adapter : un appelant qui demande plus que
+            // le plafond du balayage est un défaut d'appelant, jamais une page rognée en silence.
+            await expect(
+              store.listRetentionOwners(
+                companyA,
+                JARVIS_PROPOSAL_PAYLOAD_PURGE_MAX_OWNERS_PER_TENANT + 1,
+              ),
+            ).rejects.toThrow(/Borne de l'annuaire de rétention des payloads Jarvis invalide/u);
+            await expect(store.listRetentionOwners(` ${companyA}`, 10)).rejects.toThrow(
+              /Identifiant de société de payload Jarvis invalide/u,
+            );
+          },
+          TEST_TIMEOUT_MS,
+        );
+
+        it(
+          'preuve D4 — bout en bout : le PII échu disparaît, le vivant et le voisin restent',
+          async () => {
+            const doomed = await seedRun(companyA);
+            const survivor = await seedRun(companyA);
+            const doomedProposal = randomUUID();
+            const survivorProposal = randomUUID();
+            const fields = proposedFields();
+            await expect(
+              store.sealProposalPayload(sealInput(doomed, doomedProposal, fields)),
+            ).resolves.toEqual({ status: 'sealed' });
+            await expect(
+              store.sealProposalPayload(sealInput(survivor, survivorProposal, fields)),
+            ).resolves.toEqual({ status: 'sealed' });
+            await ageRetention(doomed.runId, doomedProposal);
+
+            const owners = await store.listRetentionOwners(
+              companyA,
+              JARVIS_PROPOSAL_PAYLOAD_PURGE_MAX_OWNERS_PER_TENANT,
+            );
+            expect(owners).toContain(doomed.ownerUserId);
+            expect(owners).not.toContain(survivor.ownerUserId);
+
+            // Le balayage réel : owner-scopé, borné, sur les seules coordonnées rendues.
+            const purged = await store.purgeExpired({
+              companyId: companyA,
+              ownerUserId: doomed.ownerUserId,
+              before: new Date().toISOString(),
+              limit: JARVIS_PROPOSAL_PAYLOAD_PURGE_LIMIT_PER_OWNER,
+            });
+            expect(purged).toBe(1);
+
+            // Relecture de la BASE par l'auditeur : la ligne échue n'existe plus, la vivante oui.
+            await expect(auditPayload(doomed.runId, doomedProposal)).resolves.toBeNull();
+            await expect(auditPayload(survivor.runId, survivorProposal)).resolves.not.toBeNull();
+            await expect(
+              store.listRetentionOwners(
+                companyA,
+                JARVIS_PROPOSAL_PAYLOAD_PURGE_MAX_OWNERS_PER_TENANT,
+              ),
+            ).resolves.not.toContain(doomed.ownerUserId);
+          },
+          TEST_TIMEOUT_MS,
+        );
+      },
     );
   },
 );

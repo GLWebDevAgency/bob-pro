@@ -3,12 +3,13 @@ import { isDeepStrictEqual } from 'node:util';
 import type {
   JarvisAdmissionOwner,
   JarvisAdmissionResult,
-  JarvisRunEnvelope,
   JarvisStatelessReadResult,
+  JarvisStatelessReadView,
   JarvisSystemAdmissionEnvelope,
   JarvisUserAdmissionEnvelope,
 } from '@bob/core';
 import {
+  readJarvisCurrentRun,
   readJarvisRunById,
   runJarvisAdmissionInTransaction,
   runJarvisSystemAdmissionInTransaction,
@@ -2217,9 +2218,7 @@ export class PrismaAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort 
 
   readJarvisStateless<T>(
     owner: JarvisAdmissionOwner,
-    read: (view: {
-      readonly runById: (runId: string) => Promise<JarvisRunEnvelope | null>;
-    }) => Promise<T>,
+    read: (view: JarvisStatelessReadView) => Promise<T>,
   ): Promise<JarvisStatelessReadResult<T>> {
     return this.prisma.withIsolatedOwner(
       owner.companyId,
@@ -2229,6 +2228,10 @@ export class PrismaAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort 
         const readAt = await databaseClock(transaction);
         const value = await read({
           runById: (runId) => readJarvisRunById(transaction, owner, runId),
+          // U1-e §1 : l'annuaire owner-scopé du run courant. Cet adaptateur SAIT énumérer, donc
+          // il fournit la moitié optionnelle du port — un adaptateur qui ne saurait pas doit
+          // l'omettre, et l'appelant échoue fermé plutôt que d'affirmer « aucun run ».
+          currentRun: () => readJarvisCurrentRun(transaction, owner),
         });
         return { status: 'executed' as const, value, readAt: readAt.toISOString() };
       },

@@ -127,6 +127,9 @@ function stateFixture(mode: 'create' | 'update'): unknown {
       fieldsDigest: FIELDS_DIGEST,
       sensitiveDigest: SENSITIVE_DIGEST,
       targetRevision: mode === 'update' ? 2 : null,
+      // Sceau de cible §9.1 posé par l'admission à la mise en proposition (les deux moitiés
+      // vont ensemble : pas de révision sans digest, pas de digest sans révision).
+      targetSensitiveDigest: mode === 'update' ? sha256Hex('cible-relue') : null,
       proposalHash: sha256Hex('proposition'),
     },
     // Phase `committing` : la définition EXIGE une confirmation consommée — l'effet ne part

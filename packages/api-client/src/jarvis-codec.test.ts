@@ -3,8 +3,10 @@ import {
   JARVIS_PRESENTED_FIELDS_MAX,
   decodeCustomerContactPresentation,
   decodeJarvisCommandReceipt,
+  decodeJarvisCurrentRun,
   decodeJarvisRun,
   decodeJarvisRunSnapshot,
+  encodeJarvisOpenRunIntent,
   encodeJarvisRunCommand,
   isJarvisAdmissionKind,
   isJarvisOpenAction,
@@ -330,6 +332,102 @@ describe('jarvis-codec — canal des commandes humaines', () => {
         proposalHash: 'x',
       }),
     ).toBeNull();
+  });
+});
+
+describe('jarvis-codec — découverte du run courant (U1-e §1)', () => {
+  it('décode « aucun run » : les DEUX champs nuls, et rien d’autre', () => {
+    expect(decodeJarvisCurrentRun({ run: null, presentation: null })).toEqual({
+      run: null,
+      presentation: null,
+    });
+    expect(Object.isFrozen(decodeJarvisCurrentRun({ run: null, presentation: null }))).toBe(true);
+    // Une présentation sans run est une carte orpheline : elle n'atteint jamais l'écran.
+    expect(decodeJarvisCurrentRun({ run: null, presentation: presentation() })).toBeNull();
+  });
+
+  it('décode un run courant et sa présentation, ou une présentation absente (G4)', () => {
+    expect(decodeJarvisCurrentRun({ run: run(), presentation: presentation() })).toMatchObject({
+      run: { runId: RUN_ID },
+      presentation: { phase: 'awaiting_confirmation' },
+    });
+    expect(decodeJarvisCurrentRun({ run: run(), presentation: null })).toMatchObject({
+      run: { runId: RUN_ID },
+      presentation: null,
+    });
+    // Contrat cassé : une présentation illisible ne devient jamais une présentation partielle.
+    expect(decodeJarvisCurrentRun({ run: run(), presentation: {} })).toBeNull();
+  });
+
+  it('refuse un run TERMINAL : « courant » et « terminé » s’excluent', () => {
+    expect(
+      decodeJarvisCurrentRun({ run: run({ status: 'completed' }), presentation: null }),
+    ).toBeNull();
+    expect(
+      decodeJarvisCurrentRun({ run: run({ status: 'cancelled' }), presentation: null }),
+    ).toBeNull();
+    expect(
+      decodeJarvisCurrentRun({ run: run({ status: 'failed_terminal' }), presentation: null }),
+    ).toBeNull();
+    // `terminalAt` posé sur un statut non terminal est tout aussi contradictoire.
+    expect(
+      decodeJarvisCurrentRun({
+        run: run({ terminalAt: '2026-08-19T10:05:00.000Z' }),
+        presentation: null,
+      }),
+    ).toBeNull();
+    // `parked` n'est PAS terminal : c'est précisément le run qu'on vient reprendre à l'écran.
+    expect(
+      decodeJarvisCurrentRun({ run: run({ status: 'parked' }), presentation: null }),
+    ).not.toBeNull();
+  });
+
+  it('refuse toute clé inconnue ou manquante dans l’enveloppe de découverte', () => {
+    expect(decodeJarvisCurrentRun({ run: null, presentation: null, readAt: 'x' })).toBeNull();
+    expect(decodeJarvisCurrentRun({ run: null })).toBeNull();
+    expect(decodeJarvisCurrentRun([{ run: null, presentation: null }])).toBeNull();
+  });
+});
+
+describe('jarvis-codec — intention d’ouverture (U1-e §1)', () => {
+  it('reconstruit `{ mode: update, target: { customerId } }` clé par clé', () => {
+    const intent = encodeJarvisOpenRunIntent({
+      mode: 'update',
+      target: { customerId: CUSTOMER_ID },
+    });
+    expect(intent).toEqual({ mode: 'update', target: { customerId: CUSTOMER_ID } });
+    expect(Object.isFrozen(intent)).toBe(true);
+  });
+
+  it('refuse une création : l’écran n’ouvre que des modifications', () => {
+    expect(encodeJarvisOpenRunIntent({ mode: 'create' })).toBeNull();
+    expect(
+      encodeJarvisOpenRunIntent({ mode: 'create', target: { customerId: CUSTOMER_ID } }),
+    ).toBeNull();
+  });
+
+  it('refuse une révision de cible affirmée par le client (§7.1 : le serveur relit)', () => {
+    expect(
+      encodeJarvisOpenRunIntent({
+        mode: 'update',
+        target: { customerId: CUSTOMER_ID, revision: 3 },
+      }),
+    ).toBeNull();
+  });
+
+  it('refuse une cible absente, non canonique ou une clé étrangère', () => {
+    expect(encodeJarvisOpenRunIntent({ mode: 'update' })).toBeNull();
+    expect(
+      encodeJarvisOpenRunIntent({ mode: 'update', target: { customerId: 'client-1' } }),
+    ).toBeNull();
+    expect(
+      encodeJarvisOpenRunIntent({
+        mode: 'update',
+        target: { customerId: CUSTOMER_ID },
+        actionId: 'client-modifier',
+      }),
+    ).toBeNull();
+    expect(encodeJarvisOpenRunIntent(null)).toBeNull();
   });
 });
 

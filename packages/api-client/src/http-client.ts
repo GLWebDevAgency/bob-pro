@@ -180,6 +180,8 @@ import type {
   CustomerContactView,
   CustomerContactWriteInput,
   JarvisCommandReceiptView,
+  JarvisCurrentRunView,
+  JarvisOpenRunClientInput,
   JarvisRunSnapshotView,
   JarvisSubmitCommandClientInput,
 } from './client';
@@ -245,7 +247,9 @@ import {
 import {
   JARVIS_RUN_REVISION_MAX,
   decodeJarvisCommandReceipt,
+  decodeJarvisCurrentRun,
   decodeJarvisRunSnapshot,
+  encodeJarvisOpenRunIntent,
   encodeJarvisRunCommand,
   isJarvisAdmissionKind,
   isJarvisOpenAction,
@@ -4680,6 +4684,48 @@ export class HttpBobClient implements BobClient {
       },
       { 'cache-control': 'no-store' },
       decodeJarvisCommandReceipt,
+      JARVIS_REQUEST_TIMEOUT_MS,
+      signal,
+    );
+  }
+  /**
+   * Ouverture d'un run de MODIFICATION depuis l'écran (lot U1-e §1). Rien ne part avant que le
+   * `commandId` soit un UUID v4 canonique et l'intention reconstruite clé par clé : `runId`,
+   * `kind`, `actionId`, `expectedRevision`, révision de la cible, horloge et empreinte restent des
+   * faits SERVEUR. Rejouer le MÊME `commandId` rend le reçu original (`replayed`, zéro écriture).
+   */
+  jarvisOpenRun(input: JarvisOpenRunClientInput, signal?: AbortSignal) {
+    if (!isJarvisUserCommandId(input?.commandId)) {
+      return invalidJarvisInput<JarvisCommandReceiptView>('commandId', 'UUID v4 canonique requis.');
+    }
+    const intent = encodeJarvisOpenRunIntent(input.intent);
+    if (intent === null) {
+      return invalidJarvisInput<JarvisCommandReceiptView>(
+        'intent',
+        'Intention d’ouverture hors du canal écran.',
+      );
+    }
+    return this.req<JarvisCommandReceiptView>(
+      'POST',
+      '/jarvis/runs',
+      { commandId: input.commandId, intent },
+      { 'cache-control': 'no-store' },
+      decodeJarvisCommandReceipt,
+      JARVIS_REQUEST_TIMEOUT_MS,
+      signal,
+    );
+  }
+  /**
+   * Découverte du run courant (lot U1-e §1) — owner-scopée, stateless, JAMAIS servie depuis un
+   * cache : c'est elle qui apprend son `runId` à un appareil qui n'a rien dérivé.
+   */
+  jarvisCurrentRun(signal?: AbortSignal) {
+    return this.req<JarvisCurrentRunView>(
+      'GET',
+      '/jarvis/runs/current',
+      undefined,
+      { 'cache-control': 'no-store', pragma: 'no-cache' },
+      decodeJarvisCurrentRun,
       JARVIS_REQUEST_TIMEOUT_MS,
       signal,
     );

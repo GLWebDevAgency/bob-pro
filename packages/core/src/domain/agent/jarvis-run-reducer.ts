@@ -22,6 +22,18 @@ import {
 } from './jarvis-run';
 import type { JarvisWorkItemIntent } from './jarvis-work-item';
 
+/**
+ * Relecture AUTORITAIRE de la cible d'un run de modification (spec §7.1/§9.1). Produite par
+ * l'ADMISSION, DANS sa transaction, sous le verrou de la ligne cible — jamais par le client
+ * (il s'auto-certifierait), jamais hors transaction (TOCTOU). Absente/`null` = aucune cible
+ * relue : run de création, ou cible devenue illisible — une modification ne se confirme alors
+ * pas, elle est refusée.
+ */
+export interface JarvisTargetRevalidation {
+  readonly revision: number;
+  readonly sensitiveDigest: string;
+}
+
 /** Contexte de réduction : tout vient de l'admission — jamais d'horloge ambiante. */
 export interface JarvisReduceContext {
   readonly commandId: string;
@@ -30,6 +42,12 @@ export interface JarvisReduceContext {
   readonly actingPrincipalId: string;
   /** effectIds préalloués par le serveur dans la transaction d'admission (spec §5.4). */
   readonly allocatedEffectIds: readonly string[];
+  /**
+   * Cible relue SOUS VERROU par l'admission (§7.1). Optionnelle dans le TYPE parce que les
+   * définitions sans cible n'en produisent ni n'en consomment ; les définitions qui en ont
+   * besoin refusent FERMÉ quand elle manque — jamais un repli sur une valeur du wire.
+   */
+  readonly targetRevalidation?: JarvisTargetRevalidation | null;
 }
 
 /** Événement typé/versionné produit par une réduction — append-only côté admission. */

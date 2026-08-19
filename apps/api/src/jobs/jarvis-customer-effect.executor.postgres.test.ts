@@ -311,7 +311,6 @@ describe.skipIf(!RUN_CERT)(
                 : {
                     kind: 'target_verified',
                     customerId: update.customerId,
-                    revision: update.revision,
                   },
           },
         }),
@@ -381,13 +380,9 @@ describe.skipIf(!RUN_CERT)(
           runId,
           expectedRevision: 4,
           actionId,
-          command: {
-            type: 'confirm',
-            confirmationId,
-            proposalHash,
-            revalidatedTargetRevision: targetRevision,
-            revalidatedSensitiveDigest: update === undefined ? null : sensitiveDigest,
-          },
+          // U1-e §2 : le confirm ne porte QUE ces trois clés. La révision et le digest sensible
+          // de la cible sont relus par l'admission, sous verrou, dans SA transaction.
+          command: { type: 'confirm', confirmationId, proposalHash },
         }),
         'confirm',
       );

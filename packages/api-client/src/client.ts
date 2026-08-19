@@ -1331,6 +1331,36 @@ export interface JarvisRunSnapshotView {
   readonly presentation: CustomerContactPresentationV1 | null;
 }
 
+/**
+ * Découverte du run courant (lot U1-e §1) — miroir de la reprise `QuoteAgentMissionResumeView` :
+ * soit il y a un run NON TERMINAL à reprendre, soit il n'y en a pas. L'union interdit l'état
+ * bâtard « pas de run mais une présentation » : un écran ne peut donc pas afficher une carte
+ * orpheline. Sans cette lecture, l'appareil ne connaît AUCUN `runId` (la voix ne renvoie que la
+ * parole) et la carte de confirmation reste invisible.
+ */
+export type JarvisCurrentRunView =
+  | { readonly run: null; readonly presentation: null }
+  | {
+      readonly run: JarvisRunView;
+      readonly presentation: CustomerContactPresentationV1 | null;
+    };
+
+/**
+ * Ouverture d'un run de MODIFICATION depuis l'écran (lot U1-e §1). Le client n'apporte que ce
+ * qu'il possède : son `commandId` (UUID v4 §5.4, mémoïsé jusqu'au reçu — c'est lui qui rend le
+ * rejeu zéro-write possible) et l'identité de la fiche visée. La RÉVISION de la cible est absente
+ * PAR CONSTRUCTION : aucune projection client ne la porte, donc le client ne peut que l'inventer
+ * — le serveur relit la cible lui-même (§7.1/§8). `runId`, `kind`, `actionId` et `expectedRevision`
+ * sont également des faits serveur : la route est dédiée à `customer_contact@1`.
+ */
+export interface JarvisOpenRunClientInput {
+  readonly commandId: string;
+  readonly intent: {
+    readonly mode: 'update';
+    readonly target: { readonly customerId: string };
+  };
+}
+
 export interface BobClient {
   readonly companyId: string;
   /**
@@ -2003,6 +2033,24 @@ export interface BobClient {
     runId: string,
     signal?: AbortSignal,
   ): Promise<Result<JarvisRunSnapshotView, AppError>>;
+  /**
+   * GET /jarvis/runs/current (lot U1-e §1) — la DÉCOUVERTE : le run non terminal de l'owner, ou
+   * `{ run: null }`. C'est l'unique porte d'entrée d'un appareil qui n'a rien dérivé ; elle est
+   * owner-scopée et stateless (zéro verrou, zéro écriture) comme `jarvisGetRun`.
+   * OPTIONNELLE, même doctrine que `jarvisSubmitCommand`.
+   */
+  jarvisCurrentRun?(signal?: AbortSignal): Promise<Result<JarvisCurrentRunView, AppError>>;
+  /**
+   * POST /jarvis/runs (lot U1-e §1) — ouverture d'un run `customer_contact@1` de MODIFICATION
+   * depuis l'écran. Route DÉDIÉE : le canal de commandes continue de refuser toute révision de
+   * seed. Rejouer le MÊME `commandId` retombe sur le MÊME run et rend le reçu original
+   * (`outcome: 'replayed'`, zéro écriture) — jamais un second run fantôme.
+   * OPTIONNELLE, même doctrine que `jarvisSubmitCommand`.
+   */
+  jarvisOpenRun?(
+    input: JarvisOpenRunClientInput,
+    signal?: AbortSignal,
+  ): Promise<Result<JarvisCommandReceiptView, AppError>>;
 }
 
 /** Entrée client de searchSalesDocuments : identique au contrat core, `scope` par défaut "all"

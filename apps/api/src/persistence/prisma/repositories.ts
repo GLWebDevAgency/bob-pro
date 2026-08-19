@@ -240,11 +240,21 @@ export class PrismaCustomerRepository implements CustomerRepository {
       requirePersistedAggregate('customer', row.id, Customer.of(customerRowToProps(row))),
     );
   }
+  /**
+   * UNIQUE writer de la fiche : `createCustomer` (insert) et le use case canonique
+   * `UpdateCustomer` (@bob/core) passent tous deux par ici. La RÉVISION (Jarvis §9.1) est un
+   * compteur de persistance — le domaine ne la porte pas, exactement comme `updatedAt` : elle
+   * naît à 1 sur l'insert (DEFAULT SQL) et s'incrémente sur CHAQUE recouvrement d'une ligne
+   * existante. Un rejeu idempotent (même contenu) l'incrémente aussi : la garde §9.1 préfère
+   * invalider une proposition de trop plutôt qu'écraser en silence la correction d'un artisan.
+   */
   async save(c: Customer): Promise<void> {
     const data = customerPropsToCreate(c.toProps());
-    await this.prisma
-      .client()
-      .customer.upsert({ where: { id: data.id }, create: data, update: data });
+    await this.prisma.client().customer.upsert({
+      where: { id: data.id },
+      create: data,
+      update: { ...data, revision: { increment: 1 } },
+    });
   }
 }
 

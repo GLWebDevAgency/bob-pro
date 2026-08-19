@@ -228,6 +228,8 @@ describe('RealtimeJarvisMissionOrchestrator — prepare', () => {
             fieldsDigest: computeCustomerContactFieldsDigest(fields()),
             sensitiveDigest: computeCustomerContactSensitiveDigest(fields()),
             targetRevision: null,
+            // Sceau de cible §9.1 : une création n'a pas de cible relue.
+            targetSensitiveDigest: null,
             proposalHash: 'e'.repeat(64),
           },
           confirmation: {
@@ -443,6 +445,8 @@ describe('RealtimeJarvisMissionOrchestrator — runPlanned', () => {
           fieldsDigest: computeCustomerContactFieldsDigest(fields()),
           sensitiveDigest: computeCustomerContactSensitiveDigest(fields()),
           targetRevision: null,
+          // Sceau de cible §9.1 : une création n'a pas de cible relue.
+          targetSensitiveDigest: null,
           proposalHash,
         },
         confirmation: {
@@ -488,12 +492,11 @@ describe('RealtimeJarvisMissionOrchestrator — runPlanned', () => {
       prepared: preparedPresented.prepared,
       frame: frame({ kind: 'confirm_proposal' }),
     });
+    // U1-e §2 : trois clés, comme le tap — la cible relue n'est pas une donnée de commande.
     expect(presented.runJarvisAdmission.mock.calls[0]![0].command).toEqual({
       type: 'confirm',
       confirmationId: CONFIRMATION_ID,
       proposalHash,
-      revalidatedTargetRevision: null,
-      revalidatedSensitiveDigest: null,
     });
   });
 
@@ -510,6 +513,8 @@ describe('RealtimeJarvisMissionOrchestrator — runPlanned', () => {
             fieldsDigest: computeCustomerContactFieldsDigest(fields()),
             sensitiveDigest: computeCustomerContactSensitiveDigest(fields()),
             targetRevision: 2,
+            // Sceau de la cible RELUE par l'admission à la mise en proposition (§7.1).
+            targetSensitiveDigest: 'f'.repeat(64),
             proposalHash: 'e'.repeat(64),
           },
           confirmation: {

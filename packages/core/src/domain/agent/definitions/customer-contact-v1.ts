@@ -15,6 +15,10 @@
  * - cycle de confirmation §7.1 complet : issued -> presented -> consumed | rejected | expired |
  *   invalidated ; une mutation TVA/canal de facturation/adresse/destinataire entre présentation
  *   et confirm INVALIDE la proposition (jamais `consumed`) — nouvelle proposition requise ;
+ * - la cible d'une modification n'est JAMAIS certifiée par le wire (U1-e §2) : la mise en
+ *   proposition scelle `targetRevision` + `targetSensitiveDigest` d'une fiche RELUE par
+ *   l'admission sous verrou, et le confirm compare ce sceau à une relecture fraîche, produite
+ *   dans LA transaction qui consomme — le contexte les porte, la commande ne les porte pas ;
  * - UN SEUL `effectId` par run : `context.allocatedEffectIds[0]` pincé au démarrage, seul id
  *   jamais émis dans un work item ; `record_effect_receipt` est idempotent (même `customerId`
  *   au replay) ; un run terminal est figé et la définition n'émet JAMAIS le statut `expired` ;
@@ -167,6 +171,13 @@ export interface CustomerContactProposalV1 {
   readonly sensitiveDigest: string;
   /** Update : révision de la cible relue juste avant proposition ; create : null. */
   readonly targetRevision: number | null;
+  /**
+   * SCEAU DE CIBLE (§9.1) — update : digest sensible de la fiche RELUE sous verrou par
+   * l'admission au moment de la mise en proposition ; create : null. C'est LUI que le confirm
+   * compare à une relecture fraîche : le digest des champs PROPOSÉS (`sensitiveDigest`) ne
+   * pourrait rien prouver de la cible, il ne parle que de ce que l'artisan veut écrire.
+   */
+  readonly targetSensitiveDigest: string | null;
   readonly proposalHash: string;
 }
 
@@ -240,7 +251,13 @@ export type CustomerContactResolutionOutcome =
       readonly reviewId: string;
       readonly candidates: readonly CustomerContactDuplicateCandidateV1[];
     }
-  | { readonly kind: 'target_verified'; readonly customerId: string; readonly revision: number };
+  /**
+   * §8 — L'AUTORITÉ D'UNE ENTITÉ NE VIENT JAMAIS DU CLIENT. La variante ne porte QUE l'identité
+   * de la cible : la révision vérifiée est celle que l'admission RELIT SOUS VERROU dans sa
+   * transaction (`context.targetRevalidation`). Un champ `revision` ici serait une affirmation
+   * que nul émetteur ne peut prouver — et le premier à s'y fier scellerait une cible périmée.
+   */
+  | { readonly kind: 'target_verified'; readonly customerId: string };
 
 /**
  * FD-06 : union à DEUX membres — continuer la création ou choisir un existant. Aucune variante
@@ -280,12 +297,14 @@ export type CustomerContactCommand =
       readonly ack: 'screen_ack' | 'voice_presentation_ack';
     }
   | {
+      /**
+       * Le wire s'arrête ICI : `confirmationId` + `proposalHash`, rien d'autre. La cible relue
+       * (§7.1) N'EST PLUS une donnée de commande — un client ne peut pas certifier l'état de sa
+       * propre cible. Elle entre par le CONTEXTE, produite par l'admission sous verrou.
+       */
       readonly type: 'confirm';
       readonly confirmationId: string;
       readonly proposalHash: string;
-      /** Update : cible relue par l'admission juste avant consommation (§7.1) ; create : null. */
-      readonly revalidatedTargetRevision: number | null;
-      readonly revalidatedSensitiveDigest: string | null;
     }
   | { readonly type: 'reject_proposal'; readonly confirmationId: string }
   | {
@@ -320,6 +339,10 @@ export type CustomerContactInvalidCommandReason =
   | 'choice_unknown'
   | 'no_update_target'
   | 'target_revision_stale'
+  /** Update sans cible relue par l'admission (§7.1) : cible disparue ou relecture non câblée. */
+  | 'target_revalidation_missing'
+  /** Create avec une cible relue : un run de création n'a pas de cible — état sans sens. */
+  | 'target_revalidation_forbidden'
   | 'max_wakes_exhausted'
   | 'max_steps_exceeded'
   | 'state_too_large'
@@ -510,6 +533,7 @@ function parseProposal(value: unknown): CustomerContactProposalV1 | null {
     'fieldsDigest',
     'sensitiveDigest',
     'targetRevision',
+    'targetSensitiveDigest',
     'proposalHash',
   ])) {
     return null;
@@ -517,6 +541,12 @@ function parseProposal(value: unknown): CustomerContactProposalV1 | null {
   if (!isCanonicalUuid(value['proposalId']) || !isCanonicalUuid(value['proposalCommandId'])) return null;
   if (!isSha256Digest(value['fieldsDigest']) || !isSha256Digest(value['sensitiveDigest'])) return null;
   if (value['targetRevision'] !== null && !isRevision(value['targetRevision'])) return null;
+  if (value['targetSensitiveDigest'] !== null && !isSha256Digest(value['targetSensitiveDigest'])) {
+    return null;
+  }
+  // Les deux moitiés du sceau de cible vont ENSEMBLE : une révision sans digest (ou l'inverse)
+  // serait une garde §9.1 à moitié armée — refus de forme, jamais une tolérance.
+  if ((value['targetRevision'] === null) !== (value['targetSensitiveDigest'] === null)) return null;
   if (!isSha256Digest(value['proposalHash'])) return null;
   return Object.freeze({
     proposalId: value['proposalId'],
@@ -524,6 +554,7 @@ function parseProposal(value: unknown): CustomerContactProposalV1 | null {
     fieldsDigest: value['fieldsDigest'],
     sensitiveDigest: value['sensitiveDigest'],
     targetRevision: value['targetRevision'],
+    targetSensitiveDigest: value['targetSensitiveDigest'],
     proposalHash: value['proposalHash'],
   });
 }
@@ -706,12 +737,11 @@ function parseResolutionOutcome(value: unknown): CustomerContactResolutionOutcom
     return Object.freeze({ kind: 'duplicate_candidates' as const, reviewId: value['reviewId'], candidates });
   }
   if (value['kind'] === 'target_verified') {
-    if (!exactKeys(value, ['kind', 'customerId', 'revision'])) return null;
-    if (!isCanonicalIdentifier(value['customerId']) || !isRevision(value['revision'])) return null;
+    if (!exactKeys(value, ['kind', 'customerId'])) return null;
+    if (!isCanonicalIdentifier(value['customerId'])) return null;
     return Object.freeze({
       kind: 'target_verified' as const,
       customerId: value['customerId'],
-      revision: value['revision'],
     });
   }
   return null;
@@ -809,26 +839,14 @@ export function parseCustomerContactCommand(value: unknown): CustomerContactComm
       });
     }
     case 'confirm': {
-      if (!exactKeys(value, [
-        'type',
-        'confirmationId',
-        'proposalHash',
-        'revalidatedTargetRevision',
-        'revalidatedSensitiveDigest',
-      ])) {
-        return null;
-      }
+      // EXACTEMENT trois clés : une commande qui prétendrait porter la révision ou le digest
+      // revalidés de la cible est REFUSÉE DE FORME — la relecture n'est pas une donnée du wire.
+      if (!exactKeys(value, ['type', 'confirmationId', 'proposalHash'])) return null;
       if (!isCanonicalUuid(value['confirmationId']) || !isSha256Digest(value['proposalHash'])) return null;
-      if (value['revalidatedTargetRevision'] !== null && !isRevision(value['revalidatedTargetRevision'])) return null;
-      if (value['revalidatedSensitiveDigest'] !== null && !isSha256Digest(value['revalidatedSensitiveDigest'])) {
-        return null;
-      }
       return Object.freeze({
         type: 'confirm' as const,
         confirmationId: value['confirmationId'],
         proposalHash: value['proposalHash'],
-        revalidatedTargetRevision: value['revalidatedTargetRevision'],
-        revalidatedSensitiveDigest: value['revalidatedSensitiveDigest'],
       });
     }
     case 'reject_proposal': {
@@ -1071,16 +1089,23 @@ function reduceResolution(
   if (resolution.kind !== 'target_verified') return fail('resolution_mode_mismatch');
   // La cible relue doit être LA cible admise au démarrage — jamais substituée en cours de run.
   if (resolution.customerId !== state.intent.target.customerId) return fail('target_mismatch');
+  // §8 — LA RÉVISION VÉRIFIÉE EST CELLE DE LA BASE, RELUE SOUS VERROU par l'admission dans CETTE
+  // transaction. L'émetteur (la route d'ouverture, demain la voix) ne l'apporte pas : il ne peut
+  // pas la prouver. Sans relecture, la résolution est REFUSÉE plutôt que scellée sur une graine —
+  // sceller ici une révision fausse ne corromprait rien tout de suite, mais condamnerait toute
+  // proposition ultérieure en `target_revision_stale`, sans que rien ne dise pourquoi.
+  const revalidation = context.targetRevalidation ?? null;
+  if (revalidation === null) return fail('target_revalidation_missing');
   const intent: CustomerContactIntentV1 = Object.freeze({
     mode: 'update' as const,
-    target: Object.freeze({ customerId: resolution.customerId, revision: resolution.revision }),
+    target: Object.freeze({ customerId: resolution.customerId, revision: revalidation.revision }),
   });
   return commit(
     run,
     context,
     withState(state, { phase: 'preparing_proposal', intent }),
     'cc_customer_resolution_recorded',
-    { outcome: 'target_verified', targetCustomerId: resolution.customerId, targetRevision: resolution.revision },
+    { outcome: 'target_verified', targetCustomerId: resolution.customerId, targetRevision: revalidation.revision },
     EMPTY_INTENTS,
   );
 }
@@ -1123,11 +1148,23 @@ function reduceStageProposal(
   command: Extract<CustomerContactCommand, { type: 'stage_proposal' }>,
   context: JarvisReduceContext,
 ): JarvisReduceResult {
+  // §7.1 — LE SCEAU DE CIBLE naît ici, d'une relecture SOUS VERROU faite par l'admission dans
+  // sa transaction : c'est ce sceau que le confirm comparera à une relecture fraîche. Sans lui,
+  // la garde §9.1 n'aurait rien à comparer et resterait une promesse creuse.
+  const revalidation = context.targetRevalidation ?? null;
   if (state.intent.mode === 'create') {
     if (command.targetRevision !== null) return fail('invalid_value');
-  } else if (command.targetRevision !== state.intent.target.revision) {
-    // La proposition doit sceller la révision vérifiée courante — sinon elle naîtrait stale.
-    return fail('target_revision_stale');
+    if (revalidation !== null) return fail('target_revalidation_forbidden');
+  } else {
+    if (command.targetRevision !== state.intent.target.revision) {
+      // La proposition doit sceller la révision vérifiée courante — sinon elle naîtrait stale.
+      return fail('target_revision_stale');
+    }
+    if (revalidation === null) return fail('target_revalidation_missing');
+    // La cible RELUE fait autorité sur la révision vérifiée en §8 : si elle a bougé entre la
+    // résolution et la mise en proposition, la proposition naîtrait déjà périmée.
+    if (revalidation.revision !== state.intent.target.revision)
+      return fail('target_revision_stale');
   }
   if (state.wakesScheduled >= CUSTOMER_CONTACT_LIMITS.maxWakes) return fail('max_wakes_exhausted');
   const epoch = instantEpoch(context.occurredAt);
@@ -1150,6 +1187,10 @@ function reduceStageProposal(
     fieldsDigest: command.fieldsDigest,
     sensitiveDigest: command.sensitiveDigest,
     targetRevision: command.targetRevision,
+    // Le sceau de cible n'entre PAS dans `proposalHash` : ce hash est ce que le client rejoue
+    // pour prouver qu'il confirme la proposition qu'il a VUE. La cible relue, elle, est une
+    // affaire de serveur — un client n'a ni à la connaître ni à la répéter.
+    targetSensitiveDigest: revalidation === null ? null : revalidation.sensitiveDigest,
     proposalHash,
   });
   const expiresAt = instantFromEpoch(epoch + CUSTOMER_CONTACT_CONFIRMATION_TTL_MS);
@@ -1244,31 +1285,35 @@ function reduceConfirm(
     });
   }
   if (command.proposalHash !== proposal.proposalHash) return fail('proposal_hash_mismatch');
+  // §7.1/§9.1 — LA GARDE RÉELLE : la cible est RELUE par l'admission dans la transaction qui
+  // consomme, sous le verrou de sa ligne ; on compare cette lecture au sceau posé à la mise en
+  // proposition. Rien de ce qui est comparé ici ne vient du client.
+  const revalidation = context.targetRevalidation ?? null;
   if (state.intent.mode === 'update') {
-    if (command.revalidatedTargetRevision === null || command.revalidatedSensitiveDigest === null) {
-      return fail('invalid_value');
-    }
+    // Cible non relue (disparue, ou admission qui ne la fournit pas) : on ne confirme JAMAIS
+    // une modification à l'aveugle — refus nommé, zéro effet, proposition intacte.
+    if (revalidation === null) return fail('target_revalidation_missing');
     if (
-      command.revalidatedTargetRevision !== proposal.targetRevision
-      || command.revalidatedSensitiveDigest !== proposal.sensitiveDigest
+      revalidation.revision !== proposal.targetRevision
+      || revalidation.sensitiveDigest !== proposal.targetSensitiveDigest
     ) {
       // §9.1 : cible mutée entre présentation et confirm => invalidated, JAMAIS consumed.
       const intent: CustomerContactIntentV1 = Object.freeze({
         mode: 'update' as const,
         target: Object.freeze({
           customerId: state.intent.target.customerId,
-          revision: command.revalidatedTargetRevision,
+          revision: revalidation.revision,
         }),
       });
       return closeProposal(run, state, context, 'invalidated', { intent }, 'cc_proposal_invalidated', {
         confirmationId: confirmation.confirmationId,
         proposalId: proposal.proposalId,
         cause: 'stale_target',
-        revalidatedTargetRevision: command.revalidatedTargetRevision,
+        revalidatedTargetRevision: revalidation.revision,
       });
     }
-  } else if (command.revalidatedTargetRevision !== null || command.revalidatedSensitiveDigest !== null) {
-    return fail('invalid_value');
+  } else if (revalidation !== null) {
+    return fail('target_revalidation_forbidden');
   }
   const actionId = state.intent.mode === 'create'
     ? CUSTOMER_CONTACT_CREATE_ACTION_ID

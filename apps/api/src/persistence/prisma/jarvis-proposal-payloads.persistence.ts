@@ -57,6 +57,18 @@ const SHA256_HEX = /^[0-9a-f]{64}$/u;
 const MAX_IDENTIFIER_LENGTH = 200;
 const MAX_PURGE_LIMIT = 500;
 
+/**
+ * Annuaire d'autorité (U1-e §4) : transaction GLOBALE, sans identité tenant, aux bornes les plus
+ * courtes du dépôt — c'est une lecture d'exploitation, jamais un chemin de requête utilisateur.
+ * Les mêmes valeurs sont posées côté fonction PostgreSQL ; celles-ci ferment la session AVANT
+ * l'appel pour qu'une fonction dé-provisionnée ne puisse pas hériter d'un timeout de pool.
+ */
+const DIRECTORY_TRANSACTION_OPTIONS = { maxWaitMs: 1_000, timeoutMs: 4_000 } as const;
+const DIRECTORY_STATEMENT_TIMEOUT = '3s';
+const DIRECTORY_LOCK_TIMEOUT = '1s';
+/** Plafond DUR, identique à celui de la fonction : au-delà, l'appelant est refusé, jamais rogné. */
+const MAX_RETENTION_OWNERS = 50;
+
 /** Entrée structurellement invalide = bug d'appelant, jamais un état runtime : on échoue fort. */
 function assertUuid(value: string, label: string): void {
   if (!UUID.test(value)) {
@@ -70,13 +82,18 @@ function assertDigest(value: string, label: string): void {
   }
 }
 
+function isOwnerIdentifier(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length >= 1 &&
+    value.length <= MAX_IDENTIFIER_LENGTH &&
+    value === value.trim() &&
+    !hasAsciiControlCharacter(value)
+  );
+}
+
 function assertOwnerIdentifier(value: string, label: string): void {
-  if (
-    value.length < 1 ||
-    value.length > MAX_IDENTIFIER_LENGTH ||
-    value !== value.trim() ||
-    hasAsciiControlCharacter(value)
-  ) {
+  if (!isOwnerIdentifier(value)) {
     throw new Error(`Identifiant ${label} de payload Jarvis invalide.`);
   }
 }
@@ -119,6 +136,15 @@ interface StoredPayloadRow {
   readonly fieldsDigest: string;
   readonly sensitiveDigest: string;
   readonly payload: unknown;
+}
+
+interface RetentionOwnerRow {
+  readonly ownerUserId: unknown;
+}
+
+interface DirectoryTimeoutRow {
+  readonly statementTimeout: string;
+  readonly lockTimeout: string;
 }
 
 export class PrismaJarvisProposalPayloadStore implements JarvisProposalPayloadStorePort {
@@ -321,5 +347,72 @@ export class PrismaJarvisProposalPayloadStore implements JarvisProposalPayloadSt
       },
       { ...PAYLOAD_TRANSACTION_OPTIONS, readOnly: false },
     );
+  }
+
+  /**
+   * ANNUAIRE DES PROPRIÉTAIRES À BALAYER (U1-e §4) — hors du port, comme `purgeExpired` : un
+   * appelant métier n'énumère jamais les propriétaires d'un tenant, seul le balayage de rétention
+   * le fait. Le service de purge le reconnaît STRUCTURELLEMENT plutôt que d'élargir un port de
+   * lecture/écriture avec un droit d'énumération.
+   *
+   * POURQUOI CE N'EST PAS UNE REQUÊTE. Les policies de `jarvis_proposal_payloads` sont
+   * owner-scopées et la table est en FORCE RLS : `bob_app` sans GUC propriétaire ne voit RIEN, et
+   * c'est exactement ce que prouve la certification. La question « qui a du PII échu ici ? » n'a
+   * donc de réponse que par une AUTORITÉ serveur — la fonction SECURITY DEFINER
+   * `list_jarvis_payload_retention_owners_v1`, détenue par un rôle NOLOGIN/NOBYPASSRLS qui ne
+   * possède, PAR COLONNE, que (companyId, ownerUserId, retentionExpiresAt) : `payload` lui est
+   * inatteignable, et sa policy ne lui montre que des lignes DÉJÀ ÉCHUES.
+   *
+   * Transaction GLOBALE (`withIsolatedGlobal`) : aucune identité tenant n'est posée — ce serait un
+   * mensonge, l'annuaire n'appartient à aucun propriétaire. Aucun repository tenanté n'est appelé
+   * ici.
+   *
+   * Toute anomalie LÈVE : la borne du service transforme l'exception en `failures += 1` sur CE
+   * tenant, et les suivants continuent. Rendre une liste vide serait pire qu'une panne — le
+   * balayage conclurait « rien à effacer » sur un tenant dont le PII est en réalité échu.
+   */
+  async listRetentionOwners(companyId: string, limit: number): Promise<readonly string[]> {
+    assertOwnerIdentifier(companyId, 'de société');
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_RETENTION_OWNERS) {
+      throw new Error("Borne de l'annuaire de rétention des payloads Jarvis invalide.");
+    }
+    return this.prisma.withIsolatedGlobal(async (transaction) => {
+      // Fence de timeouts VÉRIFIÉE, pas seulement demandée (patron PrismaRealtimeReaperDirectory) :
+      // une session qui n'accepterait pas ces bornes n'a pas le droit de scanner un magasin PII.
+      const [timeouts] = await transaction.$queryRaw<DirectoryTimeoutRow[]>(Prisma.sql`
+        SELECT pg_catalog.set_config(
+                 'statement_timeout', ${DIRECTORY_STATEMENT_TIMEOUT}, true
+               ) AS "statementTimeout",
+               pg_catalog.set_config(
+                 'lock_timeout', ${DIRECTORY_LOCK_TIMEOUT}, true
+               ) AS "lockTimeout"
+      `);
+      if (
+        timeouts?.statementTimeout !== DIRECTORY_STATEMENT_TIMEOUT ||
+        timeouts.lockTimeout !== DIRECTORY_LOCK_TIMEOUT
+      ) {
+        throw new Error('jarvis_payload_retention_directory_timeout_fence_rejected');
+      }
+      const rows = await transaction.$queryRaw<RetentionOwnerRow[]>(Prisma.sql`
+        SELECT directory."ownerUserId" AS "ownerUserId"
+          FROM public.list_jarvis_payload_retention_owners_v1(
+            ${companyId}::text, ${limit}::integer
+          ) AS directory
+      `);
+      // Validation DÉFENSIVE de la projection : la fonction est l'autorité, elle n'est pas crue
+      // sur parole. Une page trop longue, un identifiant hors forme ou un doublon signalent une
+      // dérive de la base — on refuse, on ne balaye pas sur une liste douteuse.
+      const owners: string[] = [];
+      for (const row of rows) {
+        if (!isOwnerIdentifier(row.ownerUserId)) {
+          throw new Error('jarvis_payload_retention_directory_projection_rejected');
+        }
+        owners.push(row.ownerUserId);
+      }
+      if (owners.length > limit || new Set(owners).size !== owners.length) {
+        throw new Error('jarvis_payload_retention_directory_projection_rejected');
+      }
+      return owners;
+    }, DIRECTORY_TRANSACTION_OPTIONS);
   }
 }

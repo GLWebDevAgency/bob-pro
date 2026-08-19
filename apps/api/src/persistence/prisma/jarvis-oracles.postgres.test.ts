@@ -42,7 +42,17 @@
  *      → fiche RÉELLEMENT écrite), puis le modifier avec une MUTATION D'E-MAIL glissée entre la
  *      présentation et la confirmation : la confirmation est `invalidated` (jamais `consumed`),
  *      zéro work item, zéro écriture métier — puis une nouvelle proposition, elle, aboutit, et la
- *      mutation de l'artisan SURVIT à l'effet.
+ *      mutation de l'artisan SURVIT à l'effet. U1-e §2 : la dérive n'est plus FABRIQUÉE — le
+ *      confirm ne porte que trois clés, l'admission relit la fiche sous verrou et dérive son
+ *      digest sensible, et c'est la révision INCRÉMENTÉE en base par l'écriture canonique qui
+ *      fait mordre la garde §9.1.
+ *
+ *  (5) ORACLE DU PARCOURS DE MODIFICATION (U1-e §2, §5 étage 0) — le MÊME script d'oracle, cette
+ *      fois en `update` sur une cible RÉELLE partagée : voix et tap produisent encore un seul et
+ *      même journal hors colonnes de CANAL, sceau de cible COMPRIS. Ce sceau est ensuite prouvé
+ *      RELU : il égale le digest recalculé par l'auditeur depuis les colonnes sensibles §9.1 de
+ *      la fiche, et diffère du digest des champs proposés (domaines séparés). Chaque run porte
+ *      un work item de MODIFICATION, et la fiche n'a pas bougé d'un cran.
  *
  * Même harnais que jarvis-admission.postgres.test.ts : gates env, base jetable, sociétés créées
  * par l'auditeur, fingerprints déterministes, clients Prisma `errorFormat: 'minimal'`.
@@ -57,6 +67,7 @@ import {
   computeCustomerContactFieldsDigest,
   computeCustomerContactProposalHash,
   computeCustomerContactSensitiveDigest,
+  computeCustomerContactTargetSensitiveDigest,
   deriveJarvisSystemCommandId,
   deriveRealtimeTurnId,
   sha256Hex,
@@ -349,6 +360,8 @@ interface CustomerAuditRow {
   readonly addrLine1: string;
   readonly addrZip: string;
   readonly addrCity: string;
+  /** U1-e §2 — compteur d'édition relu par l'admission ; l'oracle le LIT, ne le suppose pas. */
+  readonly revision: number;
 }
 
 /** Trace d'un run conduit par le script d'oracle — de quoi comparer, jamais de quoi rejouer. */
@@ -586,7 +599,7 @@ describe.skipIf(!RUN_CERT)(
     async function auditCustomer(customerId: string): Promise<CustomerAuditRow | null> {
       const rows = await admin.$queryRaw<CustomerAuditRow[]>`
         SELECT "id", "name", "type"::text AS "type", "email", "phone",
-               "addrLine1", "addrZip", "addrCity"
+               "addrLine1", "addrZip", "addrCity", "revision"
           FROM public.customers
          WHERE "id" = ${customerId}
       `;
@@ -636,12 +649,17 @@ describe.skipIf(!RUN_CERT)(
 
     /**
      * LE script d'oracle §19.3 — six tours, identiques quel que soit le canal :
-     *   1. `start_run` (create) · 2. `record_customer_resolution` (no_duplicates) ·
-     *   3. `stage_proposal` (charge scellée d'abord) · 4. `confirm` PRÉMATURÉ (refusé, zéro
-     *   write — la voix n'obtient pas ce que l'écran n'obtient pas) · 5.
-     *   `record_presentation_ack` (modalité DU CANAL) · 6. `confirm`.
+     *   1. `start_run` · 2. `record_customer_resolution` · 3. `stage_proposal` (charge scellée
+     *   d'abord) · 4. `confirm` PRÉMATURÉ (refusé, zéro write — la voix n'obtient pas ce que
+     *   l'écran n'obtient pas) · 5. `record_presentation_ack` (modalité DU CANAL) · 6. `confirm`.
      * `channelAt` décide quel canal porte quel tour : c'est ce qui permet au run MIXTE d'ouvrir
      * à la voix et de finir à l'écran, sans une ligne de code de plus.
+     *
+     * `target` bascule le MÊME script de la création à la MODIFICATION (U1-e §2) : l'intention
+     * cible une fiche RÉELLE, la résolution la vérifie, la proposition scelle sa révision, et
+     * l'admission relit la cible sous verrou à chaque tour. Un seul script pour les deux
+     * parcours : ce qui reste différent entre deux runs est donc bien le CANAL, jamais le code
+     * de conduite.
      */
     async function driveOracleScript(input: {
       readonly ownerUserId: string;
@@ -650,9 +668,15 @@ describe.skipIf(!RUN_CERT)(
       readonly confirmationId: string;
       readonly fields: CustomerContactProposedFieldsV1;
       readonly stopAfterPresentation?: boolean;
+      /** Modification : la cible RÉELLE et sa révision relue en base par l'appelant. */
+      readonly target?: { readonly customerId: string; readonly revision: number };
     }): Promise<OracleTrace> {
       const runId = randomUUID();
       const ownerUserId = input.ownerUserId;
+      const target = input.target ?? null;
+      const actionId =
+        target === null ? CUSTOMER_CONTACT_CREATE_ACTION_ID : CUSTOMER_CONTACT_UPDATE_ACTION_ID;
+      const targetRevision = target === null ? null : target.revision;
       const commandIds: string[] = [];
       /** Un tour ADMIS = un événement : l'acteur attendu se note ici, dans l'ordre réel. */
       const eventActors: ('user_voice' | 'user_tap')[] = [];
@@ -665,6 +689,7 @@ describe.skipIf(!RUN_CERT)(
           step,
           expectedRevision,
           command,
+          actionId,
         });
         commandIds[step - 1] = envelope.commandId;
         return envelope;
@@ -681,14 +706,21 @@ describe.skipIf(!RUN_CERT)(
       };
 
       // 1 — ouverture du run : l'effectId est ALLOUÉ par le serveur, jamais par l'appelant.
-      const started = await admitAt(1, 0, { type: 'start_run', intent: { mode: 'create' } });
+      const started = await admitAt(1, 0, {
+        type: 'start_run',
+        intent: target === null ? { mode: 'create' } : { mode: 'update', target },
+      });
       expect(started.eventSequence).toBe(1);
       const effectId = stateEffectIdOf(await requireRun(runId));
 
-      // 2 — résolution : aucun doublon (la recherche appartient à la lane résolution).
+      // 2 — résolution : aucun doublon en création ; en modification, la cible VÉRIFIÉE, dont la
+      // révision fait ensuite autorité sur tout ce que la proposition scellera.
       await admitAt(2, 1, {
         type: 'record_customer_resolution',
-        resolution: { kind: 'no_duplicates' },
+        resolution:
+          target === null
+            ? { kind: 'no_duplicates' }
+            : { kind: 'target_verified', customerId: target.customerId },
       });
 
       // 3 — la charge PII est scellée AVANT que le run ne promette son digest.
@@ -707,23 +739,25 @@ describe.skipIf(!RUN_CERT)(
         confirmationId: input.confirmationId,
         fieldsDigest,
         sensitiveDigest,
-        targetRevision: null,
+        targetRevision,
       });
       const proposalHash = computeCustomerContactProposalHash({
         runId,
         proposalId: input.proposalId,
-        actionId: CUSTOMER_CONTACT_CREATE_ACTION_ID,
+        actionId,
         fieldsDigest,
         sensitiveDigest,
-        targetRevision: null,
+        targetRevision,
         effectId,
       });
+      // U1-e §2 : trois clés au wire, dans les DEUX parcours. Une création n'a pas de cible à
+      // relire (l'admission ne fournit aucune revalidation, la définition en exige l'absence) ;
+      // une modification en a une, mais c'est l'ADMISSION qui la relit sous verrou — le client
+      // n'affirme jamais l'état de sa cible.
       const confirmCommand = {
         type: 'confirm',
         confirmationId: input.confirmationId,
         proposalHash,
-        revalidatedTargetRevision: null,
-        revalidatedSensitiveDigest: null,
       };
 
       // 4 — CONFIRMATION PRÉMATURÉE : sans reçu de présentation, la proposition n'est pas
@@ -1192,8 +1226,6 @@ describe.skipIf(!RUN_CERT)(
           type: 'confirm',
           confirmationId,
           proposalHash: trace.proposalHash,
-          revalidatedTargetRevision: null,
-          revalidatedSensitiveDigest: null,
         };
         const phone = tapChannel('iphone-du-fondateur');
         const tablet = tapChannel('ipad-atelier');
@@ -1366,8 +1398,6 @@ describe.skipIf(!RUN_CERT)(
               targetRevision: null,
               effectId,
             }),
-            revalidatedTargetRevision: null,
-            revalidatedSensitiveDigest: null,
           });
           expect(confirmed.workItemIds).toHaveLength(1);
           return { runId, effectId };
@@ -1429,6 +1459,9 @@ describe.skipIf(!RUN_CERT)(
         expect(customer?.email).toBe('marie.dupont@example.test');
         expect(customer?.addrLine1).toBe('12 rue des Lilas');
         expect(customer?.addrCity).toBe('Paris');
+        // U1-e §2 — la fiche NAÎT à la révision 1 (DEFAULT SQL) : c'est la seule chose qu'on
+        // puisse affirmer d'une ligne qui vient d'être écrite.
+        expect(customer?.revision).toBe(1);
         await expect(countCustomers(effectCompanyId, customerId)).resolves.toBe(1);
         const createdItems = await auditWorkItems(created.runId);
         expect(createdItems).toHaveLength(1);
@@ -1451,6 +1484,11 @@ describe.skipIf(!RUN_CERT)(
 
         // ---------------------------------------------------------------------------
         // B. MODIFIER — mutation d'e-mail entre la présentation et la confirmation
+        //
+        // U1-e §2 : plus AUCUNE valeur revalidée n'est fabriquée par ce test. Le confirm ne
+        // porte que trois clés ; c'est l'admission qui relit la fiche SOUS VERROU et dérive son
+        // digest sensible. La dérive prouvée ici est donc RÉELLE : une écriture canonique passe
+        // entre la présentation et la confirmation, la base bouge, et la garde §9.1 mord.
         // ---------------------------------------------------------------------------
         const updateRunId = randomUUID();
         const staleFields = proposedFields({
@@ -1485,7 +1523,7 @@ describe.skipIf(!RUN_CERT)(
         expectAdmission(
           await admitUpdate(21, 1, {
             type: 'record_customer_resolution',
-            resolution: { kind: 'target_verified', customerId, revision: 1 },
+            resolution: { kind: 'target_verified', customerId },
           }),
           'admitted',
         );
@@ -1537,8 +1575,14 @@ describe.skipIf(!RUN_CERT)(
         ).resolves.toEqual({ status: 'written' });
         await expect(auditCustomer(customerId)).resolves.toMatchObject({ email: mutatedEmail });
 
-        // La confirmation revalide la cible AU MOMENT du confirm : le sceau sensible recalculé
-        // sur l'e-mail COURANT diverge de celui de la proposition => `invalidated`.
+        // L'ÉCRITURE A BOUGÉ LA BASE : le use case canonique incrémente la révision de la fiche.
+        // C'est CE fait, relu par l'admission, qui rendra la proposition stale — aucun test ne
+        // fabrique plus la moindre valeur revalidée.
+        const mutatedRow = await auditCustomer(customerId);
+        expect(mutatedRow?.revision).toBe(2);
+
+        // Les champs de la NOUVELLE proposition (la fiche telle qu'elle est maintenant + la
+        // ville proposée) : ils servent au scellement du payload, jamais à certifier une cible.
         const revalidatedFields = proposedFields({
           displayName: null,
           legalName: null,
@@ -1551,6 +1595,9 @@ describe.skipIf(!RUN_CERT)(
         const revalidatedSensitiveDigest = computeCustomerContactSensitiveDigest(revalidatedFields);
         expect(revalidatedSensitiveDigest).not.toBe(staleSensitiveDigest);
         const writesBeforeInvalidation = authority.writes;
+        // LE CONFIRM : trois clés, rien d'autre. L'admission relit la cible dans SA transaction
+        // (révision 2, digest sensible recalculé sur l'e-mail COURANT) et compare au sceau posé
+        // à la mise en proposition (révision 1) => `invalidated`.
         expectAdmission(
           await admitUpdate(24, 4, {
             type: 'confirm',
@@ -1564,8 +1611,6 @@ describe.skipIf(!RUN_CERT)(
               targetRevision: 1,
               effectId: updateEffectId,
             }),
-            revalidatedTargetRevision: 1,
-            revalidatedSensitiveDigest,
           }),
           'admitted',
         );
@@ -1588,7 +1633,17 @@ describe.skipIf(!RUN_CERT)(
           cause: 'stale_target',
           confirmationId: staleConfirmationId,
           proposalId: staleProposalId,
+          // La révision journalisée vient de la BASE, pas du wire : 2, la valeur qu'a posée
+          // l'écriture de l'artisan. Un test qui la fabriquerait ne prouverait rien.
+          revalidatedTargetRevision: 2,
         });
+        // L'intention porte désormais la cible RELUE : la prochaine proposition devra la sceller.
+        const invalidatedIntent = (
+          invalidated.payload as {
+            readonly intent?: { readonly target?: { readonly revision?: unknown } };
+          }
+        ).intent;
+        expect(invalidatedIntent?.target?.revision).toBe(2);
         await expect(auditWorkItems(updateRunId)).resolves.toHaveLength(0);
         expect(authority.writes).toBe(writesBeforeInvalidation);
 
@@ -1603,7 +1658,9 @@ describe.skipIf(!RUN_CERT)(
           fields: revalidatedFields,
         });
         const freshFieldsDigest = computeCustomerContactFieldsDigest(revalidatedFields);
-        expectAdmission(
+        // Une proposition qui scellerait ENCORE la révision 1 naîtrait stale : le domaine la
+        // refuse par son nom, avant toute écriture — la preuve que la cible relue fait autorité.
+        const bornStale = expectAdmission(
           await admitUpdate(25, 5, {
             type: 'stage_proposal',
             proposalId: freshProposalId,
@@ -1611,6 +1668,23 @@ describe.skipIf(!RUN_CERT)(
             fieldsDigest: freshFieldsDigest,
             sensitiveDigest: revalidatedSensitiveDigest,
             targetRevision: 1,
+          }),
+          'refused',
+        );
+        expect(bornStale.error).toEqual({
+          code: 'invalid_command',
+          reason: 'target_revision_stale',
+        });
+        // Nouveau TOUR (nouveau `commandId`) : un geste corrigé n'est jamais le rejeu du geste
+        // refusé — §5.4, un commandId ne sert qu'une intention.
+        expectAdmission(
+          await admitUpdate(28, 5, {
+            type: 'stage_proposal',
+            proposalId: freshProposalId,
+            confirmationId: freshConfirmationId,
+            fieldsDigest: freshFieldsDigest,
+            sensitiveDigest: revalidatedSensitiveDigest,
+            targetRevision: 2,
           }),
           'admitted',
         );
@@ -1622,6 +1696,8 @@ describe.skipIf(!RUN_CERT)(
           }),
           'admitted',
         );
+        // La cible n'a plus bougé depuis ce sceau : la MÊME relecture d'admission le confirme,
+        // et la proposition se consomme. La garde ne bloque pas ce qui n'a pas dérivé.
         const reconfirmed = expectAdmission(
           await admitUpdate(27, 7, {
             type: 'confirm',
@@ -1632,11 +1708,9 @@ describe.skipIf(!RUN_CERT)(
               actionId: CUSTOMER_CONTACT_UPDATE_ACTION_ID,
               fieldsDigest: freshFieldsDigest,
               sensitiveDigest: revalidatedSensitiveDigest,
-              targetRevision: 1,
+              targetRevision: 2,
               effectId: updateEffectId,
             }),
-            revalidatedTargetRevision: 1,
-            revalidatedSensitiveDigest,
           }),
           'admitted',
         );
@@ -1656,6 +1730,9 @@ describe.skipIf(!RUN_CERT)(
         expect(edited?.name).toBe('Marie Dupont');
         expect(edited?.addrLine1).toBe('12 rue des Lilas');
         expect(edited?.addrZip).toBe('75011');
+        // Troisième écriture canonique de la fiche : la révision suit, sans qu'aucun code
+        // applicatif ne la pose à la main.
+        expect(edited?.revision).toBe(3);
         await expect(countCustomers(effectCompanyId, customerId)).resolves.toBe(1);
         const updateItems = await auditWorkItems(updateRunId);
         expect(updateItems).toHaveLength(1);
@@ -1670,6 +1747,148 @@ describe.skipIf(!RUN_CERT)(
           expectedRevision: 8,
         });
         await expect(requireRun(updateRunId)).resolves.toMatchObject({ status: 'completed' });
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it(
+      'preuve 5 — oracle voix/tap §19.3 sur le parcours de MODIFICATION : même journal hors CANAL, sceau de cible RELU en base',
+      async () => {
+        // LA MÊME cible pour les deux runs, créée par le use case CANONIQUE : deux fiches
+        // jumelles auraient introduit une différence sans rapport avec le canal. Ce qui reste
+        // différent entre les deux journaux est donc, ici encore, le canal et lui seul.
+        const authority = new CertificationCustomerAuthority(workerA);
+        const customerId = randomUUID();
+        await expect(
+          authority.createCustomer(
+            { companyId, ownerUserId: freshOwner('update-oracle-target'), customerId },
+            {
+              type: 'b2c',
+              name: 'Entreprise Martin',
+              email: 'contact@martin.test',
+              phone: '0601020304',
+              contactName: 'Paul Martin',
+              address: { line1: '3 rue des Peupliers', zip: '69003', city: 'Lyon' },
+            },
+          ),
+        ).resolves.toEqual({ status: 'written' });
+        const target = { customerId, revision: 1 };
+        // La révision de départ est LUE, jamais supposée : c'est elle que les propositions
+        // scelleront et que l'admission comparera à sa relecture.
+        await expect(auditCustomer(customerId)).resolves.toMatchObject({ revision: 1 });
+
+        const proposalId = randomUUID();
+        const confirmationId = randomUUID();
+        const fields = proposedFields({ city: 'Bordeaux', postalCode: '33000' });
+
+        const voiceOwner = freshOwner('update-voice-owner');
+        const voice = await liveVoiceChannel(voiceOwner);
+        const voiceTrace = await driveOracleScript({
+          ownerUserId: voiceOwner,
+          channelAt: () => voice,
+          proposalId,
+          confirmationId,
+          fields,
+          target,
+        });
+        const tap = tapChannel('iphone-du-fondateur');
+        const tapTrace = await driveOracleScript({
+          ownerUserId: freshOwner('update-tap-owner'),
+          channelAt: () => tap,
+          proposalId,
+          confirmationId,
+          fields,
+          target,
+        });
+
+        // L'ORACLE : journaux (hors colonnes de canal) et états normalisés STRICTEMENT égaux —
+        // la garde §9.1 comprise, puisque le sceau de cible vit DANS le state comparé.
+        const voiceEvents = await auditEvents(voiceTrace.runId);
+        const tapEvents = await auditEvents(tapTrace.runId);
+        expect(normalizeJournal(voiceEvents, voiceTrace.substitutions)).toEqual(
+          normalizeJournal(tapEvents, tapTrace.substitutions),
+        );
+        const voiceRun = await requireRun(voiceTrace.runId);
+        const tapRun = await requireRun(tapTrace.runId);
+        expect(normalizeRun(voiceRun, voiceTrace.substitutions)).toEqual(
+          normalizeRun(tapRun, tapTrace.substitutions),
+        );
+
+        // LE CANAL, LUI, DIFFÈRE — et la preuve NÉGATIVE ferme la boucle : tout le reste étant
+        // prouvé égal, ces deux journaux ne peuvent différer QUE par l'acteur.
+        const actorsOf = (events: readonly EventAuditRow[]): readonly string[] =>
+          events.map((event) => event.actor);
+        expect(actorsOf(voiceEvents)).toEqual(voiceTrace.eventActors);
+        expect(actorsOf(tapEvents)).toEqual(tapTrace.eventActors);
+        expect(actorsOf(voiceEvents)).not.toEqual(actorsOf(tapEvents));
+        expect(journalWithActor(voiceEvents, voiceTrace.substitutions)).not.toEqual(
+          journalWithActor(tapEvents, tapTrace.substitutions),
+        );
+        expect(voiceTrace.presentationAck).toBe('voice_presentation_ack');
+        expect(tapTrace.presentationAck).toBe('screen_ack');
+
+        // LE SCEAU DE CIBLE — il ne vient NI du canal NI du wire : les deux runs portent le
+        // digest de la fiche RELUE, recalculable par l'auditeur depuis les colonnes sensibles
+        // §9.1, et distinct du digest des champs PROPOSÉS (domaines séparés).
+        const rows = await admin.$queryRaw<
+          Array<{
+            tvaIntracom: string | null;
+            billingChannelType: string | null;
+            addrLine1: string | null;
+            addrZip: string | null;
+            addrCity: string | null;
+            contactName: string | null;
+            email: string | null;
+          }>
+        >`
+          SELECT "tvaIntracom", "billingChannelType", "addrLine1", "addrZip", "addrCity",
+                 "contactName", "email"
+            FROM public.customers
+           WHERE "id" = ${customerId}
+        `;
+        const stored = rows[0];
+        if (stored === undefined) throw new Error('Jarvis U1-e: fiche cible introuvable.');
+        const expectedTargetDigest = computeCustomerContactTargetSensitiveDigest({
+          vatNumber: stored.tvaIntracom,
+          billingChannel: stored.billingChannelType,
+          addressLine: stored.addrLine1,
+          postalCode: stored.addrZip,
+          city: stored.addrCity,
+          recipientName: stored.contactName,
+          email: stored.email,
+        });
+        interface PersistedProposal {
+          readonly targetRevision: number | null;
+          readonly targetSensitiveDigest: string | null;
+          readonly sensitiveDigest: string;
+        }
+        const proposalOf = (row: RunAuditRow): PersistedProposal => {
+          const payload = row.payload as { readonly proposal?: PersistedProposal | null } | null;
+          const proposal = payload?.proposal;
+          if (proposal === null || proposal === undefined) {
+            throw new Error('Jarvis U1-e: proposition absente du state persisté.');
+          }
+          return proposal;
+        };
+        for (const row of [voiceRun, tapRun]) {
+          const proposal = proposalOf(row);
+          expect(proposal.targetRevision).toBe(1);
+          expect(proposal.targetSensitiveDigest).toBe(expectedTargetDigest);
+          expect(proposal.targetSensitiveDigest).not.toBe(proposal.sensitiveDigest);
+        }
+
+        // Un run, un effet : chacun porte EXACTEMENT un work item de MODIFICATION, ciblé.
+        for (const trace of [voiceTrace, tapTrace]) {
+          const items = await auditWorkItems(trace.runId);
+          expect(items).toHaveLength(1);
+          expect(items[0]?.id).toBe(trace.workItemIds[0]);
+          expect(items[0]?.actionId).toBe(CUSTOMER_CONTACT_UPDATE_ACTION_ID);
+          expect(items[0]?.actionVersion).toBe(1);
+          expect(items[0]?.status).toBe('prepared');
+          expect(items[0]?.actingPrincipalId).toBe(trace.ownerUserId);
+        }
+        // Aucun de ces deux runs n'a d'effet exécuté ici : la fiche n'a pas bougé d'un cran.
+        await expect(auditCustomer(customerId)).resolves.toMatchObject({ revision: 1 });
       },
       TEST_TIMEOUT_MS,
     );
