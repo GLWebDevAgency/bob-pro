@@ -261,8 +261,10 @@ const CUSTOMER_CONTACT_SYSTEM_PROMPT = [
 ].join(' ');
 
 function hasDisallowedCharacter(value: string): boolean {
-  // eslint-disable-next-line no-control-regex
   return (
+    // Caracteres de controle REFUSES a dessein : c'est la garde elle-meme (§16 —
+    // aucune donnee non fiable ne traverse le planner avec un caractere invisible).
+    // eslint-disable-next-line no-control-regex
     /[\u0000-\u001f\u007f]/u.test(value) ||
     /[\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/iu.test(value)
   );
