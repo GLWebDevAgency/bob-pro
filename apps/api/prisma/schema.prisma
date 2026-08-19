@@ -345,6 +345,7 @@ model Company {
   quoteDraftSlots                             QuoteDraftSlot[]
   agentMissions                               AgentMission[]
   jarvisWorkItems                             JarvisWorkItem[]
+  jarvisProposalPayloads                      JarvisProposalPayload[]
   agentMissionEvents                          AgentMissionEvent[]
   documents                                   StoredDocument[]
   documentFolders                             DocumentFolder[]
@@ -514,6 +515,7 @@ model AgentMission {
   quoteDraftSlots    QuoteDraftSlot[]            @relation("AgentMissionQuoteDraft")
   quoteLineWork      AgentMissionQuoteLineWork[] @relation("AgentMissionQuoteLineWork")
   jarvisWorkItems    JarvisWorkItem[]            @relation("JarvisRunWorkItems")
+  jarvisPayloads     JarvisProposalPayload[]     @relation("JarvisRunProposalPayloads")
 
   @@unique([id, companyId, ownerUserId], map: "agent_missions_owner_binding_key")
   @@index([companyId, ownerUserId, kind, status], map: "agent_missions_owner_status_idx")
@@ -562,6 +564,32 @@ model JarvisWorkItem {
   @@index([companyId, status, nextAttemptAt], map: "jarvis_work_items_dispatch_idx")
   @@index([runId], map: "jarvis_work_items_run_idx")
   @@map("jarvis_work_items")
+}
+
+/// Magasin PII des champs proposés d'une proposition Jarvis (spec §5.1/§5.5/§9.1, lot U1-d).
+/// Le state d'un run ne porte QUE des digests : le contenu réellement proposé à l'artisan vit
+/// ici, scellé par `fieldsDigest`, écrit UNE fois AVANT `stage_proposal`, et effacé par sa
+/// propre rétention. Immuable (aucune policy UPDATE) et emporté par la purge de son run.
+model JarvisProposalPayload {
+  companyId          String
+  company            Company      @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  runId              String       @db.Uuid
+  proposalId         String       @db.Uuid
+  ownerUserId        String
+  run                AgentMission @relation("JarvisRunProposalPayloads", fields: [runId, companyId, ownerUserId], references: [id, companyId, ownerUserId], onDelete: Cascade, onUpdate: Cascade)
+  /// Sceau de TOUS les champs proposés — le même que celui inscrit dans le run (§9.1).
+  fieldsDigest       String       @db.Char(64)
+  /// Sceau du sous-ensemble sensible (TVA, canal de facturation, adresse, destinataire).
+  sensitiveDigest    String       @db.Char(64)
+  /// Contenu canonique chiffrable : jamais indexé, jamais projeté dans un log ou une trace.
+  payload            Json
+  createdAt          DateTime     @db.Timestamptz(6)
+  retentionExpiresAt DateTime     @db.Timestamptz(6)
+
+  @@id([companyId, runId, proposalId], map: "jarvis_proposal_payloads_pkey")
+  @@index([companyId, retentionExpiresAt], map: "jarvis_proposal_payloads_retention_idx")
+  @@index([runId], map: "jarvis_proposal_payloads_run_idx")
+  @@map("jarvis_proposal_payloads")
 }
 
 /// Faits normalisés et éphémères d'une ligne de devis en cours de résolution par AgentMission.

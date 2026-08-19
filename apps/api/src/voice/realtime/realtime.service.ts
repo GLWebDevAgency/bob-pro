@@ -75,10 +75,7 @@ import {
   RealtimeProviderTerminationRegistry,
   realtimeProviderTerminationAdapter,
 } from './realtime-provider-registry';
-import type {
-  RealtimeApprovedAgentControl,
-  RealtimeSidebandControl,
-} from './realtime-sideband';
+import type { RealtimeApprovedAgentControl, RealtimeSidebandControl } from './realtime-sideband';
 import type { RealtimeEntitlementPort } from './realtime-entitlement';
 import {
   DisabledRealtimeDurableControlAuthority,
@@ -116,6 +113,7 @@ import {
   type RealtimeAgentMissionNegotiationRequest,
 } from './realtime-agent-mission-negotiation';
 import {
+  admittedRealtimeMissionKindIds,
   agentMissionPrincipalBindingHash,
   DisabledRealtimeAgentMissionAdmissionGate,
   type RealtimeAgentMissionAdmissionGate,
@@ -123,17 +121,19 @@ import {
 } from './realtime-agent-mission-admission';
 import { realtimeSubjectBindings } from './realtime-principal-binding';
 import { RealtimeVoiceTraceFactory } from './realtime-voice-trace';
-import type { RealtimeVoiceTraceFailureClass, RealtimeVoiceTraceStage } from '@bob/core';
 import type {
-  BobLiveRuntimeReadiness,
-  BobLiveRuntimeReadinessPort,
-} from './realtime-readiness';
+  MissionKindId,
+  RealtimeVoiceTraceFailureClass,
+  RealtimeVoiceTraceStage,
+} from '@bob/core';
+import type { BobLiveRuntimeReadiness, BobLiveRuntimeReadinessPort } from './realtime-readiness';
 
 export { admissionSubjectHash } from './realtime-principal-binding';
 
 const MAX_OFFER_SDP_CHARS = 64 * 1024;
 const REALTIME_CONTROL_CONTEXT_TIMEOUT_MS = 1_000;
-const REALTIME_TURN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const REALTIME_TURN_ID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const REALTIME_CONTEXT_DIGEST = /^[a-f0-9]{64}$/;
 const MISTRAL_CONVERSATION_MAX_EPOCH = 0x7fff_ffff;
 const MISTRAL_CONVERSATION_CURSOR_END = 0x1_0000_0000;
@@ -167,23 +167,34 @@ function parseRealtimeBootstrapWireBinding(
       ok: false,
       error: {
         kind: 'validation',
-        issues: [{ field: 'body', message: 'Version et livraison Bob Live doivent être fournies ensemble.' }],
+        issues: [
+          {
+            field: 'body',
+            message: 'Version et livraison Bob Live doivent être fournies ensemble.',
+          },
+        ],
       },
     };
   }
   if (record.configVersion !== BOB_REALTIME_CONFIG_VERSION) {
     return {
       ok: false,
-      error: { kind: 'validation', issues: [{ field: 'configVersion', message: 'Version Bob Live incompatible.' }] },
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'configVersion', message: 'Version Bob Live incompatible.' }],
+      },
     };
   }
   if (
-    record.speechDelivery !== 'openai-native-webrtc-v1'
-    && record.speechDelivery !== 'audited-signed-url-v1'
+    record.speechDelivery !== 'openai-native-webrtc-v1' &&
+    record.speechDelivery !== 'audited-signed-url-v1'
   ) {
     return {
       ok: false,
-      error: { kind: 'validation', issues: [{ field: 'speechDelivery', message: 'Livraison audio incompatible.' }] },
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'speechDelivery', message: 'Livraison audio incompatible.' }],
+      },
     };
   }
   return ok({
@@ -200,47 +211,67 @@ export function safetyIdentifier(secret: string, userId: string): string {
   return `bob_${digest}`;
 }
 
-export function parseRealtimeCallBody(
-  body: unknown,
-): Result<{
-  sdp: string;
-  sessionHandle?: string;
-  agentMissionNegotiation: RealtimeAgentMissionNegotiationRequest;
-} & RealtimeBootstrapWireBinding, AppError> {
+export function parseRealtimeCallBody(body: unknown): Result<
+  {
+    sdp: string;
+    sessionHandle?: string;
+    agentMissionNegotiation: RealtimeAgentMissionNegotiationRequest;
+  } & RealtimeBootstrapWireBinding,
+  AppError
+> {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-    return { ok: false, error: { kind: 'validation', issues: [{ field: 'body', message: 'Corps JSON objet requis.' }] } };
+    return {
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'body', message: 'Corps JSON objet requis.' }],
+      },
+    };
   }
   const record = body as Record<string, unknown>;
   if (
-    Object.keys(record).some((key) => (
-      key !== 'sdp'
-      && key !== 'sessionHandle'
-      && key !== 'configVersion'
-      && key !== 'speechDelivery'
-      && key !== 'agentMissionProtocolVersion'
-    ))
+    Object.keys(record).some(
+      (key) =>
+        key !== 'sdp' &&
+        key !== 'sessionHandle' &&
+        key !== 'configVersion' &&
+        key !== 'speechDelivery' &&
+        key !== 'agentMissionProtocolVersion',
+    )
   ) {
-    return { ok: false, error: { kind: 'validation', issues: [{ field: 'body', message: 'Champ non autorisé.' }] } };
+    return {
+      ok: false,
+      error: { kind: 'validation', issues: [{ field: 'body', message: 'Champ non autorisé.' }] },
+    };
   }
   const sdp = record.sdp;
   if (
-    typeof sdp !== 'string'
-    || sdp.length < 16
-    || sdp.length > MAX_OFFER_SDP_CHARS
-    || sdp.includes('\u0000')
-    || !sdp.startsWith('v=0')
-    || !/(?:^|\r?\n)m=audio\s/m.test(sdp)
+    typeof sdp !== 'string' ||
+    sdp.length < 16 ||
+    sdp.length > MAX_OFFER_SDP_CHARS ||
+    sdp.includes('\u0000') ||
+    !sdp.startsWith('v=0') ||
+    !/(?:^|\r?\n)m=audio\s/m.test(sdp)
   ) {
     return {
       ok: false,
-      error: { kind: 'validation', issues: [{ field: 'sdp', message: 'Offre SDP audio invalide ou trop volumineuse.' }] },
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'sdp', message: 'Offre SDP audio invalide ou trop volumineuse.' }],
+      },
     };
   }
   const sessionHandle = record.sessionHandle;
-  if (sessionHandle !== undefined && (typeof sessionHandle !== 'string' || !isRealtimeSessionId(sessionHandle))) {
+  if (
+    sessionHandle !== undefined &&
+    (typeof sessionHandle !== 'string' || !isRealtimeSessionId(sessionHandle))
+  ) {
     return {
       ok: false,
-      error: { kind: 'validation', issues: [{ field: 'sessionHandle', message: 'Identifiant de session invalide.' }] },
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'sessionHandle', message: 'Identifiant de session invalide.' }],
+      },
     };
   }
   const binding = parseRealtimeBootstrapWireBinding(record);
@@ -255,27 +286,44 @@ export function parseRealtimeCallBody(
   });
 }
 
-export function parseMistralRealtimeCallBody(
-  body: unknown,
-): Result<{
-  sessionHandle?: string;
-  protocol: 'bob.mistral-pcm.v1' | 'bob.mistral-pcm.v2';
-  context: { version: 1; revision: number; context: unknown };
-  agentMissionNegotiation: RealtimeAgentMissionNegotiationRequest;
-} & RealtimeBootstrapWireBinding, AppError> {
+export function parseMistralRealtimeCallBody(body: unknown): Result<
+  {
+    sessionHandle?: string;
+    protocol: 'bob.mistral-pcm.v1' | 'bob.mistral-pcm.v2';
+    context: { version: 1; revision: number; context: unknown };
+    agentMissionNegotiation: RealtimeAgentMissionNegotiationRequest;
+  } & RealtimeBootstrapWireBinding,
+  AppError
+> {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-    return { ok: false, error: { kind: 'validation', issues: [{ field: 'body', message: 'Corps JSON objet requis.' }] } };
+    return {
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'body', message: 'Corps JSON objet requis.' }],
+      },
+    };
   }
   const record = body as Record<string, unknown>;
   if (
-    Object.keys(record).some((key) => (
-      key !== 'sessionHandle' && key !== 'context' && key !== 'protocol'
-      && key !== 'configVersion' && key !== 'speechDelivery'
-      && key !== 'agentMissionProtocolVersion'
-    ))
-    || !Object.hasOwn(record, 'context')
+    Object.keys(record).some(
+      (key) =>
+        key !== 'sessionHandle' &&
+        key !== 'context' &&
+        key !== 'protocol' &&
+        key !== 'configVersion' &&
+        key !== 'speechDelivery' &&
+        key !== 'agentMissionProtocolVersion',
+    ) ||
+    !Object.hasOwn(record, 'context')
   ) {
-    return { ok: false, error: { kind: 'validation', issues: [{ field: 'body', message: 'Champ non autorisé ou contexte absent.' }] } };
+    return {
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'body', message: 'Champ non autorisé ou contexte absent.' }],
+      },
+    };
   }
   const context = parseRealtimeContextBody(record.context);
   if (!context.ok) return context;
@@ -296,14 +344,23 @@ export function parseMistralRealtimeCallBody(
   if (binding.value.speechDelivery !== 'audited-signed-url-v1') {
     return {
       ok: false,
-      error: { kind: 'validation', issues: [{ field: 'speechDelivery', message: 'Livraison audio Mistral incompatible.' }] },
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'speechDelivery', message: 'Livraison audio Mistral incompatible.' }],
+      },
     };
   }
   const sessionHandle = record.sessionHandle;
-  if (sessionHandle !== undefined && (typeof sessionHandle !== 'string' || !isRealtimeSessionId(sessionHandle))) {
+  if (
+    sessionHandle !== undefined &&
+    (typeof sessionHandle !== 'string' || !isRealtimeSessionId(sessionHandle))
+  ) {
     return {
       ok: false,
-      error: { kind: 'validation', issues: [{ field: 'sessionHandle', message: 'Identifiant de session invalide.' }] },
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'sessionHandle', message: 'Identifiant de session invalide.' }],
+      },
     };
   }
   return ok({
@@ -339,19 +396,13 @@ export function agentMissionNegotiationMetricLabels(
   result: Result<RealtimeCallBootstrap, AppError>,
 ): AgentMissionNegotiationMetricLabels {
   const requested = requestedAgentMissionProtocol(body);
-  const providerLabel = provider === 'openai' || provider === 'mistral'
-    ? provider
-    : 'unknown';
-  const transport = provider === 'openai'
-    ? 'webrtc'
-    : provider === 'mistral'
-      ? 'mistral_pcm'
-      : 'unknown';
+  const providerLabel = provider === 'openai' || provider === 'mistral' ? provider : 'unknown';
+  const transport =
+    provider === 'openai' ? 'webrtc' : provider === 'mistral' ? 'mistral_pcm' : 'unknown';
   if (!result.ok) {
-    const unsupportedVersion = result.error.kind === 'validation'
-      && result.error.issues.some(
-        (issue) => issue.field === 'agentMissionProtocolVersion',
-      );
+    const unsupportedVersion =
+      result.error.kind === 'validation' &&
+      result.error.issues.some((issue) => issue.field === 'agentMissionProtocolVersion');
     return Object.freeze({
       requested,
       outcome: unsupportedVersion ? 'refused' : 'error',
@@ -367,14 +418,11 @@ export function agentMissionNegotiationMetricLabels(
       transport,
     });
   }
-  const requestedVersion = requested === 'v1'
-    ? 1
-    : requested === 'v2'
-      ? 2
-      : null;
-  const accepted = requestedVersion !== null
-    && result.value.agentMissionProtocolVersion === requestedVersion
-    && isRealtimeAgentMissionCapability(result.value.agentMissionCapability);
+  const requestedVersion = requested === 'v1' ? 1 : requested === 'v2' ? 2 : null;
+  const accepted =
+    requestedVersion !== null &&
+    result.value.agentMissionProtocolVersion === requestedVersion &&
+    isRealtimeAgentMissionCapability(result.value.agentMissionCapability);
   return Object.freeze({
     requested,
     outcome: accepted ? 'accepted' : 'refused',
@@ -395,16 +443,16 @@ export function parseRealtimeResumeTicketBody(
   const value = body as Record<string, unknown>;
   const allowed = new Set(['missionConnectionEpoch', 'nextServerSequence']);
   if (
-    Object.keys(value).length !== allowed.size
-    || Object.keys(value).some((key) => !allowed.has(key))
-    || !Number.isSafeInteger(value.missionConnectionEpoch)
-    || Object.is(value.missionConnectionEpoch, -0)
-    || (value.missionConnectionEpoch as number) < 1
-    || (value.missionConnectionEpoch as number) > MISTRAL_CONVERSATION_MAX_EPOCH
-    || !Number.isSafeInteger(value.nextServerSequence)
-    || Object.is(value.nextServerSequence, -0)
-    || (value.nextServerSequence as number) < 0
-    || (value.nextServerSequence as number) > MISTRAL_CONVERSATION_CURSOR_END
+    Object.keys(value).length !== allowed.size ||
+    Object.keys(value).some((key) => !allowed.has(key)) ||
+    !Number.isSafeInteger(value.missionConnectionEpoch) ||
+    Object.is(value.missionConnectionEpoch, -0) ||
+    (value.missionConnectionEpoch as number) < 1 ||
+    (value.missionConnectionEpoch as number) > MISTRAL_CONVERSATION_MAX_EPOCH ||
+    !Number.isSafeInteger(value.nextServerSequence) ||
+    Object.is(value.nextServerSequence, -0) ||
+    (value.nextServerSequence as number) < 0 ||
+    (value.nextServerSequence as number) > MISTRAL_CONVERSATION_CURSOR_END
   ) {
     return {
       ok: false,
@@ -420,13 +468,14 @@ export function parseRealtimeResumeTicketBody(
   });
 }
 
-export function parseRealtimeBootstrapReconciliationBody(
-  body: unknown,
-): Result<{
-  protocol: typeof MISTRAL_CONVERSATION_PROTOCOL;
-  bootstrapTicket: string;
-  attempt: number;
-}, AppError> {
+export function parseRealtimeBootstrapReconciliationBody(body: unknown): Result<
+  {
+    protocol: typeof MISTRAL_CONVERSATION_PROTOCOL;
+    bootstrapTicket: string;
+    attempt: number;
+  },
+  AppError
+> {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
     return {
       ok: false,
@@ -436,11 +485,11 @@ export function parseRealtimeBootstrapReconciliationBody(
   const value = body as Record<string, unknown>;
   const allowed = new Set(['protocol', 'bootstrapTicket', 'attempt']);
   if (
-    Object.keys(value).length !== allowed.size
-    || Object.keys(value).some((key) => !allowed.has(key))
-    || value.protocol !== MISTRAL_CONVERSATION_PROTOCOL
-    || !isMistralConversationBootstrapTicket(value.bootstrapTicket)
-    || !isMistralConversationBootstrapReconciliationAttempt(value.attempt)
+    Object.keys(value).length !== allowed.size ||
+    Object.keys(value).some((key) => !allowed.has(key)) ||
+    value.protocol !== MISTRAL_CONVERSATION_PROTOCOL ||
+    !isMistralConversationBootstrapTicket(value.bootstrapTicket) ||
+    !isMistralConversationBootstrapReconciliationAttempt(value.attempt)
   ) {
     return {
       ok: false,
@@ -478,59 +527,143 @@ export function parseRealtimeContextBody(
   body: unknown,
 ): Result<{ version: 1; revision: number; context: unknown }, AppError> {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-    return { ok: false, error: { kind: 'validation', issues: [{ field: 'body', message: 'Contexte JSON objet requis.' }] } };
+    return {
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'body', message: 'Contexte JSON objet requis.' }],
+      },
+    };
   }
   const record = body as Record<string, unknown>;
   const allowed = new Set(['version', 'revision', 'context']);
   if (Object.keys(record).some((key) => !allowed.has(key))) {
-    return { ok: false, error: { kind: 'validation', issues: [{ field: 'body', message: 'Champ non autorisé.' }] } };
+    return {
+      ok: false,
+      error: { kind: 'validation', issues: [{ field: 'body', message: 'Champ non autorisé.' }] },
+    };
   }
   if (record.version !== REALTIME_CONTEXT_SCHEMA_VERSION) {
-    return { ok: false, error: { kind: 'validation', issues: [{ field: 'version', message: 'Version de contexte non supportée.' }] } };
+    return {
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'version', message: 'Version de contexte non supportée.' }],
+      },
+    };
   }
-  if (!Number.isSafeInteger(record.revision) || (record.revision as number) < 1 || (record.revision as number) > 2_147_483_647) {
-    return { ok: false, error: { kind: 'validation', issues: [{ field: 'revision', message: 'Révision de contexte invalide.' }] } };
+  if (
+    !Number.isSafeInteger(record.revision) ||
+    (record.revision as number) < 1 ||
+    (record.revision as number) > 2_147_483_647
+  ) {
+    return {
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'revision', message: 'Révision de contexte invalide.' }],
+      },
+    };
   }
-  if (record.context === null || typeof record.context !== 'object' || Array.isArray(record.context)) {
-    return { ok: false, error: { kind: 'validation', issues: [{ field: 'context', message: 'Contexte écran invalide.' }] } };
+  if (
+    record.context === null ||
+    typeof record.context !== 'object' ||
+    Array.isArray(record.context)
+  ) {
+    return {
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'context', message: 'Contexte écran invalide.' }],
+      },
+    };
   }
-  return ok({ version: REALTIME_CONTEXT_SCHEMA_VERSION, revision: record.revision as number, context: record.context });
+  return ok({
+    version: REALTIME_CONTEXT_SCHEMA_VERSION,
+    revision: record.revision as number,
+    context: record.context,
+  });
 }
 
-export function parseRealtimeControlAcknowledgementBody(
-  body: unknown,
-): Result<{
-  turnId: string;
-  acknowledgementId: string;
-  contextRevision: number;
-  contextDigest: string;
-}, AppError> {
+export function parseRealtimeControlAcknowledgementBody(body: unknown): Result<
+  {
+    turnId: string;
+    acknowledgementId: string;
+    contextRevision: number;
+    contextDigest: string;
+  },
+  AppError
+> {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-    return { ok: false, error: { kind: 'validation', issues: [{ field: 'body', message: 'Demande d’acquittement objet requise.' }] } };
+    return {
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'body', message: 'Demande d’acquittement objet requise.' }],
+      },
+    };
   }
   const record = body as Record<string, unknown>;
   const allowed = new Set(['turnId', 'acknowledgementId', 'contextRevision', 'contextDigest']);
-  if (Object.keys(record).length !== allowed.size || Object.keys(record).some((key) => !allowed.has(key))) {
-    return { ok: false, error: { kind: 'validation', issues: [{ field: 'body', message: 'Champs d’acquittement invalides.' }] } };
+  if (
+    Object.keys(record).length !== allowed.size ||
+    Object.keys(record).some((key) => !allowed.has(key))
+  ) {
+    return {
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'body', message: 'Champs d’acquittement invalides.' }],
+      },
+    };
   }
   if (typeof record.turnId !== 'string' || !REALTIME_TURN_ID.test(record.turnId)) {
-    return { ok: false, error: { kind: 'validation', issues: [{ field: 'turnId', message: 'Identifiant de tour invalide.' }] } };
+    return {
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'turnId', message: 'Identifiant de tour invalide.' }],
+      },
+    };
   }
   if (
-    typeof record.acknowledgementId !== 'string'
-    || !REALTIME_TURN_ID.test(record.acknowledgementId)
+    typeof record.acknowledgementId !== 'string' ||
+    !REALTIME_TURN_ID.test(record.acknowledgementId)
   ) {
-    return { ok: false, error: { kind: 'validation', issues: [{ field: 'acknowledgementId', message: 'Identifiant d’acquittement audio invalide.' }] } };
+    return {
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [
+          { field: 'acknowledgementId', message: 'Identifiant d’acquittement audio invalide.' },
+        ],
+      },
+    };
   }
   if (
-    !Number.isSafeInteger(record.contextRevision)
-    || (record.contextRevision as number) < 1
-    || (record.contextRevision as number) > 2_147_483_647
+    !Number.isSafeInteger(record.contextRevision) ||
+    (record.contextRevision as number) < 1 ||
+    (record.contextRevision as number) > 2_147_483_647
   ) {
-    return { ok: false, error: { kind: 'validation', issues: [{ field: 'contextRevision', message: 'Révision de contexte invalide.' }] } };
+    return {
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'contextRevision', message: 'Révision de contexte invalide.' }],
+      },
+    };
   }
-  if (typeof record.contextDigest !== 'string' || !REALTIME_CONTEXT_DIGEST.test(record.contextDigest)) {
-    return { ok: false, error: { kind: 'validation', issues: [{ field: 'contextDigest', message: 'Empreinte de contexte invalide.' }] } };
+  if (
+    typeof record.contextDigest !== 'string' ||
+    !REALTIME_CONTEXT_DIGEST.test(record.contextDigest)
+  ) {
+    return {
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'contextDigest', message: 'Empreinte de contexte invalide.' }],
+      },
+    };
   }
   return ok({
     turnId: record.turnId,
@@ -556,24 +689,22 @@ function safeApprovedControl(
     'proposalExpiresAt',
   ]);
   if (
-    Object.keys(control).some((key) => !allowed.has(key))
-    || control.turnId !== expected.turnId
-    || control.contextRevision !== expected.contextRevision
-    || control.contextDigest !== expected.contextDigest
-    || (control.kind !== 'answer' && control.kind !== 'proposed' && control.kind !== 'done')
-    || (control.navigate !== undefined && !isAllowedAgentNavigationRoute(control.navigate))
-    || (control.proposalId !== undefined && (
-      typeof control.proposalId !== 'string'
-      || !REALTIME_TURN_ID.test(control.proposalId)
-    ))
-    || (control.proposalExpiresAt !== undefined && (
-      typeof control.proposalExpiresAt !== 'string'
-      || control.proposalExpiresAt.length > 40
-      || !Number.isFinite(Date.parse(control.proposalExpiresAt))
-      || Date.parse(control.proposalExpiresAt) <= Date.now()
-      || control.proposalId === undefined
-    ))
-  ) return null;
+    Object.keys(control).some((key) => !allowed.has(key)) ||
+    control.turnId !== expected.turnId ||
+    control.contextRevision !== expected.contextRevision ||
+    control.contextDigest !== expected.contextDigest ||
+    (control.kind !== 'answer' && control.kind !== 'proposed' && control.kind !== 'done') ||
+    (control.navigate !== undefined && !isAllowedAgentNavigationRoute(control.navigate)) ||
+    (control.proposalId !== undefined &&
+      (typeof control.proposalId !== 'string' || !REALTIME_TURN_ID.test(control.proposalId))) ||
+    (control.proposalExpiresAt !== undefined &&
+      (typeof control.proposalExpiresAt !== 'string' ||
+        control.proposalExpiresAt.length > 40 ||
+        !Number.isFinite(Date.parse(control.proposalExpiresAt)) ||
+        Date.parse(control.proposalExpiresAt) <= Date.now() ||
+        control.proposalId === undefined))
+  )
+    return null;
   return {
     turnId: expected.turnId,
     kind: control.kind,
@@ -581,7 +712,9 @@ function safeApprovedControl(
     contextDigest: expected.contextDigest,
     ...(typeof control.navigate === 'string' ? { navigate: control.navigate } : {}),
     ...(typeof control.proposalId === 'string' ? { proposalId: control.proposalId } : {}),
-    ...(typeof control.proposalExpiresAt === 'string' ? { proposalExpiresAt: control.proposalExpiresAt } : {}),
+    ...(typeof control.proposalExpiresAt === 'string'
+      ? { proposalExpiresAt: control.proposalExpiresAt }
+      : {}),
   };
 }
 
@@ -619,10 +752,10 @@ export function admittedAgentMissionCapability(
     return null;
   }
   if (
-    proof === null
-    || proof.protocolVersion !== prepared.binding.protocolVersion
-    || proof.capabilityHash !== prepared.binding.capabilityHash
-    || proof.releaseFlagVersion !== prepared.binding.releaseFlagVersion
+    proof === null ||
+    proof.protocolVersion !== prepared.binding.protocolVersion ||
+    proof.capabilityHash !== prepared.binding.capabilityHash ||
+    proof.releaseFlagVersion !== prepared.binding.releaseFlagVersion
   ) {
     throw new Error('AgentMission admission proof does not match the prepared capability.');
   }
@@ -638,10 +771,10 @@ function retryAfterSeconds(retryAt: string | null, fallback: number): number {
 function admissionDenial(result: Exclude<RealtimeAdmissionResult, { allowed: true }>): AppError {
   const retry = retryAfterSeconds(result.retryAt, result.denial.includes('hour') ? 3_600 : 60);
   if (
-    result.denial === 'user_minute'
-    || result.denial === 'user_hour'
-    || result.denial === 'tenant_minute'
-    || result.denial === 'tenant_hour'
+    result.denial === 'user_minute' ||
+    result.denial === 'user_hour' ||
+    result.denial === 'tenant_minute' ||
+    result.denial === 'tenant_hour'
   ) {
     return appRateLimited('Trop de connexions Bob Live.', retry);
   }
@@ -754,43 +887,42 @@ export class RealtimeVoiceService {
     @Inject(REALTIME_SIDEBAND) private readonly sideband: RealtimeSidebandControl,
     private readonly metrics: Metrics,
     private readonly logger: AppLogger,
-    @Inject(REALTIME_AGENT_TURN) private readonly agentTurns: RealtimeAgentTurnPort = {
+    @Inject(REALTIME_AGENT_TURN)
+    private readonly agentTurns: RealtimeAgentTurnPort = {
       run: async () => ({
         status: 'failed',
         canonicalSpeech: 'Bob Live n’est pas encore relié au moteur métier.',
       }),
     },
-    @Inject(REALTIME_ENTITLEMENT) private readonly entitlements: RealtimeEntitlementPort = {
-      check: async () => { throw new Error('realtime_entitlement_missing'); },
+    @Inject(REALTIME_ENTITLEMENT)
+    private readonly entitlements: RealtimeEntitlementPort = {
+      check: async () => {
+        throw new Error('realtime_entitlement_missing');
+      },
     },
     @Inject(MISTRAL_REALTIME_INGRESS_TICKETS)
-    private readonly mistralTickets: MistralRealtimeIngressTicketAuthority =
-      new DisabledMistralRealtimeIngressTicketAuthority(),
+    private readonly mistralTickets: MistralRealtimeIngressTicketAuthority = new DisabledMistralRealtimeIngressTicketAuthority(),
     @Optional()
     @Inject(REALTIME_PROVIDER_TERMINATION_REGISTRY)
     providerTerminations?: RealtimeProviderTerminationRegistry,
     @Optional()
     @Inject(REALTIME_DURABLE_CONTROLS)
-    private readonly controls: RealtimeDurableControlPort =
-      new DisabledRealtimeDurableControlAuthority(),
+    private readonly controls: RealtimeDurableControlPort = new DisabledRealtimeDurableControlAuthority(),
     @Optional()
     @Inject(REALTIME_SPEECH_SOURCE_POLICY)
     private readonly speechSourcePolicy: RealtimeSpeechSourcePolicyPort | null = null,
     @Optional()
     @Inject(MISTRAL_CONVERSATION_RESUME_AUTHORITY)
-    private readonly conversationResume: MistralConversationResumeAuthority =
-      new DisabledMistralConversationResumeAuthority(),
+    private readonly conversationResume: MistralConversationResumeAuthority = new DisabledMistralConversationResumeAuthority(),
     @Optional()
     @Inject(MISTRAL_CONVERSATION_BOOTSTRAP_AUTHORITY)
-    private readonly conversationBootstrap: MistralConversationBootstrapTicketAuthority =
-      new DisabledMistralConversationBootstrapTicketAuthority(),
+    private readonly conversationBootstrap: MistralConversationBootstrapTicketAuthority = new DisabledMistralConversationBootstrapTicketAuthority(),
     @Optional()
     @Inject(MISTRAL_CONVERSATION_TERMINAL_REPLAY_RUNTIME)
     private readonly conversationRuntime: MistralConversationRuntimeCapability | null = null,
     @Optional()
     @Inject(REALTIME_AGENT_MISSION_ADMISSION)
-    private readonly agentMissionAdmission: RealtimeAgentMissionAdmissionGate =
-      new DisabledRealtimeAgentMissionAdmissionGate(),
+    private readonly agentMissionAdmission: RealtimeAgentMissionAdmissionGate = new DisabledRealtimeAgentMissionAdmissionGate(),
     @Optional()
     @Inject(REALTIME_VOICE_TRACE_V2)
     private readonly voiceTrace: RealtimeVoiceTraceFactory | null = null,
@@ -801,8 +933,9 @@ export class RealtimeVoiceService {
     // Les tests unitaires et les compositions historiques construisent encore le service
     // directement. Le fallback doit capturer le paramètre `provider` déjà initialisé : une
     // valeur par défaut de paramètre ne peut pas dépendre fiablement d'une parameter-property.
-    this.providerTerminations = providerTerminations
-      ?? new RealtimeProviderTerminationRegistry(
+    this.providerTerminations =
+      providerTerminations ??
+      new RealtimeProviderTerminationRegistry(
         settings.provider === 'openai'
           ? [realtimeProviderTerminationAdapter('openai', provider)]
           : [],
@@ -810,28 +943,25 @@ export class RealtimeVoiceService {
   }
 
   async publicConfig(): Promise<RealtimeVoicePublicConfig> {
-    const mistralV2LiveAvailable = this.settings.mistralV2InitialBootstrapEnabled
-      && this.conversationRuntime?.liveTurnsAvailable === true;
+    const mistralV2LiveAvailable =
+      this.settings.mistralV2InitialBootstrapEnabled &&
+      this.conversationRuntime?.liveTurnsAvailable === true;
     // Le rail historique audité possède sa propre admission bornée. Le sonder ici déclencherait
     // la preuve TTS→Whisper longue sur le GET de config et déplacerait le cold-start avant même
     // le bootstrap. Le nouveau préflight ne concerne donc que le rail natif de publication : sa
     // readiness est boot-vérifiée et ne dépend d'aucune sonde acoustique synchrone.
     let runtimeAvailable = true;
-    if (
-      this.settings.enabled
-      && this.settings.speechDelivery === 'openai-native-webrtc-v1'
-    ) {
+    if (this.settings.enabled && this.settings.speechDelivery === 'openai-native-webrtc-v1') {
       let runtime: BobLiveRuntimeReadiness | null = null;
       try {
-        runtime = await this.runtimeReadiness?.check() ?? null;
+        runtime = (await this.runtimeReadiness?.check()) ?? null;
       } catch {
         runtime = null;
       }
       runtimeAvailable = runtime?.ready === true && runtime.mode === 'native';
     }
-    const baseConfigured = this.settings.enabled
-      && Boolean(this.settings.apiKey)
-      && Boolean(this.settings.safetySecret);
+    const baseConfigured =
+      this.settings.enabled && Boolean(this.settings.apiKey) && Boolean(this.settings.safetySecret);
     const technicallyAvailable = baseConfigured && runtimeAvailable;
     let available = false;
     let availabilityReason: RealtimeVoicePublicConfig['availabilityReason'] = !baseConfigured
@@ -858,8 +988,8 @@ export class RealtimeVoiceService {
         if (!entitlement.allowed) {
           availabilityReason = 'not_entitled';
         } else if (
-          this.settings.provider === 'openai'
-          && this.settings.speechDelivery === 'openai-native-webrtc-v1'
+          this.settings.provider === 'openai' &&
+          this.settings.speechDelivery === 'openai-native-webrtc-v1'
         ) {
           // Cette nouvelle autorité ne s'applique qu'au futur rail natif. L'étendre au rail
           // audité déjà publié casserait le contrat wire des APK N-1 avant le cutover.
@@ -928,10 +1058,10 @@ export class RealtimeVoiceService {
   ): Promise<Result<{ acknowledged: true; replayed: boolean }, AppError>> {
     const principal = getPrincipal();
     if (
-      !principal?.userId
-      || !principal.companyId
-      || !isRealtimeSessionId(sessionHandle)
-      || !isRealtimeAgentMissionCapability(presentedCapability)
+      !principal?.userId ||
+      !principal.companyId ||
+      !isRealtimeSessionId(sessionHandle) ||
+      !isRealtimeAgentMissionCapability(presentedCapability)
     ) {
       this.metrics.agentMissionCapabilityRejections.inc({
         operation: 'bootstrap_ack',
@@ -956,8 +1086,7 @@ export class RealtimeVoiceService {
 
     const acknowledgement = await this.admission.acknowledgeAgentMissionBootstrap({
       ...lookup,
-      protocolVersion:
-        realtimeAgentMissionCapabilityProtocolVersion(presentedCapability)!,
+      protocolVersion: realtimeAgentMissionCapabilityProtocolVersion(presentedCapability)!,
       capabilityHash: hashRealtimeAgentMissionCapability(presentedCapability),
     });
     if (!acknowledgement.ok) {
@@ -1007,14 +1136,16 @@ export class RealtimeVoiceService {
       this.metrics.agentMissionNegotiations.inc({
         requested: requestedAgentMissionProtocol(body),
         outcome: 'error',
-        provider: this.settings.provider === 'openai' || this.settings.provider === 'mistral'
-          ? this.settings.provider
-          : 'unknown',
-        transport: this.settings.provider === 'openai'
-          ? 'webrtc'
-          : this.settings.provider === 'mistral'
-            ? 'mistral_pcm'
+        provider:
+          this.settings.provider === 'openai' || this.settings.provider === 'mistral'
+            ? this.settings.provider
             : 'unknown',
+        transport:
+          this.settings.provider === 'openai'
+            ? 'webrtc'
+            : this.settings.provider === 'mistral'
+              ? 'mistral_pcm'
+              : 'unknown',
       });
       throw cause;
     }
@@ -1025,7 +1156,8 @@ export class RealtimeVoiceService {
     signal?: AbortSignal,
   ): Promise<Result<RealtimeCallBootstrap, AppError>> {
     const startedAt = performance.now();
-    if (!this.settings.enabled) return this.finishError('disabled', startedAt, appForbidden('Bob Live est désactivé.'));
+    if (!this.settings.enabled)
+      return this.finishError('disabled', startedAt, appForbidden('Bob Live est désactivé.'));
     if (this.settings.provider === 'mistral') {
       return this.createMistralCall(body, startedAt, signal);
     }
@@ -1034,14 +1166,13 @@ export class RealtimeVoiceService {
     if (parsed.value.speechDelivery !== this.settings.speechDelivery) {
       return this.finishError('validation', startedAt, {
         kind: 'validation',
-        issues: [{ field: 'speechDelivery', message: 'Contrat audio différent du config négocié.' }],
+        issues: [
+          { field: 'speechDelivery', message: 'Contrat audio différent du config négocié.' },
+        ],
       });
     }
     const nativeDelivery = parsed.value.speechDelivery === 'openai-native-webrtc-v1';
-    if (
-      nativeDelivery
-      && realtimeSdpSingleAudioDirection(parsed.value.sdp) !== 'sendrecv'
-    ) {
+    if (nativeDelivery && realtimeSdpSingleAudioDirection(parsed.value.sdp) !== 'sendrecv') {
       // Le contrat wire/delivery est déjà prouvé, mais aucun port tenanté ou fournisseur n'a
       // encore été appelé. Une offre native ambiguë ne doit jamais consommer une admission.
       return this.finishError('validation', startedAt, {
@@ -1049,24 +1180,27 @@ export class RealtimeVoiceService {
         issues: [{ field: 'sdp', message: 'Offre SDP native duplex invalide.' }],
       });
     }
-    if (
-      nativeDelivery
-      && parsed.value.agentMissionNegotiation.requested !== 'v2'
-    ) {
+    if (nativeDelivery && parsed.value.agentMissionNegotiation.requested !== 'v2') {
       // Une APK N-1 ou un client direct ne doit jamais consommer une session native dégradée.
       // Le rejet précède identité, entitlement, lease et tout egress OpenAI.
       return this.finishError('validation', startedAt, {
         kind: 'validation',
-        issues: [{
-          field: 'agentMissionProtocolVersion',
-          message: 'Bob Live natif exige le protocole Mission V2.',
-        }],
+        issues: [
+          {
+            field: 'agentMissionProtocolVersion',
+            message: 'Bob Live natif exige le protocole Mission V2.',
+          },
+        ],
       });
     }
 
     const principal = getPrincipal();
     if (!principal?.userId || !principal.companyId) {
-      return this.finishError('identity_missing', startedAt, appForbidden('Session utilisateur et espace de travail requis.'));
+      return this.finishError(
+        'identity_missing',
+        startedAt,
+        appForbidden('Session utilisateur et espace de travail requis.'),
+      );
     }
     let trace: ReturnType<RealtimeVoiceTraceFactory['begin']> = null;
     try {
@@ -1080,8 +1214,8 @@ export class RealtimeVoiceService {
       );
     }
     if (
-      parsed.value.agentMissionNegotiation.requested === 'v2'
-      && principal.confirmedTimeZone === undefined
+      parsed.value.agentMissionNegotiation.requested === 'v2' &&
+      principal.confirmedTimeZone === undefined
     ) {
       trace?.record({
         eventKind: 'session_bootstrap_failed',
@@ -1193,15 +1327,16 @@ export class RealtimeVoiceService {
       const binding = preparedAgentMission.binding;
       let exactNativeMission = false;
       try {
-        exactNativeMission = preparedAgentMission.capability !== null
-          && binding !== null
-          && binding.protocolVersion === AGENT_MISSION_PROTOCOL_M2A_VERSION
-          && binding.releaseFlagKey === REALTIME_AGENT_MISSION_QUOTE_M2A_RELEASE_FLAG_KEY
-          && binding.principalBindingHash === principalBindingHash
-          && realtimeAgentMissionCapabilityProtocolVersion(preparedAgentMission.capability)
-            === AGENT_MISSION_PROTOCOL_M2A_VERSION
-          && binding.capabilityHash
-            === hashRealtimeAgentMissionCapability(preparedAgentMission.capability);
+        exactNativeMission =
+          preparedAgentMission.capability !== null &&
+          binding !== null &&
+          binding.protocolVersion === AGENT_MISSION_PROTOCOL_M2A_VERSION &&
+          binding.releaseFlagKey === REALTIME_AGENT_MISSION_QUOTE_M2A_RELEASE_FLAG_KEY &&
+          binding.principalBindingHash === principalBindingHash &&
+          realtimeAgentMissionCapabilityProtocolVersion(preparedAgentMission.capability) ===
+            AGENT_MISSION_PROTOCOL_M2A_VERSION &&
+          binding.capabilityHash ===
+            hashRealtimeAgentMissionCapability(preparedAgentMission.capability);
       } catch {
         exactNativeMission = false;
       }
@@ -1229,7 +1364,9 @@ export class RealtimeVoiceService {
       principalBindingHash,
       agentMissionBinding: preparedAgentMission.binding,
       maxSessionSeconds: this.settings.maxSessionSeconds,
-      ...(parsed.value.sessionHandle === undefined ? {} : { sessionId: parsed.value.sessionHandle }),
+      ...(parsed.value.sessionHandle === undefined
+        ? {}
+        : { sessionId: parsed.value.sessionHandle }),
     };
     const admission = await this.reserveAfterCleanup(reserveInput);
     if (!admission.allowed) {
@@ -1246,37 +1383,41 @@ export class RealtimeVoiceService {
 
     const lease = admission.lease;
     trace?.bindSession(lease.sessionId);
-    const agentMissionAuthority = admission.agentMissionProof === null
-      ? undefined
-      : Object.freeze({
-          owner: Object.freeze({
-            companyId: principal.companyId,
-            ownerUserId: principal.userId,
-          }),
-          proof: Object.freeze({
-            protocolVersion: admission.agentMissionProof.protocolVersion,
-            subjectHashCandidates: Object.freeze([
-              ...reserveInput.subjectHashCandidates,
-            ]),
-            principalBindingHash: reserveInput.principalBindingHash,
-            capabilityHash: admission.agentMissionProof.capabilityHash,
-          }),
-          realtimeSessionId: lease.sessionId,
-        });
+    const agentMissionAuthority =
+      admission.agentMissionProof === null
+        ? undefined
+        : Object.freeze({
+            owner: Object.freeze({
+              companyId: principal.companyId,
+              ownerUserId: principal.userId,
+            }),
+            proof: Object.freeze({
+              protocolVersion: admission.agentMissionProof.protocolVersion,
+              subjectHashCandidates: Object.freeze([...reserveInput.subjectHashCandidates]),
+              principalBindingHash: reserveInput.principalBindingHash,
+              capabilityHash: admission.agentMissionProof.capabilityHash,
+            }),
+            realtimeSessionId: lease.sessionId,
+          });
+    // Kinds admis PAR L'ADMISSION (un flag par kind) — autorité serveur threadée jusqu'au tour ;
+    // sans preuve durable, aucun kind n'est ouvert.
+    const admittedMissionKinds =
+      admission.agentMissionProof === null
+        ? (Object.freeze([]) as readonly MissionKindId[])
+        : admittedRealtimeMissionKindIds(preparedAgentMission);
     let agentMissionBinding: ReturnType<typeof realtimeAgentMissionBootstrapBinding>;
     try {
       agentMissionBinding = realtimeAgentMissionBootstrapBinding(
         parsed.value.agentMissionNegotiation,
-        admittedAgentMissionCapability(
-          preparedAgentMission,
-          admission.agentMissionProof,
-        ),
+        admittedAgentMissionCapability(preparedAgentMission, admission.agentMissionProof),
       );
     } catch {
-      await this.admission.release({
-        ...lease,
-        providerTermination: 'not_created',
-      }).catch(() => undefined);
+      await this.admission
+        .release({
+          ...lease,
+          providerTermination: 'not_created',
+        })
+        .catch(() => undefined);
       trace?.record({
         eventKind: 'session_bootstrap_failed',
         stage: 'admission',
@@ -1298,7 +1439,9 @@ export class RealtimeVoiceService {
           lease.sessionId,
         );
       } catch {
-        await this.admission.release({ ...lease, providerTermination: 'not_created' }).catch(() => undefined);
+        await this.admission
+          .release({ ...lease, providerTermination: 'not_created' })
+          .catch(() => undefined);
         trace?.record({
           eventKind: 'session_bootstrap_failed',
           stage: 'speech_prepare',
@@ -1317,9 +1460,10 @@ export class RealtimeVoiceService {
     let lifecycle: RealtimeCallLifecycle | null = null;
     try {
       if (signal?.aborted) throw new Error('bootstrap_aborted');
-      const session = parsed.value.speechDelivery === 'openai-native-webrtc-v1'
-        ? buildOpenAiNativeRealtimeSessionConfig(this.settings)
-        : buildOpenAiRealtimeSessionConfig(this.settings);
+      const session =
+        parsed.value.speechDelivery === 'openai-native-webrtc-v1'
+          ? buildOpenAiNativeRealtimeSessionConfig(this.settings)
+          : buildOpenAiRealtimeSessionConfig(this.settings);
       created = await this.provider.createCall({
         offerSdp: parsed.value.sdp,
         safetyIdentifier: safetyIdentifier(this.settings.safetySecret, principal.userId),
@@ -1386,7 +1530,8 @@ export class RealtimeVoiceService {
             if (!stored.ok) {
               return {
                 status: 'failed' as const,
-                canonicalSpeech: 'Je ne peux pas vérifier le contexte de cet écran. Rien n’a été exécuté.',
+                canonicalSpeech:
+                  'Je ne peux pas vérifier le contexte de cet écran. Rien n’a été exécuté.',
               };
             }
             const expectedContext = realtimeAgentContextVersion(stored.snapshot);
@@ -1399,10 +1544,12 @@ export class RealtimeVoiceService {
               ...(principal.confirmedTimeZone === undefined
                 ? {}
                 : { confirmedTimeZone: principal.confirmedTimeZone }),
-              ...(stored.snapshot?.context === undefined ? {} : { context: stored.snapshot.context }),
+              ...(stored.snapshot?.context === undefined
+                ? {}
+                : { context: stored.snapshot.context }),
               ...(agentMissionAuthority === undefined
                 ? {}
-                : { agentMissionAuthority }),
+                : { agentMissionAuthority, admittedMissionKinds }),
               contextFence: {
                 expected: expectedContext,
                 revalidate: async (signal) => {
@@ -1419,15 +1566,16 @@ export class RealtimeVoiceService {
           },
         },
         controlContext: {
-          isCurrent: (expected, contextSignal) => this.isCurrentContextVersion(
-            {
-              companyId: principal.companyId!,
-              subjectHash: lease.subjectHash,
-              sessionId: lease.sessionId,
-            },
-            expected,
-            contextSignal,
-          ),
+          isCurrent: (expected, contextSignal) =>
+            this.isCurrentContextVersion(
+              {
+                companyId: principal.companyId!,
+                subjectHash: lease.subjectHash,
+                sessionId: lease.sessionId,
+              },
+              expected,
+              contextSignal,
+            ),
         },
       });
       if (signal?.aborted) throw new Error('bootstrap_aborted');
@@ -1438,18 +1586,21 @@ export class RealtimeVoiceService {
         sessionId: lease.sessionId,
       });
       if (
-        !finalResolution.ok
-        || finalResolution.identity === null
-        || finalResolution.identity.companyId !== lease.companyId
-        || finalResolution.identity.subjectHash !== lease.subjectHash
-        || finalResolution.identity.sessionId !== lease.sessionId
+        !finalResolution.ok ||
+        finalResolution.identity === null ||
+        finalResolution.identity.companyId !== lease.companyId ||
+        finalResolution.identity.subjectHash !== lease.subjectHash ||
+        finalResolution.identity.sessionId !== lease.sessionId
       ) {
         throw new Error('realtime_bootstrap_fenced');
       }
       if (signal?.aborted) throw new Error('bootstrap_aborted');
       const elapsedSeconds = (performance.now() - startedAt) / 1_000;
       this.metrics.bobLiveBootstrapRequests.inc({ model: this.settings.model, outcome: 'ok' });
-      this.metrics.bobLiveBootstrapDuration.observe({ model: this.settings.model, outcome: 'ok' }, elapsedSeconds);
+      this.metrics.bobLiveBootstrapDuration.observe(
+        { model: this.settings.model, outcome: 'ok' },
+        elapsedSeconds,
+      );
       this.logger.audit('bob.live.bootstrap.succeeded', {
         model: this.settings.model,
         transport: 'webrtc',
@@ -1498,11 +1649,12 @@ export class RealtimeVoiceService {
         outcome: signal?.aborted ? 'aborted' : 'failed',
         failureClass: traceFailure.failureClass,
       });
-      const providerTermination = error instanceof RealtimeProviderCallCompensatedError
-        ? 'confirmed'
-        : error instanceof RealtimeProviderCleanupError
-          ? 'unconfirmed'
-          : 'not_attempted';
+      const providerTermination =
+        error instanceof RealtimeProviderCallCompensatedError
+          ? 'confirmed'
+          : error instanceof RealtimeProviderCleanupError
+            ? 'unconfirmed'
+            : 'not_attempted';
       await this.cleanupFailedBootstrap(
         lease,
         registeredProviderCallId ?? created?.callId ?? null,
@@ -1543,11 +1695,12 @@ export class RealtimeVoiceService {
       return { ok: false, error: appForbidden('Session utilisateur et espace de travail requis.') };
     }
     if (
-      !this.settings.enabled
-      || this.settings.provider !== 'mistral'
-      || !this.settings.safetySecret
-      || signal.aborted
-    ) return { ok: false, error: appUnavailable('bob-live-mistral-resume', 5) };
+      !this.settings.enabled ||
+      this.settings.provider !== 'mistral' ||
+      !this.settings.safetySecret ||
+      signal.aborted
+    )
+      return { ok: false, error: appUnavailable('bob-live-mistral-resume', 5) };
 
     const subjectBindings = realtimeSubjectBindings(
       this.settings,
@@ -1568,17 +1721,16 @@ export class RealtimeVoiceService {
     if (issued.status === 'terminal_complete') {
       const receipt = issued.receipt;
       if (
-        !isMistralConversationTerminalReceipt(receipt)
-        || receipt.companyId !== principal.companyId
-        || receipt.sessionHandle !== sessionHandle
-        || receipt.protocol !== MISTRAL_CONVERSATION_PROTOCOL
-        || receipt.missionConnectionEpoch < parsed.value.missionConnectionEpoch
-        || receipt.nextServerSequence < parsed.value.nextServerSequence
-        || (
-          receipt.missionConnectionEpoch > parsed.value.missionConnectionEpoch
-          && receipt.nextServerSequence <= parsed.value.nextServerSequence
-        )
-      ) return { ok: false, error: appUnavailable('bob-live-mistral-resume', 5) };
+        !isMistralConversationTerminalReceipt(receipt) ||
+        receipt.companyId !== principal.companyId ||
+        receipt.sessionHandle !== sessionHandle ||
+        receipt.protocol !== MISTRAL_CONVERSATION_PROTOCOL ||
+        receipt.missionConnectionEpoch < parsed.value.missionConnectionEpoch ||
+        receipt.nextServerSequence < parsed.value.nextServerSequence ||
+        (receipt.missionConnectionEpoch > parsed.value.missionConnectionEpoch &&
+          receipt.nextServerSequence <= parsed.value.nextServerSequence)
+      )
+        return { ok: false, error: appUnavailable('bob-live-mistral-resume', 5) };
       this.logger.audit('bob.live.mistral.resume.terminal_complete', { sessionHandle });
       return ok({
         status: 'terminal_complete',
@@ -1594,14 +1746,14 @@ export class RealtimeVoiceService {
     if (issued.status === 'issued') {
       const bootstrap = issued.bootstrap;
       if (
-        bootstrap.companyId !== principal.companyId
-        || bootstrap.sessionHandle !== sessionHandle
-        || bootstrap.protocol !== MISTRAL_CONVERSATION_PROTOCOL
-        || bootstrap.scope !== 'terminal_replay'
-        || bootstrap.clientAcceptedMissionConnectionEpoch
-          !== parsed.value.missionConnectionEpoch
-        || bootstrap.resumeNextServerSequence !== parsed.value.nextServerSequence
-      ) return { ok: false, error: appUnavailable('bob-live-mistral-resume', 5) };
+        bootstrap.companyId !== principal.companyId ||
+        bootstrap.sessionHandle !== sessionHandle ||
+        bootstrap.protocol !== MISTRAL_CONVERSATION_PROTOCOL ||
+        bootstrap.scope !== 'terminal_replay' ||
+        bootstrap.clientAcceptedMissionConnectionEpoch !== parsed.value.missionConnectionEpoch ||
+        bootstrap.resumeNextServerSequence !== parsed.value.nextServerSequence
+      )
+        return { ok: false, error: appUnavailable('bob-live-mistral-resume', 5) };
       this.logger.audit('bob.live.mistral.resume.ticket_issued', {
         sessionHandle,
         scope: bootstrap.scope,
@@ -1617,10 +1769,10 @@ export class RealtimeVoiceService {
       return { ok: false, error: appNotFound('realtime_session', sessionHandle) };
     }
     if (
-      issued.status === 'expired'
-      || issued.status === 'stale_epoch'
-      || issued.status === 'invalid_cursor'
-      || issued.status === 'history_unavailable'
+      issued.status === 'expired' ||
+      issued.status === 'stale_epoch' ||
+      issued.status === 'invalid_cursor' ||
+      issued.status === 'history_unavailable'
     ) {
       return {
         ok: false,
@@ -1660,12 +1812,13 @@ export class RealtimeVoiceService {
       return { ok: false, error: appForbidden('Session utilisateur et espace de travail requis.') };
     }
     if (
-      !this.settings.enabled
-      || this.settings.provider !== 'mistral'
-      || !this.settings.safetySecret
-      || this.conversationRuntime?.liveTurnsAvailable !== true
-      || signal.aborted
-    ) return { ok: false, error: appUnavailable('bob-live-mistral-reconciliation', 5) };
+      !this.settings.enabled ||
+      this.settings.provider !== 'mistral' ||
+      !this.settings.safetySecret ||
+      this.conversationRuntime?.liveTurnsAvailable !== true ||
+      signal.aborted
+    )
+      return { ok: false, error: appUnavailable('bob-live-mistral-reconciliation', 5) };
 
     let reconciled: Awaited<
       ReturnType<MistralConversationResumeAuthority['reconcileInitialBootstrap']>
@@ -1702,18 +1855,18 @@ export class RealtimeVoiceService {
     if (reconciled.status === 'issued') {
       const bootstrap = reconciled.bootstrap;
       if (
-        bootstrap.companyId !== principal.companyId
-        || bootstrap.sessionHandle !== sessionHandle
-        || bootstrap.protocol !== MISTRAL_CONVERSATION_PROTOCOL
-        || (bootstrap.scope !== 'live_takeover' && bootstrap.scope !== 'terminal_replay')
-        || !isCanonicalMistralConversationResumeTicket(bootstrap.ticket)
-        || !isCanonicalRealtimeIsoTimestamp(bootstrap.ticketExpiresAt)
-        || !Number.isSafeInteger(bootstrap.expectedMissionConnectionEpoch)
-        || Object.is(bootstrap.expectedMissionConnectionEpoch, -0)
-        || bootstrap.expectedMissionConnectionEpoch < 1
-        || bootstrap.expectedMissionConnectionEpoch > MISTRAL_CONVERSATION_MAX_EPOCH
-        || bootstrap.clientAcceptedMissionConnectionEpoch !== 0
-        || bootstrap.resumeNextServerSequence !== 0
+        bootstrap.companyId !== principal.companyId ||
+        bootstrap.sessionHandle !== sessionHandle ||
+        bootstrap.protocol !== MISTRAL_CONVERSATION_PROTOCOL ||
+        (bootstrap.scope !== 'live_takeover' && bootstrap.scope !== 'terminal_replay') ||
+        !isCanonicalMistralConversationResumeTicket(bootstrap.ticket) ||
+        !isCanonicalRealtimeIsoTimestamp(bootstrap.ticketExpiresAt) ||
+        !Number.isSafeInteger(bootstrap.expectedMissionConnectionEpoch) ||
+        Object.is(bootstrap.expectedMissionConnectionEpoch, -0) ||
+        bootstrap.expectedMissionConnectionEpoch < 1 ||
+        bootstrap.expectedMissionConnectionEpoch > MISTRAL_CONVERSATION_MAX_EPOCH ||
+        bootstrap.clientAcceptedMissionConnectionEpoch !== 0 ||
+        bootstrap.resumeNextServerSequence !== 0
       ) {
         this.logger.warn(
           'bob.live.mistral.bootstrap_reconciliation.failed class=invalid_authority_result',
@@ -1776,19 +1929,21 @@ export class RealtimeVoiceService {
     if (!isRealtimeSessionId(sessionHandle)) {
       return {
         ok: false,
-        error: { kind: 'validation', issues: [{ field: 'sessionHandle', message: 'Identifiant de session invalide.' }] },
+        error: {
+          kind: 'validation',
+          issues: [{ field: 'sessionHandle', message: 'Identifiant de session invalide.' }],
+        },
       };
     }
     // Android/OkHttp conserve parfois `content-type: application/json` sur un DELETE sans
     // payload ; express.json matérialise alors le corps historique en `{}`. Cet objet vide exact
     // signifie « ancien client sans diagnostic », jamais un diagnostic permissif.
-    const diagnosticAbsent = diagnosticBody === undefined
-      || (
-        typeof diagnosticBody === 'object'
-        && diagnosticBody !== null
-        && !Array.isArray(diagnosticBody)
-        && Object.keys(diagnosticBody).length === 0
-      );
+    const diagnosticAbsent =
+      diagnosticBody === undefined ||
+      (typeof diagnosticBody === 'object' &&
+        diagnosticBody !== null &&
+        !Array.isArray(diagnosticBody) &&
+        Object.keys(diagnosticBody).length === 0);
     const clientDiagnostic = diagnosticAbsent
       ? null
       : parseRealtimeVoiceClientTerminationDiagnostic(diagnosticBody);
@@ -1797,10 +1952,12 @@ export class RealtimeVoiceService {
         ok: false,
         error: {
           kind: 'validation',
-          issues: [{
-            field: 'diagnostic',
-            message: 'Le diagnostic terminal Bob Live est invalide.',
-          }],
+          issues: [
+            {
+              field: 'diagnostic',
+              message: 'Le diagnostic terminal Bob Live est invalide.',
+            },
+          ],
         },
       };
     }
@@ -1824,9 +1981,8 @@ export class RealtimeVoiceService {
     let detachedTermination: ReturnType<RealtimeSidebandControl['fenceAndDetachSession']> =
       'not_found';
     try {
-      const sidebandCloseReason = clientDiagnostic === null
-        ? 'user'
-        : clientDiagnostic.terminationSource;
+      const sidebandCloseReason =
+        clientDiagnostic === null ? 'user' : clientDiagnostic.terminationSource;
       detachedTermination = this.sideband.fenceAndDetachSession({
         userId: principal.userId,
         companyId: principal.companyId,
@@ -1899,7 +2055,13 @@ export class RealtimeVoiceService {
       return { ok: false, error: appForbidden('Session utilisateur et espace de travail requis.') };
     }
     if (!isRealtimeSessionId(sessionHandle)) {
-      return { ok: false, error: { kind: 'validation', issues: [{ field: 'sessionHandle', message: 'Identifiant de session invalide.' }] } };
+      return {
+        ok: false,
+        error: {
+          kind: 'validation',
+          issues: [{ field: 'sessionHandle', message: 'Identifiant de session invalide.' }],
+        },
+      };
     }
     const parsed = parseRealtimeContextBody(body);
     if (!parsed.ok) return parsed;
@@ -1907,7 +2069,10 @@ export class RealtimeVoiceService {
     if (!prepared) {
       return {
         ok: false,
-        error: { kind: 'validation', issues: [{ field: 'context', message: 'Contexte écran invalide ou trop volumineux.' }] },
+        error: {
+          kind: 'validation',
+          issues: [{ field: 'context', message: 'Contexte écran invalide ou trop volumineux.' }],
+        },
       };
     }
     const lookup = admissionSessionLookup(
@@ -1963,9 +2128,9 @@ export class RealtimeVoiceService {
           };
         }
         if (
-          application.status !== 'applied'
-          || application.revision !== result.revision
-          || application.digest !== prepared.digest
+          application.status !== 'applied' ||
+          application.revision !== result.revision ||
+          application.digest !== prepared.digest
         ) {
           this.metrics.bobLiveContextUpdates.inc({ outcome: 'unavailable' });
           this.logger.warn(
@@ -1989,7 +2154,13 @@ export class RealtimeVoiceService {
     }
     if (result.reason === 'stale' || result.reason === 'conflict') {
       this.metrics.bobLiveContextUpdates.inc({ outcome: result.reason });
-      return { ok: false, error: appConflict('realtime_context', 'Le contexte écran a changé. Republie l’état courant.') };
+      return {
+        ok: false,
+        error: appConflict(
+          'realtime_context',
+          'Le contexte écran a changé. Republie l’état courant.',
+        ),
+      };
     }
     if (result.reason === 'rejected' || result.reason === 'expired') {
       this.metrics.bobLiveContextUpdates.inc({ outcome: result.reason });
@@ -2003,7 +2174,9 @@ export class RealtimeVoiceService {
     sessionHandle: string,
     body: unknown,
     signal?: AbortSignal,
-  ): Promise<Result<RealtimeApprovedAgentControl & { readonly acknowledgementId: string }, AppError>> {
+  ): Promise<
+    Result<RealtimeApprovedAgentControl & { readonly acknowledgementId: string }, AppError>
+  > {
     const principal = getPrincipal();
     if (!principal?.userId || !principal.companyId || !this.settings.safetySecret) {
       return { ok: false, error: appForbidden('Session utilisateur et espace de travail requis.') };
@@ -2011,7 +2184,10 @@ export class RealtimeVoiceService {
     if (!isRealtimeSessionId(sessionHandle)) {
       return {
         ok: false,
-        error: { kind: 'validation', issues: [{ field: 'sessionHandle', message: 'Identifiant de session invalide.' }] },
+        error: {
+          kind: 'validation',
+          issues: [{ field: 'sessionHandle', message: 'Identifiant de session invalide.' }],
+        },
       };
     }
     const parsed = parseRealtimeControlAcknowledgementBody(body);
@@ -2089,12 +2265,16 @@ export class RealtimeVoiceService {
     if (signal && onAbort) signal.removeEventListener('abort', onAbort);
     if (signal?.aborted || !current || !current.ok) return false;
     const version = realtimeAgentContextVersion(current.snapshot);
-    return version.version === expected.version
-      && version.revision === expected.revision
-      && version.digest === expected.digest;
+    return (
+      version.version === expected.version &&
+      version.revision === expected.revision &&
+      version.digest === expected.digest
+    );
   }
 
-  private async reserveAfterCleanup(input: RealtimeAdmissionReserveInput): Promise<RealtimeAdmissionResult> {
+  private async reserveAfterCleanup(
+    input: RealtimeAdmissionReserveInput,
+  ): Promise<RealtimeAdmissionResult> {
     const first = await this.admission.reserve(input);
     if (first.allowed || !first.reapingClaim) return first;
     try {
@@ -2135,7 +2315,11 @@ export class RealtimeVoiceService {
     );
     const principal = getPrincipal();
     if (!principal?.userId || !principal.companyId) {
-      return this.finishError('identity_missing', startedAt, appForbidden('Session utilisateur et espace de travail requis.'));
+      return this.finishError(
+        'identity_missing',
+        startedAt,
+        appForbidden('Session utilisateur et espace de travail requis.'),
+      );
     }
     if (!this.settings.safetySecret || !this.settings.apiKey) {
       return this.finishError('misconfigured', startedAt, {
@@ -2145,11 +2329,9 @@ export class RealtimeVoiceService {
       });
     }
     if (
-      parsed.value.protocol === MISTRAL_CONVERSATION_PROTOCOL
-      && (
-        !this.settings.mistralV2InitialBootstrapEnabled
-        || this.conversationRuntime?.liveTurnsAvailable !== true
-      )
+      parsed.value.protocol === MISTRAL_CONVERSATION_PROTOCOL &&
+      (!this.settings.mistralV2InitialBootstrapEnabled ||
+        this.conversationRuntime?.liveTurnsAvailable !== true)
     ) {
       return this.finishError(
         'disabled',
@@ -2201,13 +2383,12 @@ export class RealtimeVoiceService {
         subjectBindings.subjectHash,
         ...subjectBindings.historicalSubjectBindings.map((binding) => binding.subjectHash),
       ],
-      principalBindingHash: agentMissionPrincipalBindingHash(
-        principal.companyId,
-        principal.userId,
-      ),
+      principalBindingHash: agentMissionPrincipalBindingHash(principal.companyId, principal.userId),
       agentMissionBinding: null,
       maxSessionSeconds: this.settings.maxSessionSeconds,
-      ...(parsed.value.sessionHandle === undefined ? {} : { sessionId: parsed.value.sessionHandle }),
+      ...(parsed.value.sessionHandle === undefined
+        ? {}
+        : { sessionId: parsed.value.sessionHandle }),
     };
     const admission = await this.reserveAfterCleanup(reserveInput);
     if (!admission.allowed) {
@@ -2218,14 +2399,16 @@ export class RealtimeVoiceService {
     const lease = admission.lease;
     try {
       admittedAgentMissionCapability(
-        { capability: null, binding: null },
+        { capability: null, binding: null, admittedKinds: [] },
         admission.agentMissionProof,
       );
     } catch {
-      await this.admission.release({
-        ...lease,
-        providerTermination: 'not_created',
-      }).catch(() => undefined);
+      await this.admission
+        .release({
+          ...lease,
+          providerTermination: 'not_created',
+        })
+        .catch(() => undefined);
       return this.finishError(
         'admission_unavailable',
         startedAt,
@@ -2240,7 +2423,9 @@ export class RealtimeVoiceService {
         lease.sessionId,
       );
     } catch {
-      await this.admission.release({ ...lease, providerTermination: 'not_created' }).catch(() => undefined);
+      await this.admission
+        .release({ ...lease, providerTermination: 'not_created' })
+        .catch(() => undefined);
       return this.finishError(
         'speech_unavailable',
         startedAt,
@@ -2248,7 +2433,9 @@ export class RealtimeVoiceService {
       );
     }
     if (signal?.aborted) {
-      await this.admission.release({ ...lease, providerTermination: 'not_created' }).catch(() => undefined);
+      await this.admission
+        .release({ ...lease, providerTermination: 'not_created' })
+        .catch(() => undefined);
       return this.finishError('aborted', startedAt, appUnavailable('bob-live-bootstrap', 1));
     }
 
@@ -2268,10 +2455,13 @@ export class RealtimeVoiceService {
         initial = { status: 'unavailable' };
       }
       if (initial.status !== 'issued' || signal?.aborted) {
-        await this.admission.release({ ...lease, providerTermination: 'not_created' }).catch(() => undefined);
-        const error = initial.status === 'quota'
-          ? appRateLimited('Trop de connexions Bob Live.', 60)
-          : appUnavailable('bob-live-mistral-v2-bootstrap', 5);
+        await this.admission
+          .release({ ...lease, providerTermination: 'not_created' })
+          .catch(() => undefined);
+        const error =
+          initial.status === 'quota'
+            ? appRateLimited('Trop de connexions Bob Live.', 60)
+            : appUnavailable('bob-live-mistral-v2-bootstrap', 5);
         return this.finishError(error.kind, startedAt, error);
       }
       const bootstrap = initial.bootstrap;
@@ -2317,7 +2507,9 @@ export class RealtimeVoiceService {
       issued = { ok: false, reason: 'unavailable' };
     }
     if (!issued.ok || signal?.aborted) {
-      await this.admission.release({ ...lease, providerTermination: 'not_created' }).catch(() => undefined);
+      await this.admission
+        .release({ ...lease, providerTermination: 'not_created' })
+        .catch(() => undefined);
       const error = issued.ok
         ? appUnavailable('bob-live-bootstrap', 1)
         : issued.reason === 'quota'
@@ -2328,7 +2520,10 @@ export class RealtimeVoiceService {
 
     const elapsedSeconds = (performance.now() - startedAt) / 1_000;
     this.metrics.bobLiveBootstrapRequests.inc({ model: this.settings.model, outcome: 'ok' });
-    this.metrics.bobLiveBootstrapDuration.observe({ model: this.settings.model, outcome: 'ok' }, elapsedSeconds);
+    this.metrics.bobLiveBootstrapDuration.observe(
+      { model: this.settings.model, outcome: 'ok' },
+      elapsedSeconds,
+    );
     this.logger.audit('bob.live.bootstrap.succeeded', {
       model: this.settings.model,
       transport: 'mistral-pcm',
@@ -2395,9 +2590,10 @@ export class RealtimeVoiceService {
     lease: RealtimeAdmissionLease,
     providerTermination: 'confirmed' | 'not_created',
   ): Promise<void> {
-    const failureClass = providerTermination === 'confirmed'
-      ? 'admission_release_failed_after_provider_termination'
-      : 'admission_release_failed_before_provider_creation';
+    const failureClass =
+      providerTermination === 'confirmed'
+        ? 'admission_release_failed_after_provider_termination'
+        : 'admission_release_failed_before_provider_creation';
     try {
       const released = await this.admission.release({ ...lease, providerTermination });
       if (released.ok) return;
@@ -2411,7 +2607,10 @@ export class RealtimeVoiceService {
   private finishError<T>(outcome: string, startedAt: number, error: AppError): Result<T, AppError> {
     const elapsedSeconds = (performance.now() - startedAt) / 1_000;
     this.metrics.bobLiveBootstrapRequests.inc({ model: this.settings.model, outcome });
-    this.metrics.bobLiveBootstrapDuration.observe({ model: this.settings.model, outcome }, elapsedSeconds);
+    this.metrics.bobLiveBootstrapDuration.observe(
+      { model: this.settings.model, outcome },
+      elapsedSeconds,
+    );
     return { ok: false, error };
   }
 }

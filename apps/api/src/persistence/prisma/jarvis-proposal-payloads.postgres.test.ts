@@ -1,0 +1,517 @@
+/**
+ * Jarvis U1-d — certification PostgreSQL du magasin de payloads de proposition
+ * (spec Jarvis §5.1/§5.5/§9.1, SPEC_U1D §3 « MOBILE » + greffe G4, preuves §19.2).
+ *
+ * Chaque preuve passe par le VRAI magasin (`sealProposalPayload` / `readProposalPayload` /
+ * `purgeExpired`) puis RELIT LA BASE par l'auditeur — jamais seulement le résultat du port :
+ *
+ *  (1) scellement : la charge est écrite avec ses deux digests et son échéance, et se relit
+ *      champ pour champ ;
+ *  (2) rejeu du MÊME sceau => `replayed`, zéro écriture (`createdAt` inchangé, une seule ligne) ;
+ *  (3) même clé, contenu DIFFÉRENT => `conflict` et la charge d'origine survit intacte — un
+ *      sceau promis dans le run ne peut jamais être réécrit sous ses pieds ;
+ *  (4) greffe G4 : un `fieldsDigest` attendu qui diverge rend la charge ABSENTE ;
+ *  (5) altération au repos (l'auditeur réécrit le JSON) => absente aussi : le digest est
+ *      RECALCULÉ depuis le contenu, jamais cru sur parole ;
+ *  (6) RLS fail-closed : un autre propriétaire et une autre société ne voient rien, ni par le
+ *      port ni par un SELECT brut sous leurs propres GUC ;
+ *  (7) aucun orphelin : un run inconnu ne produit aucune ligne (FK) — `unavailable`, fail-closed ;
+ *  (8) rétention §5.5 : une charge échue cesse d'être lisible AVANT même d'être purgée, la purge
+ *      l'efface réellement, et la base refuse d'effacer une charge encore VIVANTE même quand
+ *      l'appelant le demande (la policy est l'autorité, pas le WHERE de l'applicatif) ;
+ *  (9) immuabilité : le rôle applicatif n'a AUCUN droit d'UPDATE sur cette table.
+ *
+ * Même harnais que jarvis-admission.postgres.test.ts : gates env, base jetable, société créée
+ * par l'auditeur, runs `customer_contact` seedés par LE VRAI port d'admission.
+ */
+import { randomUUID } from 'node:crypto';
+
+import {
+  CUSTOMER_CONTACT_CREATE_ACTION_ID,
+  computeCustomerContactFieldsDigest,
+  computeCustomerContactSensitiveDigest,
+  sha256Hex,
+  type AgentMissionFingerprintPort,
+  type CustomerContactProposedFieldsV1,
+  type JarvisUserAdmissionEnvelope,
+} from '@bob/core';
+import { PrismaClient } from '@prisma/client';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+import { PrismaAgentMissionUnitOfWork } from './agent-mission.persistence';
+import type { JarvisAdmissionDeps } from './jarvis-admission.persistence';
+import { PrismaJarvisProposalPayloadStore } from './jarvis-proposal-payloads.persistence';
+import { PrismaService } from './prisma.service';
+
+const RUN_CERT = process.env.RUN_AGENT_MISSION_POSTGRES_CERT === 'true';
+const DISPOSABLE = process.env.AGENT_MISSION_CERT_DATABASE_IS_DISPOSABLE === 'true';
+
+const TEST_TIMEOUT_MS = 60_000;
+const TRANSACTION_OPTIONS = { maxWaitMs: 5_000, timeoutMs: 15_000 } as const;
+
+const FINGERPRINTS: AgentMissionFingerprintPort = {
+  sign(canonicalRequest) {
+    return { keyVersion: 1, hmac: sha256Hex(`jarvis-u1d-payload-key:${canonicalRequest}`) };
+  },
+  matches(canonicalRequest, fingerprint) {
+    if (fingerprint.keyVersion !== 1) return null;
+    return fingerprint.hmac === sha256Hex(`jarvis-u1d-payload-key:${canonicalRequest}`);
+  },
+};
+
+const DEPS: JarvisAdmissionDeps = {
+  fingerprints: FINGERPRINTS,
+  canonicalizationVersion: 1,
+  admissionEnabled: true,
+  allowCertificationAuthority: true,
+};
+
+/** Champs proposés canoniques — la PII de fixture ne sort jamais de cette base jetable. */
+function proposedFields(
+  overrides: Partial<CustomerContactProposedFieldsV1> = {},
+): CustomerContactProposedFieldsV1 {
+  return Object.freeze({
+    displayName: 'Marie Dupont',
+    legalName: null,
+    email: 'marie.dupont@example.test',
+    phone: null,
+    addressLine: '12 rue des Lilas',
+    postalCode: '75011',
+    city: 'Paris',
+    vatNumber: null,
+    billingChannel: null,
+    recipientName: null,
+    ...overrides,
+  });
+}
+
+interface PayloadAuditRow {
+  readonly ownerUserId: string;
+  readonly fieldsDigest: string;
+  readonly sensitiveDigest: string;
+  readonly payload: unknown;
+  readonly createdAt: Date;
+  readonly retentionExpiresAt: Date;
+}
+
+describe.skipIf(!RUN_CERT)(
+  'Jarvis U1-d — certification PostgreSQL du magasin de payloads (§5.5, G4)',
+  () => {
+    const runtimeUrl = process.env.DATABASE_URL ?? '';
+    const certAdminUrl = process.env.AGENT_MISSION_CERT_ADMIN_URL ?? '';
+    const companyA = `jarvis-payload-company-a-${randomUUID()}`;
+    const companyB = `jarvis-payload-company-b-${randomUUID()}`;
+    let admin: PrismaClient;
+    let worker: PrismaService;
+    let uow: PrismaAgentMissionUnitOfWork;
+    let store: PrismaJarvisProposalPayloadStore;
+
+    function userEnvelope(input: {
+      readonly companyId: string;
+      readonly ownerUserId: string;
+      readonly runId: string;
+      readonly expectedRevision: number;
+      readonly command: unknown;
+    }): JarvisUserAdmissionEnvelope {
+      return Object.freeze({
+        kind: 'customer_contact' as const,
+        definitionVersion: 1,
+        companyId: input.companyId,
+        ownerUserId: input.ownerUserId,
+        runId: input.runId,
+        commandId: randomUUID(),
+        expectedRevision: input.expectedRevision,
+        actionId: CUSTOMER_CONTACT_CREATE_ACTION_ID,
+        actionVersion: 1,
+        authority: { source: 'certification_fixture' } as const,
+        command: input.command,
+        canonicalInputDigest: sha256Hex(
+          `jarvis-u1d-payload-input:${JSON.stringify(input.command)}`,
+        ),
+        occurredAt: new Date().toISOString(),
+      });
+    }
+
+    /** Run RÉEL par le VRAI port : aucune ligne fabriquée à la main sous la charge. */
+    async function seedRun(
+      companyId: string,
+    ): Promise<{
+      readonly companyId: string;
+      readonly ownerUserId: string;
+      readonly runId: string;
+    }> {
+      const ownerUserId = `jarvis-payload-owner-${randomUUID()}`;
+      const runId = randomUUID();
+      const result = await uow.runJarvisAdmission(
+        userEnvelope({
+          companyId,
+          ownerUserId,
+          runId,
+          expectedRevision: 0,
+          command: { type: 'start_run', intent: { mode: 'create' } },
+        }),
+        DEPS,
+      );
+      if (result.status !== 'admitted') {
+        throw new Error(`Jarvis U1-d: seed refusé ${JSON.stringify(result)}`);
+      }
+      return { companyId, ownerUserId, runId };
+    }
+
+    async function auditPayload(
+      runId: string,
+      proposalId: string,
+    ): Promise<PayloadAuditRow | null> {
+      const rows = await admin.$queryRaw<PayloadAuditRow[]>`
+        SELECT "ownerUserId", "fieldsDigest", "sensitiveDigest", "payload",
+               "createdAt", "retentionExpiresAt"
+          FROM public.jarvis_proposal_payloads
+         WHERE "runId" = ${runId}::uuid
+           AND "proposalId" = ${proposalId}::uuid
+      `;
+      return rows[0] ?? null;
+    }
+
+    async function countPayloads(runId: string): Promise<number> {
+      const rows = await admin.$queryRaw<Array<{ count: number }>>`
+        SELECT count(*)::int AS "count"
+          FROM public.jarvis_proposal_payloads
+         WHERE "runId" = ${runId}::uuid
+      `;
+      return rows[0]?.count ?? 0;
+    }
+
+    /**
+     * Vieillissement PAR L'AUDITEUR (harnais §19.2) : jamais par le magasin. Les DEUX
+     * horodatages reculent — la contrainte `retentionExpiresAt > createdAt` est un invariant de
+     * la ligne, pas un obstacle de harnais : une charge échue est une VIEILLE charge, pas une
+     * charge née périmée.
+     */
+    async function ageRetention(runId: string, proposalId: string): Promise<void> {
+      const count = await admin.$executeRaw`
+        UPDATE public.jarvis_proposal_payloads
+           SET "createdAt" = statement_timestamp() - INTERVAL '2 hours',
+               "retentionExpiresAt" = statement_timestamp() - INTERVAL '1 hour'
+         WHERE "runId" = ${runId}::uuid
+           AND "proposalId" = ${proposalId}::uuid
+      `;
+      if (count !== 1) throw new Error('Jarvis U1-d: vieillissement de rétention raté.');
+    }
+
+    /** Altération au repos, simulée par l'auditeur : le sceau doit la détecter seul. */
+    async function tamperPayload(runId: string, proposalId: string): Promise<void> {
+      const count = await admin.$executeRaw`
+        UPDATE public.jarvis_proposal_payloads
+           SET "payload" = jsonb_set("payload", '{city}', '"Lyon"'::jsonb)
+         WHERE "runId" = ${runId}::uuid
+           AND "proposalId" = ${proposalId}::uuid
+      `;
+      if (count !== 1) throw new Error('Jarvis U1-d: altération de charge ratée.');
+    }
+
+    function sealInput(
+      coordinates: {
+        readonly companyId: string;
+        readonly ownerUserId: string;
+        readonly runId: string;
+      },
+      proposalId: string,
+      fields: CustomerContactProposedFieldsV1,
+      retentionMs = 30 * 24 * 60 * 60_000,
+    ): {
+      readonly companyId: string;
+      readonly ownerUserId: string;
+      readonly runId: string;
+      readonly proposalId: string;
+      readonly fieldsDigest: string;
+      readonly sensitiveDigest: string;
+      readonly fields: CustomerContactProposedFieldsV1;
+      readonly retentionExpiresAt: string;
+    } {
+      return {
+        ...coordinates,
+        proposalId,
+        fieldsDigest: computeCustomerContactFieldsDigest(fields),
+        sensitiveDigest: computeCustomerContactSensitiveDigest(fields),
+        fields,
+        retentionExpiresAt: new Date(Date.now() + retentionMs).toISOString(),
+      };
+    }
+
+    beforeAll(async () => {
+      if (!DISPOSABLE) {
+        throw new Error(
+          'AGENT_MISSION_CERT_DATABASE_IS_DISPOSABLE=true est obligatoire : le journal est immuable.',
+        );
+      }
+      if (runtimeUrl === '' || certAdminUrl === '') {
+        throw new Error('DATABASE_URL runtime et AGENT_MISSION_CERT_ADMIN_URL sont requis.');
+      }
+      admin = new PrismaClient({ datasourceUrl: certAdminUrl, errorFormat: 'minimal' });
+      worker = new PrismaService({ datasourceUrl: runtimeUrl, errorFormat: 'minimal' });
+      uow = new PrismaAgentMissionUnitOfWork(worker);
+      store = new PrismaJarvisProposalPayloadStore(worker);
+      await Promise.all([admin.$connect(), worker.$connect()]);
+      for (const [companyId, suffix] of [
+        [companyA, '6'],
+        [companyB, '7'],
+      ] as const) {
+        await admin.$executeRaw`
+          INSERT INTO public.companies (
+            "id", "name", "legalForm", "siren", "siret", "trade", "vatRegime",
+            "addrLine1", "addrZip", "addrCity"
+          ) VALUES (
+            ${companyId}, ${`Jarvis payload cert ${suffix}`}, ${'EI'},
+            ${`90300000${suffix}`}, ${`90300000${suffix}0000${suffix}`},
+            ${'certification'}, ${'reel_normal'},
+            ${'1 rue du Test'}, ${'75001'}, ${'Paris'}
+          )
+        `;
+      }
+    }, 30_000);
+
+    afterAll(async () => {
+      await Promise.all([admin?.$disconnect(), worker?.$disconnect()]);
+    });
+
+    it(
+      'preuve 1 & 2 — scellement puis rejeu du même sceau : une seule ligne, zéro réécriture',
+      async () => {
+        const coordinates = await seedRun(companyA);
+        const proposalId = randomUUID();
+        const fields = proposedFields();
+        const input = sealInput(coordinates, proposalId, fields);
+
+        await expect(store.sealProposalPayload(input)).resolves.toEqual({ status: 'sealed' });
+        const written = await auditPayload(coordinates.runId, proposalId);
+        expect(written?.ownerUserId).toBe(coordinates.ownerUserId);
+        expect(written?.fieldsDigest).toBe(input.fieldsDigest);
+        expect(written?.sensitiveDigest).toBe(input.sensitiveDigest);
+        expect(written?.retentionExpiresAt.getTime()).toBeGreaterThan(
+          written?.createdAt.getTime() ?? 0,
+        );
+
+        const read = await store.readProposalPayload({
+          companyId: coordinates.companyId,
+          ownerUserId: coordinates.ownerUserId,
+          runId: coordinates.runId,
+          proposalId,
+          fieldsDigest: input.fieldsDigest,
+        });
+        expect(read?.fields).toEqual(fields);
+        expect(read?.sensitiveDigest).toBe(input.sensitiveDigest);
+
+        await expect(store.sealProposalPayload(input)).resolves.toEqual({ status: 'replayed' });
+        const replayed = await auditPayload(coordinates.runId, proposalId);
+        expect(replayed?.createdAt.getTime()).toBe(written?.createdAt.getTime());
+        await expect(countPayloads(coordinates.runId)).resolves.toBe(1);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it(
+      'preuve 3 — même clé, contenu différent : conflit et charge d’origine intacte',
+      async () => {
+        const coordinates = await seedRun(companyA);
+        const proposalId = randomUUID();
+        const original = proposedFields();
+        await expect(
+          store.sealProposalPayload(sealInput(coordinates, proposalId, original)),
+        ).resolves.toEqual({ status: 'sealed' });
+
+        const divergent = proposedFields({ email: 'autre.adresse@example.test' });
+        await expect(
+          store.sealProposalPayload(sealInput(coordinates, proposalId, divergent)),
+        ).resolves.toEqual({ status: 'conflict' });
+
+        const row = await auditPayload(coordinates.runId, proposalId);
+        expect(row?.fieldsDigest).toBe(computeCustomerContactFieldsDigest(original));
+        const read = await store.readProposalPayload({
+          companyId: coordinates.companyId,
+          ownerUserId: coordinates.ownerUserId,
+          runId: coordinates.runId,
+          proposalId,
+          fieldsDigest: computeCustomerContactFieldsDigest(original),
+        });
+        expect(read?.fields).toEqual(original);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it(
+      'preuve 4 & 5 — G4 : digest attendu divergent OU contenu altéré au repos => charge absente',
+      async () => {
+        const coordinates = await seedRun(companyA);
+        const proposalId = randomUUID();
+        const fields = proposedFields();
+        const input = sealInput(coordinates, proposalId, fields);
+        await expect(store.sealProposalPayload(input)).resolves.toEqual({ status: 'sealed' });
+
+        await expect(
+          store.readProposalPayload({
+            companyId: coordinates.companyId,
+            ownerUserId: coordinates.ownerUserId,
+            runId: coordinates.runId,
+            proposalId,
+            fieldsDigest: computeCustomerContactFieldsDigest(proposedFields({ city: 'Lyon' })),
+          }),
+        ).resolves.toBeNull();
+
+        await tamperPayload(coordinates.runId, proposalId);
+        await expect(
+          store.readProposalPayload({
+            companyId: coordinates.companyId,
+            ownerUserId: coordinates.ownerUserId,
+            runId: coordinates.runId,
+            proposalId,
+            fieldsDigest: input.fieldsDigest,
+          }),
+        ).resolves.toBeNull();
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it(
+      'preuve 6 — RLS : ni un autre propriétaire ni une autre société ne voient la charge',
+      async () => {
+        const coordinates = await seedRun(companyA);
+        const proposalId = randomUUID();
+        const fields = proposedFields();
+        const input = sealInput(coordinates, proposalId, fields);
+        await expect(store.sealProposalPayload(input)).resolves.toEqual({ status: 'sealed' });
+
+        const intruder = `jarvis-payload-owner-${randomUUID()}`;
+        await expect(
+          store.readProposalPayload({
+            companyId: coordinates.companyId,
+            ownerUserId: intruder,
+            runId: coordinates.runId,
+            proposalId,
+            fieldsDigest: input.fieldsDigest,
+          }),
+        ).resolves.toBeNull();
+
+        // SELECT brut sans filtre applicatif : seule la policy peut encore cacher la ligne.
+        const otherOwnerRows = await worker.withIsolatedOwner(
+          coordinates.companyId,
+          intruder,
+          (tx) =>
+            tx.$queryRaw<Array<{ count: number }>>`
+              SELECT count(*)::int AS "count" FROM public.jarvis_proposal_payloads
+            `,
+          { ...TRANSACTION_OPTIONS, readOnly: true },
+        );
+        expect(otherOwnerRows[0]?.count).toBe(0);
+
+        const otherCompanyRows = await worker.withIsolatedOwner(
+          companyB,
+          coordinates.ownerUserId,
+          (tx) =>
+            tx.$queryRaw<Array<{ count: number }>>`
+              SELECT count(*)::int AS "count" FROM public.jarvis_proposal_payloads
+            `,
+          { ...TRANSACTION_OPTIONS, readOnly: true },
+        );
+        expect(otherCompanyRows[0]?.count).toBe(0);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it(
+      'preuve 7 — run inconnu : aucune charge orpheline, refus typé',
+      async () => {
+        const coordinates = await seedRun(companyA);
+        const orphanRunId = randomUUID();
+        const proposalId = randomUUID();
+        const result = await store.sealProposalPayload(
+          sealInput({ ...coordinates, runId: orphanRunId }, proposalId, proposedFields()),
+        );
+        expect(result).toEqual({ status: 'unavailable' });
+        await expect(countPayloads(orphanRunId)).resolves.toBe(0);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it(
+      'preuve 8 — rétention : échue => illisible puis purgée ; vivante => la base refuse la purge',
+      async () => {
+        const coordinates = await seedRun(companyA);
+        const expiring = randomUUID();
+        const alive = randomUUID();
+        const fields = proposedFields();
+        const expiringInput = sealInput(coordinates, expiring, fields);
+        // Charge VIVANTE : échéance dans 10 minutes — la purge la DEMANDERA (borne future),
+        // la policy la refusera.
+        const aliveInput = sealInput(coordinates, alive, fields, 10 * 60_000);
+        await expect(store.sealProposalPayload(expiringInput)).resolves.toEqual({
+          status: 'sealed',
+        });
+        await expect(store.sealProposalPayload(aliveInput)).resolves.toEqual({ status: 'sealed' });
+
+        await ageRetention(coordinates.runId, expiring);
+        // Une charge échue cesse d'être lisible AVANT même que la purge passe.
+        await expect(
+          store.readProposalPayload({
+            companyId: coordinates.companyId,
+            ownerUserId: coordinates.ownerUserId,
+            runId: coordinates.runId,
+            proposalId: expiring,
+            fieldsDigest: expiringInput.fieldsDigest,
+          }),
+        ).resolves.toBeNull();
+
+        const purged = await store.purgeExpired({
+          companyId: coordinates.companyId,
+          ownerUserId: coordinates.ownerUserId,
+          before: new Date(Date.now() + 60 * 60_000).toISOString(),
+          limit: 100,
+        });
+        expect(purged).toBe(1);
+        await expect(auditPayload(coordinates.runId, expiring)).resolves.toBeNull();
+        // La charge vivante est TOUJOURS là : la policy DELETE ne concède rien avant l'échéance.
+        const survivor = await auditPayload(coordinates.runId, alive);
+        expect(survivor).not.toBeNull();
+        const read = await store.readProposalPayload({
+          companyId: coordinates.companyId,
+          ownerUserId: coordinates.ownerUserId,
+          runId: coordinates.runId,
+          proposalId: alive,
+          fieldsDigest: aliveInput.fieldsDigest,
+        });
+        expect(read?.fields).toEqual(fields);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it(
+      'preuve 9 — immuabilité : le rôle applicatif ne peut pas réécrire une charge scellée',
+      async () => {
+        const coordinates = await seedRun(companyA);
+        const proposalId = randomUUID();
+        const input = sealInput(coordinates, proposalId, proposedFields());
+        await expect(store.sealProposalPayload(input)).resolves.toEqual({ status: 'sealed' });
+
+        await expect(
+          worker.withIsolatedOwner(
+            coordinates.companyId,
+            coordinates.ownerUserId,
+            (tx) =>
+              tx.$executeRaw`
+                UPDATE public.jarvis_proposal_payloads
+                   SET "payload" = '{"displayName":"Autre"}'::jsonb
+                 WHERE "runId" = ${coordinates.runId}::uuid
+                   AND "proposalId" = ${proposalId}::uuid
+              `,
+            { ...TRANSACTION_OPTIONS, readOnly: false },
+          ),
+          // La règle NOMMÉE : aucune policy UPDATE n'existe sur jarvis_proposal_payloads
+          // (payload scellé IMMUABLE) — RLS refuse l'écriture (42501 / row-level security).
+        ).rejects.toThrow(/42501|row-level security|new row violates|permission denied/i);
+
+        const row = await auditPayload(coordinates.runId, proposalId);
+        expect(row?.fieldsDigest).toBe(input.fieldsDigest);
+      },
+      TEST_TIMEOUT_MS,
+    );
+  },
+);

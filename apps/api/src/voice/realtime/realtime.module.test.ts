@@ -3,7 +3,7 @@ import type { FactoryProvider, Provider } from '@nestjs/common';
 import { MODULE_METADATA } from '@nestjs/common/constants';
 import { ModuleRef } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
-import { QUOTE_CREATION_MISSION_KIND_V1 } from '@bob/core';
+import { CUSTOMER_CONTACT_MISSION_KIND_V1, QUOTE_CREATION_MISSION_KIND_V1 } from '@bob/core';
 import { AgentMissionService } from '../../agent-missions/agent-mission.service';
 import { loadEnv, type Env } from '../../config/env';
 import type { Persistence } from '../../persistence/persistence';
@@ -21,6 +21,8 @@ import {
 } from './realtime-mistral-ingress-ticket';
 import { RealtimeBobAgentTurnAdapter } from './realtime-agent-turn';
 import { RealtimeMissionKindRegistry } from './realtime-mission-kind';
+import { REALTIME_MISSION_UNAVAILABLE_SPEECH } from './quote-creation-mission-kind.adapter';
+import { JARVIS_ADMISSION, JARVIS_PROPOSAL_PAYLOAD_STORE } from '../../jarvis/jarvis.tokens';
 import {
   BOB_LIVE_RUNTIME_READINESS,
   REALTIME_ADMISSION,
@@ -60,14 +62,16 @@ type RealtimeAgentTurnFactoryProvider = FactoryProvider & {
 function isRealtimeAgentTurnFactoryProvider(
   provider: Provider,
 ): provider is RealtimeAgentTurnFactoryProvider {
-  return typeof provider === 'object'
-    && provider !== null
-    && 'provide' in provider
-    && provider.provide === REALTIME_AGENT_TURN
-    && 'inject' in provider
-    && Array.isArray(provider.inject)
-    && 'useFactory' in provider
-    && typeof provider.useFactory === 'function';
+  return (
+    typeof provider === 'object' &&
+    provider !== null &&
+    'provide' in provider &&
+    provider.provide === REALTIME_AGENT_TURN &&
+    'inject' in provider &&
+    Array.isArray(provider.inject) &&
+    'useFactory' in provider &&
+    typeof provider.useFactory === 'function'
+  );
 }
 
 function moduleFactory(token: unknown): FactoryProvider {
@@ -75,11 +79,13 @@ function moduleFactory(token: unknown): FactoryProvider {
     MODULE_METADATA.PROVIDERS,
     RealtimeVoiceModule,
   ) as Provider[];
-  const provider = providers.find((candidate) =>
-    typeof candidate === 'object'
-    && candidate !== null
-    && 'provide' in candidate
-    && candidate.provide === token);
+  const provider = providers.find(
+    (candidate) =>
+      typeof candidate === 'object' &&
+      candidate !== null &&
+      'provide' in candidate &&
+      candidate.provide === token,
+  );
   if (!provider || !('useFactory' in provider) || typeof provider.useFactory !== 'function') {
     throw new Error('RealtimeVoiceModule factory provider is unavailable.');
   }
@@ -120,32 +126,34 @@ function validSpeechRuntimeEnvironment(provider: 'openai' | 'mistral'): Env {
 function speechPersistenceFixture(): {
   readonly persistence: Persistence;
   readonly owner: ReturnType<Persistence['createRealtimeSidebandOwner']>;
-  readonly factories: Readonly<Record<
-  | 'owner'
-  | 'usage'
-  | 'keyVersions'
-  | 'nativeDelivery'
-  | 'auditedDelivery'
-  | 'controls'
-  | 'artifact',
-  ReturnType<typeof vi.fn>
-  >>;
+  readonly factories: Readonly<
+    Record<
+      | 'owner'
+      | 'usage'
+      | 'keyVersions'
+      | 'nativeDelivery'
+      | 'auditedDelivery'
+      | 'controls'
+      | 'artifact',
+      ReturnType<typeof vi.fn>
+    >
+  >;
 } {
   const owner = {} as ReturnType<Persistence['createRealtimeSidebandOwner']>;
   const factories = {
     owner: vi.fn(() => owner),
-    usage: vi.fn(() => ({} as ReturnType<Persistence['createRealtimeVoiceUsageRepository']>)),
+    usage: vi.fn(() => ({}) as ReturnType<Persistence['createRealtimeVoiceUsageRepository']>),
     keyVersions: vi.fn(() => ({ assertCurrentKeyVersions: vi.fn(async () => undefined) })),
-    nativeDelivery: vi.fn(() => (
-      {} as ReturnType<Persistence['createOpenAiNativeSpeechDeliveryRepository']>
-    )),
-    auditedDelivery: vi.fn(() => (
-      {} as ReturnType<Persistence['createRealtimeSpeechDeliveryRepository']>
-    )),
-    controls: vi.fn(() => ({} as ReturnType<Persistence['createRealtimeControlRepository']>)),
-    artifact: vi.fn(() => (
-      {} as ReturnType<Persistence['createRealtimeSpeechArtifactRepository']>
-    )),
+    nativeDelivery: vi.fn(
+      () => ({}) as ReturnType<Persistence['createOpenAiNativeSpeechDeliveryRepository']>,
+    ),
+    auditedDelivery: vi.fn(
+      () => ({}) as ReturnType<Persistence['createRealtimeSpeechDeliveryRepository']>,
+    ),
+    controls: vi.fn(() => ({}) as ReturnType<Persistence['createRealtimeControlRepository']>),
+    artifact: vi.fn(
+      () => ({}) as ReturnType<Persistence['createRealtimeSpeechArtifactRepository']>,
+    ),
   };
   return {
     owner,
@@ -177,9 +185,12 @@ describe('RealtimeVoiceModule — composition terminale Mistral v2', () => {
     const missionSecret = Buffer.alloc(32, 91).toString('base64url');
     vi.stubEnv('BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED', 'true');
     vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEY_VERSION', '1');
-    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEYRING', JSON.stringify({
-      1: missionSecret,
-    }));
+    vi.stubEnv(
+      'BOB_AGENT_MISSION_HMAC_KEYRING',
+      JSON.stringify({
+        1: missionSecret,
+      }),
+    );
     const provider = moduleFactory(REALTIME_AGENT_MISSION_ADMISSION);
     const persistence = {
       cabinet: { flags: {} },
@@ -187,8 +198,9 @@ describe('RealtimeVoiceModule — composition terminale Mistral v2', () => {
     } as unknown as Persistence;
 
     expect(provider.inject).toEqual([PERSISTENCE]);
-    expect(provider.useFactory(persistence))
-      .toBeInstanceOf(DurableRealtimeAgentMissionAdmissionGate);
+    expect(provider.useFactory(persistence)).toBeInstanceOf(
+      DurableRealtimeAgentMissionAdmissionGate,
+    );
   });
 
   it('reste dormant et ne sollicite jamais la persistance sans opt-in', async () => {
@@ -198,8 +210,9 @@ describe('RealtimeVoiceModule — composition terminale Mistral v2', () => {
       createMistralConversationTerminalReplayAuthorities: create,
     } as Pick<Persistence, 'createMistralConversationTerminalReplayAuthorities'>;
 
-    await expect(buildMistralConversationTerminalReplayRuntime(persistence, loadEnv()))
-      .resolves.toBeNull();
+    await expect(
+      buildMistralConversationTerminalReplayRuntime(persistence, loadEnv()),
+    ).resolves.toBeNull();
     expect(create).not.toHaveBeenCalled();
   });
 
@@ -207,9 +220,12 @@ describe('RealtimeVoiceModule — composition terminale Mistral v2', () => {
     validMistralEnvironment();
     vi.stubEnv('BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED', 'true');
     vi.stubEnv('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION', '1');
-    vi.stubEnv('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING', JSON.stringify({
-      1: Buffer.alloc(32, 7).toString('base64url'),
-    }));
+    vi.stubEnv(
+      'BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING',
+      JSON.stringify({
+        1: Buffer.alloc(32, 7).toString('base64url'),
+      }),
+    );
     vi.stubEnv('BOB_LIVE_MISTRAL_V2_BOOTSTRAP_REAPER_INTERVAL_MS', '120000');
     vi.stubEnv('BOB_LIVE_MISTRAL_V2_BOOTSTRAP_REAPER_BATCH_SIZE', '25');
     vi.stubEnv('BOB_LIVE_MISTRAL_V2_BOOTSTRAP_REAPER_MAX_BATCHES', '6');
@@ -227,9 +243,12 @@ describe('RealtimeVoiceModule — composition terminale Mistral v2', () => {
     const secret = Buffer.alloc(32, 7);
     vi.stubEnv('BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED', 'true');
     vi.stubEnv('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION', '3');
-    vi.stubEnv('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING', JSON.stringify({
-      3: secret.toString('base64url'),
-    }));
+    vi.stubEnv(
+      'BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING',
+      JSON.stringify({
+        3: secret.toString('base64url'),
+      }),
+    );
     const authorities = {
       durable: durable(),
       resume: new DisabledMistralConversationResumeAuthority(),
@@ -238,24 +257,26 @@ describe('RealtimeVoiceModule — composition terminale Mistral v2', () => {
       termination: { terminateReaping: vi.fn(async () => ({ status: 'unavailable' as const })) },
       assertCurrentKeyVersion: vi.fn(async () => undefined),
     };
-    const create = vi.fn((
-      _keys: MistralConversationPersistenceKeyRing,
-      _identityKeys: MistralRealtimeIngressIdentityKeyRing | null,
-      _subjectKeys: {
-        readonly currentVersion: number;
-        readonly versions: readonly number[];
-        secret(version: number): string | null;
-      },
-      _admissionPolicy: { readonly activeLeaseSeconds: number; readonly heartbeatSeconds: number },
-    ) => authorities);
+    const create = vi.fn(
+      (
+        _keys: MistralConversationPersistenceKeyRing,
+        _identityKeys: MistralRealtimeIngressIdentityKeyRing | null,
+        _subjectKeys: {
+          readonly currentVersion: number;
+          readonly versions: readonly number[];
+          secret(version: number): string | null;
+        },
+        _admissionPolicy: {
+          readonly activeLeaseSeconds: number;
+          readonly heartbeatSeconds: number;
+        },
+      ) => authorities,
+    );
     const persistence = {
       createMistralConversationTerminalReplayAuthorities: create,
     } as Pick<Persistence, 'createMistralConversationTerminalReplayAuthorities'>;
 
-    const runtime = await buildMistralConversationTerminalReplayRuntime(
-      persistence,
-      loadEnv(),
-    );
+    const runtime = await buildMistralConversationTerminalReplayRuntime(persistence, loadEnv());
 
     expect(authorities.assertCurrentKeyVersion).toHaveBeenCalledOnce();
     expect(runtime?.resume).not.toBe(authorities.resume);
@@ -285,14 +306,20 @@ describe('RealtimeVoiceModule — composition terminale Mistral v2', () => {
     vi.stubEnv('BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED', 'true');
     vi.stubEnv('BOB_LIVE_MISTRAL_V2_INITIAL_BOOTSTRAP_ENABLED', 'true');
     vi.stubEnv('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION', '3');
-    vi.stubEnv('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING', JSON.stringify({
-      3: persistenceSecret.toString('base64url'),
-    }));
+    vi.stubEnv(
+      'BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING',
+      JSON.stringify({
+        3: persistenceSecret.toString('base64url'),
+      }),
+    );
     vi.stubEnv('BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEY_VERSION', '2');
-    vi.stubEnv('BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING', JSON.stringify({
-      1: firstIdentitySecret,
-      2: currentIdentitySecret,
-    }));
+    vi.stubEnv(
+      'BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING',
+      JSON.stringify({
+        1: firstIdentitySecret,
+        2: currentIdentitySecret,
+      }),
+    );
     const identityBinding: MistralRealtimeIdentityBinding = {
       companyId: 'company-1',
       subjectHash: '1'.repeat(64),
@@ -316,16 +343,21 @@ describe('RealtimeVoiceModule — composition terminale Mistral v2', () => {
       termination: { terminateReaping: vi.fn(async () => ({ status: 'unavailable' as const })) },
       assertCurrentKeyVersion: vi.fn(async () => undefined),
     };
-    const create = vi.fn((
-      _keys: MistralConversationPersistenceKeyRing,
-      _identityKeys: MistralRealtimeIngressIdentityKeyRing | null,
-      _subjectKeys: {
-        readonly currentVersion: number;
-        readonly versions: readonly number[];
-        secret(version: number): string | null;
-      },
-      _admissionPolicy: { readonly activeLeaseSeconds: number; readonly heartbeatSeconds: number },
-    ) => authorities);
+    const create = vi.fn(
+      (
+        _keys: MistralConversationPersistenceKeyRing,
+        _identityKeys: MistralRealtimeIngressIdentityKeyRing | null,
+        _subjectKeys: {
+          readonly currentVersion: number;
+          readonly versions: readonly number[];
+          secret(version: number): string | null;
+        },
+        _admissionPolicy: {
+          readonly activeLeaseSeconds: number;
+          readonly heartbeatSeconds: number;
+        },
+      ) => authorities,
+    );
     const persistence = {
       createMistralConversationTerminalReplayAuthorities: create,
     } as Pick<Persistence, 'createMistralConversationTerminalReplayAuthorities'>;
@@ -338,8 +370,9 @@ describe('RealtimeVoiceModule — composition terminale Mistral v2', () => {
     expect(identityKeys?.secret(1)).toBe(firstIdentitySecret);
     expect(identityKeys?.secret(2)).toBe(currentIdentitySecret);
     expect(identityKeys?.secret(3)).toBeNull();
-    expect(openMistralRealtimeUserIdentity(v1Proof, identityBinding, identityKeys!))
-      .toBe('auth-user-42');
+    expect(openMistralRealtimeUserIdentity(v1Proof, identityBinding, identityKeys!)).toBe(
+      'auth-user-42',
+    );
   });
 
   it('conserve le keyring identité en rollback drain-only sans réactiver le flag bootstrap', async () => {
@@ -349,14 +382,20 @@ describe('RealtimeVoiceModule — composition terminale Mistral v2', () => {
     const currentIdentitySecret = Buffer.alloc(32, 9).toString('base64url');
     vi.stubEnv('BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED', 'true');
     vi.stubEnv('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION', '3');
-    vi.stubEnv('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING', JSON.stringify({
-      3: persistenceSecret.toString('base64url'),
-    }));
+    vi.stubEnv(
+      'BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING',
+      JSON.stringify({
+        3: persistenceSecret.toString('base64url'),
+      }),
+    );
     vi.stubEnv('BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEY_VERSION', '2');
-    vi.stubEnv('BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING', JSON.stringify({
-      1: firstIdentitySecret,
-      2: currentIdentitySecret,
-    }));
+    vi.stubEnv(
+      'BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING',
+      JSON.stringify({
+        1: firstIdentitySecret,
+        2: currentIdentitySecret,
+      }),
+    );
     const authorities = {
       durable: durable(),
       resume: new DisabledMistralConversationResumeAuthority(),
@@ -365,16 +404,21 @@ describe('RealtimeVoiceModule — composition terminale Mistral v2', () => {
       termination: { terminateReaping: vi.fn(async () => ({ status: 'unavailable' as const })) },
       assertCurrentKeyVersion: vi.fn(async () => undefined),
     };
-    const create = vi.fn((
-      _keys: MistralConversationPersistenceKeyRing,
-      _identityKeys: MistralRealtimeIngressIdentityKeyRing | null,
-      _subjectKeys: {
-        readonly currentVersion: number;
-        readonly versions: readonly number[];
-        secret(version: number): string | null;
-      },
-      _admissionPolicy: { readonly activeLeaseSeconds: number; readonly heartbeatSeconds: number },
-    ) => authorities);
+    const create = vi.fn(
+      (
+        _keys: MistralConversationPersistenceKeyRing,
+        _identityKeys: MistralRealtimeIngressIdentityKeyRing | null,
+        _subjectKeys: {
+          readonly currentVersion: number;
+          readonly versions: readonly number[];
+          secret(version: number): string | null;
+        },
+        _admissionPolicy: {
+          readonly activeLeaseSeconds: number;
+          readonly heartbeatSeconds: number;
+        },
+      ) => authorities,
+    );
     const persistence = {
       createMistralConversationTerminalReplayAuthorities: create,
     } as Pick<Persistence, 'createMistralConversationTerminalReplayAuthorities'>;
@@ -392,15 +436,19 @@ describe('RealtimeVoiceModule — composition terminale Mistral v2', () => {
     validMistralEnvironment();
     vi.stubEnv('BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED', 'true');
     vi.stubEnv('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION', '1');
-    vi.stubEnv('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING', JSON.stringify({
-      1: Buffer.alloc(32, 9).toString('base64url'),
-    }));
+    vi.stubEnv(
+      'BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING',
+      JSON.stringify({
+        1: Buffer.alloc(32, 9).toString('base64url'),
+      }),
+    );
     const persistence = {
       createMistralConversationTerminalReplayAuthorities: vi.fn(() => null),
     } as Pick<Persistence, 'createMistralConversationTerminalReplayAuthorities'>;
 
-    await expect(buildMistralConversationTerminalReplayRuntime(persistence, loadEnv()))
-      .rejects.toThrow(/PostgreSQL terminal replay authority is unavailable/);
+    await expect(
+      buildMistralConversationTerminalReplayRuntime(persistence, loadEnv()),
+    ).rejects.toThrow(/PostgreSQL terminal replay authority is unavailable/);
   });
 
   it('fait échouer le boot si le bootstrap initial est activé sans autorité PostgreSQL', async () => {
@@ -408,13 +456,19 @@ describe('RealtimeVoiceModule — composition terminale Mistral v2', () => {
     vi.stubEnv('BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED', 'true');
     vi.stubEnv('BOB_LIVE_MISTRAL_V2_INITIAL_BOOTSTRAP_ENABLED', 'true');
     vi.stubEnv('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION', '1');
-    vi.stubEnv('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING', JSON.stringify({
-      1: Buffer.alloc(32, 9).toString('base64url'),
-    }));
+    vi.stubEnv(
+      'BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING',
+      JSON.stringify({
+        1: Buffer.alloc(32, 9).toString('base64url'),
+      }),
+    );
     vi.stubEnv('BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEY_VERSION', '1');
-    vi.stubEnv('BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING', JSON.stringify({
-      1: Buffer.alloc(32, 8).toString('base64url'),
-    }));
+    vi.stubEnv(
+      'BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING',
+      JSON.stringify({
+        1: Buffer.alloc(32, 8).toString('base64url'),
+      }),
+    );
     const authorities = {
       durable: durable(),
       resume: new DisabledMistralConversationResumeAuthority(),
@@ -427,8 +481,9 @@ describe('RealtimeVoiceModule — composition terminale Mistral v2', () => {
       createMistralConversationTerminalReplayAuthorities: vi.fn(() => authorities),
     } as Pick<Persistence, 'createMistralConversationTerminalReplayAuthorities'>;
 
-    await expect(buildMistralConversationTerminalReplayRuntime(persistence, loadEnv()))
-      .rejects.toThrow(/PostgreSQL bootstrap authority is unavailable/);
+    await expect(
+      buildMistralConversationTerminalReplayRuntime(persistence, loadEnv()),
+    ).rejects.toThrow(/PostgreSQL bootstrap authority is unavailable/);
     expect(authorities.assertCurrentKeyVersion).not.toHaveBeenCalled();
   });
 
@@ -436,9 +491,12 @@ describe('RealtimeVoiceModule — composition terminale Mistral v2', () => {
     validMistralEnvironment();
     vi.stubEnv('BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED', 'true');
     vi.stubEnv('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION', '1');
-    vi.stubEnv('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING', JSON.stringify({
-      1: Buffer.alloc(32, 9).toString('base64url'),
-    }));
+    vi.stubEnv(
+      'BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING',
+      JSON.stringify({
+        1: Buffer.alloc(32, 9).toString('base64url'),
+      }),
+    );
     const admissionError = new Error('durable key floor is 2');
     const authorities = {
       durable: durable(),
@@ -452,8 +510,9 @@ describe('RealtimeVoiceModule — composition terminale Mistral v2', () => {
       createMistralConversationTerminalReplayAuthorities: vi.fn(() => authorities),
     } as Pick<Persistence, 'createMistralConversationTerminalReplayAuthorities'>;
 
-    await expect(buildMistralConversationTerminalReplayRuntime(persistence, loadEnv()))
-      .rejects.toBe(admissionError);
+    await expect(
+      buildMistralConversationTerminalReplayRuntime(persistence, loadEnv()),
+    ).rejects.toBe(admissionError);
     expect(authorities.assertCurrentKeyVersion).toHaveBeenCalledOnce();
     expect(authorities.durable.open).not.toHaveBeenCalled();
   });
@@ -478,13 +537,7 @@ describe('RealtimeVoiceModule — runtimes de restitution exclusifs', () => {
 
   function sidebandSpeech(runtime: SpeechRuntime): WiredSpeech | undefined {
     const factory = moduleFactory(REALTIME_SIDEBAND).useFactory as unknown as SidebandFactory;
-    const manager = factory(
-      {} as RealtimeVoiceSettings,
-      {},
-      {},
-      {},
-      runtime,
-    );
+    const manager = factory({} as RealtimeVoiceSettings, {}, {}, {}, runtime);
     return (manager as { readonly speech?: WiredSpeech }).speech;
   }
 
@@ -526,10 +579,11 @@ describe('RealtimeVoiceModule — runtimes de restitution exclusifs', () => {
     });
     expect(wired?.audited).toBeUndefined();
 
-    const controlsFactory = moduleFactory(REALTIME_DURABLE_CONTROLS).useFactory as unknown as
-      (speech: SpeechRuntime | null) => unknown;
-    const sourcePolicyFactory = moduleFactory(REALTIME_SPEECH_SOURCE_POLICY).useFactory as unknown as
-      (speech: SpeechRuntime | null) => unknown;
+    const controlsFactory = moduleFactory(REALTIME_DURABLE_CONTROLS).useFactory as unknown as (
+      speech: SpeechRuntime | null,
+    ) => unknown;
+    const sourcePolicyFactory = moduleFactory(REALTIME_SPEECH_SOURCE_POLICY)
+      .useFactory as unknown as (speech: SpeechRuntime | null) => unknown;
     expect(controlsFactory(runtime)).toBeInstanceOf(DisabledRealtimeDurableControlAuthority);
     expect(sourcePolicyFactory(runtime)).toBeNull();
 
@@ -538,13 +592,13 @@ describe('RealtimeVoiceModule — runtimes de restitution exclusifs', () => {
     vi.stubEnv('BOB_LIVE_SPEECH_DELIVERY', 'audited-signed-url-v1');
     vi.stubEnv('BOB_LIVE_LOCAL_AUDIT_BASE_URL', 'http://127.0.0.1:8080/v1');
     vi.stubEnv('BOB_LIVE_LOCAL_AUDIT_TOKEN', 'a'.repeat(32));
-    const acknowledgementFactory = moduleFactory(
-      OpenAiNativeSpeechAcknowledgementService,
-    ).useFactory as unknown as (logger: unknown, speech: SpeechRuntime | null) => unknown;
+    const acknowledgementFactory = moduleFactory(OpenAiNativeSpeechAcknowledgementService)
+      .useFactory as unknown as (logger: unknown, speech: SpeechRuntime | null) => unknown;
     const acknowledgements = acknowledgementFactory({ audit: vi.fn(), warn: vi.fn() }, runtime);
     expect(acknowledgements).toBeInstanceOf(OpenAiNativeSpeechAcknowledgementService);
-    expect((acknowledgements as { readonly authority?: unknown }).authority)
-      .toBe(runtime.native.authority);
+    expect((acknowledgements as { readonly authority?: unknown }).authority).toBe(
+      runtime.native.authority,
+    );
     // Le service ne conserve volontairement pas l'objet de configuration (il contient la keyring
     // sujet). Prouver le bit effectif évite aussi de réintroduire les secrets dans son instance.
     expect((acknowledgements as { readonly enabled?: boolean }).enabled).toBe(false);
@@ -569,10 +623,12 @@ describe('RealtimeVoiceModule — runtimes de restitution exclusifs', () => {
     expect(runtime?.native).toBeDefined();
     expect(fixture.factories.keyVersions).toHaveBeenCalledOnce();
     expect(assertCurrentKeyVersions).toHaveBeenCalledOnce();
-    expect(fixture.factories.keyVersions.mock.invocationCallOrder[0])
-      .toBeLessThan(assertCurrentKeyVersions.mock.invocationCallOrder[0] as number);
-    expect(assertCurrentKeyVersions.mock.invocationCallOrder[0])
-      .toBeLessThan(fixture.factories.nativeDelivery.mock.invocationCallOrder[0] as number);
+    expect(fixture.factories.keyVersions.mock.invocationCallOrder[0]).toBeLessThan(
+      assertCurrentKeyVersions.mock.invocationCallOrder[0] as number,
+    );
+    expect(assertCurrentKeyVersions.mock.invocationCallOrder[0]).toBeLessThan(
+      fixture.factories.nativeDelivery.mock.invocationCallOrder[0] as number,
+    );
   });
 
   it('refuse le runtime natif si la persistance ne fournit pas son autorité de versions', async () => {
@@ -584,8 +640,9 @@ describe('RealtimeVoiceModule — runtimes de restitution exclusifs', () => {
     const fixture = speechPersistenceFixture();
     fixture.factories.keyVersions.mockReturnValue(null);
 
-    await expect(buildVerifiedRealtimeSpeechRuntime(fixture.persistence, env))
-      .rejects.toThrow('PostgreSQL key authority is unavailable');
+    await expect(buildVerifiedRealtimeSpeechRuntime(fixture.persistence, env)).rejects.toThrow(
+      'PostgreSQL key authority is unavailable',
+    );
     expect(fixture.factories.owner).not.toHaveBeenCalled();
     expect(fixture.factories.usage).not.toHaveBeenCalled();
     expect(fixture.factories.nativeDelivery).not.toHaveBeenCalled();
@@ -596,10 +653,12 @@ describe('RealtimeVoiceModule — runtimes de restitution exclusifs', () => {
     async (provider) => {
       const fixture = speechPersistenceFixture();
 
-      await expect(buildVerifiedRealtimeSpeechRuntime(
-        fixture.persistence,
-        validSpeechRuntimeEnvironment(provider),
-      )).resolves.not.toBeNull();
+      await expect(
+        buildVerifiedRealtimeSpeechRuntime(
+          fixture.persistence,
+          validSpeechRuntimeEnvironment(provider),
+        ),
+      ).resolves.not.toBeNull();
 
       expect(fixture.factories.keyVersions).not.toHaveBeenCalled();
     },
@@ -612,10 +671,7 @@ describe('RealtimeVoiceModule — runtimes de restitution exclusifs', () => {
     const readiness = provider.useFactory({
       audited: { auditHealth: { health }, acousticProof: { prove } },
     });
-    const exports = Reflect.getMetadata(
-      MODULE_METADATA.EXPORTS,
-      RealtimeVoiceModule,
-    ) as unknown[];
+    const exports = Reflect.getMetadata(MODULE_METADATA.EXPORTS, RealtimeVoiceModule) as unknown[];
 
     expect(exports).toContain(BOB_LIVE_RUNTIME_READINESS);
     await expect(readiness.check({ fresh: true })).resolves.toEqual({
@@ -687,16 +743,16 @@ describe('RealtimeVoiceModule — runtimes de restitution exclusifs', () => {
       });
       expect(wired?.native).toBeUndefined();
 
-      const controlsFactory = moduleFactory(REALTIME_DURABLE_CONTROLS).useFactory as unknown as
-        (speech: SpeechRuntime | null) => unknown;
-      const sourcePolicyFactory = moduleFactory(REALTIME_SPEECH_SOURCE_POLICY).useFactory as unknown as
-        (speech: SpeechRuntime | null) => unknown;
+      const controlsFactory = moduleFactory(REALTIME_DURABLE_CONTROLS).useFactory as unknown as (
+        speech: SpeechRuntime | null,
+      ) => unknown;
+      const sourcePolicyFactory = moduleFactory(REALTIME_SPEECH_SOURCE_POLICY)
+        .useFactory as unknown as (speech: SpeechRuntime | null) => unknown;
       expect(controlsFactory(runtime)).toBe(runtime.audited.controls);
       expect(sourcePolicyFactory(runtime)).toBe(runtime.audited.sourcePolicy);
 
-      const acknowledgementFactory = moduleFactory(
-        OpenAiNativeSpeechAcknowledgementService,
-      ).useFactory as unknown as (logger: unknown, speech: SpeechRuntime | null) => unknown;
+      const acknowledgementFactory = moduleFactory(OpenAiNativeSpeechAcknowledgementService)
+        .useFactory as unknown as (logger: unknown, speech: SpeechRuntime | null) => unknown;
       const acknowledgements = acknowledgementFactory({ audit: vi.fn(), warn: vi.fn() }, runtime);
       expect(acknowledgements).toBeInstanceOf(OpenAiNativeSpeechAcknowledgementService);
       expect((acknowledgements as { readonly authority?: unknown }).authority).toBeNull();
@@ -714,8 +770,9 @@ describe('RealtimeVoiceModule — runtimes de restitution exclusifs', () => {
       };
       const fixture = speechPersistenceFixture();
 
-      expect(() => buildRealtimeSpeechRuntime(fixture.persistence, env))
-        .toThrow('Bob Live audited speech runtime is incompletely configured.');
+      expect(() => buildRealtimeSpeechRuntime(fixture.persistence, env)).toThrow(
+        'Bob Live audited speech runtime is incompletely configured.',
+      );
       expect(fixture.factories.owner).not.toHaveBeenCalled();
       expect(fixture.factories.usage).not.toHaveBeenCalled();
       expect(fixture.factories.nativeDelivery).not.toHaveBeenCalled();
@@ -742,7 +799,13 @@ describe('RealtimeVoiceModule — composition du cerveau Bob Live', () => {
       if (definition === undefined) {
         throw new Error('REALTIME_AGENT_TURN provider is unavailable.');
       }
-      expect(registryDefinition.inject).toEqual([AgentMissionService]);
+      // U1-d : le registre porte les DEUX kinds ; les ports Jarvis sont injectés en optionnel
+      // (leurs providers arrivent en vague B) — le boot reste vert, l'adaptateur fail-closed.
+      expect(registryDefinition.inject).toEqual([
+        AgentMissionService,
+        { token: JARVIS_ADMISSION, optional: true },
+        { token: JARVIS_PROPOSAL_PAYLOAD_STORE, optional: true },
+      ]);
       expect(definition?.inject).toEqual([
         PERSISTENCE,
         REALTIME_VOICE_SETTINGS,
@@ -770,18 +833,48 @@ describe('RealtimeVoiceModule — composition du cerveau Bob Live', () => {
 
       expect(missionKinds).toBeInstanceOf(RealtimeMissionKindRegistry);
       expect(adapter).toBeInstanceOf(RealtimeBobAgentTurnAdapter);
-      expect(
-        (adapter as unknown as { readonly requiredProvider: unknown }).requiredProvider,
-      ).toBe(provider);
-      expect(
-        (adapter as unknown as { readonly quoteMissions: unknown }).quoteMissions,
-      ).toBe(quoteKind);
-      expect(
-        (adapter as unknown as { readonly semanticPlanner: unknown }).semanticPlanner,
-      ).toBe(semanticPlanner);
+      expect((adapter as unknown as { readonly requiredProvider: unknown }).requiredProvider).toBe(
+        provider,
+      );
+      expect((adapter as unknown as { readonly quoteMissions: unknown }).quoteMissions).toBe(
+        quoteKind,
+      );
+      expect((adapter as unknown as { readonly semanticPlanner: unknown }).semanticPlanner).toBe(
+        semanticPlanner,
+      );
       expect(quoteKind.id).toBe(QUOTE_CREATION_MISSION_KIND_V1);
       expect(typeof quoteKind.prepare).toBe('function');
       expect(typeof quoteKind.runPlanned).toBe('function');
+      const customerContactKind = missionKinds.get(CUSTOMER_CONTACT_MISSION_KIND_V1);
+      expect(customerContactKind.id).toBe(CUSTOMER_CONTACT_MISSION_KIND_V1);
+      expect(
+        (adapter as unknown as { readonly customerContactMissions: unknown })
+          .customerContactMissions,
+      ).toBe(customerContactKind);
+      // Sans provider d'admission, la fiche client échoue FERMÉE au lieu d'exister à moitié.
+      await expect(
+        customerContactKind.prepare({
+          authority: {
+            owner: { companyId: 'company-1', ownerUserId: 'owner-1' },
+            proof: {
+              protocolVersion: 1,
+              subjectHashCandidates: ['a'.repeat(64)],
+              principalBindingHash: 'b'.repeat(64),
+              capabilityHash: 'c'.repeat(64),
+            },
+            realtimeSessionId: '20000000-0000-4000-8000-000000000001',
+          },
+          turnId: '10000000-0000-4000-8000-000000000001',
+          transcript: 'crée la fiche de Dupont',
+          history: [],
+          contextRevision: 1,
+          contextDigest: 'd'.repeat(64),
+          signal: new AbortController().signal,
+        }),
+      ).resolves.toEqual({
+        status: 'failed',
+        canonicalSpeech: REALTIME_MISSION_UNAVAILABLE_SPEECH,
+      });
       await compiled.close();
     },
   );
@@ -795,9 +888,7 @@ describe('RealtimeVoiceModule — composition du cerveau Bob Live', () => {
       vi.stubEnv(key, '');
       try {
         const plannerDefinition = moduleFactory(REALTIME_SEMANTIC_PLANNER);
-        expect(plannerDefinition.useFactory(
-          { provider } as RealtimeVoiceSettings,
-        )).toBeNull();
+        expect(plannerDefinition.useFactory({ provider } as RealtimeVoiceSettings)).toBeNull();
 
         const getCurrent = vi.fn(async () => ({
           ok: true as const,
@@ -807,24 +898,26 @@ describe('RealtimeVoiceModule — composition du cerveau Bob Live', () => {
         const registry = definition.useFactory({
           getCurrent,
         } as unknown as AgentMissionService) as RealtimeMissionKindRegistry;
-        await expect(registry.get(QUOTE_CREATION_MISSION_KIND_V1).prepare({
-          authority: {
-            owner: { companyId: 'company-1', ownerUserId: 'owner-1' },
-            proof: {
-              protocolVersion: 1,
-              subjectHashCandidates: ['a'.repeat(64)],
-              principalBindingHash: 'b'.repeat(64),
-              capabilityHash: 'c'.repeat(64),
+        await expect(
+          registry.get(QUOTE_CREATION_MISSION_KIND_V1).prepare({
+            authority: {
+              owner: { companyId: 'company-1', ownerUserId: 'owner-1' },
+              proof: {
+                protocolVersion: 1,
+                subjectHashCandidates: ['a'.repeat(64)],
+                principalBindingHash: 'b'.repeat(64),
+                capabilityHash: 'c'.repeat(64),
+              },
+              realtimeSessionId: '20000000-0000-4000-8000-000000000001',
             },
-            realtimeSessionId: '20000000-0000-4000-8000-000000000001',
-          },
-          turnId: '10000000-0000-4000-8000-000000000001',
-          transcript: 'parle-moi de mon activité',
-          history: [],
-          contextRevision: 1,
-          contextDigest: 'd'.repeat(64),
-          signal: new AbortController().signal,
-        })).resolves.toMatchObject({
+            turnId: '10000000-0000-4000-8000-000000000001',
+            transcript: 'parle-moi de mon activité',
+            history: [],
+            contextRevision: 1,
+            contextDigest: 'd'.repeat(64),
+            signal: new AbortController().signal,
+          }),
+        ).resolves.toMatchObject({
           status: 'prepared',
           prepared: {
             semanticContext: {
@@ -847,30 +940,40 @@ describe('RealtimeVoiceModule — composition du cerveau Bob Live', () => {
     'compose le planner sémantique %s et effectue une seule complétion fournisseur',
     async (provider, key) => {
       vi.stubEnv(key, 'test-provider-key');
-      const fetchProvider = vi.fn(async () => new Response(JSON.stringify({
-        model: 'test-model',
-        choices: [{
-          message: {
-            content: null,
-            tool_calls: [{
-              function: {
-                name: 'aide_capacites',
-                arguments: JSON.stringify({}),
-              },
-            }],
-          },
-        }],
-      }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      }));
+      const fetchProvider = vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              model: 'test-model',
+              choices: [
+                {
+                  message: {
+                    content: null,
+                    tool_calls: [
+                      {
+                        function: {
+                          name: 'aide_capacites',
+                          arguments: JSON.stringify({}),
+                        },
+                      },
+                    ],
+                  },
+                },
+              ],
+            }),
+            {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            },
+          ),
+      );
       vi.stubGlobal('fetch', fetchProvider);
 
       try {
         const definition = moduleFactory(REALTIME_SEMANTIC_PLANNER);
-        const planner = definition.useFactory(
-          { provider } as RealtimeVoiceSettings,
-        ) as { plan: (input: unknown) => Promise<unknown> };
+        const planner = definition.useFactory({ provider } as RealtimeVoiceSettings) as {
+          plan: (input: unknown) => Promise<unknown>;
+        };
 
         await expect(
           planner.plan({
@@ -919,22 +1022,29 @@ describe('RealtimeVoiceModule — maintenance durable OpenAI native', () => {
       MODULE_METADATA.PROVIDERS,
       RealtimeVoiceModule,
     ) as Provider[];
-    const maintenance = providers.find((provider) =>
-      typeof provider === 'object'
-      && provider !== null
-      && 'provide' in provider
-      && provider.provide === OPENAI_NATIVE_SPEECH_MAINTENANCE);
+    const maintenance = providers.find(
+      (provider) =>
+        typeof provider === 'object' &&
+        provider !== null &&
+        'provide' in provider &&
+        provider.provide === OPENAI_NATIVE_SPEECH_MAINTENANCE,
+    );
     expect(maintenance).toMatchObject({ inject: [PERSISTENCE] });
     expect(providers).toContain(OpenAiNativeSpeechMaintenanceScheduler);
 
     const create = vi.fn(() => ({
-      listDueCompanyIds: vi.fn(), acknowledgeDueCompanyIds: vi.fn(),
-      renewDueCompanyIdsClaim: vi.fn(), reapExpired: vi.fn(), purgeRetained: vi.fn(),
+      listDueCompanyIds: vi.fn(),
+      acknowledgeDueCompanyIds: vi.fn(),
+      renewDueCompanyIdsClaim: vi.fn(),
+      reapExpired: vi.fn(),
+      purgeRetained: vi.fn(),
     }));
     const factory = (maintenance as FactoryProvider | undefined)?.useFactory as
       | ((persistence: Pick<Persistence, 'createOpenAiNativeSpeechMaintenance'>) => unknown)
       | undefined;
-    expect(factory?.({ createOpenAiNativeSpeechMaintenance: create })).toBe(create.mock.results[0]?.value);
+    expect(factory?.({ createOpenAiNativeSpeechMaintenance: create })).toBe(
+      create.mock.results[0]?.value,
+    );
     expect(create).toHaveBeenCalledOnce();
   });
 });
@@ -945,20 +1055,23 @@ describe('RealtimeVoiceModule — annuaire durable du reaper admission', () => {
       MODULE_METADATA.PROVIDERS,
       RealtimeVoiceModule,
     ) as Provider[];
-    const directory = providers.find((provider) =>
-      typeof provider === 'object'
-      && provider !== null
-      && 'provide' in provider
-      && provider.provide === REALTIME_REAPER_DIRECTORY);
+    const directory = providers.find(
+      (provider) =>
+        typeof provider === 'object' &&
+        provider !== null &&
+        'provide' in provider &&
+        provider.provide === REALTIME_REAPER_DIRECTORY,
+    );
     expect(directory).toMatchObject({ inject: [PERSISTENCE] });
 
     const created = {
-      listDueCompanyIds: vi.fn(), renewClaim: vi.fn(), acknowledgeClaim: vi.fn(),
+      listDueCompanyIds: vi.fn(),
+      renewClaim: vi.fn(),
+      acknowledgeClaim: vi.fn(),
     };
     const create = vi.fn(() => created);
     const factory = (directory as FactoryProvider | undefined)?.useFactory as
-      | ((persistence: Pick<Persistence, 'createRealtimeReaperDirectory'>) => unknown)
-      | undefined;
+      ((persistence: Pick<Persistence, 'createRealtimeReaperDirectory'>) => unknown) | undefined;
     expect(factory?.({ createRealtimeReaperDirectory: create })).toBe(created);
     expect(create).toHaveBeenCalledOnce();
   });
@@ -968,18 +1081,19 @@ describe('RealtimeVoiceModule — annuaire durable du reaper admission', () => {
       MODULE_METADATA.PROVIDERS,
       RealtimeVoiceModule,
     ) as Provider[];
-    const termination = providers.find((provider) =>
-      typeof provider === 'object'
-      && provider !== null
-      && 'provide' in provider
-      && provider.provide === MISTRAL_REALTIME_TERMINATION_AUTHORITY);
+    const termination = providers.find(
+      (provider) =>
+        typeof provider === 'object' &&
+        provider !== null &&
+        'provide' in provider &&
+        provider.provide === MISTRAL_REALTIME_TERMINATION_AUTHORITY,
+    );
     const factory = (termination as FactoryProvider | undefined)?.useFactory as
-      | ((settings: RealtimeVoiceSettings) => MistralRealtimeTerminationAuthority | null)
-      | undefined;
+      ((settings: RealtimeVoiceSettings) => MistralRealtimeTerminationAuthority | null) | undefined;
 
-    expect(factory?.({ enabled: false, provider: 'mistral' } as RealtimeVoiceSettings))
-      .toBeInstanceOf(MistralRealtimeTerminationAuthority);
-    expect(factory?.({ enabled: false, provider: 'openai' } as RealtimeVoiceSettings))
-      .toBeNull();
+    expect(
+      factory?.({ enabled: false, provider: 'mistral' } as RealtimeVoiceSettings),
+    ).toBeInstanceOf(MistralRealtimeTerminationAuthority);
+    expect(factory?.({ enabled: false, provider: 'openai' } as RealtimeVoiceSettings)).toBeNull();
   });
 });

@@ -9,6 +9,7 @@ import {
 import {
   AGENT_MISSION_BOOTSTRAP_RECEIPT_ATTEMPTS,
   AGENT_MISSION_BOOTSTRAP_RECEIPT_REQUEST_TIMEOUT_MS,
+  isCanonicalAgentMissionUuid,
   isCustomPrestationId,
   parseIanaTimeZone,
   parseCustomPrestation,
@@ -178,6 +179,9 @@ import type {
   PurchaseOrderMutationView,
   CustomerContactView,
   CustomerContactWriteInput,
+  JarvisCommandReceiptView,
+  JarvisRunSnapshotView,
+  JarvisSubmitCommandClientInput,
 } from './client';
 
 function decodeConfirmedConversationTimeZone(
@@ -239,6 +243,15 @@ import {
   decodeQuoteAgentMissionResumeV2,
 } from './agent-mission-codec';
 import {
+  JARVIS_RUN_REVISION_MAX,
+  decodeJarvisCommandReceipt,
+  decodeJarvisRunSnapshot,
+  encodeJarvisRunCommand,
+  isJarvisAdmissionKind,
+  isJarvisOpenAction,
+  isJarvisUserCommandId,
+} from './jarvis-codec';
+import {
   createHttpRealtimeAgentMissionSession,
   type HttpAgentMissionRequest,
   type HttpAgentMissionRequester,
@@ -255,11 +268,7 @@ import {
   newCorrelationId,
   withErrorTransport,
 } from './error-codes';
-import {
-  emitApiErrorReport,
-  redactPathForDiagnostics,
-  type ApiErrorReport,
-} from './error-report';
+import { emitApiErrorReport, redactPathForDiagnostics, type ApiErrorReport } from './error-report';
 
 export interface HttpBobClientOptions {
   baseUrl: string;
@@ -287,9 +296,11 @@ const AGENT_TURN_TIMEOUT_MS = 50_000;
 // Deadline UX du bootstrap complet (auth, admission, reaping, DB et fournisseur inclus).
 // Un dépassement est ambigu : le serveur peut encore avoir créé une lease. Toute reprise exige
 // donc une terminaison puis une preuve durable de réconciliation, jamais un retry aveugle.
+// Admission Jarvis (§5.2) : une transaction courte et bornée. À l'expiration, le reçu peut
+// exister côté serveur — l'appelant REJOUE donc le MÊME commandId (§5.4), jamais un nouveau.
+const JARVIS_REQUEST_TIMEOUT_MS = 12_000;
 const REALTIME_BOOTSTRAP_TIMEOUT_MS = 12_000;
-const REALTIME_BOOTSTRAP_TIMEOUT_CAUSE =
-  `Délai réseau dépassé après ${REALTIME_BOOTSTRAP_TIMEOUT_MS} ms.`;
+const REALTIME_BOOTSTRAP_TIMEOUT_CAUSE = `Délai réseau dépassé après ${REALTIME_BOOTSTRAP_TIMEOUT_MS} ms.`;
 const REALTIME_CONFIG_VERSION_CURRENT = 'bob-live-provider-neutral-v4';
 const REALTIME_CONFIG_VERSION_N_MINUS_ONE = 'bob-live-provider-neutral-v3';
 const REALTIME_CONTROL_ACK_TIMEOUT_MS = 4_000;
@@ -374,7 +385,11 @@ function isCanonicalBase64Url256Ticket(
   value: unknown,
   prefix: 'b2_' | 'r2_' | 'bam1_' | 'bam2_',
 ): value is string {
-  if (typeof value !== 'string' || value.length !== prefix.length + 43 || !value.startsWith(prefix)) {
+  if (
+    typeof value !== 'string' ||
+    value.length !== prefix.length + 43 ||
+    !value.startsWith(prefix)
+  ) {
     return false;
   }
   const payload = value.slice(prefix.length);
@@ -385,9 +400,7 @@ function isCanonicalBase64Url256Ticket(
 }
 
 type RealtimeAgentMissionProtocolExpectation =
-  | 'omitted'
-  | null
-  | RealtimeAgentMissionProtocolVersion;
+  'omitted' | null | RealtimeAgentMissionProtocolVersion;
 
 type DecodedRealtimeAgentMissionBinding =
   | { readonly kind: 'omitted' }
@@ -414,23 +427,17 @@ function decodeRealtimeAgentMissionBinding(
   }
   if (!hasVersion || !hasCapability) return null;
   if (expected === null) {
-    return value.agentMissionProtocolVersion === null
-      && value.agentMissionCapability === null
+    return value.agentMissionProtocolVersion === null && value.agentMissionCapability === null
       ? { kind: 'disabled' }
       : null;
   }
-  if (
-    value.agentMissionProtocolVersion === null
-    && value.agentMissionCapability === null
-  ) {
+  if (value.agentMissionProtocolVersion === null && value.agentMissionCapability === null) {
     return { kind: 'disabled' };
   }
-  const prefix = expected === REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
-    ? 'bam2_'
-    : 'bam1_';
+  const prefix = expected === REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION ? 'bam2_' : 'bam1_';
   if (
-    value.agentMissionProtocolVersion !== expected
-    || !isCanonicalBase64Url256Ticket(value.agentMissionCapability, prefix)
+    value.agentMissionProtocolVersion !== expected ||
+    !isCanonicalBase64Url256Ticket(value.agentMissionCapability, prefix)
   ) {
     return null;
   }
@@ -455,13 +462,10 @@ function attachRealtimeAgentMissionSession(
     configurable: false,
     enumerable: false,
     writable: false,
-    value: binding.kind === 'disabled'
-      ? null
-      : createSession(
-          call.sessionHandle,
-          binding.capability,
-          binding.protocolVersion,
-        ),
+    value:
+      binding.kind === 'disabled'
+        ? null
+        : createSession(call.sessionHandle, binding.capability, binding.protocolVersion),
   });
   return Object.freeze(call);
 }
@@ -477,11 +481,12 @@ function decodeRealtimeAgentMissionBootstrapReceipt(
   value: unknown,
 ): { readonly acknowledged: true; readonly replayed: boolean } | null {
   if (
-    !isRecord(value)
-    || !hasExactKeys(value, ['acknowledged', 'replayed'])
-    || value.acknowledged !== true
-    || typeof value.replayed !== 'boolean'
-  ) return null;
+    !isRecord(value) ||
+    !hasExactKeys(value, ['acknowledged', 'replayed']) ||
+    value.acknowledged !== true ||
+    typeof value.replayed !== 'boolean'
+  )
+    return null;
   return { acknowledged: true, replayed: value.replayed };
 }
 
@@ -504,9 +509,9 @@ export function isRealtimeBootstrapTimeoutError(error: unknown): error is AppErr
   );
   if (withoutTransport.sort().join(',') !== 'cause,kind,port') return false;
   return (
-    error.kind === 'dependency'
-    && error.port === 'api'
-    && error.cause === REALTIME_BOOTSTRAP_TIMEOUT_CAUSE
+    error.kind === 'dependency' &&
+    error.port === 'api' &&
+    error.cause === REALTIME_BOOTSTRAP_TIMEOUT_CAUSE
   );
 }
 
@@ -643,9 +648,7 @@ function isMistralConversationSessionEndReason(
 ): value is MistralConversationSessionEndReason {
   return (
     typeof value === 'string' &&
-    MISTRAL_CONVERSATION_SESSION_END_REASONS.has(
-      value as MistralConversationSessionEndReason,
-    )
+    MISTRAL_CONVERSATION_SESSION_END_REASONS.has(value as MistralConversationSessionEndReason)
   );
 }
 
@@ -914,7 +917,11 @@ function decodeCustomerListItem(value: unknown): CustomerListItem | null {
   }
   if (value.isInternational !== undefined && typeof value.isInternational !== 'boolean')
     return null;
-  if (value.tvaIntracom !== undefined && value.tvaIntracom !== null && typeof value.tvaIntracom !== 'string')
+  if (
+    value.tvaIntracom !== undefined &&
+    value.tvaIntracom !== null &&
+    typeof value.tvaIntracom !== 'string'
+  )
     return null;
   if (
     value.siret !== undefined &&
@@ -980,12 +987,8 @@ function customerClientBody(
     // B4/B6 — allowlist EXPLICITE (copies profondes) : sans elle, les conditions de paiement et
     // le canal déclarés depuis la fiche mobile n'atteignaient jamais l'API (champ silencieusement
     // perdu à chaque remplacement complet).
-    ...(input.paymentTerms !== undefined
-      ? { paymentTerms: { ...input.paymentTerms } }
-      : {}),
-    ...(input.billingChannel !== undefined
-      ? { billingChannel: { ...input.billingChannel } }
-      : {}),
+    ...(input.paymentTerms !== undefined ? { paymentTerms: { ...input.paymentTerms } } : {}),
+    ...(input.billingChannel !== undefined ? { billingChannel: { ...input.billingChannel } } : {}),
     ...(input.isInternational !== undefined ? { isInternational: input.isInternational } : {}),
     ...(input.isSubcontractingBtp !== undefined
       ? { isSubcontractingBtp: input.isSubcontractingBtp }
@@ -1600,6 +1603,17 @@ function invalidRealtimeSpeechInput<T>(
   });
 }
 
+/**
+ * Refus AVANT tout départ réseau (patron `validation` de http-agent-mission-session) : une
+ * enveloppe Jarvis mal formée ne consomme ni jeton d'admission ni quota de route.
+ */
+function invalidJarvisInput<T>(field: string, message: string): Promise<Result<T, AppError>> {
+  return Promise.resolve({
+    ok: false,
+    error: { kind: 'validation', issues: [{ field, message }] },
+  });
+}
+
 function decodeRealtimeVoiceDiagnosticTraceDisclosure(
   value: unknown,
 ): import('./client').RealtimeVoiceDiagnosticTraceDisclosure | null {
@@ -1684,9 +1698,7 @@ function decodeRealtimeVoiceConfig(value: unknown): RealtimeVoiceConfig | null {
       ? {}
       : {
           availabilityReason: availabilityReason as
-            | 'disabled'
-            | 'not_entitled'
-            | 'entitlement_unavailable',
+            'disabled' | 'not_entitled' | 'entitlement_unavailable',
         }),
     model: value.model,
     voice: value.voice,
@@ -1704,7 +1716,7 @@ function decodeRealtimeVoiceConfig(value: unknown): RealtimeVoiceConfig | null {
     ...common,
     transport: 'mistral-pcm',
     speechDelivery: 'audited-signed-url-v1',
-    ...((value.protocol === 'bob.mistral-pcm.v1' || value.protocol === 'bob.mistral-pcm.v2')
+    ...(value.protocol === 'bob.mistral-pcm.v1' || value.protocol === 'bob.mistral-pcm.v2'
       ? { protocol: value.protocol }
       : {}),
   };
@@ -1791,8 +1803,8 @@ function decodeRealtimeVoiceCall(
 ): DecodedRealtimeVoiceCallEnvelope | null {
   if (!isRecord(value)) return null;
   const legacyWire =
-    expectedConfigVersion === REALTIME_CONFIG_VERSION_N_MINUS_ONE
-    && expectedSpeechDelivery === 'audited-signed-url-v1';
+    expectedConfigVersion === REALTIME_CONFIG_VERSION_N_MINUS_ONE &&
+    expectedSpeechDelivery === 'audited-signed-url-v1';
   const currentWire = expectedConfigVersion === REALTIME_CONFIG_VERSION_CURRENT;
   if (!legacyWire && !currentWire) return null;
   const hasSpeechDelivery = Object.hasOwn(value, 'speechDelivery');
@@ -1807,9 +1819,9 @@ function decodeRealtimeVoiceCall(
     'maxSessionSeconds',
   ] as const;
   if (
-    (legacyWire && hasSpeechDelivery)
-    || (currentWire && !hasSpeechDelivery)
-    || typeof value.sessionHandle !== 'string' ||
+    (legacyWire && hasSpeechDelivery) ||
+    (currentWire && !hasSpeechDelivery) ||
+    typeof value.sessionHandle !== 'string' ||
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
       value.sessionHandle,
     ) ||
@@ -1834,11 +1846,12 @@ function decodeRealtimeVoiceCall(
     expectedAgentMissionProtocol,
   );
   if (agentMissionBinding === null) return null;
-  const agentMissionWireKeys = agentMissionBinding.kind === 'omitted'
-    ? [] as const
-    : ['agentMissionProtocolVersion', 'agentMissionCapability'] as const;
+  const agentMissionWireKeys =
+    agentMissionBinding.kind === 'omitted'
+      ? ([] as const)
+      : (['agentMissionProtocolVersion', 'agentMissionCapability'] as const);
   const wireCommonKeysBase = currentWire
-    ? [...commonKeys, 'speechDelivery'] as const
+    ? ([...commonKeys, 'speechDelivery'] as const)
     : commonKeys;
   const wireCommonKeys = [...wireCommonKeysBase, ...agentMissionWireKeys] as const;
   const diagnosticTrace = hasDiagnosticTrace
@@ -1871,12 +1884,15 @@ function decodeRealtimeVoiceCall(
         !value.answerSdp.startsWith('v=0')
       )
         return null;
-      return prepareRealtimeVoiceCall({
-        transport: 'webrtc',
-        speechDelivery: 'openai-native-webrtc-v1',
-        answerSdp: value.answerSdp,
-        ...common,
-      }, agentMissionBinding);
+      return prepareRealtimeVoiceCall(
+        {
+          transport: 'webrtc',
+          speechDelivery: 'openai-native-webrtc-v1',
+          answerSdp: value.answerSdp,
+          ...common,
+        },
+        agentMissionBinding,
+      );
     }
     if (
       !hasExactKeys(value, [...wireCommonKeysWithDiagnostic, 'speechSourcePolicy', 'answerSdp']) ||
@@ -1892,13 +1908,16 @@ function decodeRealtimeVoiceCall(
       value.sessionHandle,
     );
     if (!speechSourcePolicy) return null;
-    return prepareRealtimeVoiceCall({
-      transport: 'webrtc',
-      speechDelivery: 'audited-signed-url-v1',
-      speechSourcePolicy,
-      answerSdp: value.answerSdp,
-      ...common,
-    }, agentMissionBinding);
+    return prepareRealtimeVoiceCall(
+      {
+        transport: 'webrtc',
+        speechDelivery: 'audited-signed-url-v1',
+        speechSourcePolicy,
+        answerSdp: value.answerSdp,
+        ...common,
+      },
+      agentMissionBinding,
+    );
   }
 
   if (value.transport === 'mistral-pcm') {
@@ -1929,37 +1948,41 @@ function decodeRealtimeVoiceCall(
           'contextDigest',
           'routeMode',
           'fullDuplexCertified',
-        ])
-        || !isMistralRealtimeWebsocketUrl(value.websocketUrl, expectedApiBaseUrl)
-        || typeof value.companyId !== 'string'
-        || !COMPANY_ID_PATTERN.test(value.companyId)
-        || value.companyId !== expectedCompanyId
-        || typeof value.ticket !== 'string'
-        || !MISTRAL_CONVERSATION_BOOTSTRAP_TICKET_PATTERN.test(value.ticket)
-        || !isCanonicalIsoTimestamp(value.ticketExpiresAt)
-        || Date.parse(value.ticketExpiresAt) > Date.parse(value.hardExpiresAt)
-        || !isBoundedInteger(value.maxMissionAudioBytes, 320, 28_800_000)
-        || value.maxMissionAudioBytes % 320 !== 0
-        || !isBoundedInteger(value.contextRevision, 1, 2_147_483_647)
-        || typeof value.contextDigest !== 'string'
-        || !SHA_256_PATTERN.test(value.contextDigest)
-        || value.routeMode !== 'push_to_talk'
-        || value.fullDuplexCertified !== false
-      ) return null;
-      return prepareRealtimeVoiceCall({
-        transport: 'mistral-pcm',
-        websocketUrl: value.websocketUrl,
-        companyId: value.companyId,
-        ticket: value.ticket,
-        protocol: value.protocol,
-        ticketExpiresAt: value.ticketExpiresAt,
-        maxMissionAudioBytes: value.maxMissionAudioBytes,
-        contextRevision: value.contextRevision,
-        contextDigest: value.contextDigest,
-        routeMode: value.routeMode,
-        fullDuplexCertified: value.fullDuplexCertified,
-        ...auditedCommon,
-      }, agentMissionBinding);
+        ]) ||
+        !isMistralRealtimeWebsocketUrl(value.websocketUrl, expectedApiBaseUrl) ||
+        typeof value.companyId !== 'string' ||
+        !COMPANY_ID_PATTERN.test(value.companyId) ||
+        value.companyId !== expectedCompanyId ||
+        typeof value.ticket !== 'string' ||
+        !MISTRAL_CONVERSATION_BOOTSTRAP_TICKET_PATTERN.test(value.ticket) ||
+        !isCanonicalIsoTimestamp(value.ticketExpiresAt) ||
+        Date.parse(value.ticketExpiresAt) > Date.parse(value.hardExpiresAt) ||
+        !isBoundedInteger(value.maxMissionAudioBytes, 320, 28_800_000) ||
+        value.maxMissionAudioBytes % 320 !== 0 ||
+        !isBoundedInteger(value.contextRevision, 1, 2_147_483_647) ||
+        typeof value.contextDigest !== 'string' ||
+        !SHA_256_PATTERN.test(value.contextDigest) ||
+        value.routeMode !== 'push_to_talk' ||
+        value.fullDuplexCertified !== false
+      )
+        return null;
+      return prepareRealtimeVoiceCall(
+        {
+          transport: 'mistral-pcm',
+          websocketUrl: value.websocketUrl,
+          companyId: value.companyId,
+          ticket: value.ticket,
+          protocol: value.protocol,
+          ticketExpiresAt: value.ticketExpiresAt,
+          maxMissionAudioBytes: value.maxMissionAudioBytes,
+          contextRevision: value.contextRevision,
+          contextDigest: value.contextDigest,
+          routeMode: value.routeMode,
+          fullDuplexCertified: value.fullDuplexCertified,
+          ...auditedCommon,
+        },
+        agentMissionBinding,
+      );
     }
     if (
       !hasExactKeys(value, [
@@ -1990,18 +2013,21 @@ function decodeRealtimeVoiceCall(
       !SHA_256_PATTERN.test(value.contextDigest)
     )
       return null;
-    return prepareRealtimeVoiceCall({
-      transport: 'mistral-pcm',
-      websocketUrl: value.websocketUrl,
-      companyId: value.companyId,
-      ticket: value.ticket,
-      protocol: value.protocol,
-      ticketExpiresAt: value.ticketExpiresAt,
-      maxAudioBytes: value.maxAudioBytes,
-      contextRevision: value.contextRevision,
-      contextDigest: value.contextDigest,
-      ...auditedCommon,
-    }, agentMissionBinding);
+    return prepareRealtimeVoiceCall(
+      {
+        transport: 'mistral-pcm',
+        websocketUrl: value.websocketUrl,
+        companyId: value.companyId,
+        ticket: value.ticket,
+        protocol: value.protocol,
+        ticketExpiresAt: value.ticketExpiresAt,
+        maxAudioBytes: value.maxAudioBytes,
+        contextRevision: value.contextRevision,
+        contextDigest: value.contextDigest,
+        ...auditedCommon,
+      },
+      agentMissionBinding,
+    );
   }
   return null;
 }
@@ -2043,10 +2069,8 @@ function decodeRealtimeVoiceResumeTicket(
         MISTRAL_CONVERSATION_MAX_SERVER_SEQUENCE_CURSOR,
       ) ||
       value.nextServerSequence < expected.input.nextServerSequence ||
-      (
-        value.missionConnectionEpoch > expected.input.missionConnectionEpoch &&
-        value.nextServerSequence <= expected.input.nextServerSequence
-      ) ||
+      (value.missionConnectionEpoch > expected.input.missionConnectionEpoch &&
+        value.nextServerSequence <= expected.input.nextServerSequence) ||
       !isMistralConversationSessionEndReason(value.reason) ||
       !isCanonicalIsoTimestamp(value.closedAt)
     ) {
@@ -2139,8 +2163,8 @@ function decodeRealtimeVoiceBootstrapReconciliation(
     return hasExactKeys(value, ['status']) ? { status: value.status } : null;
   }
   if (
-    value.status !== 'issued'
-    || !hasExactKeys(value, [
+    value.status !== 'issued' ||
+    !hasExactKeys(value, [
       'status',
       'websocketUrl',
       'companyId',
@@ -2152,26 +2176,27 @@ function decodeRealtimeVoiceBootstrapReconciliation(
       'expectedMissionConnectionEpoch',
       'clientAcceptedMissionConnectionEpoch',
       'resumeNextServerSequence',
-    ])
-    || !isMistralRealtimeWebsocketUrl(value.websocketUrl, expected.apiBaseUrl)
-    || typeof value.companyId !== 'string'
-    || !COMPANY_ID_PATTERN.test(value.companyId)
-    || value.companyId !== expected.companyId
-    || value.sessionHandle !== expected.sessionHandle
-    || typeof value.ticket !== 'string'
-    || !MISTRAL_CONVERSATION_RESUME_TICKET_PATTERN.test(value.ticket)
-    || !isCanonicalBase64Url256Ticket(value.ticket, 'r2_')
-    || value.protocol !== 'bob.mistral-pcm.v2'
-    || (value.scope !== 'live_takeover' && value.scope !== 'terminal_replay')
-    || !isCanonicalIsoTimestamp(value.ticketExpiresAt)
-    || !isBoundedInteger(
+    ]) ||
+    !isMistralRealtimeWebsocketUrl(value.websocketUrl, expected.apiBaseUrl) ||
+    typeof value.companyId !== 'string' ||
+    !COMPANY_ID_PATTERN.test(value.companyId) ||
+    value.companyId !== expected.companyId ||
+    value.sessionHandle !== expected.sessionHandle ||
+    typeof value.ticket !== 'string' ||
+    !MISTRAL_CONVERSATION_RESUME_TICKET_PATTERN.test(value.ticket) ||
+    !isCanonicalBase64Url256Ticket(value.ticket, 'r2_') ||
+    value.protocol !== 'bob.mistral-pcm.v2' ||
+    (value.scope !== 'live_takeover' && value.scope !== 'terminal_replay') ||
+    !isCanonicalIsoTimestamp(value.ticketExpiresAt) ||
+    !isBoundedInteger(
       value.expectedMissionConnectionEpoch,
       1,
       MISTRAL_CONVERSATION_MAX_MISSION_CONNECTION_EPOCH,
-    )
-    || value.clientAcceptedMissionConnectionEpoch !== 0
-    || value.resumeNextServerSequence !== 0
-  ) return null;
+    ) ||
+    value.clientAcceptedMissionConnectionEpoch !== 0 ||
+    value.resumeNextServerSequence !== 0
+  )
+    return null;
   return {
     status: 'issued',
     websocketUrl: value.websocketUrl,
@@ -2273,8 +2298,7 @@ export class HttpBobClient implements BobClient {
       readonly headerCorrelationId?: string | null;
     },
   ): { ok: false; error: AppError } {
-    const correlationId =
-      at.bodyCorrelationId ?? at.headerCorrelationId ?? at.localCorrelationId;
+    const correlationId = at.bodyCorrelationId ?? at.headerCorrelationId ?? at.localCorrelationId;
     const code = bobErrorCode(error, bobErrorContextForRoute(at.method, at.path));
     const enriched = withErrorTransport(error, { code, correlationId });
     emitApiErrorReport(this.opts.onError, {
@@ -2452,13 +2476,10 @@ export class HttpBobClient implements BobClient {
       `/voice/realtime/calls/${encodeURIComponent(sessionHandle)}`,
       undefined,
       undefined,
-      (value) => (
-        isRecord(value)
-        && hasExactKeys(value, ['ended'])
-        && value.ended === true
+      (value) =>
+        isRecord(value) && hasExactKeys(value, ['ended']) && value.ended === true
           ? { ended: true }
-          : null
-      ),
+          : null,
       AGENT_MISSION_BOOTSTRAP_RECEIPT_REQUEST_TIMEOUT_MS,
     );
   }
@@ -2826,9 +2847,9 @@ export class HttpBobClient implements BobClient {
       input as RealtimeVoiceCallInput & { readonly bootstrapTerminationOwner?: unknown }
     ).bootstrapTerminationOwner;
     if (
-      Object.hasOwn(input, 'bootstrapTerminationOwner')
-      && bootstrapTerminationOwner !== 'client'
-      && bootstrapTerminationOwner !== 'transport'
+      Object.hasOwn(input, 'bootstrapTerminationOwner') &&
+      bootstrapTerminationOwner !== 'client' &&
+      bootstrapTerminationOwner !== 'transport'
     ) {
       return invalidRealtimeSpeechInput<RealtimeVoiceCall>(
         'bootstrapTerminationOwner',
@@ -2837,12 +2858,10 @@ export class HttpBobClient implements BobClient {
     }
     const transportOwnsBootstrapTermination = bootstrapTerminationOwner === 'transport';
     if (
-      transportOwnsBootstrapTermination
-      && (
-        input.transport === 'mistral-pcm'
-        || typeof input.sessionHandle !== 'string'
-        || !UUID_PATTERN.test(input.sessionHandle)
-      )
+      transportOwnsBootstrapTermination &&
+      (input.transport === 'mistral-pcm' ||
+        typeof input.sessionHandle !== 'string' ||
+        !UUID_PATTERN.test(input.sessionHandle))
     ) {
       return invalidRealtimeSpeechInput<RealtimeVoiceCall>(
         'bootstrapTerminationOwner',
@@ -2871,26 +2890,23 @@ export class HttpBobClient implements BobClient {
       : 'cancel_immediately';
     const currentWire = input.configVersion === REALTIME_CONFIG_VERSION_CURRENT;
     const legacyWire =
-      input.configVersion === REALTIME_CONFIG_VERSION_N_MINUS_ONE
-      && input.speechDelivery === 'audited-signed-url-v1';
+      input.configVersion === REALTIME_CONFIG_VERSION_N_MINUS_ONE &&
+      input.speechDelivery === 'audited-signed-url-v1';
     if (!currentWire && !legacyWire) {
       return invalidRealtimeSpeechInput<RealtimeVoiceCall>(
         'configVersion',
         'Version Bob Live non prise en charge par ce client.',
       );
     }
-    const hasAgentMissionProtocolVersion = Object.hasOwn(
-      input,
-      'agentMissionProtocolVersion',
-    );
+    const hasAgentMissionProtocolVersion = Object.hasOwn(input, 'agentMissionProtocolVersion');
     let requestedAgentMissionProtocol: RealtimeAgentMissionProtocolExpectation = 'omitted';
     if (hasAgentMissionProtocolVersion) {
       const requested = (input as { readonly agentMissionProtocolVersion?: unknown })
         .agentMissionProtocolVersion;
       if (
-        requested !== null
-        && requested !== REALTIME_AGENT_MISSION_PROTOCOL_VERSION
-        && requested !== REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
+        requested !== null &&
+        requested !== REALTIME_AGENT_MISSION_PROTOCOL_VERSION &&
+        requested !== REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
       ) {
         return invalidRealtimeSpeechInput<RealtimeVoiceCall>(
           'agentMissionProtocolVersion',
@@ -2932,23 +2948,24 @@ export class HttpBobClient implements BobClient {
       '/voice/realtime/calls',
       body,
       undefined,
-      (value) => decodeRealtimeVoiceCall(
-        value,
-        this.companyId,
-        this.opts.baseUrl,
-        input.configVersion,
-        input.speechDelivery,
-        requestedAgentMissionProtocol,
-      ),
+      (value) =>
+        decodeRealtimeVoiceCall(
+          value,
+          this.companyId,
+          this.opts.baseUrl,
+          input.configVersion,
+          input.speechDelivery,
+          requestedAgentMissionProtocol,
+        ),
       REALTIME_BOOTSTRAP_TIMEOUT_MS,
       signal,
       bootstrapAbortPolicy,
     );
     if (!bootstrap.ok) {
       if (
-        !transportOwnsBootstrapTermination
-        && typeof requestedAgentMissionProtocol === 'number'
-        && typeof input.sessionHandle === 'string'
+        !transportOwnsBootstrapTermination &&
+        typeof requestedAgentMissionProtocol === 'number' &&
+        typeof input.sessionHandle === 'string'
       ) {
         await this.terminateRealtimeBootstrapSession(input.sessionHandle);
       }
@@ -2957,30 +2974,31 @@ export class HttpBobClient implements BobClient {
 
     const { call, agentMissionBinding } = bootstrap.value;
     if (agentMissionBinding.kind === 'accepted') {
-      const acknowledgeReceipt = () => this.req<{
-        readonly acknowledged: true;
-        readonly replayed: boolean;
-      }>(
-        'POST',
-        `/voice/realtime/calls/${encodeURIComponent(
-          call.sessionHandle,
-        )}/agent-mission-bootstrap-acknowledgements`,
-        undefined,
-        {
-          'x-bob-agent-mission-capability': agentMissionBinding.capability,
-        },
-        decodeRealtimeAgentMissionBootstrapReceipt,
-        AGENT_MISSION_BOOTSTRAP_RECEIPT_REQUEST_TIMEOUT_MS,
-        signal,
-        bootstrapAbortPolicy,
-      );
+      const acknowledgeReceipt = () =>
+        this.req<{
+          readonly acknowledged: true;
+          readonly replayed: boolean;
+        }>(
+          'POST',
+          `/voice/realtime/calls/${encodeURIComponent(
+            call.sessionHandle,
+          )}/agent-mission-bootstrap-acknowledgements`,
+          undefined,
+          {
+            'x-bob-agent-mission-capability': agentMissionBinding.capability,
+          },
+          decodeRealtimeAgentMissionBootstrapReceipt,
+          AGENT_MISSION_BOOTSTRAP_RECEIPT_REQUEST_TIMEOUT_MS,
+          signal,
+          bootstrapAbortPolicy,
+        );
       let receipt = await acknowledgeReceipt();
       for (
         let attempt = 1;
-        attempt < AGENT_MISSION_BOOTSTRAP_RECEIPT_ATTEMPTS
-          && !receipt.ok
-          && canRetryRealtimeAgentMissionBootstrapReceipt(receipt.error)
-          && !signal?.aborted;
+        attempt < AGENT_MISSION_BOOTSTRAP_RECEIPT_ATTEMPTS &&
+        !receipt.ok &&
+        canRetryRealtimeAgentMissionBootstrapReceipt(receipt.error) &&
+        !signal?.aborted;
         attempt += 1
       ) {
         receipt = await acknowledgeReceipt();
@@ -3031,7 +3049,7 @@ export class HttpBobClient implements BobClient {
         value: attachRealtimeAgentMissionSession(
           call,
           agentMissionBinding,
-          (realtimeSessionId, capability, protocolVersion) => (
+          (realtimeSessionId, capability, protocolVersion) =>
             protocolVersion === REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
               ? createHttpRealtimeAgentMissionSession({
                   realtimeSessionId,
@@ -3044,8 +3062,7 @@ export class HttpBobClient implements BobClient {
                   capability,
                   protocolVersion,
                   request,
-                })
-          ),
+                }),
         ),
       };
     } catch {
@@ -3073,7 +3090,10 @@ export class HttpBobClient implements BobClient {
         'La session de reprise Bob Live est invalide.',
       );
     }
-    if (!isRecord(input) || !hasExactKeys(input, ['missionConnectionEpoch', 'nextServerSequence'])) {
+    if (
+      !isRecord(input) ||
+      !hasExactKeys(input, ['missionConnectionEpoch', 'nextServerSequence'])
+    ) {
       return invalidRealtimeSpeechInput<RealtimeVoiceResumeTicketResult>(
         'resumeTicket',
         'La preuve de reprise Bob Live doit contenir exactement l’epoch et la prochaine séquence.',
@@ -3136,18 +3156,18 @@ export class HttpBobClient implements BobClient {
       );
     }
     if (
-      !isRecord(input)
-      || !hasExactKeys(input, ['protocol', 'bootstrapTicket', 'attempt'])
-      || input.protocol !== 'bob.mistral-pcm.v2'
-      || typeof input.bootstrapTicket !== 'string'
-      || !MISTRAL_CONVERSATION_BOOTSTRAP_TICKET_PATTERN.test(input.bootstrapTicket)
-      || !isCanonicalBase64Url256Ticket(input.bootstrapTicket, 'b2_')
-      || !isBoundedInteger(
+      !isRecord(input) ||
+      !hasExactKeys(input, ['protocol', 'bootstrapTicket', 'attempt']) ||
+      input.protocol !== 'bob.mistral-pcm.v2' ||
+      typeof input.bootstrapTicket !== 'string' ||
+      !MISTRAL_CONVERSATION_BOOTSTRAP_TICKET_PATTERN.test(input.bootstrapTicket) ||
+      !isCanonicalBase64Url256Ticket(input.bootstrapTicket, 'b2_') ||
+      !isBoundedInteger(
         input.attempt,
         1,
         MISTRAL_CONVERSATION_BOOTSTRAP_RECONCILIATION_MAX_ATTEMPTS,
-      )
-      || Object.is(input.attempt, -0)
+      ) ||
+      Object.is(input.attempt, -0)
     ) {
       return invalidRealtimeSpeechInput<RealtimeVoiceBootstrapReconciliationResult>(
         'reconciliation',
@@ -3164,11 +3184,12 @@ export class HttpBobClient implements BobClient {
       `/voice/realtime/calls/${encodeURIComponent(sessionHandle)}/bootstrap-reconciliations`,
       body,
       undefined,
-      (value) => decodeRealtimeVoiceBootstrapReconciliation(value, {
-        apiBaseUrl: this.opts.baseUrl,
-        companyId: this.companyId,
-        sessionHandle,
-      }),
+      (value) =>
+        decodeRealtimeVoiceBootstrapReconciliation(value, {
+          apiBaseUrl: this.opts.baseUrl,
+          companyId: this.companyId,
+          sessionHandle,
+        }),
       REALTIME_BOOTSTRAP_TIMEOUT_MS,
       signal,
     );
@@ -3179,8 +3200,8 @@ export class HttpBobClient implements BobClient {
     diagnostic?: RealtimeVoiceClientTerminationDiagnostic,
   ) {
     if (
-      diagnostic !== undefined
-      && parseRealtimeVoiceClientTerminationDiagnostic(diagnostic) === null
+      diagnostic !== undefined &&
+      parseRealtimeVoiceClientTerminationDiagnostic(diagnostic) === null
     ) {
       return invalidRealtimeSpeechInput<{ ended: true }>(
         'diagnostic',
@@ -3374,17 +3395,14 @@ export class HttpBobClient implements BobClient {
       'POST',
       `/voice/realtime/calls/${encodeURIComponent(sessionHandle.toLowerCase())}/turns/${encodeURIComponent(canonicalTurnId)}/native-speech/${encodeURIComponent(canonicalDeliveryId)}/deliveries`,
       encoded,
-      (status, value) => decodeRealtimeVoiceNativeSpeechDeliveryAcknowledgement(
-        status,
-        value,
-        {
+      (status, value) =>
+        decodeRealtimeVoiceNativeSpeechDeliveryAcknowledgement(status, value, {
           deliveryId: canonicalDeliveryId,
           turnId: canonicalTurnId,
           acknowledgementId: encoded.acknowledgementId,
           contextRevision: encoded.contextRevision,
           contextDigest: encoded.contextDigest,
-        },
-      ),
+        }),
       signal,
     );
   }
@@ -3864,15 +3882,11 @@ export class HttpBobClient implements BobClient {
     );
   }
   addChantierNote(chantierId: string, input: { text: string; equipmentId?: string | null }) {
-    return this.req<{ id: string }>(
-      'POST',
-      `/chantiers/${encodeURIComponent(chantierId)}/notes`,
-      {
-        text: input.text,
-        // PR-11 — le tag équipement atteint le serveur (perte silencieuse interdite).
-        ...(input.equipmentId !== undefined ? { equipmentId: input.equipmentId } : {}),
-      },
-    );
+    return this.req<{ id: string }>('POST', `/chantiers/${encodeURIComponent(chantierId)}/notes`, {
+      text: input.text,
+      // PR-11 — le tag équipement atteint le serveur (perte silencieuse interdite).
+      ...(input.equipmentId !== undefined ? { equipmentId: input.equipmentId } : {}),
+    });
   }
   listWorksitePhotos(chantierId: string) {
     return this.req<WorksiteMediaItem[]>(
@@ -3882,7 +3896,12 @@ export class HttpBobClient implements BobClient {
   }
   uploadWorksitePhoto(
     chantierId: string,
-    input: { contentBase64: string; mimeType: string; filename: string; equipmentId?: string | null },
+    input: {
+      contentBase64: string;
+      mimeType: string;
+      filename: string;
+      equipmentId?: string | null;
+    },
   ) {
     return this.req<WorksiteMediaItem>(
       'POST',
@@ -4105,12 +4124,21 @@ export class HttpBobClient implements BobClient {
     // pas de proposalId — on lui renvoie alors l'ancien contrat (PendingAction complet) au
     // lieu d'un { proposalId: undefined } qui casserait toute confirmation.
     const body = pending.proposalId !== undefined ? { proposalId: pending.proposalId } : pending;
-    const run = await this.req<AgentRun>('POST', '/ai/confirm', body, undefined, undefined, AGENT_TURN_TIMEOUT_MS);
+    const run = await this.req<AgentRun>(
+      'POST',
+      '/ai/confirm',
+      body,
+      undefined,
+      undefined,
+      AGENT_TURN_TIMEOUT_MS,
+    );
     // L'ENCHAÎNEMENT ANNONCÉ appartient à la proposition que TIENT le client : le serveur ne la
     // reçoit pas (seul l'identifiant opaque traverse) et n'en a pas besoin — la commande de
     // suivi repassera par /ai/ask, qui refait toute l'autorité. Sans cette reprise, la promesse
     // « ensuite je te propose … » resterait sans suite sur le chemin HTTP.
-    return run.ok ? { ok: true as const, value: withAnnouncedChain(run.value, pending.chain) } : run;
+    return run.ok
+      ? { ok: true as const, value: withAnnouncedChain(run.value, pending.chain) }
+      : run;
   }
   getRunJournal(runId: string) {
     return this.req<JournalEntry[]>('GET', `/ai/runs/${encodeURIComponent(runId)}/journal`);
@@ -4376,7 +4404,8 @@ export class HttpBobClient implements BobClient {
         expectedRevision: input.expectedRevision,
       },
       undefined,
-      (value) => decodePurchaseOrderMutation(value, { targetType: 'quote', targetId: input.quoteId }),
+      (value) =>
+        decodePurchaseOrderMutation(value, { targetType: 'quote', targetId: input.quoteId }),
     );
   }
   /** B8 : DELETE /quotes/:id/purchase-order — seule la révision optimiste voyage. */
@@ -4386,7 +4415,8 @@ export class HttpBobClient implements BobClient {
       `/quotes/${encodeURIComponent(input.quoteId)}/purchase-order`,
       { expectedRevision: input.expectedRevision },
       undefined,
-      (value) => decodePurchaseOrderMutation(value, { targetType: 'quote', targetId: input.quoteId }),
+      (value) =>
+        decodePurchaseOrderMutation(value, { targetType: 'quote', targetId: input.quoteId }),
     );
   }
   /** B8 : PUT /invoices/:id/purchase-order — facture BROUILLON uniquement (figé à l'émission). */
@@ -4590,6 +4620,84 @@ export class HttpBobClient implements BobClient {
   suggestSalesDocuments(query: string) {
     const qs = new URLSearchParams({ q: query }).toString();
     return this.req<SuggestSalesDocumentsResult>('GET', `/documents/suggest?${qs}`);
+  }
+  /**
+   * Canal tactile d'un run Jarvis (§5.2/§5.4). Rien ne part avant que l'enveloppe soit canonique :
+   * `commandId` UUID v4 (contrat user du journal), révision CAS positive, action DANS la borne
+   * d'ouverture du lot (`U1_OPEN_ACTIONS` de @bob/core — jamais une liste locale) et commande
+   * reconstruite clé par clé. `occurredAt`/`canonicalInputDigest` restent calculés serveur : deux
+   * essais du même geste produisent donc la même empreinte, condition du rejeu §5.2.
+   */
+  jarvisSubmitCommand(input: JarvisSubmitCommandClientInput, signal?: AbortSignal) {
+    if (!isCanonicalAgentMissionUuid(input?.runId)) {
+      return invalidJarvisInput<JarvisCommandReceiptView>('runId', 'UUID canonique requis.');
+    }
+    if (!isJarvisAdmissionKind(input.kind)) {
+      return invalidJarvisInput<JarvisCommandReceiptView>(
+        'kind',
+        'Kind de run Jarvis inconnu du port d’admission.',
+      );
+    }
+    if (!isBoundedInteger(input.definitionVersion, 1, JARVIS_RUN_REVISION_MAX)) {
+      return invalidJarvisInput<JarvisCommandReceiptView>(
+        'definitionVersion',
+        'Version de définition positive requise.',
+      );
+    }
+    if (!isJarvisUserCommandId(input.commandId)) {
+      return invalidJarvisInput<JarvisCommandReceiptView>('commandId', 'UUID v4 canonique requis.');
+    }
+    if (!isBoundedInteger(input.expectedRevision, 1, JARVIS_RUN_REVISION_MAX)) {
+      return invalidJarvisInput<JarvisCommandReceiptView>(
+        'expectedRevision',
+        'Révision positive requise.',
+      );
+    }
+    if (!isJarvisOpenAction(input.actionId, input.actionVersion)) {
+      return invalidJarvisInput<JarvisCommandReceiptView>(
+        'actionId',
+        'Action hors des bornes d’ouverture du lot.',
+      );
+    }
+    const command = encodeJarvisRunCommand(input.command);
+    if (command === null) {
+      return invalidJarvisInput<JarvisCommandReceiptView>(
+        'command',
+        'Commande Jarvis hors du canal utilisateur.',
+      );
+    }
+    return this.req<JarvisCommandReceiptView>(
+      'POST',
+      `/jarvis/runs/${encodeURIComponent(input.runId)}/commands`,
+      {
+        kind: input.kind,
+        definitionVersion: input.definitionVersion,
+        commandId: input.commandId,
+        expectedRevision: input.expectedRevision,
+        actionId: input.actionId,
+        actionVersion: input.actionVersion,
+        command,
+      },
+      { 'cache-control': 'no-store' },
+      decodeJarvisCommandReceipt,
+      JARVIS_REQUEST_TIMEOUT_MS,
+      signal,
+    );
+  }
+  /** Lecture stateless §5.2 — jamais servie depuis un cache : l'écran décide sur l'autorité. */
+  jarvisGetRun(runId: string, signal?: AbortSignal) {
+    if (!isCanonicalAgentMissionUuid(runId)) {
+      return invalidJarvisInput<JarvisRunSnapshotView>('runId', 'UUID canonique requis.');
+    }
+    return this.req<JarvisRunSnapshotView>(
+      'GET',
+      `/jarvis/runs/${encodeURIComponent(runId)}`,
+      undefined,
+      { 'cache-control': 'no-store', pragma: 'no-cache' },
+      decodeJarvisRunSnapshot,
+      JARVIS_REQUEST_TIMEOUT_MS,
+      signal,
+    );
   }
   listAccountingEntries() {
     return this.req<AccountingEntryView[]>('GET', '/accounting/entries');

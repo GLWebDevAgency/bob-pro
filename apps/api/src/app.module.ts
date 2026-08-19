@@ -25,6 +25,7 @@ import { DigestService } from './jobs/digest.service';
 import { DocumentArchiveService } from './jobs/document-archive.service';
 import { NotificationDeliveryService } from './jobs/notification-delivery.service';
 import { JarvisWorkItemDispatchService } from './jobs/jarvis-work-item-dispatch.service';
+import { JarvisProposalPayloadPurgeService } from './jobs/jarvis-proposal-payload-purge.service';
 import { ScheduledTenantDirectory } from './jobs/tenant-directory';
 import { VoiceTracePurgeService } from './jobs/voice-trace-purge.service';
 import { VoiceTraceRecorder, voiceTraceRecorderProvider } from './voice/voice-trace.recorder';
@@ -41,6 +42,7 @@ import { QuoteDraftService } from './quotes/quote-draft.service';
 import { DiagnosticAssessmentController } from './diagnostic/diagnostic-assessment.controller';
 import { DiagnosticAssessmentService } from './diagnostic/diagnostic-assessment.service';
 import { AgentMissionModule } from './agent-missions/agent-mission.module';
+import { JarvisModule } from './jarvis/jarvis.module';
 import {
   HealthController,
   CustomersController,
@@ -90,6 +92,9 @@ import {
     RealtimeVoiceModule,
     FiscalModule,
     AgentMissionModule,
+    // Vertical Jarvis (U1-d) : il possède ses providers — AppModule n'en recopie aucun. Ses
+    // exports (admission, registre d'exécuteurs) alimentent le worker de dispatch déclaré ici.
+    JarvisModule,
   ],
   controllers: [
     HealthController,
@@ -147,6 +152,11 @@ import {
     // sous GUC, UoW d'admission) sont des tokens @Optional non liés dans cette tranche — tick
     // no-op fail-closed audité tant que les callers U1-d ne fournissent pas les liaisons.
     JarvisWorkItemDispatchService,
+    // Jarvis U1-d (§5.5) : rétention du magasin PII des propositions. Enregistré
+    // INCONDITIONNELLEMENT — comme la purge des traces vocales, on n'écrit du PII que si le
+    // balayage qui l'efface tourne aussi. Sans son annuaire de propriétaires (autorité serveur
+    // bornée, lot suivant), le tick est un no-op AUDITÉ : rien n'est perdu, rien n'est promis.
+    JarvisProposalPayloadPurgeService,
     ScheduledTenantDirectory,
     // Traçage du comportement vocal (bêta-test) : l'enregistreur est injecté dans
     // BackendService (chemin vocal réel) et la purge honore la rétention de 30 jours.

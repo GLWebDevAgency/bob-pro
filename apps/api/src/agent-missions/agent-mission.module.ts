@@ -3,7 +3,10 @@ import { ObservabilityModule } from '../observability/observability.module';
 import { PersistenceModule } from '../persistence/persistence.module';
 import { realtimeVoiceSettingsProvider } from '../voice/realtime/realtime-settings.provider';
 import { AgentMissionController } from './agent-mission.controller';
-import { agentMissionFingerprintProvider } from './agent-mission-fingerprint.provider';
+import {
+  AGENT_MISSION_FINGERPRINTS,
+  agentMissionFingerprintProvider,
+} from './agent-mission-fingerprint.provider';
 import { agentMissionHttpAuthorityProvider } from './agent-mission-http-authority';
 import { AgentMissionService } from './agent-mission.service';
 
@@ -20,6 +23,9 @@ import { AgentMissionService } from './agent-mission.service';
     agentMissionHttpAuthorityProvider,
     agentMissionFingerprintProvider,
   ],
-  exports: [AgentMissionService],
+  // AGENT_MISSION_FINGERPRINTS est EXPORTÉ : le vertical Jarvis (U1-d) signe ses reçus avec CE
+  // keyring, jamais avec un second. Un token non exporté resterait invisible à son module et
+  // ferait échouer le boot — une deuxième instance ferait pire : deux vérités de signature.
+  exports: [AgentMissionService, AGENT_MISSION_FINGERPRINTS],
 })
 export class AgentMissionModule {}

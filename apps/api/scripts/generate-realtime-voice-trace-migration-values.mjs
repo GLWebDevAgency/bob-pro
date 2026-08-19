@@ -18,6 +18,13 @@ const traceClientCloseMigrationPath = path.join(
   repositoryRoot,
   'apps/api/prisma/migrations/20260803010000_realtime_voice_trace_client_close_expand/migration.sql',
 );
+// APPEND-ONLY (garde `existing_migration_changed`) : une migration livree n'est jamais
+// reecrite. Le bloc des kinds de mission vit donc dans la migration la PLUS RECENTE qui
+// redefinit la contrainte — celle-ci applique aussi le changement aux bases existantes.
+const traceMissionKindMigrationPath = path.join(
+  repositoryRoot,
+  'apps/api/prisma/migrations/20260819180000_realtime_trace_customer_contact_kind/migration.sql',
+);
 const traceSourcePath = path.join(
   repositoryRoot,
   'packages/core/src/observability/realtime-voice-trace.ts',
@@ -100,7 +107,12 @@ const BLOCKS = Object.freeze([
     traceSourcePath,
     'REALTIME_VOICE_TRACE_SESSION_CLOSE_REASONS',
   ],
-  ['REALTIME_TRACE_MISSION_KINDS', traceMigrationPath, missionKindSourcePath, 'MISSION_KIND_IDS'],
+  [
+    'REALTIME_TRACE_MISSION_KINDS',
+    traceMissionKindMigrationPath,
+    missionKindSourcePath,
+    'MISSION_KIND_IDS',
+  ],
   [
     'OPENAI_NATIVE_SPEECH_SCENARIOS',
     nativeRetryMigrationPath,

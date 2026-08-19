@@ -99,6 +99,11 @@ import type {
   SituationAmountInput,
   InvoiceTransmissionStatus,
   TransmissionGuide,
+  CustomerContactConfirmationStatus,
+  CustomerContactPhase,
+  CustomerContactSensitiveField,
+  JarvisAdmissionKind,
+  JarvisRunStatus,
   RealtimeVoiceClientTerminationDiagnostic as CoreRealtimeVoiceClientTerminationDiagnostic,
 } from '@bob/core';
 import type {
@@ -298,7 +303,13 @@ export interface DetachInvoicePurchaseOrderClientInput {
 }
 
 export type { PurchaseOrderRef, PurchaseOrderRefInput, PurchaseOrderMutationView };
-export type { Discount, LineInput, SituationAmountInput, InvoiceTransmissionStatus, TransmissionGuide };
+export type {
+  Discount,
+  LineInput,
+  SituationAmountInput,
+  InvoiceTransmissionStatus,
+  TransmissionGuide,
+};
 
 export interface SendQuoteOutput {
   number: string;
@@ -551,9 +562,7 @@ export interface RealtimeVoiceMistralConfig extends RealtimeVoiceConfigCommon {
 }
 
 export type RealtimeVoiceConfig =
-  | RealtimeVoiceNativeWebRtcConfig
-  | RealtimeVoiceAuditedWebRtcConfig
-  | RealtimeVoiceMistralConfig;
+  RealtimeVoiceNativeWebRtcConfig | RealtimeVoiceAuditedWebRtcConfig | RealtimeVoiceMistralConfig;
 
 export interface RealtimeVoiceSpeechSourcePolicy {
   mode: 'signed-url-v1';
@@ -596,8 +605,7 @@ export interface RealtimeVoiceAuditedWebRtcCall extends RealtimeVoiceAuditedCall
 }
 
 export type RealtimeVoiceWebRtcCall =
-  | RealtimeVoiceNativeWebRtcCall
-  | RealtimeVoiceAuditedWebRtcCall;
+  RealtimeVoiceNativeWebRtcCall | RealtimeVoiceAuditedWebRtcCall;
 
 export interface RealtimeVoiceMistralPcmCall extends RealtimeVoiceAuditedCallCommon {
   transport: 'mistral-pcm';
@@ -626,9 +634,7 @@ export interface RealtimeVoiceMistralConversationCall extends RealtimeVoiceAudit
 }
 
 export type RealtimeVoiceCall =
-  | RealtimeVoiceWebRtcCall
-  | RealtimeVoiceMistralPcmCall
-  | RealtimeVoiceMistralConversationCall;
+  RealtimeVoiceWebRtcCall | RealtimeVoiceMistralPcmCall | RealtimeVoiceMistralConversationCall;
 
 /** Preuve locale minimale permettant de reprendre une mission Mistral v2 sans nouvelle admission. */
 export interface RealtimeVoiceResumeTicketInput {
@@ -665,8 +671,7 @@ export interface RealtimeVoiceTerminalCompleteReceipt {
 }
 
 export type RealtimeVoiceResumeTicketResult =
-  | RealtimeVoiceIssuedResumeTicket
-  | RealtimeVoiceTerminalCompleteReceipt;
+  RealtimeVoiceIssuedResumeTicket | RealtimeVoiceTerminalCompleteReceipt;
 
 /** Capacité initiale gardée uniquement en mémoire jusqu'à `session.ready`. */
 export interface RealtimeVoiceBootstrapReconciliationInput {
@@ -702,8 +707,7 @@ export interface RealtimeVoiceContextUpdate {
 }
 
 /** Contrat redacted transporté avec le hangup ; la source canonique vit dans @bob/core. */
-export type RealtimeVoiceClientTerminationDiagnostic =
-  CoreRealtimeVoiceClientTerminationDiagnostic;
+export type RealtimeVoiceClientTerminationDiagnostic = CoreRealtimeVoiceClientTerminationDiagnostic;
 
 export type RealtimeVoiceCallInput = (
   | {
@@ -1223,6 +1227,110 @@ export interface ConfirmedConversationTimeZoneView {
   readonly requiresSessionRefresh: true;
 }
 
+// ---------------------------------------------------------------------------
+// Jarvis — callers réels du canal tactile (spec §5.2/§5.4/§7.1, lot U1-d)
+// ---------------------------------------------------------------------------
+
+/**
+ * Projection wire d'un `JarvisRun` (§5.1). Le `state` durable ne porte que des digests et n'est
+ * JAMAIS exposé : tout ce que l'écran montre vient de la projection serveur ci-dessous.
+ */
+export interface JarvisRunView {
+  readonly runId: string;
+  readonly kind: JarvisAdmissionKind;
+  readonly definitionVersion: number;
+  readonly status: JarvisRunStatus;
+  readonly revision: number;
+  readonly nextWakeAt: string | null;
+  readonly terminalAt: string | null;
+}
+
+/**
+ * Un champ proposé, déjà TRADUIT côté serveur : `label` est la formulation humaine (montrée ET
+ * vocalisable, §7.0 règles 2-3), jamais du jargon reconstruit par le mobile. `before` vaut null en
+ * création. `sensitiveField` marque les champs dont la mutation entre présentation et confirmation
+ * INVALIDE la proposition (§9.1) — l'écran l'explique au point de décision.
+ */
+export interface CustomerContactPresentedFieldV1 {
+  readonly field: string;
+  readonly label: string;
+  readonly before: string | null;
+  readonly after: string;
+  readonly sensitiveField: CustomerContactSensitiveField | null;
+}
+
+/**
+ * Projection serveur d'un run `customer_contact@1` — recomposée depuis le payload store PII scellé
+ * par `fieldsDigest`. La recomposition revérifie ce digest : au moindre écart, le serveur rend
+ * `presentation: null` (fail-closed, greffe G4) et l'écran n'offre AUCUNE confirmation.
+ */
+export interface CustomerContactPresentationV1 {
+  readonly schema: 'bob.jarvis-run.customer-contact-presentation';
+  readonly version: 1;
+  readonly phase: CustomerContactPhase;
+  readonly intent: 'create' | 'update';
+  readonly targetCustomerId: string | null;
+  readonly proposal: {
+    readonly proposalId: string;
+    readonly proposalHash: string;
+    readonly fieldsDigest: string;
+    readonly fields: readonly CustomerContactPresentedFieldV1[];
+  } | null;
+  readonly confirmation: {
+    readonly confirmationId: string;
+    readonly status: CustomerContactConfirmationStatus;
+    readonly expiresAt: string;
+    readonly presentedAt: string | null;
+  } | null;
+}
+
+/**
+ * Sous-ensemble des commandes `customer_contact@1` qu'un HUMAIN peut émettre depuis un appareil.
+ * Les `revalidated*` du `confirm` domaine sont absents À DESSEIN : l'admission relit la cible
+ * elle-même juste avant de consommer la confirmation (§7.1) — un client ne revalide jamais son
+ * propre geste. `occurredAt` et `canonicalInputDigest` sont également calculés serveur (G7),
+ * stables par retry.
+ */
+export type JarvisRunCommandV1 =
+  | {
+      readonly type: 'record_presentation_ack';
+      readonly confirmationId: string;
+      readonly ack: 'screen_ack';
+    }
+  | { readonly type: 'confirm'; readonly confirmationId: string; readonly proposalHash: string }
+  | { readonly type: 'reject_proposal'; readonly confirmationId: string }
+  | { readonly type: 'cancel_run'; readonly reason: 'user_cancelled' | 'manual_handoff' };
+
+/**
+ * Enveloppe utilisateur du canal tactile. Le `commandId` est un UUID v4 généré UNE fois côté
+ * client avant le premier essai et conservé jusqu'au reçu (§5.4) ; l'autorité (`authenticated_
+ * principal`, greffe G1) est dérivée SERVEUR du bearer — jamais transportée par le client.
+ */
+export interface JarvisSubmitCommandClientInput {
+  readonly runId: string;
+  readonly kind: JarvisAdmissionKind;
+  readonly definitionVersion: number;
+  readonly commandId: string;
+  readonly expectedRevision: number;
+  readonly actionId: string;
+  readonly actionVersion: number;
+  readonly command: JarvisRunCommandV1;
+}
+
+/** Reçu d'admission (§5.2) : `replayed` = même commandId, zéro écriture, le reçu original. */
+export interface JarvisCommandReceiptView {
+  readonly outcome: 'admitted' | 'replayed';
+  readonly run: JarvisRunView;
+  readonly presentation: CustomerContactPresentationV1 | null;
+  readonly eventSequence: number;
+}
+
+/** Lecture stateless §5.2 : zéro verrou, zéro écriture, aucune réponse persistée. */
+export interface JarvisRunSnapshotView {
+  readonly run: JarvisRunView;
+  readonly presentation: CustomerContactPresentationV1 | null;
+}
+
 export interface BobClient {
   readonly companyId: string;
   /**
@@ -1548,7 +1656,12 @@ export interface BobClient {
   listWorksitePhotos(chantierId: string): Promise<Result<WorksiteMediaItem[], AppError>>;
   uploadWorksitePhoto(
     chantierId: string,
-    input: { contentBase64: string; mimeType: string; filename: string; equipmentId?: string | null },
+    input: {
+      contentBase64: string;
+      mimeType: string;
+      filename: string;
+      equipmentId?: string | null;
+    },
   ): Promise<Result<WorksiteMediaItem, AppError>>;
   // ── PR-11 — parc d'équipements d'un site (Bloc A) : MÊMES use cases que la voix.
   // OPTIONNELLES (compat transports existants) — HttpBobClient et LocalBobClient les
@@ -1570,9 +1683,7 @@ export interface BobClient {
     equipmentId: string,
     input: { expectedRevision: number },
   ): Promise<Result<EquipmentProps, AppError>>;
-  getEquipmentHistory?(
-    equipmentId: string,
-  ): Promise<Result<EquipmentHistoryView, AppError>>;
+  getEquipmentHistory?(equipmentId: string): Promise<Result<EquipmentHistoryView, AppError>>;
   // ── PR-16 §3.2/§4.5 — réglages de fiche de passage PARAMÉTRABLES (titre du PDF, templates
   // de checklist par `kind`) : MÊME use case que la voix. OPTIONNELLES (compat transports
   // existants) — HttpBobClient et LocalBobClient les implémentent tous les deux. ──
@@ -1621,7 +1732,9 @@ export interface BobClient {
   equipmentContractCoverage?(
     equipmentId: string,
   ): Promise<Result<{ activeContractLabels: string[] }, AppError>>;
-  worksitePhotoViewUrl(photoId: string): Promise<Result<{ url: string; expiresInSeconds: number }, AppError>>;
+  worksitePhotoViewUrl(
+    photoId: string,
+  ): Promise<Result<{ url: string; expiresInSeconds: number }, AppError>>;
   deleteWorksitePhoto(photoId: string): Promise<Result<void, AppError>>;
   /**
    * ERRATUM 6 — retrait TRACÉ d'une photo (« 1 photo n'a pas pu être jointe ») : geste
@@ -1637,7 +1750,10 @@ export interface BobClient {
   createCustomer(input: CreateCustomerClientInput): Promise<Result<{ id: string }, AppError>>;
   /** Édition post-création (C13/C40 TODO partagé) — remplacement complet revalidé, mêmes champs
    * que la création (SIREN, adresse, contact… complétés depuis la fiche). */
-  updateCustomer(id: string, input: UpdateCustomerClientInput): Promise<Result<{ id: string }, AppError>>;
+  updateCustomer(
+    id: string,
+    input: UpdateCustomerClientInput,
+  ): Promise<Result<{ id: string }, AppError>>;
   // ── PR-09 — contacts multiples du client (label libre) : MÊMES use cases que la fiche.
   // OPTIONNELLES (compat transports existants) — HttpBobClient et LocalBobClient les
   // implémentent tous les deux (parité stricte). ──
@@ -1697,13 +1813,9 @@ export interface BobClient {
   /** Slot BDD du brouillon courant, isolé côté serveur par companyId + userId du JWT. */
   getQuoteDraft(): Promise<Result<QuoteDraftSlotView | null, AppError>>;
   /** expectedRevision=0 crée ; toute reprise ultérieure exige la révision exacte observée. */
-  saveQuoteDraft(
-    input: SaveQuoteDraftClientInput,
-  ): Promise<Result<QuoteDraftSlotView, AppError>>;
+  saveQuoteDraft(input: SaveQuoteDraftClientInput): Promise<Result<QuoteDraftSlotView, AppError>>;
   /** Suppression CAS : un écran périmé ne peut jamais effacer une reprise plus récente. */
-  deleteQuoteDraft(
-    expectedRevision: number,
-  ): Promise<Result<{ deleted: true }, AppError>>;
+  deleteQuoteDraft(expectedRevision: number): Promise<Result<{ deleted: true }, AppError>>;
   sendQuote(quoteId: string): Promise<Result<SendQuoteOutput, AppError>>;
   /** P0 R4 : prépare/rotate le lien de signature SANS AUCUN effet sortant (jamais d'e-mail). */
   createQuoteSignatureLink(
@@ -1730,11 +1842,10 @@ export interface BobClient {
    * l'échéance (outbox serveur planifiée, un job par devis). OPTIONNELLE (compat transports
    * existants) — le client HTTP et le client local de démo l'implémentent tous les deux
    * (parité stricte). */
-  scheduleEmbargoPayment?(quoteId: string): Promise<
-    Result<
-      { scheduledFor: string; availableFrom: string; jobId: string; status: string },
-      AppError
-    >
+  scheduleEmbargoPayment?(
+    quoteId: string,
+  ): Promise<
+    Result<{ scheduledFor: string; availableFrom: string; jobId: string; status: string }, AppError>
   >;
   generateInvoice(input: {
     quoteId: string;
@@ -1813,9 +1924,7 @@ export interface BobClient {
    * geste explicite confirmé, lien public + PDF archivé joint, expéditeur perçu = la société.
    * OPTIONNELLE (compat transports existants) — le client HTTP et le client local de démo
    * l'implémentent tous les deux (parité stricte). */
-  sendInvoice?(
-    input: SendInvoiceClientInput,
-  ): Promise<Result<SendInvoiceClientOutput, AppError>>;
+  sendInvoice?(input: SendInvoiceClientInput): Promise<Result<SendInvoiceClientOutput, AppError>>;
   /** C25 ② : envoi RÉEL d'une relance ciblée — POST /invoices/:id/relance (ton du plan @bob/core,
    * confirmation côté UI/agent avant l'appel : action sortante vers un tiers). */
   sendRelance(invoiceId: string): Promise<Result<SendRelanceClientOutput, AppError>>;
@@ -1871,6 +1980,29 @@ export interface BobClient {
   ): Promise<Result<SearchSalesDocumentsResult, AppError>>;
   /** B9 — GET /documents/suggest : autocomplétion typée {kind, value, count}, LIMIT 8. */
   suggestSalesDocuments(query: string): Promise<Result<SuggestSalesDocumentsResult, AppError>>;
+  /**
+   * POST /jarvis/runs/:runId/commands (lot U1-d) — le canal TACTILE d'un run Jarvis : une
+   * enveloppe utilisateur entre, un reçu d'admission sort. Le tap vit SANS lease Realtime (§14,
+   * greffe G1) : un run parké après la mort de la session vocale se reprend à l'écran.
+   * Un rejeu du MÊME `commandId` rend le reçu original (`outcome: 'replayed'`, zéro écriture) ;
+   * tout refus fermé de l'admission (révision périmée, conflit, capability, action fermée…)
+   * remonte en `AppError` — l'écran refait alors une lecture autoritative, jamais une supposition.
+   * OPTIONNELLE (précédent `trialReport?`) : les transports qui n'ouvrent pas Jarvis restent
+   * assignables et l'appelant échoue fermé lorsqu'elle est absente.
+   */
+  jarvisSubmitCommand?(
+    input: JarvisSubmitCommandClientInput,
+    signal?: AbortSignal,
+  ): Promise<Result<JarvisCommandReceiptView, AppError>>;
+  /**
+   * GET /jarvis/runs/:runId (lot U1-d) — lecture stateless §5.2 : le run projeté + la présentation
+   * serveur des champs proposés. `presentation: null` = le digest des champs ne se revérifie pas
+   * (greffe G4) : rien n'est confirmable. OPTIONNELLE, même doctrine que `jarvisSubmitCommand`.
+   */
+  jarvisGetRun?(
+    runId: string,
+    signal?: AbortSignal,
+  ): Promise<Result<JarvisRunSnapshotView, AppError>>;
 }
 
 /** Entrée client de searchSalesDocuments : identique au contrat core, `scope` par défaut "all"

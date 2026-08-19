@@ -44,6 +44,36 @@ import {
 } from './agent-mission.persistence';
 
 /** Digest constant du résultat « aucun effet » (cancel gagné avant autorisation). */
+/** Acteur journalise : le canal reel, jamais un defaut (§5.2, vocabulaire de la lane devis). */
+function jarvisEventActor(envelope: AdmissionEnvelope): 'user_voice' | 'user_tap' | 'system' {
+  if (envelope.actor !== 'user') return 'system';
+  return envelope.authority.source === 'realtime_capability' ? 'user_voice' : 'user_tap';
+}
+
+/** Corrélation realtime de l'événement — exigée par le CHECK pour un acteur `user_voice`. */
+function jarvisEventCorrelation(envelope: AdmissionEnvelope): {
+  realtimeSessionId: string | null;
+  turnId: string | null;
+  contextRevision: number | null;
+  contextDigest: string | null;
+} {
+  const correlation = envelope.actor === 'user' ? envelope.realtimeCorrelation : undefined;
+  if (correlation === undefined) {
+    return {
+      realtimeSessionId: null,
+      turnId: null,
+      contextRevision: null,
+      contextDigest: null,
+    };
+  }
+  return {
+    realtimeSessionId: correlation.realtimeSessionId,
+    turnId: correlation.turnId,
+    contextRevision: correlation.contextRevision,
+    contextDigest: correlation.contextDigest,
+  };
+}
+
 const NO_EFFECT_RESULT_DIGEST = 'a'.repeat(0) + '0'.repeat(64);
 
 // Enregistrement des définitions au chargement du module (registre gelé U1-b).
@@ -321,13 +351,16 @@ async function persistTransition(
       sequence,
       eventType: transition.event.type,
       eventVersion: transition.event.version,
-      actor: envelope.actor === 'user' ? 'user_tap' : 'system',
+      // Le journal immuable dit le CANAL (revue C12-P0) : une commande vocale ne s'inscrit
+      // jamais comme un tap. Meme vocabulaire que la lane devis (user_voice | user_tap).
+      actor: jarvisEventActor(envelope),
       commandId: envelope.commandId,
       requestFingerprintHmac: fingerprint.hmac,
       fingerprintKeyVersion: fingerprint.keyVersion,
       fingerprintCanonicalizationVersion: deps.canonicalizationVersion,
       missionRevisionBefore: envelope.expectedRevision,
       missionRevisionAfter: postimage.revision,
+      ...jarvisEventCorrelation(envelope),
       data: toInputJson({ ...transition.event.data, kind: transition.event.type }),
       occurredAt,
       retentionExpiresAt: new Date(occurredAt.getTime() + AGENT_MISSION_RETENTION_MS),
@@ -403,18 +436,45 @@ async function admitCore(
       return { status: 'action_refused', reason: 'admission_kill_switch' };
     }
     // Principal (§5.2 étape 5) : la preuve d'autorité se résout SOUS verrou, in-tx.
-    if (envelope.authority.source === 'realtime_capability') {
-      const resolution = await resolveAgentMissionAuthority(
-        tx,
-        { companyId: envelope.companyId, ownerUserId: envelope.ownerUserId },
-        envelope.authority.proof,
-        true,
-      );
-      if (resolution.status !== 'authorized') {
-        return { status: 'capability_rejected', reason: String(resolution.reason) };
+    // Switch EXHAUSTIF sur l'union fermée — une source inconnue est refusée, jamais tolérée.
+    switch (envelope.authority.source) {
+      case 'realtime_capability': {
+        // Le journal exige la corrélation complète pour une commande vocale : sans elle,
+        // l'admission refuse — jamais un événement vocal sans sa session (CHECK SQL).
+        if (envelope.actor === 'user' && envelope.realtimeCorrelation === undefined) {
+          return { status: 'capability_rejected', reason: 'missing_realtime_correlation' };
+        }
+        const resolution = await resolveAgentMissionAuthority(
+          tx,
+          { companyId: envelope.companyId, ownerUserId: envelope.ownerUserId },
+          envelope.authority.proof,
+          true,
+        );
+        if (resolution.status !== 'authorized') {
+          return { status: 'capability_rejected', reason: String(resolution.reason) };
+        }
+        break;
       }
-    } else if (!deps.allowCertificationAuthority) {
-      return { status: 'capability_rejected', reason: 'certification_fixture_forbidden' };
+      case 'authenticated_principal': {
+        // §14 : le canal tactile vit SANS lease Realtime. Le hash est dérivé SERVEUR
+        // par le controller depuis le bearer authentifié — l'admission n'en vérifie que
+        // la forme et le stampe pour l'audit (dans l'événement via la canonicalisation).
+        if (!/^[a-f0-9]{64}$/.test(envelope.authority.principalBindingHash)) {
+          return { status: 'capability_rejected', reason: 'malformed_principal_binding' };
+        }
+        break;
+      }
+      case 'certification_fixture': {
+        if (!deps.allowCertificationAuthority) {
+          return { status: 'capability_rejected', reason: 'certification_fixture_forbidden' };
+        }
+        break;
+      }
+      default: {
+        const never: never = envelope.authority;
+        void never;
+        return { status: 'capability_rejected', reason: 'unknown_authority_source' };
+      }
     }
     // Catalogue (pur, §5.2 étape 6).
     const entry = catalogEntryFor(envelope.actionId, envelope.actionVersion);
@@ -547,13 +607,16 @@ async function admitCore(
           // commandId. Le garde envelope_check lie l'acteur au format du commandId
           // (user ⇔ v4, system ⇔ v8) — l'acteur reflète donc l'enveloppe, comme partout ;
           // le caractère « système » de la mise en quarantaine vit dans le TYPE §5.5.
-          actor: envelope.actor === 'user' ? 'user_tap' : 'system',
+          // Le journal immuable dit le CANAL (revue C12-P0) : une commande vocale ne s'inscrit
+          // jamais comme un tap. Meme vocabulaire que la lane devis (user_voice | user_tap).
+          actor: jarvisEventActor(envelope),
           commandId: envelope.commandId,
           requestFingerprintHmac: fingerprint.hmac,
           fingerprintKeyVersion: fingerprint.keyVersion,
           fingerprintCanonicalizationVersion: deps.canonicalizationVersion,
           missionRevisionBefore: envelope.expectedRevision,
           missionRevisionAfter: nextRevision,
+          ...jarvisEventCorrelation(envelope),
           data: toInputJson({
             kind: 'run_quarantined',
             definitionVersion: envelope.definitionVersion,
