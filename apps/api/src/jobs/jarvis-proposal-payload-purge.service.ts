@@ -89,9 +89,9 @@ export interface JarvisProposalPayloadPurgeSummary {
 }
 
 /**
- * Reconnaissance structurelle du magasin durable : le double mémoire
- * (`InMemoryPersistence.createJarvisProposalPayloadStore` ⇒ `null`) et tout adapter incapable de
- * prouver la policy de rétention restent NULL — fail-closed, jamais une purge simulée.
+ * Reconnaissance structurelle du magasin durable : les persistances non durables rendent
+ * déjà `null` pour ce port, et tout adapter incapable de prouver la policy de rétention
+ * reste NULL ici — fail-closed, jamais une purge simulée.
  */
 export function asJarvisProposalPayloadRetention(
   store: JarvisProposalPayloadStorePort | null,
