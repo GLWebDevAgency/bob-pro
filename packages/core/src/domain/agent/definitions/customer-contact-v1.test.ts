@@ -472,6 +472,46 @@ describe('customer_contact@1 — cible réelle en update', () => {
     );
   });
 
+  it("lit encore un état N-1 (proposition sans sceau de cible) : annulable, jamais confirmable", () => {
+    // COMPATIBILITÉ N-1. `targetSensitiveDigest` est né avec U1-e. Un run déjà en base au moment
+    // du déploiement porte une proposition SANS cette clé : si le parseur l'exigeait, le state
+    // deviendrait illisible et le run IRRÉDUCTIBLE — `state_shape` sur toute commande, y compris
+    // `cancel_run`. L'artisan garderait à vie un run mort tenant son premier plan.
+    const presented = updateAtPresented();
+    const state = stateOf(presented);
+    const proposal = state.proposal;
+    if (proposal === null) throw new Error('proposition attendue');
+    const { targetSensitiveDigest: _retire, ...proposalN1 } = proposal as unknown as Record<
+      string,
+      unknown
+    > & { targetSensitiveDigest: unknown };
+    const runN1: CustomerContactRunEnvelope = {
+      ...presented,
+      state: { ...(presented.state as Record<string, unknown>), proposal: proposalN1 },
+    };
+
+    // (a) LISIBLE : le run se réduit encore, donc l'artisan peut s'en défaire.
+    const cancelled = CUSTOMER_CONTACT_V1.reduce(
+      runN1,
+      { type: 'cancel_run', reason: 'user_cancelled' },
+      ctx(runN1, { occurredAt: at(20_000) }),
+    );
+    expect(cancelled.ok).toBe(true);
+
+    // (b) PAS CONFIRMABLE : sans sceau, la garde §9.1 n'a rien à comparer — la proposition est
+    // INVALIDÉE (elle sera refaite), jamais consommée sur une cible qu'on n'a pas vérifiée.
+    const confirmed = CUSTOMER_CONTACT_V1.reduce(
+      runN1,
+      confirmUpdateCommand(runN1),
+      ctx(runN1, { occurredAt: at(20_000), targetRevalidation: TARGET_AT_REVISION_3 }),
+    );
+    expect(confirmed.ok).toBe(true);
+    if (!confirmed.ok) throw new Error('transition attendue');
+    const after = stateOf(confirmed.value.postimage as CustomerContactRunEnvelope);
+    expect(after.confirmation?.status).toBe('invalidated');
+    expect(confirmed.value.workItemIntents).toEqual([]);
+  });
+
   it('refuse un outcome de résolution incohérent avec le mode', () => {
     const startedUpdate = step(seedRun(), START_UPDATE, { allocatedEffectIds: [EFFECT_ID] }).run;
     expectInvalid(

@@ -914,8 +914,11 @@ export class JarvisRunController {
    * digest d'entrée, l'horloge et l'autorité. Le rejeu du MÊME `commandId` retombe sur le MÊME
    * run et rend le reçu original (`replayed`, zéro écriture).
    *
-   * L'action reste pincée depuis @bob/core : la fermer (rollout G2) est opposé par l'admission
-   * (`action_refused`), le controller ne duplique pas une borne qu'il ne peut pas contredire.
+   * BORNE D'OUVERTURE (G2) OPPOSÉE ICI. L'admission ne la connaît PAS : elle ne vérifie que le
+   * catalogue (`unknown_action`, `voiceMode === 'closed'`), deux bornes distinctes de la liste de
+   * rollout `U1_OPEN_ACTIONS`. Fermer le rollout ferme le canal tap, le worker, le client HTTP et
+   * le coordinateur mobile — si cette route restait ouverte, elle sèmerait des runs que plus rien
+   * ne peut faire avancer NI annuler, et chacun confisquerait le premier plan de son owner.
    */
   @Post('runs')
   @HttpCode(HttpStatus.OK)
@@ -926,6 +929,11 @@ export class JarvisRunController {
     if (!authorization.ok) refuse(authorization.error);
     const admission = this.requireAdmission();
     const body = parseJarvisOpenRunBody(value);
+    // Même source UNIQUE que le canal de commandes (@bob/core), même refus : la route pince son
+    // action, mais elle ne s'exempte pas de la borne qui la gouverne.
+    if (!isU1OpenAction(CUSTOMER_CONTACT_UPDATE_ACTION_ID, CUSTOMER_CONTACT_ACTION_VERSION)) {
+      invalidBody('actionId', 'Action hors des bornes d’ouverture du lot.');
+    }
     const owner = authorization.value.owner;
     const runId = deriveJarvisScreenRunId(owner, body.commandId);
     const command: JarvisOpenRunCommand = Object.freeze({
@@ -1050,9 +1058,19 @@ export class JarvisRunController {
     const result = await this.guarded('admission', () => admission.runJarvisAdmission(envelope));
     if (result.status !== 'admitted' && result.status !== 'replayed') {
       // Fail-closed HONNETE : le run existe, parke en resolving_customer. On rend le semis.
+      // La RAISON, pas seulement le statut : un run parké est un incident d'exploitation, et
+      // « refused » sans motif ne se diagnostique pas. Les membres de `JarvisAdmissionResult`
+      // portent leur cause sous des clés distinctes — on les rend toutes, sans jamais inventer.
+      const cause = result as { readonly reason?: unknown; readonly error?: { readonly reason?: unknown } };
       this.logger.audit('jarvis.tap.target_resolution_deferred', {
         runId: input.runId,
         status: result.status,
+        reason:
+          typeof cause.reason === 'string'
+            ? cause.reason
+            : typeof cause.error?.reason === 'string'
+              ? cause.error.reason
+              : null,
       });
       return {
         postimage: input.postimage,

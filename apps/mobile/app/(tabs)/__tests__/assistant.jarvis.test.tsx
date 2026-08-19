@@ -93,11 +93,26 @@ vi.mock('react-native-safe-area-context', () => ({
 vi.mock('expo-crypto', () => ({
   randomUUID: (): string => '88888888-8888-4888-8888-888888888888',
 }));
-vi.mock('expo-router', () => ({
-  useRouter: () => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn(), canGoBack: () => true }),
-  useLocalSearchParams: () => ({}),
-  useFocusEffect: () => {},
-}));
+/**
+ * `useFocusEffect` EXÉCUTE son effet — comme le vrai, sur un écran affiché. Un mock inerte
+ * laisserait l'onglet éternellement « non focalisé », et l'accusé §7.1 (qui n'est dû QUE si la
+ * proposition est réellement visible) ne partirait jamais : le test prouverait le contraire de
+ * ce qu'il annonce. `focusedHost` permet de rejouer le cas inverse — écran monté, jamais vu.
+ */
+let focusedHost = true;
+vi.mock('expo-router', async () => {
+  const react = await vi.importActual<typeof import('react')>('react');
+  return {
+    useRouter: () => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn(), canGoBack: () => true }),
+    useLocalSearchParams: () => ({}),
+    useFocusEffect: (callback: () => void | (() => void)) => {
+      react.useEffect(() => {
+        if (!focusedHost) return;
+        return callback();
+      }, [callback]);
+    },
+  };
+});
 
 const CUSTOMER_ID = '55555555-5555-4555-8555-555555555555';
 const RUN_ID = '11111111-1111-4111-8111-111111111111';
@@ -291,6 +306,7 @@ beforeEach(() => {
   server.submitted = [];
   server.runAbsent = false;
   entitlement.assistant = { allowed: true, loading: false, verified: true, decision: null };
+  focusedHost = true;
 });
 
 describe('L’onglet assistant, hôte primaire du run Jarvis', () => {
@@ -301,6 +317,17 @@ describe('L’onglet assistant, hôte primaire du run Jarvis', () => {
     expect(rendered).toContain('Modifier la fiche client');
     // La MÊME grammaire visuelle que les propositions du fil : ActionDiffView, a11y composée.
     expect(rendered).toContain('E-mail. Avant : compta@martin.fr. Après : facturation@martin.fr.');
+  });
+
+  it('onglet en arrière-plan : la carte est montée mais RIEN n’est accusé (§7.1)', async () => {
+    // `record_presentation_ack` atteste que la proposition A ÉTÉ AFFICHÉE — et c'est lui qui ouvre
+    // le droit de confirmer. Un onglet monté sous une autre route est monté, pas VU : l'accuser
+    // serait attester d'un affichage qui n'a pas eu lieu, et déverrouiller une écriture sur la
+    // fiche d'un client que l'artisan n'a jamais regardée.
+    focusedHost = false;
+    await render();
+    expect(server.submitted).toEqual([]);
+    expect(announce).not.toHaveBeenCalledWith('Bob attend votre confirmation.');
   });
 
   it('enchaînement §7.1 : accusé au rendu réel → presented → « Confirmer » ouvert et émis', async () => {

@@ -114,6 +114,8 @@ const DISPOSABLE = process.env.AGENT_MISSION_CERT_DATABASE_IS_DISPOSABLE === 'tr
 /** Le parcours §2 enchaîne un run complet, deux propositions, un tick de worker et deux écritures. */
 const TEST_TIMEOUT_MS = 90_000;
 const PAYLOAD_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
+/** Autorité de l'annuaire de rétention (SPEC_U1E §4) — le rôle NOLOGIN de `release.sh`. */
+const RETENTION_DIRECTORY_ROLE = 'bob_jarvis_payload_retention_directory';
 
 const FINGERPRINTS: AgentMissionFingerprintPort = {
   sign(canonicalRequest) {
@@ -1038,9 +1040,7 @@ describe.skipIf(!RUN_CERT)(
           expect(sealed.status).toBe('sealed');
           return runId;
         };
-        await sealShortLived(expiredOwner, controllerA);
-        await sealShortLived(neighborOwner, controllerB);
-        // Le vivant, lui, est scellé pour la durée nominale : il ne doit JAMAIS apparaître.
+        // Le vivant est semé EN PREMIER, pour la durée nominale : il ne doit JAMAIS apparaître.
         const livingCustomerId = await seedTargetCustomer(livingOwner);
         const livingRun = await openRun(controllerA, livingOwner, {
           commandId: randomUUID(),
@@ -1053,15 +1053,27 @@ describe.skipIf(!RUN_CERT)(
           proposalId: randomUUID(),
           fields,
         });
+        // Les charges COURTES viennent en DERNIER : leur fenêtre de vie ne couvre plus que
+        // l'assertion qui suit, jamais une dizaine de transactions PostgreSQL — sinon la preuve
+        // serait un pari sur la vitesse de la machine, et elle casserait sous charge.
+        await sealShortLived(expiredOwner, controllerA);
+        await sealShortLived(neighborOwner, controllerB);
 
         // AVANT l'échéance : l'annuaire ne rend RIEN. C'est la moitié de la garde — un annuaire
         // qui rendrait les propriétaires actifs cartographierait les usagers du tenant.
         expect(await storeA.listRetentionOwners(companyId, 50)).toEqual([]);
 
-        await new Promise((resolve) => setTimeout(resolve, shortRetentionMs + 300));
+        // ATTENTE CONDITIONNELLE, jamais une durée devinée : on interroge l'annuaire jusqu'à ce
+        // que la base — seule détentrice de l'horloge qui fait foi — déclare la charge échue.
+        const echeance = Date.now() + 30_000;
+        let owners: readonly string[] = [];
+        do {
+          owners = await storeA.listRetentionOwners(companyId, 50);
+          if (owners.length > 0) break;
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        } while (Date.now() < echeance);
 
-        // APRÈS : le propriétaire échu, et lui SEUL. Ni le vivant du même tenant, ni le voisin.
-        const owners = await storeA.listRetentionOwners(companyId, 50);
+        // Le propriétaire échu, et lui SEUL. Ni le vivant du même tenant, ni le voisin.
         expect(owners).toEqual([expiredOwner.ownerUserId]);
         expect(await storeA.listRetentionOwners(neighborCompanyId, 50)).toEqual([
           neighborOwner.ownerUserId,
@@ -1070,18 +1082,34 @@ describe.skipIf(!RUN_CERT)(
         // L'AUTORITÉ NE PEUT PAS LIRE LE CONTENU. Le GRANT par colonne exclut `payload` : même
         // assumée directement, même sous SECURITY DEFINER, la PII lui est refusée par la base
         // (42501) — le fichier de migration n'est pas le gardien, le privilège l'est.
-        let payloadRefusal: unknown = null;
-        try {
-          // Deux gestes DANS LA MÊME transaction : `SET LOCAL ROLE` ne survit pas à sa
-          // transaction, et PostgreSQL refuse deux commandes dans un statement préparé.
-          await admin.$transaction(async (tx) => {
-            await tx.$executeRawUnsafe('SET LOCAL ROLE bob_jarvis_payload_retention_directory');
-            await tx.$queryRawUnsafe('SELECT payload FROM public.jarvis_proposal_payloads LIMIT 1');
-          });
-        } catch (cause) {
-          payloadRefusal = cause;
-        }
-        expect(String(payloadRefusal)).toMatch(/permission denied|42501/i);
+        // ORACLE DU CATALOGUE, jamais une tentative. Une sonde qui ferait `SET ROLE` puis
+        // `SELECT payload` mourrait sur le SET ROLE lui-même (l'auditeur n'est pas membre de
+        // l'autorité) et passerait pour de MAUVAISES raisons : « permission denied » aurait été
+        // rendu par le mauvais refus. `has_column_privilege` interroge le privilège RÉEL, colonne
+        // par colonne, sans rien assumer.
+        const [privileges] = await admin.$queryRaw<
+          Array<{ payload: boolean; owner: boolean; company: boolean; expiry: boolean }>
+        >`
+          SELECT has_column_privilege(
+                   ${RETENTION_DIRECTORY_ROLE}, 'public.jarvis_proposal_payloads', 'payload', 'SELECT'
+                 ) AS "payload",
+                 has_column_privilege(
+                   ${RETENTION_DIRECTORY_ROLE}, 'public.jarvis_proposal_payloads', 'ownerUserId', 'SELECT'
+                 ) AS "owner",
+                 has_column_privilege(
+                   ${RETENTION_DIRECTORY_ROLE}, 'public.jarvis_proposal_payloads', 'companyId', 'SELECT'
+                 ) AS "company",
+                 has_column_privilege(
+                   ${RETENTION_DIRECTORY_ROLE}, 'public.jarvis_proposal_payloads', 'retentionExpiresAt', 'SELECT'
+                 ) AS "expiry"
+        `;
+        // La PII lui est refusée par le privilège lui-même : même SECURITY DEFINER, même en
+        // réécrivant la fonction, l'autorité ne peut pas atteindre `payload`.
+        expect(privileges?.payload).toBe(false);
+        // Et elle possède EXACTEMENT les trois coordonnées dont le balayage a besoin.
+        expect(privileges?.owner).toBe(true);
+        expect(privileges?.company).toBe(true);
+        expect(privileges?.expiry).toBe(true);
 
         // Le rôle RUNTIME ne peut pas devenir l'autorité : il n'a que le droit d'EXÉCUTER la
         // fonction. Sans ce verrou, `bob_app` lirait le magasin d'autrui en une ligne de SQL.

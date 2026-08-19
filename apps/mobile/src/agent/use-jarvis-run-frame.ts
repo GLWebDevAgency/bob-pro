@@ -25,7 +25,7 @@
  *   donc jamais dessus — c'est la même loi que `refreshAfterAction` de l'onglet assistant.
  */
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { randomUUID } from 'expo-crypto';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { JarvisCurrentRunView } from '@bob/api-client';
@@ -33,6 +33,17 @@ import { useAuth } from '../data/auth';
 import { useBobClient } from '../data/client';
 import { AGENT_REFRESH_QUERY_KEY_PREFIXES } from '../assistant/refresh-after-action';
 import { useAgentMissionCommandIdRegistry } from './agent-mission-provider';
+
+/**
+ * Phases où Bob ÉCRIT : la décision est admise, l'effet est en vol (work item pris par le worker),
+ * mais rien n'est encore visible dans les projections métier. Ce sont les seules que l'écran
+ * poursuit — et c'est en les QUITTANT vers `completed` qu'il relit les fiches.
+ */
+const JARVIS_WRITING_PHASES: ReadonlySet<string> = new Set([
+  'committing',
+  'awaiting_receipt',
+  'cancelling',
+]);
 import {
   JarvisRunCoordinator,
   type JarvisRunFrame,
@@ -157,6 +168,12 @@ export function useJarvisRunFrame(): JarvisRunFrameBinding {
     refetchOnMount: 'always',
     refetchOnWindowFocus: 'always',
     refetchOnReconnect: 'always',
+    // SUIVI DES PHASES OÙ BOB ÉCRIT. La confirmation ne fait qu'ADMETTRE la décision : l'écriture
+    // métier part ensuite par un work item, exécutée par le worker. Sans ce suivi, l'écran resterait
+    // sur « Bob enregistre… » jusqu'à un remontage — l'artisan ne verrait jamais son changement
+    // arriver. On ne poursuit QUE ces phases, jamais en continu : un run au repos ne coûte rien.
+    refetchInterval: (current: { state: { data?: JarvisCurrentRunView } }) =>
+      JARVIS_WRITING_PHASES.has(current.state.data?.presentation?.phase ?? '') ? 1_500 : false,
     queryFn: async ({ signal }): Promise<JarvisCurrentRunView> => {
       // Refus NOMMÉ : `enabled` interdit déjà ce chemin, mais un transport sans Jarvis ne doit
       // jamais échouer en « undefined n'est pas une fonction ».
@@ -193,6 +210,22 @@ export function useJarvisRunFrame(): JarvisRunFrameBinding {
       .cancelQueries({ queryKey, exact: true })
       .then(() => queryClient.refetchQueries({ queryKey, exact: true }));
   }, [queryClient, queryKey]);
+
+  // CONVERGENCE. L'invalidation du geste (ci-dessus) part AVANT que l'écriture métier existe :
+  // à cet instant le work item n'est pas encore exécuté, et relire ne rendrait que l'ancienne
+  // fiche. La relecture qui COMPTE est celle-ci — déclenchée quand le run ARRIVE en `completed`,
+  // c'est-à-dire quand le reçu d'effet est acté. Sans elle, l'artisan confirmerait, verrait
+  // « enregistré », et sa fiche resterait visuellement inchangée jusqu'au prochain remontage.
+  const phase = query.data?.presentation?.phase ?? null;
+  const previousPhase = useRef<string | null>(null);
+  useEffect(() => {
+    const before = previousPhase.current;
+    previousPhase.current = phase;
+    if (phase !== 'completed' || before === 'completed' || before === null) return;
+    for (const prefix of AGENT_REFRESH_QUERY_KEY_PREFIXES) {
+      void queryClient.invalidateQueries({ queryKey: prefix });
+    }
+  }, [phase, queryClient]);
 
   return useMemo(() => ({ state, coordinator, refresh }), [coordinator, refresh, state]);
 }

@@ -148,19 +148,6 @@ CREATE ROLE bob_mistral_bootstrap_reaper
   NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
 CREATE ROLE bob_realtime_reaper_directory
   NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
--- Jarvis U1-e (SPEC_U1E §4) : autorite de l'annuaire de retention des payloads. Meme forme que
--- le reaper — NOLOGIN (personne ne s'y connecte) et NOBYPASSRLS (sa policy la BORNE aux lignes
--- echues, un BYPASSRLS la rendrait decorative). `ensure_jarvis_payload_retention_directory_role`
--- de release.sh cree exactement ce role ; ici il precede les migrations, comme en release.
-CREATE ROLE bob_jarvis_payload_retention_directory
-  NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
--- Adhesion SET du deployeur, SANS INHERIT : la contrepartie EXACTE de ce que
--- `createrole_self_grant='set'` accorde implicitement au createur en release. Elle est requise
--- pour le seul ALTER FUNCTION ... OWNER TO du provisionnement (PostgreSQL exige que le rol
--- courant puisse assumer le nouveau proprietaire). INHERIT FALSE est essentiel : sans SET ROLE
--- explicite, le deployeur ne porte JAMAIS les droits de l'autorite — la preuve 4 verifie que
--- `bob_app`, lui, n'a meme pas cette adhesion.
-GRANT bob_jarvis_payload_retention_directory TO bob_deployer WITH INHERIT FALSE, SET TRUE;
 SQL
 
 if [ "$LOCAL_CLUSTER_STARTED" = "true" ]; then
@@ -234,6 +221,14 @@ fi
 SET createrole_self_grant = 'set';
 CREATE ROLE bob_schema_owner
   NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+-- Jarvis U1-e (SPEC_U1E §4) : autorite de l'annuaire de retention des payloads. Creee ICI, par
+-- le DEPLOYEUR et sous `createrole_self_grant='set'` — exactement comme
+-- `ensure_jarvis_payload_retention_directory_role` en release. L'adhesion SET du createur naît
+-- IMPLICITEMENT (elle est requise par le seul `ALTER FUNCTION … OWNER TO` du provisionnement) :
+-- un GRANT d'adhesion explicite vers le deployeur est INTERDIT par le contrat Supabase du depot
+-- (supabase-owner-membership-release-safety) — Supabase tue la connexion sur un tel GRANT.
+CREATE ROLE bob_jarvis_payload_retention_directory
+  NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
 SQL
 "$PSQL_BIN" "$DEPLOYER_BOOTSTRAP_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
   -f "$ROOT_DIR/apps/api/prisma/agent-mission-release-flag-authority-role.sql"
@@ -5319,6 +5314,7 @@ DIRECT_URL="$DIRECT_URL" \
 AGENT_MISSION_CERT_ADMIN_URL="$CERT_ADMIN_URL" \
 RUN_AGENT_MISSION_POSTGRES_CERT=true \
 AGENT_MISSION_CERT_DATABASE_IS_DISPOSABLE=true \
+JARVIS_PAYLOAD_RETENTION_DIRECTORY_CERT=true \
 pnpm --filter @bob/api exec vitest run \
   src/persistence/prisma/agent-mission.persistence.postgres.test.ts \
   src/persistence/prisma/jarvis-run-expand.postgres.test.ts \

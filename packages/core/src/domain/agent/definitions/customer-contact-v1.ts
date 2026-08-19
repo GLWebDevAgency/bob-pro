@@ -526,27 +526,48 @@ function parseDuplicateReview(value: unknown): CustomerContactDuplicateReviewV1 
   });
 }
 
+/**
+ * Clés d'une proposition N-1 : le sceau de cible (`targetSensitiveDigest`) N'EXISTAIT PAS avant
+ * U1-e. Les deux formes sont acceptées — voir `parseProposal`.
+ */
+const PROPOSAL_KEYS_N_MINUS_1 = Object.freeze([
+  'proposalId',
+  'proposalCommandId',
+  'fieldsDigest',
+  'sensitiveDigest',
+  'targetRevision',
+  'proposalHash',
+]);
+
+const PROPOSAL_KEYS_CURRENT = Object.freeze([
+  ...PROPOSAL_KEYS_N_MINUS_1.slice(0, 5),
+  'targetSensitiveDigest',
+  'proposalHash',
+]);
+
 function parseProposal(value: unknown): CustomerContactProposalV1 | null {
-  if (!isPlainRecord(value) || !exactKeys(value, [
-    'proposalId',
-    'proposalCommandId',
-    'fieldsDigest',
-    'sensitiveDigest',
-    'targetRevision',
-    'targetSensitiveDigest',
-    'proposalHash',
-  ])) {
-    return null;
-  }
+  if (!isPlainRecord(value)) return null;
+  // COMPATIBILITÉ N-1, NON NÉGOCIABLE. `targetSensitiveDigest` est né avec U1-e : une proposition
+  // écrite AVANT ce déploiement n'en porte pas. L'exiger rendrait ces états ILLISIBLES, donc le
+  // run IRRÉDUCTIBLE — `state_shape` sur TOUTE commande, `cancel_run` compris : l'artisan garderait
+  // à vie un run mort qui confisque son premier plan, sans aucun geste pour s'en défaire.
+  //
+  // Ce que la tolérance NE fait PAS : armer à moitié la garde §9.1. Une proposition héritée porte
+  // `targetSensitiveDigest: null`, et le `confirm` d'une update compare ce sceau à la relecture —
+  // `null` ne peut égaler aucun digest, donc elle est INVALIDÉE, jamais consommée. Elle redevient
+  // simplement une proposition à refaire, ce qu'elle est.
+  const heritee = exactKeys(value, PROPOSAL_KEYS_N_MINUS_1 as unknown as string[]);
+  if (!heritee && !exactKeys(value, PROPOSAL_KEYS_CURRENT as unknown as string[])) return null;
   if (!isCanonicalUuid(value['proposalId']) || !isCanonicalUuid(value['proposalCommandId'])) return null;
   if (!isSha256Digest(value['fieldsDigest']) || !isSha256Digest(value['sensitiveDigest'])) return null;
   if (value['targetRevision'] !== null && !isRevision(value['targetRevision'])) return null;
-  if (value['targetSensitiveDigest'] !== null && !isSha256Digest(value['targetSensitiveDigest'])) {
-    return null;
-  }
-  // Les deux moitiés du sceau de cible vont ENSEMBLE : une révision sans digest (ou l'inverse)
-  // serait une garde §9.1 à moitié armée — refus de forme, jamais une tolérance.
-  if ((value['targetRevision'] === null) !== (value['targetSensitiveDigest'] === null)) return null;
+  const targetSensitiveDigest = heritee ? null : value['targetSensitiveDigest'];
+  if (targetSensitiveDigest !== null && !isSha256Digest(targetSensitiveDigest)) return null;
+  // Les deux moitiés du sceau de cible vont ENSEMBLE dans la forme COURANTE : une révision sans
+  // digest (ou l'inverse) y serait une garde §9.1 à moitié armée — refus de forme, jamais une
+  // tolérance. La forme héritée est exemptée : son asymétrie est un fait historique, pas un défaut
+  // d'écriture, et elle est neutralisée à la confirmation.
+  if (!heritee && (value['targetRevision'] === null) !== (targetSensitiveDigest === null)) return null;
   if (!isSha256Digest(value['proposalHash'])) return null;
   return Object.freeze({
     proposalId: value['proposalId'],
@@ -554,7 +575,7 @@ function parseProposal(value: unknown): CustomerContactProposalV1 | null {
     fieldsDigest: value['fieldsDigest'],
     sensitiveDigest: value['sensitiveDigest'],
     targetRevision: value['targetRevision'],
-    targetSensitiveDigest: value['targetSensitiveDigest'],
+    targetSensitiveDigest,
     proposalHash: value['proposalHash'],
   });
 }

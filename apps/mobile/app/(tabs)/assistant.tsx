@@ -1088,8 +1088,21 @@ export default function Assistant() {
               frame={jarvis.state.frame}
               coordinator={jarvis.coordinator}
               ports={jarvis.state.ports}
+              visible={assistantFocused}
               onAuthoritativeRefresh={jarvis.refresh}
             />
+          ) : null}
+          {/* Une demande de Bob que l'écran ne sait PAS rendre (lecture en panne, présentation
+              absente) ne disparaît pas en silence : le run tient le premier plan de l'artisan,
+              donc il doit le voir et pouvoir réessayer. Se taire ici, c'est laisser quelqu'un
+              devant un assistant muet qui refuse par ailleurs toute nouvelle demande. */}
+          {jarvis.state.phase === 'error' || jarvis.state.phase === 'unpresentable' ? (
+            <View style={{ marginHorizontal: 16, marginTop: 8 }}>
+              <ErrorRetry
+                message="Bob a une demande en cours mais n’arrive pas à l’afficher."
+                onRetry={jarvis.refresh}
+              />
+            </View>
           ) : null}
 
           {busy ? <TypingBubble phase={phase} /> : null}
