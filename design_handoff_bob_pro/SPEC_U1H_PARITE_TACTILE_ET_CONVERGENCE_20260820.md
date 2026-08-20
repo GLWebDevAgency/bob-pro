@@ -6,8 +6,8 @@
 - **Statut normatif** : `specified` — la gate moteur unique du parent Jarvis §17/§21.2 reste
   fermée. L0/L1/L9 (`3a51593f6`), L2/L3 (`ab7b4439d` + durcissement `5a86f94d6`) et L4
   (`d4742b35d`) sont réalisés et prouvés localement ; la mesure/correction M1 est implémentée
-  localement par `e79d205e0`. L5–L8 et L10–L11 restent à réaliser. Aucun livrable U1-h n'est
-  `certified` ni `released`.
+  localement par `e79d205e0` ; L7 est implémenté localement par `e9d128c97`. L5/L6, L8 et
+  L10–L11 restent à réaliser. Aucun livrable U1-h n'est `certified` ni `released`.
 - **Deltas mesurés** : `3a51593f6` = 7 fichiers, +453/-15 ; `ab7b4439d` = 6 fichiers,
   +503/-13 ; `5a86f94d6` = 4 fichiers, +359/-16. Safety et U1-i ne sont pas attribués à U1-h.
 - **Parents** : SPEC_U1G §6 (hors-lot tracé) · spec Jarvis §7.0/§8/§9.1/§14/§17.1 · FD-2026-0817-06.
@@ -172,14 +172,14 @@ matrice vaut faux, l'autorité invalide une fois les préfixes métier canonique
 sans déduire succès, échec ou entité modifiée.
 
 Cette autorité est une instance owner-scopée unique, montée au-dessus des routes avec la capability
-Mission : assistant et fiche client ne possèdent ni file ni timer. Sa file ne garde que des `runId`
-et des métadonnées de backoff, jamais un snapshot ou de la PII. Un seul GET exact vole à la fois,
-avec un plancher global de 1 500 ms ; succès encore pendant ⇒ rotation équitable, erreur ⇒ backoff
-exponentiel plafonné à 30 s, sans qu'une cible en panne bloque les suivantes. Une panne réseau suit
-ce backoff ; le scheduler se met en pause en arrière-plan via le pont AppState/focusManager déjà
-câblé, puis reprend au signal. Changement de principal, logout ou démontage global abortent le vol
-et purgent la file. Aucun endpoint neuf, aucune seconde projection terminale et aucun polling par
-hôte ne sont ajoutés.
+Mission : assistant et fiche client ne possèdent ni file ni timer. Sa file ne garde que des `runId`,
+la révision minimale autoritaire et des métadonnées de cadence/backoff, jamais un snapshot ou de la
+PII. Un seul GET exact vole à la fois, avec un plancher global de 1 500 ms ; succès encore pendant ⇒
+rotation équitable, erreur ⇒ backoff exponentiel plafonné à 30 s, sans qu'une cible en panne bloque
+les suivantes. Une panne réseau suit ce backoff ; le scheduler se met en pause en arrière-plan via
+le pont AppState/focusManager déjà câblé, puis reprend au signal. Changement de principal, logout ou
+démontage global abortent le vol et purgent la file. Aucun endpoint neuf, aucune seconde projection
+terminale et aucun polling par hôte ne sont ajoutés.
 
 L'acceptation L7 est fermée :
 
@@ -195,6 +195,8 @@ L'acceptation L7 est fermée :
   qu'une fois ;
 - une cible en erreur, cinq cibles pendantes et le backoff maximal prouvent l'ordre équitable et le
   plancher global ; la suite avance réellement le temps, puis prouve zéro GET après règlement ;
+- un écho d'un autre `runId` ou une révision exacte inférieure au dernier reçu/current observé ne
+  règle jamais la cible ; la lecture reste due avec backoff ;
 - le changement de principal avec un vol en retard purge et abort : aucune réponse d'un compte ne
   déclenche une invalidation pour un autre ; l'arrière-plan ne produit aucun GET ;
 - plusieurs effets sont suivis séparément, sans qu'un effet bloqué affame les suivants. Le suivi
@@ -205,6 +207,12 @@ Le canal vocal ne rend aujourd'hui aucun reçu de commande au mobile. L7 couvre 
 seulement s'il est observé pendant par `GET current`; un effet vocal devenu terminal avant toute
 observation mobile reste un blocker distinct de la convergence voix→écran et interdit toute
 revendication de L7 global/certifié.
+
+**Évidence locale L7 — `e9d128c97`.** La matrice core passe 15/15 ; sept fichiers de preuves
+mobiles passent 85/85, incluant le reçu A masqué par B, deux hôtes, StrictMode réel, révision stale,
+écho de run divergent, équité/backoff, changement de principal, cold-start arrière-plan et gestes
+tactiles. Typechecks core/mobile, ESLint ciblé et `git diff --check` sont verts. Aucune preuve
+appareil, staging ou voix→écran n'est revendiquée : L7 est `implemented`, jamais `certified`.
 
 ## 4. Gardes à rendre vraies avant certification
 
@@ -226,9 +234,10 @@ revendication de L7 global/certifié.
       `readJarvisCustomerLabels`, avec une valeur historique à espaces anormaux.
 - [x] Projection serveur et codec prouvent ordre, absence de `customerId`, panne globale et issue.
 - [x] Le parseur tactile serveur et le codec refusent clés étrangères et `adopt_existing`.
-- [ ] Coordinateur : deux gestes gardés, refus sans réseau hors phase/jeu rendu.
+- [x] Coordinateur : deux gestes gardés, refus sans réseau hors phase/jeu rendu.
 - [ ] Carte : matrice phase × confirmation, ordre, rang irrésolu et accessibilité.
-- [ ] Convergence : transition écriture → absent déclenche une relecture autoritaire.
+- [x] Convergence : reçu/current pendant → GET exact owner-scopé → règlement invalide une fois ;
+      absence/B, écho divergent et révision stale ne peuvent clore prématurément le suivi.
 - [x] PostgreSQL réel : `idleExpiresAt` avance avec la transition, `hardExpiresAt` reste immuable
       et `idle <= hard` (`121/121`, certificat local du 2026-08-20).
 - [ ] Preuve discriminante du clamp exact sur `hardExpiresAt` sans fabriquer une ligne, et zéro
