@@ -439,3 +439,151 @@ function presentedConfirmation(): Partial<CustomerContactPresentationV1> {
     },
   };
 }
+
+describe('JarvisRunCoordinator — U1-h : la revue de doublons se résout au doigt', () => {
+  const REVIEW_ID = '77777777-7777-4777-8777-777777777777';
+  const CHOICE_A = '88888888-8888-4888-8888-888888888888';
+  const CHOICE_B = '99999999-9999-4999-8999-999999999999';
+
+  function revue(
+    overrides: Partial<NonNullable<CustomerContactPresentationV1['duplicateReview']>> = {},
+  ): CustomerContactPresentationV1['duplicateReview'] {
+    return {
+      reviewId: REVIEW_ID,
+      choices: [
+        { ordinal: 1, choiceId: CHOICE_A, label: 'Dupont Plomberie' },
+        { ordinal: 2, choiceId: CHOICE_B, label: 'Dupont Plomberie SARL' },
+      ],
+      ...overrides,
+    };
+  }
+
+  function enRevue(
+    review: CustomerContactPresentationV1['duplicateReview'] = revue(),
+  ): ReturnType<typeof frame> {
+    return frame(
+      {},
+      {
+        phase: 'awaiting_duplicate_review',
+        proposal: null,
+        confirmation: null,
+        duplicateReview: review,
+      },
+    );
+  }
+
+  it('« c’est celle-là » retient la fiche ÉNONCÉE sous l’action serveur de la création', async () => {
+    const ports = acceptingPort();
+    const coordinator = new JarvisRunCoordinator(() => COMMAND_ID);
+
+    await expect(
+      coordinator.chooseExistingCustomer(enRevue(), CHOICE_B, ports),
+    ).resolves.toMatchObject({ status: 'completed' });
+    expect(ports.submitCommand).toHaveBeenCalledWith({
+      runId: RUN_ID,
+      kind: 'customer_contact',
+      definitionVersion: 1,
+      commandId: COMMAND_ID,
+      expectedRevision: 4,
+      // Le run reste une CRÉATION : retenir une fiche existante ne fait pas muter l'action.
+      actionId: 'client-creer',
+      actionVersion: 1,
+      command: {
+        type: 'choose_duplicate_resolution',
+        reviewId: REVIEW_ID,
+        decision: { kind: 'use_existing', choiceId: CHOICE_B },
+      },
+    });
+  });
+
+  it('« créer quand même » poursuit la création, sans exiger de choix', async () => {
+    const ports = acceptingPort();
+    const coordinator = new JarvisRunCoordinator(() => COMMAND_ID);
+
+    await expect(coordinator.continueCreation(enRevue(), ports)).resolves.toMatchObject({
+      status: 'completed',
+    });
+    expect(ports.submitCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: {
+          type: 'choose_duplicate_resolution',
+          reviewId: REVIEW_ID,
+          decision: { kind: 'continue_create' },
+        },
+      }),
+    );
+  });
+
+  it('REFUSE SANS RÉSEAU un choix absent du jeu rendu — jamais un rattachement inventé', async () => {
+    const ports = acceptingPort();
+    const coordinator = new JarvisRunCoordinator(() => COMMAND_ID);
+
+    await expect(
+      coordinator.chooseExistingCustomer(enRevue(), '11111111-1111-4111-8111-111111111111', ports),
+    ).resolves.toMatchObject({ status: 'invalid_response' });
+    // LE POINT QUI COMPTE : rien n'est parti. Un identifiant qui ne vient pas de l'écran ne doit
+    // pas même atteindre le serveur, sans quoi l'appareil deviendrait une source d'autorité.
+    expect(ports.submitCommand).not.toHaveBeenCalled();
+  });
+
+  it('REFUSE SANS RÉSEAU un rang dont le nom ne s’est pas résolu — on ne choisit pas à l’aveugle', async () => {
+    const ports = acceptingPort();
+    const coordinator = new JarvisRunCoordinator(() => COMMAND_ID);
+    const aveugle = revue({
+      choices: [
+        { ordinal: 1, choiceId: CHOICE_A, label: null },
+        { ordinal: 2, choiceId: CHOICE_B, label: 'Dupont Plomberie SARL' },
+      ],
+    });
+
+    await expect(
+      coordinator.chooseExistingCustomer(enRevue(aveugle), CHOICE_A, ports),
+    ).resolves.toMatchObject({ status: 'invalid_response' });
+    expect(ports.submitCommand).not.toHaveBeenCalled();
+
+    // Le rang VOISIN, lui, reste choisissable : un nom manquant ne condamne pas toute la liste.
+    await expect(
+      coordinator.chooseExistingCustomer(enRevue(aveugle), CHOICE_B, ports),
+    ).resolves.toMatchObject({ status: 'completed' });
+  });
+
+  it('REFUSE SANS RÉSEAU hors de la phase de revue, et sans revue rendue', async () => {
+    const ports = acceptingPort();
+    const coordinator = new JarvisRunCoordinator(() => COMMAND_ID);
+
+    // Phase d'écriture : la revue est passée, le choix n'a plus de sens.
+    const horsPhase = frame({}, { phase: 'committing', duplicateReview: revue() });
+    await expect(
+      coordinator.chooseExistingCustomer(horsPhase, CHOICE_A, ports),
+    ).resolves.toMatchObject({ status: 'invalid_response' });
+    await expect(coordinator.continueCreation(horsPhase, ports)).resolves.toMatchObject({
+      status: 'invalid_response',
+    });
+
+    // Bonne phase mais AUCUNE revue rendue (libellés indisponibles) : l'écran ne devine rien.
+    const sansRevue = enRevue(null);
+    await expect(
+      coordinator.chooseExistingCustomer(sansRevue, CHOICE_A, ports),
+    ).resolves.toMatchObject({ status: 'invalid_response' });
+    await expect(coordinator.continueCreation(sansRevue, ports)).resolves.toMatchObject({
+      status: 'invalid_response',
+    });
+
+    expect(ports.submitCommand).not.toHaveBeenCalled();
+  });
+
+  it('DÉDUPLIQUE les vols : deux taps sur le même rang ne partent qu’une fois', async () => {
+    const ports = acceptingPort();
+    const coordinator = new JarvisRunCoordinator(() => COMMAND_ID);
+    const cadre = enRevue();
+
+    const [un, deux] = await Promise.all([
+      coordinator.chooseExistingCustomer(cadre, CHOICE_A, ports),
+      coordinator.chooseExistingCustomer(cadre, CHOICE_A, ports),
+    ]);
+
+    expect(un).toMatchObject({ status: 'completed' });
+    expect(deux).toMatchObject({ status: 'completed' });
+    expect(ports.submitCommand).toHaveBeenCalledTimes(1);
+  });
+});

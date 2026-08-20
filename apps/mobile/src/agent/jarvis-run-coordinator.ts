@@ -21,11 +21,7 @@
  * (greffe G3) : ce coordinateur vit à côté du writer N-1, jamais dedans.
  */
 
-import {
-  JARVIS_RUN_TERMINAL_STATUSES,
-  type AppError,
-  type Result,
-} from '@bob/core';
+import { JARVIS_RUN_TERMINAL_STATUSES, type AppError, type Result } from '@bob/core';
 import type {
   CustomerContactPresentationV1,
   JarvisCommandReceiptView,
@@ -53,8 +49,16 @@ export type JarvisRunCall =
   | { readonly status: 'failed'; readonly error: AppError }
   | { readonly status: 'invalid_response' };
 
-/** Les quatre gestes humains du canal tactile — la voix a les siens, le système les autres. */
-export type JarvisRunGesture = 'presentation_ack' | 'confirm' | 'reject' | 'cancel';
+/** Les gestes humains du canal tactile — la voix a les siens, le système les autres. */
+export type JarvisRunGesture =
+  | 'presentation_ack'
+  | 'confirm'
+  | 'reject'
+  | 'cancel'
+  // U1-h — les deux issues de la revue de doublons, au doigt. `use_existing` n'ECRIT RIEN :
+  // il acheve le run sur une fiche qui existait deja.
+  | 'use_existing'
+  | 'continue_create';
 
 interface JarvisRunCommon {
   readonly runId: string;
@@ -75,7 +79,10 @@ function invalid(): Promise<JarvisRunCall> {
 
 export type JarvisRunCancellationAvailability =
   | { readonly status: 'available' }
-  | { readonly status: 'unavailable'; readonly reason: 'terminal' | 'cancelling' | 'action_missing' };
+  | {
+      readonly status: 'unavailable';
+      readonly reason: 'terminal' | 'cancelling' | 'action_missing';
+    };
 
 /** Borne tactile unique : aucun hôte ne redécide localement pourquoi un run est annulable. */
 export function evaluateJarvisRunCancellation(
@@ -168,6 +175,72 @@ export class JarvisRunCoordinator {
       {
         type: 'reject_proposal',
         confirmationId: confirmation.confirmationId,
+      },
+      ports,
+    );
+  }
+
+  /**
+   * « C'est celle-là » : l'artisan RETIENT une fiche que Bob vient d'énoncer.
+   *
+   * AUCUNE ÉCRITURE. Le run s'achève sur une fiche qui existait déjà — c'est précisément ce qui
+   * distingue cette issue d'une adoption : une erreur de choix ne fait perdre qu'un run, jamais
+   * l'identité d'un client (SPEC_U1H §2).
+   *
+   * LE CHOIX EST VÉRIFIÉ CONTRE CE QUI A ÉTÉ RENDU, sans réseau : un `choiceId` absent du jeu
+   * affiché, ou un rang dont le nom ne s'est pas résolu, sont refusés ici. Un rang « introuvable »
+   * n'est pas choisissable — laisser partir un rattachement durable vers une fiche que l'artisan
+   * n'a pas pu lire serait exactement le geste aveugle que ce lot existe pour empêcher.
+   */
+  chooseExistingCustomer(
+    frame: JarvisRunFrame,
+    choiceId: string,
+    ports: JarvisRunPorts,
+  ): Promise<JarvisRunCall> {
+    const common = this.customerContactCommon(frame);
+    const review = frame.presentation.duplicateReview;
+    if (
+      common === null ||
+      review === null ||
+      frame.presentation.phase !== 'awaiting_duplicate_review'
+    ) {
+      return invalid();
+    }
+    const choix = review.choices.find((candidat) => candidat.choiceId === choiceId);
+    if (choix === undefined || choix.label === null) return invalid();
+    return this.submit(
+      common,
+      {
+        type: 'choose_duplicate_resolution',
+        reviewId: review.reviewId,
+        decision: { kind: 'use_existing', choiceId: choix.choiceId },
+      },
+      ports,
+    );
+  }
+
+  /**
+   * « Créer quand même » : l'artisan a VU les fiches proches et poursuit la création.
+   *
+   * C'est un doublon assumé, en connaissance de cause — l'inverse d'un doublon subi, que la revue
+   * existe pour éviter. Aucun choix n'est requis : la revue a été présentée, cela suffit.
+   */
+  continueCreation(frame: JarvisRunFrame, ports: JarvisRunPorts): Promise<JarvisRunCall> {
+    const common = this.customerContactCommon(frame);
+    const review = frame.presentation.duplicateReview;
+    if (
+      common === null ||
+      review === null ||
+      frame.presentation.phase !== 'awaiting_duplicate_review'
+    ) {
+      return invalid();
+    }
+    return this.submit(
+      common,
+      {
+        type: 'choose_duplicate_resolution',
+        reviewId: review.reviewId,
+        decision: { kind: 'continue_create' },
       },
       ports,
     );
