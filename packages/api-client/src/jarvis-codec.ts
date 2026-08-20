@@ -31,7 +31,6 @@ import {
   JARVIS_RUN_KINDS,
   JARVIS_RUN_STATUSES,
   JARVIS_RUN_TERMINAL_STATUSES,
-  isU1OpenAction,
   type CustomerContactConfirmationStatus,
   type CustomerContactPhase,
   type CustomerContactSensitiveField,
@@ -447,16 +446,4 @@ export function encodeJarvisOpenRunIntent(
     mode: 'update' as const,
     target: Object.freeze({ customerId: target.customerId }),
   });
-}
-
-/**
- * Borne d'ouverture du lot (greffe G2) : la SEULE source est `rollout.ts` de @bob/core, partagée
- * avec le planner, l'orchestrateur realtime, le controller et le worker. Jamais une liste locale.
- */
-export function isJarvisOpenAction(actionId: unknown, actionVersion: unknown): boolean {
-  return (
-    typeof actionId === 'string' &&
-    Number.isSafeInteger(actionVersion) &&
-    isU1OpenAction(actionId, actionVersion as number)
-  );
 }

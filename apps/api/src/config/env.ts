@@ -170,6 +170,11 @@ const schema = z.object({
   // M2-A reste un second master explicite. Il ne peut jamais activer implicitement V1 ni
   // réutiliser une capability bam1_* : le client, la lease et la mission doivent tous être V2.
   BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED: z.enum(['true', 'false']).default('false'),
+  // Le moteur métier Jarvis reste fermé tant que le manifeste de publication exact et le
+  // cutover moteur unique ne sont pas certifiés. Les workers lisent encore ces masters à chaud,
+  // mais le démarrage refuse toute valeur ambiguë et leur absence vaut toujours false.
+  BOB_JARVIS_ADMISSION_ENABLED: z.enum(['true', 'false']).default('false'),
+  BOB_JARVIS_DISPATCH_ENABLED: z.enum(['true', 'false']).default('false'),
   BOB_AGENT_MISSION_HMAC_KEY_VERSION: z.coerce.number().int().min(1).max(2_147_483_647).optional(),
   BOB_AGENT_MISSION_HMAC_KEYRING: z.string().trim().min(1).max(16_384).optional(),
   OPENAI_REALTIME_ENABLED: z.enum(['true', 'false']).default('false'),

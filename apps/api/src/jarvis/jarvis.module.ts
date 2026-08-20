@@ -4,7 +4,9 @@
  * Le module possède ses providers ; `AppModule` n'en recopie AUCUN (patron `AgentMissionModule`) :
  * la DI testée ici est donc exactement celle qui démarre en production.
  *
- * Il fournit cinq choses, et rien d'autre :
+ * Il fournit une composition unique, sans adapter parallèle :
+ *   · `JARVIS_ACTION_RELEASE_POLICY` — l'unique autorité de publication partagée par
+ *     l'admission et le worker ; manifest vide tant qu'aucune release exacte n'est livrée ;
  *   · `JARVIS_ADMISSION` — l'adapter du port mono-argument vers le UoW unique (§17) ;
  *   · `JARVIS_DISPATCH_ADMISSION` — la MÊME instance pour le worker de dispatch (§5.3) ;
  *   · `JARVIS_PROPOSAL_PAYLOAD_STORE` — le magasin PII scellé des propositions (§5.5), pris sur
@@ -22,10 +24,11 @@
 
 import { Module, type Provider } from '@nestjs/common';
 import {
+  CLOSED_JARVIS_ACTION_RELEASE_POLICY,
   CUSTOMER_CONTACT_ACTION_VERSION,
   CUSTOMER_CONTACT_CREATE_ACTION_ID,
   CUSTOMER_CONTACT_UPDATE_ACTION_ID,
-  isU1OpenAction,
+  isU1CandidateAction,
   type JarvisAdmissionUnitOfWorkPort,
   type JarvisProposalPayloadStorePort,
 } from '@bob/core';
@@ -58,7 +61,17 @@ import {
   jarvisDispatchAdmissionProvider,
 } from './jarvis-admission.provider';
 import { JarvisRunController, jarvisTapAuthorityProvider } from './jarvis-run.controller';
-import { JARVIS_ADMISSION, JARVIS_PROPOSAL_PAYLOAD_STORE } from './jarvis.tokens';
+import {
+  JARVIS_ACTION_RELEASE_POLICY,
+  JARVIS_ADMISSION,
+  JARVIS_PROPOSAL_PAYLOAD_STORE,
+} from './jarvis.tokens';
+
+/** Manifest runtime vide : une seule instance injectée à l'admission ET au dispatch. */
+export const jarvisActionReleasePolicyProvider: Provider = {
+  provide: JARVIS_ACTION_RELEASE_POLICY,
+  useValue: CLOSED_JARVIS_ACTION_RELEASE_POLICY,
+};
 
 /**
  * Magasin PII des propositions (§5.5), pris sur LA persistance — jamais un second client Prisma,
@@ -101,7 +114,7 @@ const jarvisProposalPayloadRetentionOwnersProvider: Provider = {
 /**
  * Registre d'exécuteurs du worker (§5.3). Le registre statique de U1-c est VIDE : cette tranche
  * y ouvre la PREMIÈRE porte — `client-creer@1` et `client-modifier@1`, les deux seules actions de
- * `U1_OPEN_ACTIONS` (source unique G2, revérifiée ici). Tout le reste demeure
+ * `U1_CANDIDATE_ACTIONS` (source unique G2, revérifiée ici). Tout le reste demeure
  * `executor_unregistered`, fail-closed.
  *
  * Une dépendance manquante ne donne JAMAIS un demi-exécuteur : sans transaction d'admission, sans
@@ -120,7 +133,7 @@ export function buildJarvisCustomerEffectExecutors(deps: {
   // `certificationCustomerType` est ABSENT : le harnais seul le fournit, jamais la production.
   const executor = new JarvisCustomerEffectExecutor({ admission, payloads, customers });
   for (const actionId of [CUSTOMER_CONTACT_CREATE_ACTION_ID, CUSTOMER_CONTACT_UPDATE_ACTION_ID]) {
-    if (!isU1OpenAction(actionId, CUSTOMER_CONTACT_ACTION_VERSION)) continue;
+    if (!isU1CandidateAction(actionId, CUSTOMER_CONTACT_ACTION_VERSION)) continue;
     registry.set(jarvisEffectExecutorKey(actionId, CUSTOMER_CONTACT_ACTION_VERSION), executor);
   }
   return registry;
@@ -211,6 +224,7 @@ const jarvisEffectExecutorsProvider: Provider = {
   imports: [ObservabilityModule, PersistenceModule, AgentMissionModule],
   controllers: [JarvisRunController],
   providers: [
+    jarvisActionReleasePolicyProvider,
     jarvisAdmissionProvider,
     jarvisDispatchAdmissionProvider,
     jarvisProposalPayloadStoreProvider,
@@ -225,6 +239,7 @@ const jarvisEffectExecutorsProvider: Provider = {
   // par AppModule, la voix par `RealtimeVoiceModule` — et un token non exporté reste invisible,
   // donc résolu `null` par une injection optionnelle (le silence exact que cette PR referme).
   exports: [
+    JARVIS_ACTION_RELEASE_POLICY,
     JARVIS_ADMISSION,
     JARVIS_DISPATCH_ADMISSION,
     JARVIS_PROPOSAL_PAYLOAD_STORE,

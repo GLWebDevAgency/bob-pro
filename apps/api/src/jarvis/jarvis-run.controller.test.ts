@@ -1,7 +1,9 @@
 import { HttpException } from '@nestjs/common';
 import {
+  appUnavailable,
   computeCustomerContactFieldsDigest,
   computeCustomerContactSensitiveDigest,
+  err,
   type CustomerContactProposedFieldsV1,
   type JarvisAdmissionOwner,
   type JarvisAdmissionResult,
@@ -20,7 +22,6 @@ import { AppLogger, requestContext } from '../observability/logger';
 import { agentMissionPrincipalBindingHash } from '../voice/realtime/realtime-agent-mission-admission';
 
 import {
-  DisabledJarvisTapAuthority,
   DurableJarvisTapAuthority,
   JARVIS_UNVERIFIED_TARGET_REVISION,
   JarvisRunController,
@@ -251,6 +252,10 @@ async function caught(work: () => Promise<unknown>): Promise<HttpException> {
 
 afterEach(() => vi.restoreAllMocks());
 
+const UNAVAILABLE_TAP_AUTHORITY: JarvisTapAuthority = {
+  prepare: () => err(appUnavailable('jarvis_tap_authority')),
+};
+
 describe('autorité du canal tactile (greffe G1)', () => {
   it('dérive owner ET hash de liaison du bearer — jamais du corps', async () => {
     const authority = new DurableJarvisTapAuthority();
@@ -282,13 +287,13 @@ describe('autorité du canal tactile (greffe G1)', () => {
     expect(withoutTenant.ok).toBe(false);
   });
 
-  it('kill switch OFF : les QUATRE routes rendent 503 sans jamais toucher à l’admission', async () => {
+  it('une autorité tap indisponible : les QUATRE routes rendent 503 sans toucher à l’admission', async () => {
     const admission = new FakeAdmission(admitted(runWith(null)), runWith(null), {
       currentRun: runWith(null),
     });
     const { controller: candidate } = controller({
       admission,
-      authority: new DisabledJarvisTapAuthority(),
+      authority: UNAVAILABLE_TAP_AUTHORITY,
     });
 
     const post = await caught(() => asOwner(() => candidate.submitCommand(RUN_ID, submitBody())));
@@ -307,15 +312,17 @@ describe('autorité du canal tactile (greffe G1)', () => {
     expect(admission.reads).toHaveLength(0);
   });
 
-  it('choisit l’autorité selon le drapeau, au boot', () => {
+  it('garde l’autorité d’authentification active sous fermeture — le gate vit dans l’admission', () => {
     const original = process.env.BOB_JARVIS_ADMISSION_ENABLED;
     try {
       const factory = (jarvisTapAuthorityProvider as { useFactory: () => JarvisTapAuthority })
         .useFactory;
       delete process.env.BOB_JARVIS_ADMISSION_ENABLED;
       expect(factory()).toBeInstanceOf(DurableJarvisTapAuthority);
-      process.env.BOB_JARVIS_ADMISSION_ENABLED = 'false';
-      expect(factory()).toBeInstanceOf(DisabledJarvisTapAuthority);
+      process.env.BOB_JARVIS_ADMISSION_ENABLED = 'true';
+      expect(factory()).toBeInstanceOf(DurableJarvisTapAuthority);
+      process.env.BOB_JARVIS_ADMISSION_ENABLED = 'TRUE';
+      expect(factory()).toBeInstanceOf(DurableJarvisTapAuthority);
     } finally {
       if (original === undefined) delete process.env.BOB_JARVIS_ADMISSION_ENABLED;
       else process.env.BOB_JARVIS_ADMISSION_ENABLED = original;
@@ -330,7 +337,9 @@ describe('corps exact (422) — le serveur ne devine jamais', () => {
     ['digest imposé refusé', { ...submitBody(), canonicalInputDigest: 'a'.repeat(64) }, 'canonicalInputDigest'],
     ['commandId v8 (contrat user = v4)', submitBody({ commandId: '40000000-0000-8000-8000-000000000001' }), 'commandId'],
     ['révision de seed interdite au tap', submitBody({ expectedRevision: 0 }), 'expectedRevision'],
-    ['action hors bornes d’ouverture', submitBody({ actionId: 'devis-creer' }), 'actionId'],
+    ['action vide', submitBody({ actionId: '' }), 'actionId'],
+    ['action non canonique', submitBody({ actionId: 'Devis_Creer' }), 'actionId'],
+    ['action trop longue', submitBody({ actionId: `a-${'b'.repeat(100)}` }), 'actionId'],
     ['kind de la branche devis', submitBody({ kind: 'quote_creation' }), 'kind'],
     [
       'accusé vocal sur le canal tactile',
@@ -380,6 +389,16 @@ describe('corps exact (422) — le serveur ne devine jamais', () => {
     expect(parseJarvisSubmitCommandBody(submitBody({
       command: { type: 'cancel_run', reason: 'manual_handoff' },
     })).command).toEqual({ type: 'cancel_run', reason: 'manual_handoff' });
+  });
+
+  it('laisse replay et drain atteindre l’admission même après retrait de l’allowlist technique', () => {
+    const parsed = parseJarvisSubmitCommandBody(submitBody({
+      actionId: 'devis-creer',
+      command: { type: 'cancel_run', reason: 'manual_handoff' },
+    }));
+
+    expect(parsed.actionId).toBe('devis-creer');
+    expect(parsed.command).toEqual({ type: 'cancel_run', reason: 'manual_handoff' });
   });
 });
 
@@ -515,6 +534,8 @@ describe('mapping fermé résultat d’admission -> HTTP (greffe G6)', () => {
     [{ status: 'action_refused', reason: 'admission_kill_switch' }, 503],
     [{ status: 'action_refused', reason: 'unknown_action' }, 403],
     [{ status: 'action_refused', reason: 'action_closed' }, 403],
+    [{ status: 'action_refused', reason: 'action_not_released' }, 403],
+    [{ status: 'action_refused', reason: 'action_binding_mismatch' }, 403],
     [{ status: 'quarantined' }, 409],
     [{ status: 'foreground_unavailable', reason: 'lock_timeout' }, 503],
     [{ status: 'refused', error: { code: 'revision_conflict', expectedRevision: 3, actualRevision: 4 } }, 409],

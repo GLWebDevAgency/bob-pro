@@ -28,8 +28,8 @@
  *   refusé PAR CONSTRUCTION : ce sont des faits serveur ;
  * - **`occurredAt` et `canonicalInputDigest` calculés serveur** (G7) : deux essais du même
  *   `commandId` produisent la même empreinte — condition du rejeu zéro-write §5.2 ;
- * - **bornes d'ouverture (G2)** : `U1_OPEN_ACTIONS` de @bob/core, source UNIQUE partagée avec le
- *   planner, l'orchestrateur vocal et le worker. Jamais une liste locale ;
+ * - **publication (G2)** : aucune allowlist n'est réinterprétée ici. L'admission profonde relit
+ *   d'abord un éventuel reçu, puis applique l'unique policy aux nouvelles commandes ;
  * - **mapping fermé (G6)** : chaque membre de `JarvisAdmissionResult` a UN statut HTTP. Le
  *   client n'a jamais à deviner, et aucun refus ne devient un 500 muet ;
  * - **présentation fail-closed (G4)** : la projection écran est recomposée depuis le payload
@@ -73,7 +73,7 @@ import {
   err,
   isCanonicalAgentMissionUserCommandId,
   isCanonicalAgentMissionUuid,
-  isU1OpenAction,
+  isCanonicalJarvisActionReference,
   ok,
   parseCustomerContactState,
   sha256Hex,
@@ -104,7 +104,6 @@ import { WithoutTenantPersistenceTransaction } from '../persistence/tenant-persi
 import { isRealtimeCompanyId } from '../voice/realtime/realtime-admission';
 import { agentMissionPrincipalBindingHash } from '../voice/realtime/realtime-agent-mission-admission';
 
-import { jarvisAdmissionEnabled } from './jarvis-admission.provider';
 import { JARVIS_ADMISSION, JARVIS_PROPOSAL_PAYLOAD_STORE } from './jarvis.tokens';
 
 /**
@@ -182,22 +181,14 @@ export class DurableJarvisTapAuthority implements JarvisTapAuthority {
   }
 }
 
-/** Vertical fermé au boot : aucune route n'ouvre et aucune ne ment sur ce qu'elle a fait. */
-export class DisabledJarvisTapAuthority implements JarvisTapAuthority {
-  prepare(_operation: JarvisTapOperation): Result<JarvisTapAuthorization, AppError> {
-    return err(appUnavailable('jarvis_tap_authority'));
-  }
-}
-
 /**
- * Le drapeau est lu DEUX fois, à deux échelles : ici au boot (le vertical est ouvert ou fermé)
- * et à chaque appel dans les deps d'admission (le kill switch se coupe à chaud sans jamais
- * s'opposer aux signaux d'effets déjà autorisés).
+ * Cette autorité authentifie seulement le principal. Le kill switch, le manifest et l'unique
+ * exception de drain `cancel_run` vivent dans la transaction d'admission : aucune seconde vérité
+ * au boot ne doit empêcher la lecture ou l'annulation d'un run antérieur.
  */
 export const jarvisTapAuthorityProvider: Provider = {
   provide: JARVIS_TAP_AUTHORITY,
-  useFactory: (): JarvisTapAuthority =>
-    jarvisAdmissionEnabled() ? new DurableJarvisTapAuthority() : new DisabledJarvisTapAuthority(),
+  useFactory: (): JarvisTapAuthority => new DurableJarvisTapAuthority(),
 };
 
 // ---------------------------------------------------------------------------
@@ -347,20 +338,17 @@ export function parseJarvisSubmitCommandBody(value: unknown): JarvisSubmitComman
   if (!boundedInteger(body.expectedRevision, 1)) {
     invalidBody('expectedRevision', 'Révision positive requise.');
   }
-  if (typeof body.actionId !== 'string' || !boundedInteger(body.actionVersion, 1)) {
-    invalidBody('actionId', 'Action canonique requise.');
-  }
-  // Borne d'ouverture du lot (G2) — source UNIQUE @bob/core, jamais une liste locale.
-  if (!isU1OpenAction(body.actionId, body.actionVersion)) {
-    invalidBody('actionId', 'Action hors des bornes d’ouverture du lot.');
+  // Forme wire seulement. L'admission dérive ensuite l'action autoritaire du state sous verrou.
+  if (!isCanonicalJarvisActionReference(body.actionId, body.actionVersion)) {
+    invalidBody('actionId', 'Identifiant d’action canonique requis.');
   }
   return {
     kind: body.kind,
     definitionVersion: body.definitionVersion,
     commandId: body.commandId,
     expectedRevision: body.expectedRevision,
-    actionId: body.actionId,
-    actionVersion: body.actionVersion,
+    actionId: body.actionId as string,
+    actionVersion: body.actionVersion as number,
     command: parseJarvisTapCommand(body.command),
   };
 }
@@ -954,11 +942,9 @@ export class JarvisRunController {
    * digest d'entrée, l'horloge et l'autorité. Le rejeu du MÊME `commandId` retombe sur le MÊME
    * run et rend le reçu original (`replayed`, zéro écriture).
    *
-   * BORNE D'OUVERTURE (G2) OPPOSÉE ICI. L'admission ne la connaît PAS : elle ne vérifie que le
-   * catalogue (`unknown_action`, `voiceMode === 'closed'`), deux bornes distinctes de la liste de
-   * rollout `U1_OPEN_ACTIONS`. Fermer le rollout ferme le canal tap, le worker, le client HTTP et
-   * le coordinateur mobile — si cette route restait ouverte, elle sèmerait des runs que plus rien
-   * ne peut faire avancer NI annuler, et chacun confisquerait le premier plan de son owner.
+   * Aucune borne de publication n'est opposée par le controller : l'action/version sont pincées
+   * serveur, puis l'admission cherche d'abord le reçu exact avant d'appliquer policy et kill switch
+   * à un nouveau semis. Ainsi une policy retirée ne rend pas un reçu d'ouverture illisible.
    */
   @Post('runs')
   @HttpCode(HttpStatus.OK)
@@ -969,11 +955,6 @@ export class JarvisRunController {
     if (!authorization.ok) refuse(authorization.error);
     const admission = this.requireAdmission();
     const body = parseJarvisOpenRunBody(value);
-    // Même source UNIQUE que le canal de commandes (@bob/core), même refus : la route pince son
-    // action, mais elle ne s'exempte pas de la borne qui la gouverne.
-    if (!isU1OpenAction(CUSTOMER_CONTACT_UPDATE_ACTION_ID, CUSTOMER_CONTACT_ACTION_VERSION)) {
-      invalidBody('actionId', 'Action hors des bornes d’ouverture du lot.');
-    }
     const owner = authorization.value.owner;
     const runId = deriveJarvisScreenRunId(owner, body.commandId);
     const command: JarvisOpenRunCommand = Object.freeze({

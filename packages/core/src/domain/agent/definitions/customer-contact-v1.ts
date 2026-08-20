@@ -42,6 +42,7 @@ import {
 } from '../jarvis-run';
 import {
   registerJarvisDefinition,
+  type JarvisDefinitionActionReference,
   type JarvisDefinitionModule,
   type JarvisReduceContext,
   type JarvisReduceResult,
@@ -1765,6 +1766,37 @@ function reduceCustomerContact(
   return reduceStarted(run, state, parsed, context);
 }
 
+/**
+ * L'action d'un run customer_contact vient du seed ou de son state persistant. Le champ
+ * `actionId` de l'enveloppe n'est qu'un écho et ne peut jamais choisir la policy de publication.
+ */
+function customerContactActionReference(
+  run: CustomerContactRunEnvelope,
+  command: unknown,
+): JarvisDefinitionActionReference | null {
+  if (run.state === null) {
+    const parsed = parseCustomerContactCommand(command);
+    if (parsed?.type !== 'start_run') return null;
+    return Object.freeze({
+      actionId:
+        parsed.intent.mode === 'create'
+          ? CUSTOMER_CONTACT_CREATE_ACTION_ID
+          : CUSTOMER_CONTACT_UPDATE_ACTION_ID,
+      actionVersion: CUSTOMER_CONTACT_ACTION_VERSION,
+    });
+  }
+  if (run.stateVersion !== CUSTOMER_CONTACT_STATE_VERSION) return null;
+  const state = parseCustomerContactState(run.state);
+  if (state === null) return null;
+  return Object.freeze({
+    actionId:
+      state.intent.mode === 'create'
+        ? CUSTOMER_CONTACT_CREATE_ACTION_ID
+        : CUSTOMER_CONTACT_UPDATE_ACTION_ID,
+    actionVersion: CUSTOMER_CONTACT_ACTION_VERSION,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Module de définition §4.3 — enregistré dans le registre gelé du reducer racine
 // ---------------------------------------------------------------------------
@@ -1774,6 +1806,7 @@ export const CUSTOMER_CONTACT_V1: JarvisDefinitionModule = Object.freeze({
   definitionVersion: CUSTOMER_CONTACT_DEFINITION_VERSION,
   stateVersion: CUSTOMER_CONTACT_STATE_VERSION,
   limits: CUSTOMER_CONTACT_LIMITS,
+  actionReference: customerContactActionReference,
   reduce: reduceCustomerContact,
 });
 

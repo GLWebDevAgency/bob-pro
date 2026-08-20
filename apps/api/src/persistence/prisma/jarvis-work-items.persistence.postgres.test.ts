@@ -911,11 +911,102 @@ describe.skipIf(!RUN_CERT)(
           }),
         ).resolves.toBe(true);
 
+        // Une issue indécidable plus ancienne reste durablement quarantinée : elle n'entre
+        // jamais dans la page des vrais reçus et ne peut donc ni les affamer, ni être stampée.
+        const unknownId = await insertPreparedWorkItem(coordinates);
+        const unknownToken = randomUUID();
+        const unknownClaim = await repositoryA.claimDue(coordinates, {
+          leaseOwner: 'jarvis-u1c-cert-worker-unknown-signal',
+          leaseToken: unknownToken,
+          leaseDurationMs: LEASE_DURATION_MS,
+          limit: 10,
+        });
+        expect(unknownClaim.map((lease) => lease.id)).toEqual([unknownId]);
+        await expect(
+          repositoryA.authorize(coordinates, {
+            id: unknownId,
+            leaseToken: unknownToken,
+            leaseFence: 1n,
+            authorizationDigest: sha256Hex('jarvis-u1c-authorization-unknown-signal'),
+          }),
+        ).resolves.toBe(true);
+        const unknownDigest = sha256Hex('jarvis-u1c-result-unknown-signal');
+        await expect(
+          repositoryA.storeResult(coordinates, {
+            id: unknownId,
+            leaseToken: unknownToken,
+            leaseFence: 1n,
+            status: 'outcome_unknown',
+            resultDigest: unknownDigest,
+          }),
+        ).resolves.toBe(true);
+
         const pending = await repositoryA.listPendingSignals(coordinates, 10);
         expect(pending).toHaveLength(1);
         expect(pending[0]?.id).toBe(itemId);
         expect(pending[0]?.resultDigest).toBe(resultDigest);
         expect(pending[0]?.leaseFence).toBe(1n);
+        await expect(
+          repositoryA.markSignalApplied(coordinates, {
+            id: unknownId,
+            leaseFence: 1n,
+            resultDigest: unknownDigest,
+          }),
+        ).resolves.toBe(false);
+        const quarantined = await auditItem(unknownId);
+        expect(quarantined.status).toBe('outcome_unknown');
+        expect(quarantined.signalAppliedAt).toBeNull();
+
+        // Forme historique contradictoire : un statut `cancelled` ne prouve pas no-effect si une
+        // autorisation existe. Ni la lecture pending ni le stamp ne doivent la blanchir.
+        const contradictoryId = await insertPreparedWorkItem(coordinates);
+        const contradictoryToken = randomUUID();
+        const contradictoryClaim = await repositoryA.claimDue(coordinates, {
+          leaseOwner: 'jarvis-u1c-cert-worker-contradictory-signal',
+          leaseToken: contradictoryToken,
+          leaseDurationMs: LEASE_DURATION_MS,
+          limit: 10,
+        });
+        expect(contradictoryClaim.map((lease) => lease.id)).toEqual([contradictoryId]);
+        const contradictoryAuthorization = sha256Hex(
+          'jarvis-u1c-authorization-contradictory-signal',
+        );
+        await expect(
+          repositoryA.authorize(coordinates, {
+            id: contradictoryId,
+            leaseToken: contradictoryToken,
+            leaseFence: 1n,
+            authorizationDigest: contradictoryAuthorization,
+          }),
+        ).resolves.toBe(true);
+        const contradictoryDigest = sha256Hex('jarvis-u1c-result-contradictory-signal');
+        await admin.$executeRaw`
+          UPDATE public.jarvis_work_items
+             SET "status" = 'cancelled',
+                 "resultDigest" = ${contradictoryDigest},
+                 "leaseToken" = NULL,
+                 "leaseExpiresAt" = NULL,
+                 "updatedAt" = statement_timestamp()
+           WHERE "id" = ${contradictoryId}::uuid
+        `;
+        await expect(repositoryA.listPendingSignals(coordinates, 10)).resolves.toEqual([
+          expect.objectContaining({ id: itemId }),
+        ]);
+        await expect(
+          repositoryA.markSignalApplied(coordinates, {
+            id: contradictoryId,
+            leaseFence: 1n,
+            resultDigest: contradictoryDigest,
+          }),
+        ).resolves.toBe(false);
+        const contradictory = await auditItem(contradictoryId);
+        expect(contradictory).toMatchObject({
+          status: 'cancelled',
+          authorizedAt: expect.any(Date),
+          authorizationDigest: contradictoryAuthorization,
+          resultDigest: contradictoryDigest,
+          signalAppliedAt: null,
+        });
 
         // Signal stale (autre digest) ou fence périmé : no-op EXPLICITE, jamais un stamp.
         await expect(

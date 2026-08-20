@@ -32,6 +32,8 @@
  *     repository sans signal appliqué (fenêtre de crash §5.3) => le replay SYSTÈME
  *     du même (runId, effectId, observationKind) rend `signalRestamped=true` ET pose
  *     `signalAppliedAt` en base ; un replay USER du même run ne re-stampe JAMAIS.
+ * (12) cancel avant authorize : l'item non autorisé devient `cancelled`, sa lease est vidée mais
+ *      son résultat no-effect reste dû ; la redelivery canonique terminalise ensuite le run.
  *
  * Même harnais que jarvis-work-items.persistence.postgres.test.ts : gates env,
  * base jetable, sociétés via l'auditeur, fingerprints déterministes.
@@ -39,6 +41,7 @@
 import { randomUUID } from 'node:crypto';
 
 import {
+  CLOSED_JARVIS_ACTION_RELEASE_POLICY,
   computeCustomerContactProposalHash,
   CUSTOMER_CONTACT_CREATE_ACTION_ID,
   CUSTOMER_CONTACT_LIMITS,
@@ -53,6 +56,7 @@ import { Prisma, PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { PrismaAgentMissionUnitOfWork } from './agent-mission.persistence';
+import { TEST_ONLY_JARVIS_ACTION_RELEASE_POLICY } from '../../jarvis/jarvis-release-policy.testing';
 import type { JarvisAdmissionDeps } from './jarvis-admission.persistence';
 import {
   PrismaJarvisWorkItemsRepository,
@@ -75,12 +79,13 @@ const FINGERPRINTS: AgentMissionFingerprintPort = {
   },
 };
 
-const DEPS: JarvisAdmissionDeps = {
+const TEST_ONLY_ADMISSION_DEPS: JarvisAdmissionDeps = {
   fingerprints: FINGERPRINTS,
   canonicalizationVersion: 1,
   admissionEnabled: true,
   // Harnais de certification : la preuve d'autorite realtime arrive avec les callers U1-d.
   allowCertificationAuthority: true,
+  actionReleasePolicy: TEST_ONLY_JARVIS_ACTION_RELEASE_POLICY,
 };
 
 const START_CREATE = { type: 'start_run', intent: { mode: 'create' } } as const;
@@ -146,6 +151,14 @@ interface WorkItemAuditRow {
   readonly actionVersion: number;
   readonly status: string;
   readonly leaseFence: bigint;
+  readonly leaseOwner: string | null;
+  readonly leaseToken: string | null;
+  readonly leaseExpiresAt: Date | null;
+  readonly nextAttemptAt: Date | null;
+  readonly authorizedAt: Date | null;
+  readonly authorizationDigest: string | null;
+  readonly resultDigest: string | null;
+  readonly signalAppliedAt: Date | null;
   readonly actingPrincipalId: string;
   readonly authorizationSource: unknown;
 }
@@ -189,6 +202,8 @@ describe.skipIf(!RUN_CERT)(
       readonly commandId?: string;
       readonly canonicalInputDigest?: string;
       readonly definitionVersion?: number;
+      readonly actionId?: string;
+      readonly actionVersion?: number;
     }): JarvisUserAdmissionEnvelope {
       return Object.freeze({
         kind: 'customer_contact' as const,
@@ -198,8 +213,8 @@ describe.skipIf(!RUN_CERT)(
         runId: input.runId,
         commandId: input.commandId ?? randomUUID(),
         expectedRevision: input.expectedRevision,
-        actionId: CUSTOMER_CONTACT_CREATE_ACTION_ID,
-        actionVersion: 1,
+        actionId: input.actionId ?? CUSTOMER_CONTACT_CREATE_ACTION_ID,
+        actionVersion: input.actionVersion ?? 1,
         authority: { source: 'certification_fixture' } as const,
         command: input.command,
         canonicalInputDigest:
@@ -290,7 +305,10 @@ describe.skipIf(!RUN_CERT)(
     async function auditWorkItems(runId: string): Promise<WorkItemAuditRow[]> {
       return admin.$queryRaw<WorkItemAuditRow[]>`
         SELECT "id", "effectId", "actionId", "actionVersion", "status",
-               "leaseFence", "actingPrincipalId", "authorizationSource"
+               "leaseFence", "leaseOwner", "leaseToken", "leaseExpiresAt",
+               "nextAttemptAt", "authorizedAt", "resultDigest", "signalAppliedAt",
+               "authorizationDigest",
+               "actingPrincipalId", "authorizationSource"
           FROM public.jarvis_work_items
          WHERE "runId" = ${runId}::uuid
       `;
@@ -307,7 +325,7 @@ describe.skipIf(!RUN_CERT)(
         expectedRevision: 0,
         command: START_CREATE,
       });
-      const admitted = expectAdmission(await uowA.runJarvisAdmission(envelope, DEPS), 'admitted');
+      const admitted = expectAdmission(await uowA.runJarvisAdmission(envelope, TEST_ONLY_ADMISSION_DEPS), 'admitted');
       expect(admitted.eventSequence).toBe(1);
       return { runId, envelope };
     }
@@ -333,7 +351,7 @@ describe.skipIf(!RUN_CERT)(
             expectedRevision: 1,
             command: { type: 'record_customer_resolution', resolution: { kind: 'no_duplicates' } },
           }),
-          DEPS,
+          TEST_ONLY_ADMISSION_DEPS,
         ),
         'admitted',
       );
@@ -356,7 +374,7 @@ describe.skipIf(!RUN_CERT)(
               targetRevision: null,
             },
           }),
-          DEPS,
+          TEST_ONLY_ADMISSION_DEPS,
         ),
         'admitted',
       );
@@ -368,7 +386,7 @@ describe.skipIf(!RUN_CERT)(
             expectedRevision: 3,
             command: { type: 'record_presentation_ack', confirmationId, ack: 'screen_ack' },
           }),
-          DEPS,
+          TEST_ONLY_ADMISSION_DEPS,
         ),
         'admitted',
       );
@@ -526,6 +544,99 @@ describe.skipIf(!RUN_CERT)(
     });
 
     it(
+      'manifest runtime vide — action specified refusée, zéro run/event/work item',
+      async () => {
+        const ownerUserId = freshOwner();
+        const runId = randomUUID();
+        const envelope = userEnvelope({
+          ownerUserId,
+          runId,
+          expectedRevision: 0,
+          command: START_CREATE,
+        });
+
+        const result = await uowA.runJarvisAdmission(envelope, {
+          ...TEST_ONLY_ADMISSION_DEPS,
+          actionReleasePolicy: CLOSED_JARVIS_ACTION_RELEASE_POLICY,
+        });
+
+        expect(result).toEqual({ status: 'action_refused', reason: 'action_not_released' });
+        await expect(auditRun(runId)).resolves.toBeNull();
+        await expect(commandEventCount(envelope.commandId)).resolves.toBe(0);
+        await expect(auditWorkItems(runId)).resolves.toHaveLength(0);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it(
+      'action annoncée publiée mais seed update réel — binding serveur refuse sans écrire',
+      async () => {
+        const ownerUserId = freshOwner();
+        const runId = randomUUID();
+        const envelope = userEnvelope({
+          ownerUserId,
+          runId,
+          expectedRevision: 0,
+          // L'enveloppe annonce implicitement client-creer@1, mais le seed réel est update.
+          command: {
+            type: 'start_run',
+            intent: {
+              mode: 'update',
+              target: { customerId: `customer-${randomUUID()}`, revision: 1 },
+            },
+          },
+        });
+        const publishedCreateOnly = {
+          isPublished: (ref: { readonly actionId: string }) => ref.actionId === 'client-creer',
+        };
+
+        const result = await uowA.runJarvisAdmission(envelope, {
+          ...TEST_ONLY_ADMISSION_DEPS,
+          actionReleasePolicy: publishedCreateOnly,
+        });
+
+        expect(result).toEqual({ status: 'action_refused', reason: 'action_binding_mismatch' });
+        await expect(auditRun(runId)).resolves.toBeNull();
+        await expect(commandEventCount(envelope.commandId)).resolves.toBe(0);
+        await expect(auditWorkItems(runId)).resolves.toHaveLength(0);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it(
+      'fermeture runtime — cancel_run reste admis pour drainer sans créer d’effet',
+      async () => {
+        const ownerUserId = freshOwner();
+        const { runId } = await seedRun(ownerUserId);
+
+        const cancelled = await uowA.runJarvisAdmission(
+          userEnvelope({
+            ownerUserId,
+            runId,
+            expectedRevision: 1,
+            command: { type: 'cancel_run', reason: 'manual_handoff' },
+          }),
+          {
+            ...TEST_ONLY_ADMISSION_DEPS,
+            admissionEnabled: false,
+            actionReleasePolicy: {
+              isPublished: () => {
+                throw new Error('policy_ne_doit_pas_etre_appelee_pour_cancel');
+              },
+            },
+          },
+        );
+
+        expectAdmission(cancelled, 'admitted');
+        const run = await requireRun(runId);
+        expect(run.status).toBe('cancelled');
+        expect(run.terminalAt).not.toBeNull();
+        await expect(auditWorkItems(runId)).resolves.toHaveLength(0);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it(
       'preuve 1 — seed admis : run revision 1, événement sequence 1, phase = state.phase',
       async () => {
         const ownerUserId = freshOwner();
@@ -556,17 +667,82 @@ describe.skipIf(!RUN_CERT)(
     );
 
     it(
+      'run create existant mais enveloppe update — binding serveur refuse sans mutation',
+      async () => {
+        const ownerUserId = freshOwner();
+        const { runId } = await seedRun(ownerUserId);
+        const before = await requireRun(runId);
+        const beforeEvents = await auditEvents(runId);
+
+        const mismatched = await uowA.runJarvisAdmission(
+          userEnvelope({
+            ownerUserId,
+            runId,
+            expectedRevision: before.revision,
+            actionId: 'client-modifier',
+            command: {
+              type: 'record_customer_resolution',
+              resolution: { kind: 'no_duplicates' },
+            },
+          }),
+          TEST_ONLY_ADMISSION_DEPS,
+        );
+
+        expect(mismatched).toEqual({
+          status: 'action_refused',
+          reason: 'action_binding_mismatch',
+        });
+        expect(await requireRun(runId)).toEqual(before);
+        expect(await auditEvents(runId)).toEqual(beforeEvents);
+        await expect(auditWorkItems(runId)).resolves.toHaveLength(0);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it(
       'preuve 2 — replay même commandId + même enveloppe : replayed, zéro nouvelle ligne',
       async () => {
         const ownerUserId = freshOwner();
         const { runId, envelope } = await seedRun(ownerUserId);
 
-        const replayed = expectAdmission(await uowA.runJarvisAdmission(envelope, DEPS), 'replayed');
+        const replayed = expectAdmission(
+          await uowA.runJarvisAdmission(envelope, {
+            ...TEST_ONLY_ADMISSION_DEPS,
+            admissionEnabled: false,
+            actionReleasePolicy: {
+              isPublished: () => {
+                throw new Error('policy_ne_doit_pas_etre_appelee_pour_replay');
+              },
+            },
+          }),
+          'replayed',
+        );
         expect(replayed.eventSequence).toBe(1);
         expect(replayed.signalRestamped).toBe(false);
         expect(replayed.postimage.revision).toBe(1);
         expect(replayed.postimage.runId).toBe(runId);
 
+        const run = await requireRun(runId);
+        expect(run.revision).toBe(1);
+        await expect(auditEvents(runId)).resolves.toHaveLength(1);
+        await expect(commandEventCount(envelope.commandId)).resolves.toBe(1);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it(
+      'replay déjà commité — fermeture admission+manifest rend le reçu, jamais un faux refus',
+      async () => {
+        const ownerUserId = freshOwner();
+        const { runId, envelope } = await seedRun(ownerUserId);
+
+        const replayed = await uowA.runJarvisAdmission(envelope, {
+          ...TEST_ONLY_ADMISSION_DEPS,
+          admissionEnabled: false,
+          actionReleasePolicy: CLOSED_JARVIS_ACTION_RELEASE_POLICY,
+        });
+
+        expectAdmission(replayed, 'replayed');
         const run = await requireRun(runId);
         expect(run.revision).toBe(1);
         await expect(auditEvents(runId)).resolves.toHaveLength(1);
@@ -589,7 +765,7 @@ describe.skipIf(!RUN_CERT)(
           commandId: envelope.commandId,
           canonicalInputDigest: sha256Hex('jarvis-u1c-adm-input-divergent'),
         });
-        expectAdmission(await uowA.runJarvisAdmission(conflicting, DEPS), 'command_conflict');
+        expectAdmission(await uowA.runJarvisAdmission(conflicting, TEST_ONLY_ADMISSION_DEPS), 'command_conflict');
 
         const run = await requireRun(runId);
         expect(run.revision).toBe(1);
@@ -619,8 +795,8 @@ describe.skipIf(!RUN_CERT)(
           command: cancelCommand,
         });
         const [resultA, resultB] = await Promise.all([
-          uowA.runJarvisAdmission(envelopeA, DEPS),
-          uowB.runJarvisAdmission(envelopeB, DEPS),
+          uowA.runJarvisAdmission(envelopeA, TEST_ONLY_ADMISSION_DEPS),
+          uowB.runJarvisAdmission(envelopeB, TEST_ONLY_ADMISSION_DEPS),
         ]);
 
         const results = [resultA, resultB];
@@ -660,7 +836,7 @@ describe.skipIf(!RUN_CERT)(
           command: START_CREATE,
           commandId: envelope.commandId,
         });
-        expectAdmission(await uowA.runJarvisAdmission(stolen, DEPS), 'command_conflict');
+        expectAdmission(await uowA.runJarvisAdmission(stolen, TEST_ONLY_ADMISSION_DEPS), 'command_conflict');
         await expect(auditRun(otherRunId)).resolves.toBeNull();
         await expect(commandEventCount(envelope.commandId)).resolves.toBe(1);
 
@@ -796,7 +972,7 @@ describe.skipIf(!RUN_CERT)(
             },
           },
         });
-        expectAdmission(await uowA.runJarvisAdmission(review, DEPS), 'admitted');
+        expectAdmission(await uowA.runJarvisAdmission(review, TEST_ONLY_ADMISSION_DEPS), 'admitted');
         const waiting = await requireRun(runId);
         expect(waiting.status).toBe('waiting_user');
         expect(waiting.phase).toBe('awaiting_duplicate_review');
@@ -809,7 +985,7 @@ describe.skipIf(!RUN_CERT)(
           expectedRevision: 0,
           command: START_CREATE,
         });
-        expectAdmission(await uowA.runJarvisAdmission(secondSeed, DEPS), 'foreground_busy');
+        expectAdmission(await uowA.runJarvisAdmission(secondSeed, TEST_ONLY_ADMISSION_DEPS), 'foreground_busy');
         await expect(auditRun(secondRunId)).resolves.toBeNull();
         await expect(commandEventCount(secondSeed.commandId)).resolves.toBe(0);
 
@@ -820,13 +996,13 @@ describe.skipIf(!RUN_CERT)(
           expectedRevision: 2,
           command: { type: 'cancel_run', reason: 'user_cancelled' },
         });
-        expectAdmission(await uowA.runJarvisAdmission(cancel, DEPS), 'admitted');
+        expectAdmission(await uowA.runJarvisAdmission(cancel, TEST_ONLY_ADMISSION_DEPS), 'admitted');
         const cancelled = await requireRun(runId);
         expect(cancelled.status).toBe('cancelled');
         expect(cancelled.terminalAt).not.toBeNull();
 
         // La MÊME enveloppe de seed passe désormais — le refus n'a rien persisté.
-        expectAdmission(await uowA.runJarvisAdmission(secondSeed, DEPS), 'admitted');
+        expectAdmission(await uowA.runJarvisAdmission(secondSeed, TEST_ONLY_ADMISSION_DEPS), 'admitted');
         const second = await requireRun(secondRunId);
         expect(second.revision).toBe(1);
         expect(second.status).toBe('active');
@@ -887,7 +1063,7 @@ describe.skipIf(!RUN_CERT)(
             expectedRevision: 1,
             command: { type: 'cancel_run', reason: 'user_cancelled' },
           });
-          const crashing = crashUow.runJarvisAdmission(envelope, DEPS);
+          const crashing = crashUow.runJarvisAdmission(envelope, TEST_ONLY_ADMISSION_DEPS);
 
           // Déconnexion forcée du worker : pg_terminate_backend depuis une connexion du
           // MÊME rôle (droit natif). Si la fenêtre est manquée, le lock_timeout local de
@@ -930,7 +1106,7 @@ describe.skipIf(!RUN_CERT)(
 
           // La MÊME enveloppe rejouée sur un worker sain est ADMISE (jamais `replayed`,
           // jamais `command_conflict`) : aucun reçu partiel n'a été persisté.
-          expectAdmission(await uowA.runJarvisAdmission(envelope, DEPS), 'admitted');
+          expectAdmission(await uowA.runJarvisAdmission(envelope, TEST_ONLY_ADMISSION_DEPS), 'admitted');
           const settled = await requireRun(runId);
           expect(settled.revision).toBe(2);
           expect(settled.status).toBe('cancelled');
@@ -990,7 +1166,7 @@ describe.skipIf(!RUN_CERT)(
                 resolution: { kind: 'no_duplicates' },
               },
             }),
-            DEPS,
+            TEST_ONLY_ADMISSION_DEPS,
           ),
           'admitted',
         );
@@ -1013,7 +1189,7 @@ describe.skipIf(!RUN_CERT)(
                 targetRevision: null,
               },
             }),
-            DEPS,
+            TEST_ONLY_ADMISSION_DEPS,
           ),
           'admitted',
         );
@@ -1029,7 +1205,7 @@ describe.skipIf(!RUN_CERT)(
                 ack: 'screen_ack',
               },
             }),
-            DEPS,
+            TEST_ONLY_ADMISSION_DEPS,
           ),
           'admitted',
         );
@@ -1060,7 +1236,7 @@ describe.skipIf(!RUN_CERT)(
               command: confirmCommand,
               observationKind: 'confirm_attempt',
             }),
-            DEPS,
+            TEST_ONLY_ADMISSION_DEPS,
           ),
           'refused',
         );
@@ -1083,7 +1259,7 @@ describe.skipIf(!RUN_CERT)(
               expectedRevision: 4,
               command: confirmCommand,
             }),
-            DEPS,
+            TEST_ONLY_ADMISSION_DEPS,
           ),
           'admitted',
         );
@@ -1120,7 +1296,7 @@ describe.skipIf(!RUN_CERT)(
           observationKind: 'effect_receipt',
         });
         const applied = expectAdmission(
-          await uowA.runJarvisSystemAdmission(receiptEnvelope, DEPS),
+          await uowA.runJarvisSystemAdmission(receiptEnvelope, TEST_ONLY_ADMISSION_DEPS),
           'admitted',
         );
         expect(applied.eventSequence).toBe(6);
@@ -1140,7 +1316,7 @@ describe.skipIf(!RUN_CERT)(
 
         // La même observation re-soumise dérive le MÊME commandId : replay zéro-write.
         const replayed = expectAdmission(
-          await uowA.runJarvisSystemAdmission(receiptEnvelope, DEPS),
+          await uowA.runJarvisSystemAdmission(receiptEnvelope, TEST_ONLY_ADMISSION_DEPS),
           'replayed',
         );
         expect(replayed.eventSequence).toBe(6);
@@ -1162,6 +1338,29 @@ describe.skipIf(!RUN_CERT)(
         await openProtocolGateForUnknownVersion();
         await pinRunOnUnknownVersion(ownerUserId, runId);
 
+        // La version inconnue ne contourne jamais le kill switch. Fermé, le runtime refuse
+        // avant toute transition ; rouvert sous le harnais test-only, il appliquera ensuite la
+        // quarantaine canonique. Révision, événements et work items restent inchangés ici.
+        const closedAttempt = userEnvelope({
+          ownerUserId,
+          runId,
+          expectedRevision: 4,
+          command: { type: 'confirm', confirmationId, proposalHash },
+        });
+        expect(
+          await uowA.runJarvisAdmission(closedAttempt, {
+            ...TEST_ONLY_ADMISSION_DEPS,
+            admissionEnabled: false,
+          }),
+        ).toEqual({ status: 'action_refused', reason: 'admission_kill_switch' });
+        await expect(requireRun(runId)).resolves.toMatchObject({
+          revision: 4,
+          status: 'waiting_user',
+          phase: 'awaiting_confirmation',
+        });
+        await expect(auditEvents(runId)).resolves.toHaveLength(4);
+        await expect(auditWorkItems(runId)).resolves.toHaveLength(0);
+
         // La commande qui AURAIT émis l'intent 1:1 (confirm) arrive sur le run épinglé :
         // quarantaine — jamais un comportement par défaut, jamais un work item.
         const quarantining = userEnvelope({
@@ -1171,7 +1370,7 @@ describe.skipIf(!RUN_CERT)(
           definitionVersion: UNKNOWN_DEFINITION_VERSION,
           command: confirmCommand(confirmationId, proposalHash),
         });
-        expectAdmission(await uowA.runJarvisAdmission(quarantining, DEPS), 'quarantined');
+        expectAdmission(await uowA.runJarvisAdmission(quarantining, TEST_ONLY_ADMISSION_DEPS), 'quarantined');
 
         // LA BASE : transition COMPLÈTE (gardes SQL mutation_v2 + event_required passées)
         // — revision+1, événement système `run_quarantined` sequence=revision, état
@@ -1207,7 +1406,7 @@ describe.skipIf(!RUN_CERT)(
           definitionVersion: UNKNOWN_DEFINITION_VERSION,
           command: { type: 'cancel_run', reason: 'user_cancelled' },
         });
-        const frozen = expectAdmission(await uowA.runJarvisAdmission(staleCancel, DEPS), 'refused');
+        const frozen = expectAdmission(await uowA.runJarvisAdmission(staleCancel, TEST_ONLY_ADMISSION_DEPS), 'refused');
         expect(frozen.error).toEqual({ code: 'run_terminal', status: 'quarantined' });
         await expect(commandEventCount(staleCancel.commandId)).resolves.toBe(0);
 
@@ -1217,7 +1416,7 @@ describe.skipIf(!RUN_CERT)(
           expectedRevision: 5,
           command: { type: 'cancel_run', reason: 'user_cancelled' },
         });
-        const refused = expectAdmission(await uowA.runJarvisAdmission(mismatched, DEPS), 'refused');
+        const refused = expectAdmission(await uowA.runJarvisAdmission(mismatched, TEST_ONLY_ADMISSION_DEPS), 'refused');
         expect(refused.error).toEqual({ code: 'run_terminal', status: 'quarantined' });
         await expect(commandEventCount(mismatched.commandId)).resolves.toBe(0);
 
@@ -1247,7 +1446,7 @@ describe.skipIf(!RUN_CERT)(
           command: confirmCommand(confirmationId, proposalHash),
         });
         const confirmed = expectAdmission(
-          await uowA.runJarvisAdmission(confirmEnvelope, DEPS),
+          await uowA.runJarvisAdmission(confirmEnvelope, TEST_ONLY_ADMISSION_DEPS),
           'admitted',
         );
         expect(confirmed.workItemIds).toHaveLength(1);
@@ -1292,7 +1491,7 @@ describe.skipIf(!RUN_CERT)(
         // Borne de la greffe (revue C1/C18) : un replay USER du même run n'éteint JAMAIS
         // un signal pas encore admis.
         const userReplay = expectAdmission(
-          await uowA.runJarvisAdmission(confirmEnvelope, DEPS),
+          await uowA.runJarvisAdmission(confirmEnvelope, TEST_ONLY_ADMISSION_DEPS),
           'replayed',
         );
         expect(userReplay.signalRestamped).toBe(false);
@@ -1315,7 +1514,7 @@ describe.skipIf(!RUN_CERT)(
           observationKind: 'effect_receipt',
         });
         const admittedSignal = expectAdmission(
-          await uowA.runJarvisSystemAdmission(receiptEnvelope, DEPS),
+          await uowA.runJarvisSystemAdmission(receiptEnvelope, TEST_ONLY_ADMISSION_DEPS),
           'admitted',
         );
         expect(admittedSignal.eventSequence).toBe(6);
@@ -1327,7 +1526,7 @@ describe.skipIf(!RUN_CERT)(
         // Redelivery : le MÊME commandId système rejoue — et la branche VRAIE heal :
         // signalRestamped=true, signalAppliedAt posé DANS la même transaction.
         const healed = expectAdmission(
-          await uowA.runJarvisSystemAdmission(receiptEnvelope, DEPS),
+          await uowA.runJarvisSystemAdmission(receiptEnvelope, TEST_ONLY_ADMISSION_DEPS),
           'replayed',
         );
         expect(healed.eventSequence).toBe(6);
@@ -1338,13 +1537,13 @@ describe.skipIf(!RUN_CERT)(
 
         // Idempotence du heal : un signal déjà stampé n'est jamais re-stampé…
         const replayedAgain = expectAdmission(
-          await uowA.runJarvisSystemAdmission(receiptEnvelope, DEPS),
+          await uowA.runJarvisSystemAdmission(receiptEnvelope, TEST_ONLY_ADMISSION_DEPS),
           'replayed',
         );
         expect(replayedAgain.signalRestamped).toBe(false);
         // …et un replay USER tardif ne touche pas davantage au stamp.
         const lateUserReplay = expectAdmission(
-          await uowA.runJarvisAdmission(confirmEnvelope, DEPS),
+          await uowA.runJarvisAdmission(confirmEnvelope, TEST_ONLY_ADMISSION_DEPS),
           'replayed',
         );
         expect(lateUserReplay.signalRestamped).toBe(false);
@@ -1397,7 +1596,7 @@ describe.skipIf(!RUN_CERT)(
               expectedRevision: 1,
               command: { type: 'record_customer_resolution', resolution: { kind: 'no_duplicates' } },
             }),
-            DEPS,
+            TEST_ONLY_ADMISSION_DEPS,
           ),
           'admitted',
         );
@@ -1416,5 +1615,184 @@ describe.skipIf(!RUN_CERT)(
       TEST_TIMEOUT_MS,
     );
 
+    it(
+      'preuve 12 — cancel avant authorize laisse le reçu no-effect dû puis converge terminal',
+      async () => {
+        const ownerUserId = freshOwner();
+        const { runId, effectId, confirmationId, proposalHash } =
+          await driveRunToPresented(ownerUserId);
+        const confirmed = expectAdmission(
+          await uowA.runJarvisAdmission(
+            userEnvelope({
+              ownerUserId,
+              runId,
+              expectedRevision: 4,
+              command: confirmCommand(confirmationId, proposalHash),
+            }),
+            TEST_ONLY_ADMISSION_DEPS,
+          ),
+          'admitted',
+        );
+        const workItemId = confirmed.workItemIds[0] ?? '';
+        const coordinates: JarvisWorkItemCoordinates = { companyId, ownerUserId, runId };
+        const repository = new PrismaJarvisWorkItemsRepository(workerA);
+        const claimed = await repository.claimDue(coordinates, {
+          leaseOwner: 'jarvis-u1c-cancel-before-authorize',
+          leaseToken: randomUUID(),
+          leaseDurationMs: 60_000,
+          limit: 10,
+        });
+        expect(claimed).toHaveLength(1);
+        expect(claimed[0]?.id).toBe(workItemId);
+        expect(claimed[0]?.leaseFence).toBe(1n);
+
+        expectAdmission(
+          await uowA.runJarvisAdmission(
+            userEnvelope({
+              ownerUserId,
+              runId,
+              expectedRevision: 5,
+              command: { type: 'cancel_run', reason: 'user_cancelled' },
+            }),
+            TEST_ONLY_ADMISSION_DEPS,
+          ),
+          'admitted',
+        );
+
+        const cancelling = await requireRun(runId);
+        expect(cancelling.status).toBe('cancelling');
+        const [cancelledItem] = await auditWorkItems(runId);
+        expect(cancelledItem).toMatchObject({
+          id: workItemId,
+          status: 'cancelled',
+          leaseFence: 1n,
+          leaseOwner: null,
+          leaseToken: null,
+          leaseExpiresAt: null,
+          nextAttemptAt: null,
+          authorizedAt: null,
+          resultDigest: '0'.repeat(64),
+          signalAppliedAt: null,
+        });
+
+        const pending = await repository.listPendingSignals(coordinates, 10);
+        expect(pending).toHaveLength(1);
+        expect(pending[0]).toMatchObject({
+          id: workItemId,
+          effectId,
+          status: 'cancelled',
+          leaseFence: 1n,
+          resultDigest: '0'.repeat(64),
+        });
+
+        const resultDigest = pending[0]?.resultDigest ?? '';
+        const receipt = expectAdmission(
+          await uowA.runJarvisSystemAdmission(
+            systemEnvelope({
+              ownerUserId,
+              runId,
+              effectId,
+              expectedRevision: 6,
+              command: {
+                type: 'record_effect_receipt',
+                effectId,
+                outcome: {
+                  kind: 'failed_terminal',
+                  reasonCode: 'dispatch_cancelled_no_effect',
+                },
+              },
+              observationKind: 'effect_result',
+            }),
+            TEST_ONLY_ADMISSION_DEPS,
+          ),
+          'admitted',
+        );
+        expect(receipt.eventSequence).toBe(7);
+        await expect(
+          repository.markSignalApplied(coordinates, {
+            id: workItemId,
+            leaseFence: 1n,
+            resultDigest,
+          }),
+        ).resolves.toBe(true);
+
+        const settled = await requireRun(runId);
+        expect(settled.status).toBe('cancelled');
+        expect(settled.terminalAt).not.toBeNull();
+        await expect(repository.listPendingSignals(coordinates, 10)).resolves.toHaveLength(0);
+        await expect(auditWorkItemSignal(workItemId)).resolves.toMatchObject({
+          resultDigest: '0'.repeat(64),
+        });
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it(
+      'preuve 13 — une forme N-1 contradictoire reste visible, jamais réécrite en faux no-effect',
+      async () => {
+        const ownerUserId = freshOwner();
+        const { runId, confirmationId, proposalHash } = await driveRunToPresented(ownerUserId);
+        const confirmed = expectAdmission(
+          await uowA.runJarvisAdmission(
+            userEnvelope({
+              ownerUserId,
+              runId,
+              expectedRevision: 4,
+              command: confirmCommand(confirmationId, proposalHash),
+            }),
+            TEST_ONLY_ADMISSION_DEPS,
+          ),
+          'admitted',
+        );
+        const workItemId = confirmed.workItemIds[0] ?? '';
+        const coordinates: JarvisWorkItemCoordinates = { companyId, ownerUserId, runId };
+        const repository = new PrismaJarvisWorkItemsRepository(workerA);
+        const leaseToken = randomUUID();
+        const claimed = await repository.claimDue(coordinates, {
+          leaseOwner: 'jarvis-u1c-contradictory-n1',
+          leaseToken,
+          leaseDurationMs: 60_000,
+          limit: 10,
+        });
+        expect(claimed).toHaveLength(1);
+
+        const historicalAuthorizationDigest = sha256Hex('jarvis-u1c-contradictory-n1-auth');
+        await admin.$executeRaw`
+          UPDATE public.jarvis_work_items
+             SET "authorizedAt" = statement_timestamp(),
+                 "authorizationDigest" = ${historicalAuthorizationDigest}
+           WHERE "id" = ${workItemId}::uuid
+             AND "status" = 'leased'
+        `;
+
+        expectAdmission(
+          await uowA.runJarvisAdmission(
+            userEnvelope({
+              ownerUserId,
+              runId,
+              expectedRevision: 5,
+              command: { type: 'cancel_run', reason: 'user_cancelled' },
+            }),
+            TEST_ONLY_ADMISSION_DEPS,
+          ),
+          'admitted',
+        );
+
+        const run = await requireRun(runId);
+        expect(run.status).toBe('cancelling');
+        const [item] = await auditWorkItems(runId);
+        expect(item).toMatchObject({
+          id: workItemId,
+          status: 'leased',
+          leaseToken,
+          authorizedAt: expect.any(Date),
+          authorizationDigest: historicalAuthorizationDigest,
+          resultDigest: null,
+          signalAppliedAt: null,
+        });
+        await expect(repository.listPendingSignals(coordinates, 10)).resolves.toHaveLength(0);
+      },
+      TEST_TIMEOUT_MS,
+    );
   },
 );

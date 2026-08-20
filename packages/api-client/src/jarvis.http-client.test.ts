@@ -123,6 +123,30 @@ describe('HttpBobClient — canal tactile Jarvis', () => {
     });
   });
 
+  it('transporte une référence canonique hors candidate et laisse le serveur décider', async () => {
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        actionId: 'client-supprimer',
+        actionVersion: 1,
+      });
+      return new Response(
+        JSON.stringify({
+          outcome: 'admitted',
+          run: run(),
+          presentation: presentation(),
+          eventSequence: 9,
+        }),
+        { headers: { 'content-type': 'application/json' } },
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      client().jarvisSubmitCommand(submitInput({ actionId: 'client-supprimer' })),
+    ).resolves.toMatchObject({ ok: true });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
   it('n’envoie rien quand l’enveloppe n’est pas canonique', async () => {
     const fetchMock = vi.fn(async () => new Response('{}'));
     vi.stubGlobal('fetch', fetchMock);
@@ -132,9 +156,9 @@ describe('HttpBobClient — canal tactile Jarvis', () => {
     await expect(
       http.jarvisSubmitCommand(submitInput({ commandId: '22222222-2222-8222-8222-222222222222' })),
     ).resolves.toMatchObject({ ok: false, error: { kind: 'validation' } });
-    // Action hors des bornes d'ouverture du lot (rollout.ts).
+    // Identité d'action non canonique : le transport refuse une forme ambiguë.
     await expect(
-      http.jarvisSubmitCommand(submitInput({ actionId: 'client-supprimer' })),
+      http.jarvisSubmitCommand(submitInput({ actionId: 'Client/Supprimer' })),
     ).resolves.toMatchObject({ ok: false, error: { kind: 'validation' } });
     await expect(
       http.jarvisSubmitCommand(submitInput({ expectedRevision: 0 })),

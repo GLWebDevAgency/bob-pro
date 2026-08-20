@@ -18,10 +18,10 @@
  * sont JAMAIS coupées par le kill switch, qui ne gate que les nouveaux claims (§5.3).
  *
  * Fail-closed U1-c documenté : AUCUNE action du catalogue n'a d'exécuteur réel — le registre
- * statique est VIDE. Tout work item autorisé sans exécuteur est réglé `outcome_unknown` motif
- * `executor_unregistered` (aucun appel provider, aucun retry aveugle — §5.3), puis signalé au
- * run comme clôture d'échec : le registre vide prouve qu'aucune I/O n'est jamais partie, la
- * clôture terminale est donc honnête. `NotificationJobEffectExecutor` (greffe : l'UNIQUE
+ * statique est VIDE. Un nouvel item sans exécuteur est annulé sous fence AVANT `authorize`
+ * (aucune I/O possible). Une reprise déjà `authorized` sans arbitre reste au contraire
+ * `outcome_unknown`, durablement non signalée : l'ancienne image a pu appeler un provider.
+ * `NotificationJobEffectExecutor` (greffe : l'UNIQUE
  * exécuteur prévu, au-dessus de l'outbox canonique `notification_jobs`) est livré prêt mais
  * NON enregistré ; U1-d le branche action par action.
  *
@@ -29,7 +29,8 @@
  * `authorized` n'est plus laissée en suspens — le worker lui demande de LIRE son effet par
  * `effectId` (`reconcileEffect`) et route le verdict : reçu trouvé ⇒ résultat persisté et
  * signalé ; absence prouvée ou action idempotente ⇒ rejeu du MÊME effectId ; indécidable ⇒
- * `outcome_unknown` motivé. Sans cette lecture, une ligne `authorized` voyait sa lease
+ * `outcome_unknown` motivé et quarantiné sans reçu terminal. Sans cette lecture, une ligne
+ * `authorized` voyait sa lease
  * renouvelée à chaque tick, indéfiniment : un run bloqué à vie par un worker mort.
  *
  * Horloge : les échéances (`executeBy`) sont jugées contre l'horloge BASE (`readAt` de la
@@ -39,19 +40,23 @@ import { randomUUID } from 'node:crypto';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import {
-  ACTION_CATALOG_V0,
+  CLOSED_JARVIS_ACTION_RELEASE_POLICY,
   SystemClock,
   deriveJarvisSystemCommandId,
+  evaluateJarvisActionPublication,
   parseJarvisAuthorizationSource,
+  resolveJarvisDefinition,
   sha256Hex,
   type JarvisAdmissionResult,
   type JarvisAdmissionUnitOfWorkPort,
+  type JarvisActionReleasePolicy,
   type JarvisRunEnvelope,
   type JarvisSystemAdmissionEnvelope,
   type Notification,
 } from '@bob/core';
 import type { Persistence } from '../persistence/persistence';
 import { PERSISTENCE } from '../persistence/persistence-token';
+import { JARVIS_ACTION_RELEASE_POLICY } from '../jarvis/jarvis.tokens';
 import type { NotificationJob } from '../persistence/notification-jobs';
 import type {
   JarvisWorkItemCoordinates,
@@ -77,7 +82,7 @@ import { ScheduledTenantDirectory } from './tenant-directory';
  * d'un effet parti.
  */
 export function jarvisDispatchEnabled(): boolean {
-  return process.env.BOB_JARVIS_DISPATCH_ENABLED !== 'false';
+  return process.env.BOB_JARVIS_DISPATCH_ENABLED === 'true';
 }
 
 // ---------------------------------------------------------------------------
@@ -93,7 +98,6 @@ export const JARVIS_DISPATCH_RUN_DIRECTORY = Symbol('JARVIS_DISPATCH_RUN_DIRECTO
 export const JARVIS_DISPATCH_ADMISSION = Symbol('JARVIS_DISPATCH_ADMISSION');
 /** Override de registre d'exécuteurs (tests/U1-d) — défaut : registre statique (VIDE en U1-c). */
 export const JARVIS_EFFECT_EXECUTORS = Symbol('JARVIS_EFFECT_EXECUTORS');
-
 /**
  * Annuaire des coordonnées de dispatch d'un tenant : les (owner, run) portant des work items
  * dus OU des résultats non signalés. Les coordonnées viennent d'un annuaire SERVEUR (précédent
@@ -194,8 +198,8 @@ type JarvisEffectExecutorFactory = (deps: JarvisEffectExecutorDeps) => JarvisEff
 
 /**
  * Registre STATIQUE U1-c : VIDE, volontairement. Aucune action du catalogue n'a d'exécuteur
- * réel dans cette tranche — le worker règle `outcome_unknown` motif `executor_unregistered`
- * (fail-closed honnête, documenté en tête de fichier). U1-d enregistre ici, action par action,
+ * réel dans cette tranche — un nouvel item est annulé no-effect avant `authorize`, tandis
+ * qu'une reprise historiquement autorisée reste indécidable. U1-d enregistre ici, action par action,
  * des `NotificationJobEffectExecutor` paramétrés — jamais un exécuteur générique fourre-tout.
  */
 const JARVIS_EFFECT_EXECUTOR_FACTORIES_V1: ReadonlyMap<string, JarvisEffectExecutorFactory> =
@@ -351,9 +355,10 @@ type JarvisDispatchRunEnvelope = Extract<
  * Motifs fermés customer_contact (grammaire `reasonCode` de la définition). Reconstructibles
  * depuis la seule ligne persistée (status) — condition de la redelivery level-triggered.
  */
-const CC_FAILURE_REASON_BY_STATUS: Readonly<Record<string, string>> = Object.freeze({
+const CC_FAILURE_REASON_BY_STATUS: Readonly<
+  Record<'cancelled' | 'failed_terminal', string>
+> = Object.freeze({
   cancelled: 'dispatch_cancelled_no_effect',
-  outcome_unknown: 'dispatch_outcome_unknown',
   failed_terminal: 'dispatch_failed_terminal',
 });
 
@@ -370,6 +375,10 @@ function buildReceiptCommand(
   resultDigest: string,
   describedOutcome: unknown | null,
 ): unknown | null {
+  // Une issue indécidable n'est ni un échec terminal ni une preuve de non-effet. Elle reste
+  // durablement non acquittée jusqu'à une réconciliation purpose-specific ; aucun reducer
+  // ne doit libérer le run sur une supposition.
+  if (status === 'outcome_unknown') return null;
   if (status === 'succeeded') {
     if (kind === 'single_business_action') {
       return {
@@ -384,10 +393,8 @@ function buildReceiptCommand(
     if (describedOutcome === null) return null;
     return { type: 'record_effect_receipt', effectId, outcome: describedOutcome };
   }
-  // cancelled / failed_terminal / outcome_unknown : clôture d'échec. Pour outcome_unknown,
-  // cette clôture n'est honnête que parce que rien n'a pu partir sans être observé : registre
-  // vide en U1-c, et depuis U1-d (revue C9) réconciliation par `effectId` OBLIGATOIRE avant
-  // qu'une reprise `authorized` puisse être close — jamais un indécidable prononcé sans lecture.
+  if (status !== 'cancelled' && status !== 'failed_terminal') return null;
+  // Uniquement cancelled / failed_terminal : issue décidée ou non-effet prouvé.
   if (kind === 'single_business_action') {
     return {
       type: 'record_effect_receipt',
@@ -450,6 +457,7 @@ function emptyCompanySummary(): JarvisDispatchCompanySummary {
 export class JarvisWorkItemDispatchService {
   private readonly clock = new SystemClock();
   private readonly executors: ReadonlyMap<string, JarvisEffectExecutor>;
+  private readonly actionReleasePolicy: JarvisActionReleasePolicy;
   private dependenciesWarned = false;
 
   constructor(
@@ -472,10 +480,14 @@ export class JarvisWorkItemDispatchService {
     @Optional()
     @Inject(JARVIS_EFFECT_EXECUTORS)
     executors: ReadonlyMap<string, JarvisEffectExecutor> | null = null,
+    @Optional()
+    @Inject(JARVIS_ACTION_RELEASE_POLICY)
+    actionReleasePolicy: JarvisActionReleasePolicy | null = null,
   ) {
     this.executors =
       executors ??
       buildJarvisEffectExecutorRegistry({ persistence: p, now: () => this.clock.now() });
+    this.actionReleasePolicy = actionReleasePolicy ?? CLOSED_JARVIS_ACTION_RELEASE_POLICY;
   }
 
   /** Cadence courte : l'effet d'une confirmation ne doit jamais attendre un long cron. */
@@ -597,6 +609,7 @@ export class JarvisWorkItemDispatchService {
           // Une reprise peut désormais EXÉCUTER (rejeu du même effectId après réconciliation) :
           // le compteur doit le dire, sinon un rejeu réussi passerait pour un tick vide.
           if (outcome === 'executed') summary.executed += 1;
+          if (outcome === 'cancelled') summary.cancelled += 1;
           if (outcome === 'unknown') summary.unknown += 1;
           if (outcome === 'failed') summary.failures += 1;
         }
@@ -697,6 +710,37 @@ export class JarvisWorkItemDispatchService {
         return { outcome: 'cancelled', signalled: applied ? 1 : 0 };
       }
 
+      const executor = this.executors.get(
+        jarvisEffectExecutorKey(lease.actionId, lease.actionVersion),
+      );
+      if (executor === undefined) {
+        // Aucun exécuteur n'est enregistré AVANT le point de non-retour : aucune I/O n'a pu
+        // partir. On annule sous fence au lieu de fabriquer une issue indécidable.
+        const resultDigest = noEffectResultDigest(lease.effectId, 'executor_unregistered');
+        const won = await repository.cancelUnauthorized(coordinates, {
+          id: lease.id,
+          expectedLeaseFence: lease.leaseFence,
+          noEffectResultDigest: resultDigest,
+        });
+        this.logger.audit('jarvis.dispatch.executor_unregistered', {
+          companyId: coordinates.companyId,
+          workItemId: lease.id,
+          effectId: lease.effectId,
+          actionId: lease.actionId,
+          actionVersion: lease.actionVersion,
+          cancelledNoEffect: won,
+        });
+        if (!won) return { outcome: 'skipped', signalled: 0 };
+        const applied = await this.signalStoredResult(coordinates, {
+          id: lease.id,
+          effectId: lease.effectId,
+          status: 'cancelled',
+          resultDigest,
+          leaseFence: lease.leaseFence,
+        });
+        return { outcome: 'cancelled', signalled: applied ? 1 : 0 };
+      }
+
       // Point de non-retour : authorizedAt + authorizationDigest posés ENSEMBLE, réservé au
       // détenteur (token, fence) dont la lease couvre encore l'instant base.
       const authorized = await repository.authorize(coordinates, {
@@ -738,40 +782,22 @@ export class JarvisWorkItemDispatchService {
         return { outcome: 'cancelled', signalled: applied ? 1 : 0 };
       }
 
-      const executor = this.executors.get(
-        jarvisEffectExecutorKey(lease.actionId, lease.actionVersion),
-      );
       let execution: JarvisEffectExecutionOutcome;
-      if (executor === undefined) {
-        // U1-c : registre VIDE — fail-closed honnête, AUCUN appel provider (voir en-tête).
+      try {
+        execution = await executor.execute({ coordinates, lease });
+      } catch (e) {
+        // Après `authorized`, une exception d'exécuteur est INDÉCIDABLE : outcome_unknown,
+        // jamais un retry aveugle (§5.3).
+        this.logger.warn(
+          `Exécuteur Jarvis en échec (${lease.actionId}@${lease.actionVersion}): ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+          'jarvis-dispatch',
+        );
         execution = {
           status: 'outcome_unknown',
-          resultDigest: unknownOutcomeResultDigest(lease.effectId, 'executor_unregistered'),
+          resultDigest: unknownOutcomeResultDigest(lease.effectId, 'executor_error'),
         };
-        this.logger.audit('jarvis.dispatch.executor_unregistered', {
-          companyId: coordinates.companyId,
-          workItemId: lease.id,
-          effectId: lease.effectId,
-          actionId: lease.actionId,
-          actionVersion: lease.actionVersion,
-        });
-      } else {
-        try {
-          execution = await executor.execute({ coordinates, lease });
-        } catch (e) {
-          // Après `authorized`, une exception d'exécuteur est INDÉCIDABLE : outcome_unknown,
-          // jamais un retry aveugle (§5.3).
-          this.logger.warn(
-            `Exécuteur Jarvis en échec (${lease.actionId}@${lease.actionVersion}): ${
-              e instanceof Error ? e.message : String(e)
-            }`,
-            'jarvis-dispatch',
-          );
-          execution = {
-            status: 'outcome_unknown',
-            resultDigest: unknownOutcomeResultDigest(lease.effectId, 'executor_error'),
-          };
-        }
       }
 
       const stored = await repository.storeResult(coordinates, {
@@ -813,9 +839,9 @@ export class JarvisWorkItemDispatchService {
    * Règlement d'une ligne `authorized` reprise après expiration de lease (revue C10) : le
    * worker précédent est mort APRÈS le point de non-retour, AVANT `storeResult`.
    *
-   * Registre VIDE (U1-c) : l'absence d'exécuteur pour l'action PROUVE qu'aucune I/O n'a jamais
-   * pu partir — le règlement `outcome_unknown` motif `executor_unregistered` puis son signal
-   * sont honnêtes.
+   * Registre absent à la REPRISE : l'image précédente a pu disposer d'un exécuteur et appeler
+   * son provider. L'issue devient donc `outcome_unknown` et reste non signalée, jamais un faux
+   * no-effect.
    *
    * Exécuteur ENREGISTRÉ (U1-d, revue C9) : l'issue ne se devine pas, elle se LIT. Le protocole
    * §5.3 est appliqué tel quel — « il réconcilie d'abord l'autorité métier/provider avec le même
@@ -874,13 +900,48 @@ export class JarvisWorkItemDispatchService {
       actionVersion: lease.actionVersion,
       verdict: verdict.kind,
     });
+    const actionPublished = evaluateJarvisActionPublication(this.actionReleasePolicy, {
+      companyId: coordinates.companyId,
+      ownerUserId: coordinates.ownerUserId,
+      actionId: lease.actionId,
+      actionVersion: lease.actionVersion,
+    }).published;
     if (verdict.kind === 'landed') {
       // Reçu trouvé : l'issue est celle que l'autorité montre, persistée puis observée.
       return this.settleReclaimedAuthorized(coordinates, lease, verdict.outcome);
     }
-    if (verdict.kind === 'not_landed' || verdict.kind === 'safe_to_replay') {
+    if (verdict.kind === 'not_landed') {
+      // Une autorisation historique ne vaut pas publication éternelle. Après avoir PROUVÉ
+      // l'absence d'effet, un manifest fermé interdit le rejeu et produit un échec no-effect.
+      if (!actionPublished) {
+        return this.settleReclaimedAuthorized(coordinates, lease, {
+          status: 'failed_terminal',
+          resultDigest: noEffectResultDigest(
+            lease.effectId,
+            'action_not_released_after_authorization',
+          ),
+        }, 'cancelled');
+      }
       // Absence prouvée (ou action idempotente par construction) : NOUVEL appel avec le MÊME
       // effectId — jamais un nouvel effectId, jamais un second effet.
+      return this.settleReclaimedAuthorized(
+        coordinates,
+        lease,
+        await this.executeReclaimed(executor, coordinates, lease),
+      );
+    }
+    if (verdict.kind === 'safe_to_replay') {
+      // `safe_to_replay` prouve l'idempotence, PAS l'absence d'un effet déjà committé. Sous
+      // manifest fermé on ne rejoue rien et on conserve l'issue honnête : indécidable.
+      if (!actionPublished) {
+        return this.settleReclaimedAuthorized(coordinates, lease, {
+          status: 'outcome_unknown',
+          resultDigest: unknownOutcomeResultDigest(
+            lease.effectId,
+            'action_not_released_safe_replay_suppressed',
+          ),
+        });
+      }
       return this.settleReclaimedAuthorized(
         coordinates,
         lease,
@@ -923,6 +984,7 @@ export class JarvisWorkItemDispatchService {
     coordinates: JarvisWorkItemCoordinates,
     lease: JarvisWorkItemLease,
     execution: JarvisEffectExecutionOutcome,
+    outcomeOverride?: LeaseOutcome,
   ): Promise<{ outcome: LeaseOutcome; signalled: number }> {
     const repository = this.repository;
     if (repository === null) return { outcome: 'skipped', signalled: 0 };
@@ -957,7 +1019,8 @@ export class JarvisWorkItemDispatchService {
       leaseFence: lease.leaseFence,
     });
     return {
-      outcome: execution.status === 'outcome_unknown' ? 'unknown' : 'executed',
+      outcome:
+        outcomeOverride ?? (execution.status === 'outcome_unknown' ? 'unknown' : 'executed'),
       signalled: applied ? 1 : 0,
     };
   }
@@ -988,13 +1051,6 @@ export class JarvisWorkItemDispatchService {
     if (!jarvisDispatchEnabled()) {
       return { kind: 'retry', cause: 'dispatch_disabled' };
     }
-    // Action au catalogue, non fermée (le catalogue peut avoir bougé depuis la confirmation).
-    const entry = ACTION_CATALOG_V0.find(
-      (candidate) =>
-        candidate.actionId === lease.actionId && candidate.version === lease.actionVersion,
-    );
-    if (entry === undefined) return { kind: 'cancel', reason: 'action_unknown' };
-    if (entry.voiceMode === 'closed') return { kind: 'cancel', reason: 'action_closed' };
     // Tenant ouvert : une société clôturée n'exécute plus JAMAIS un effet différé.
     try {
       const company = await this.p.runWithTenant(coordinates.companyId, () =>
@@ -1030,6 +1086,29 @@ export class JarvisWorkItemDispatchService {
     if (run === null) return { kind: 'cancel', reason: 'run_missing' };
     if (run.kind !== 'single_business_action' && run.kind !== 'customer_contact') {
       return { kind: 'cancel', reason: 'run_kind_unsupported' };
+    }
+    const definition = resolveJarvisDefinition(run.kind, run.definitionVersion);
+    const serverAction = definition?.actionReference(run, null) ?? null;
+    if (
+      serverAction === null
+      || serverAction.actionId !== lease.actionId
+      || serverAction.actionVersion !== lease.actionVersion
+    ) {
+      return { kind: 'cancel', reason: 'action_binding_mismatch' };
+    }
+    // Publication évaluée sur l'action dérivée du state relu, jamais sur les seules colonnes de
+    // la lease. Une ligne N-1/corrompue ne peut donc pas emprunter l'autorisation d'une autre
+    // action pour exécuter un effet sous ce run.
+    const publication = evaluateJarvisActionPublication(this.actionReleasePolicy, {
+      companyId: coordinates.companyId,
+      ownerUserId: coordinates.ownerUserId,
+      ...serverAction,
+    });
+    if (!publication.published) {
+      return {
+        kind: 'cancel',
+        reason: publication.reason === 'unknown_action' ? 'action_unknown' : publication.reason,
+      };
     }
     // Cancel gagné côté run : un run terminal ou en annulation n'attend plus cet effet non
     // autorisé — clôture no-effect, jamais une exécution posthume.
@@ -1093,6 +1172,17 @@ export class JarvisWorkItemDispatchService {
     const admission = this.admission;
     const repository = this.repository;
     if (admission === null || repository === null) return false;
+    if (stored.status === 'outcome_unknown') {
+      // Quarantaine durable : ni admission système, ni stamp. Le drain de release doit rester
+      // rouge tant qu'une autorité purpose-specific n'a pas réconcilié cette issue.
+      this.logger.audit('jarvis.dispatch.signal_quarantined', {
+        companyId: coordinates.companyId,
+        workItemId: stored.id,
+        effectId: stored.effectId,
+        status: stored.status,
+      });
+      return false;
+    }
     try {
       const read = await admission.readJarvisStateless(
         { companyId: coordinates.companyId, ownerUserId: coordinates.ownerUserId },

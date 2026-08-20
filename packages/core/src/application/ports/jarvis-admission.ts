@@ -7,12 +7,12 @@
  * aucun verrou et n'écrit rien.
  */
 
-import type {
-  CustomerCandidate,
-  CustomerCandidateReference,
-} from './customer-candidate-search';
+import type { CustomerCandidate, CustomerCandidateReference } from './customer-candidate-search';
 import type { JarvisRunEnvelope, JarvisRunKind } from '../../domain/agent/jarvis-run';
 import type { JarvisReduceError } from '../../domain/agent/jarvis-run-reducer';
+import { ACTION_CATALOG_V0 } from '../../domain/action-catalog/catalog.data';
+import { isU1CandidateAction } from '../../domain/action-catalog/rollout';
+import type { ActionCatalogEntry } from '../../domain/action-catalog/types';
 import type { Instant } from '../../shared-kernel/time';
 
 import type { AgentMissionRealtimeAuthorityProof } from './agent-mission-unit-of-work';
@@ -23,6 +23,76 @@ export type JarvisAdmissionKind = Exclude<JarvisRunKind, 'quote_creation'>;
 export interface JarvisAdmissionOwner {
   readonly companyId: string;
   readonly ownerUserId: string;
+}
+
+/**
+ * Référence minimale évaluée par le manifeste de publication serveur.
+ *
+ * Le catalogue décrit le cycle de vie du code ; il ne publie jamais à lui seul une action.
+ * Le provider réel pourra ainsi borner tenant, cohorte et principal sans que le worker ni
+ * l'admission n'interprètent eux-mêmes ces règles.
+ */
+export interface JarvisActionReleaseRef extends JarvisAdmissionOwner {
+  readonly actionId: string;
+  readonly actionVersion: number;
+}
+
+/**
+ * Forme wire minimale d'une référence d'action. Cette garde ne publie RIEN : elle empêche
+ * seulement les transports de réintroduire chacun leur propre regexp ou leur propre allowlist.
+ * L'action autoritaire reste dérivée de la définition et du state sous verrou par l'admission.
+ */
+export function isCanonicalJarvisActionReference(
+  actionId: unknown,
+  actionVersion: unknown,
+): boolean {
+  return (
+    typeof actionId === 'string'
+    && actionId.length >= 1
+    && actionId.length <= 100
+    && /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u.test(actionId)
+    && Number.isSafeInteger(actionVersion)
+    && (actionVersion as number) >= 1
+    && (actionVersion as number) <= 2_147_483_647
+  );
+}
+
+export interface JarvisActionReleasePolicy {
+  /**
+   * Décide depuis le contexte serveur ET l'entrée catalogue exacte. Un provider positif doit
+   * donc porter lui-même la loi de cycle de vie ; le catalogue seul ne publie jamais une action.
+   */
+  isPublished(ref: JarvisActionReleaseRef, entry: ActionCatalogEntry): boolean;
+}
+
+/** Manifest vide : état runtime sûr tant qu'aucune publication exacte n'est câblée. */
+export const CLOSED_JARVIS_ACTION_RELEASE_POLICY: JarvisActionReleasePolicy = Object.freeze({
+  isPublished: () => false,
+});
+
+export type JarvisActionPublicationDecision =
+  | { readonly published: true }
+  | {
+      readonly published: false;
+      readonly reason: 'unknown_action' | 'action_closed' | 'action_not_released';
+    };
+
+/** Autorité pure unique : catalogue, borne technique et manifeste sont évalués une seule fois. */
+export function evaluateJarvisActionPublication(
+  policy: JarvisActionReleasePolicy,
+  ref: JarvisActionReleaseRef,
+): JarvisActionPublicationDecision {
+  const entry = ACTION_CATALOG_V0.find(
+    (candidate) => candidate.actionId === ref.actionId && candidate.version === ref.actionVersion,
+  );
+  if (entry === undefined) return { published: false, reason: 'unknown_action' };
+  if (entry.voiceMode === 'closed' || !isU1CandidateAction(ref.actionId, ref.actionVersion)) {
+    return { published: false, reason: 'action_closed' };
+  }
+  if (!policy.isPublished(ref, entry)) {
+    return { published: false, reason: 'action_not_released' };
+  }
+  return { published: true };
 }
 
 /**
@@ -118,7 +188,12 @@ export type JarvisAdmissionResult =
   | { readonly status: 'capability_rejected'; readonly reason: string }
   | {
       readonly status: 'action_refused';
-      readonly reason: 'unknown_action' | 'action_closed' | 'admission_kill_switch';
+      readonly reason:
+        | 'unknown_action'
+        | 'action_closed'
+        | 'action_not_released'
+        | 'action_binding_mismatch'
+        | 'admission_kill_switch';
     }
   | { readonly status: 'quarantined' }
   | { readonly status: 'foreground_unavailable'; readonly reason: string }

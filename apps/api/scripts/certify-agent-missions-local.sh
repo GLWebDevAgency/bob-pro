@@ -9,6 +9,7 @@ DATA_DIR=""
 LOCAL_CLUSTER_STARTED=false
 CONCURRENCY_LOG=""
 CONCURRENCY_MANAGER_LOG=""
+DRAIN_CERT_LOG=""
 concurrent_writer_pid=""
 concurrent_manager_pid=""
 
@@ -40,6 +41,9 @@ cleanup() {
   fi
   if [ -n "$CONCURRENCY_MANAGER_LOG" ]; then
     rm -f "$CONCURRENCY_MANAGER_LOG"
+  fi
+  if [ -n "$DRAIN_CERT_LOG" ]; then
+    rm -f "$DRAIN_CERT_LOG"
   fi
   exit "$cleanup_status"
 }
@@ -5281,6 +5285,10 @@ SQL
 # claim et le reglement perd l'effet confirme a jamais.
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
   -f "$ROOT_DIR/apps/api/prisma/migrations/20260820140000_jarvis_dispatch_directory_leased/migration.sql"
+# Correctif de vérité : un `outcome_unknown` ne produit aucun signal et ne doit donc jamais
+# occuper la page bornée de l'annuaire au détriment d'un vrai claim ou signal.
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260820150000_jarvis_dispatch_directory_signalable/migration.sql"
 
 # Fail-closed NATIF : tant que le provisionnement n'a pas eu lieu, meme le deployeur est refuse.
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
@@ -5361,9 +5369,9 @@ SELECT DISTINCT format(
    AND privilege.grantee = 'bob_jarvis_dispatch_directory'::regrole
 \gexec
 -- Coordonnees et colonnes de la BORNE uniquement : ni payloadRef, ni authorizationSource, ni
--- submittedJobRef, ni targetDigest, ni authorizationDigest — l'autorite oriente le worker, elle
--- ne lit ni charge ni preuve d'autorisation.
-GRANT SELECT ("companyId", "ownerUserId", "runId", "status", "nextAttemptAt", "leaseExpiresAt", "resultDigest", "signalAppliedAt")
+-- submittedJobRef ni targetDigest — l'autorite oriente le worker, elle ne lit aucune charge.
+-- La paire authorization est nécessaire uniquement pour refuser un faux `cancelled` no-effect.
+GRANT SELECT ("companyId", "ownerUserId", "runId", "status", "nextAttemptAt", "leaseExpiresAt", "authorizedAt", "authorizationDigest", "resultDigest", "signalAppliedAt")
   ON TABLE public.jarvis_work_items
   TO bob_jarvis_dispatch_directory;
 RESET ROLE;
@@ -5407,7 +5415,9 @@ GRANT DELETE ON TABLE public.realtime_session_leases TO bob_cert_auditor;
 -- contrainte (23503), pas sur le droit (42501). Concession de certification uniquement,
 -- meme precedent que le DELETE leases ci-dessus ; la base est jetable.
 GRANT DELETE ON TABLE public.agent_missions TO bob_cert_auditor;
-GRANT SELECT ON TABLE public.jarvis_work_items TO bob_cert_auditor;
+-- Le certificat du drain insère puis retire UNE forme dangereuse dans cette base jetable afin
+-- d'exécuter le SQL de release exact contre PostgreSQL. Ces droits n'existent pas en runtime.
+GRANT SELECT, INSERT, DELETE ON TABLE public.jarvis_work_items TO bob_cert_auditor;
 -- Jarvis U1-c : le harnais §19.2 vieillit les leases PAR L'AUDITEUR (UPDATE de
 -- leaseExpiresAt) pour prouver qu'une ligne authorized n'est jamais reprise ni
 -- re-prepared. Concession de certification uniquement, même précédent que les DELETE
@@ -5444,6 +5454,76 @@ pnpm --filter @bob/api exec vitest run \
   src/jobs/jarvis-customer-effect.executor.postgres.test.ts \
   src/persistence/prisma/jarvis-oracles.postgres.test.ts \
   src/persistence/prisma/jarvis-u1e.postgres.test.ts
+
+# Exécute le VRAI preflight de release contre PostgreSQL, pas un stub de `psql`. La fixture prend
+# la forme N-1 historique exacte : run `cancelling`, item `cancelled/no-effect` déjà signalé. Le
+# drain doit la refuser comme annulation bloquée ; son zéro global n'est pas exigé dans cette base
+# parce que d'autres suites conservent volontairement des runs non terminaux pour leurs preuves.
+"$PSQL_BIN" "$CERT_ADMIN_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+-- Toutes les suites qui consomment cette table sont terminées. La base est explicitement jetable :
+-- isoler la fixture rend la classe d'échec du SQL exact discriminante, sans faux positif venu
+-- d'un autre scénario de certification.
+DELETE FROM public.jarvis_work_items WHERE TRUE;
+WITH target_run AS (
+  SELECT "id", "companyId", "ownerUserId"
+    FROM public.agent_missions
+   WHERE "status" = 'cancelling'
+   ORDER BY "createdAt", "id"
+   LIMIT 1
+)
+INSERT INTO public.jarvis_work_items (
+  "id", "companyId", "runId", "ownerUserId", "effectId",
+  "actionId", "actionVersion", "authorizationSource", "actingPrincipalId",
+  "executeBy", "status", "resultDigest", "signalAppliedAt", "createdAt", "updatedAt"
+)
+SELECT
+  'cf000000-0000-4000-8000-000000000001'::UUID,
+  target_run."companyId",
+  target_run."id",
+  target_run."ownerUserId",
+  'cf000000-0000-4000-8000-000000000002'::UUID,
+  'client-creer',
+  1,
+  '{"source":"confirmation","receiptId":"cf000000-0000-4000-8000-000000000003"}'::JSONB,
+  target_run."ownerUserId",
+  pg_catalog.statement_timestamp() + INTERVAL '1 hour',
+  'cancelled',
+  repeat('0', 64),
+  pg_catalog.statement_timestamp(),
+  pg_catalog.statement_timestamp(),
+  pg_catalog.statement_timestamp()
+FROM target_run;
+SQL
+
+DRAIN_CERT_LOG="$(mktemp "${TMPDIR:-/tmp}/bob-jarvis-u1-drain.XXXXXX")"
+if [ "$LOCAL_CLUSTER_STARTED" = "true" ]; then
+  # Le parseur psql partagé refuse intentionnellement le paramètre libpq `host`. Le cluster local
+  # écoute aussi sur loopback : utiliser cette URL sans query plutôt que d'élargir l'allowlist.
+  DRAIN_CERT_URL="postgresql://bob_cert_auditor@localhost:$PORT/bob_agent_mission_cert"
+else
+  DRAIN_CERT_URL="$CERT_ADMIN_URL"
+fi
+if BOB_JARVIS_ADMISSION_ENABLED=false \
+  BOB_JARVIS_DISPATCH_ENABLED=false \
+  DIRECT_URL="$DRAIN_CERT_URL" \
+  PATH="$PG_BIN_DIR:$PATH" \
+  node apps/api/scripts/check-jarvis-u1-drain.mjs \
+  > /dev/null 2>"$DRAIN_CERT_LOG"; then
+  echo "Jarvis U1 drain accepted an executable work item" >&2
+  exit 1
+fi
+if ! grep -Fq 'jarvis-u1-drain:strandedCancellations_not_zero' "$DRAIN_CERT_LOG"; then
+  echo "Jarvis U1 drain failed for an unexpected reason" >&2
+  sed -n '1,20p' "$DRAIN_CERT_LOG" >&2
+  exit 1
+fi
+
+"$PSQL_BIN" "$CERT_ADMIN_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+DELETE FROM public.jarvis_work_items
+ WHERE "id" = 'cf000000-0000-4000-8000-000000000001'::UUID;
+SQL
+rm -f "$DRAIN_CERT_LOG"
+DRAIN_CERT_LOG=""
 
 # Cycle de rotation réel, après les tests métier qui utilisent volontairement la version 1.
 # La preuve couvre deux connexions concurrentes, les snapshots après verrou, le retrait N-1 et

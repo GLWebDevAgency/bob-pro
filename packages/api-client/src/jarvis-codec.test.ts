@@ -9,7 +9,6 @@ import {
   encodeJarvisOpenRunIntent,
   encodeJarvisRunCommand,
   isJarvisAdmissionKind,
-  isJarvisOpenAction,
   isJarvisUserCommandId,
 } from './jarvis-codec';
 
@@ -432,15 +431,7 @@ describe('jarvis-codec — intention d’ouverture (U1-e §1)', () => {
   });
 });
 
-describe('jarvis-codec — bornes du lot et contrat du commandId', () => {
-  it('n’ouvre que les deux actions de rollout.ts', () => {
-    expect(isJarvisOpenAction('client-creer', 1)).toBe(true);
-    expect(isJarvisOpenAction('client-modifier', 1)).toBe(true);
-    expect(isJarvisOpenAction('client-supprimer', 1)).toBe(false);
-    expect(isJarvisOpenAction('client-creer', 2)).toBe(false);
-    expect(isJarvisOpenAction('client-creer', 1.5)).toBe(false);
-  });
-
+describe('jarvis-codec — contrat du commandId', () => {
   it('exige un UUID v4 pour un commandId utilisateur (§5.4)', () => {
     expect(isJarvisUserCommandId(RUN_ID)).toBe(true);
     // v8 = commandId SYSTÈME (§5.6) : il n'entre jamais par le canal utilisateur.

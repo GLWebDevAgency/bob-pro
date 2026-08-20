@@ -12,7 +12,8 @@
  * @bob/core). Chaque assertion RELIT LA BASE par l'auditeur — jamais le seul résultat rendu.
  *
  *  (1) AUTORITÉ DU TAP §14 (greffe G1) — `authenticated_principal` est admis SOUS LE CÂBLAGE DE
- *      PRODUCTION (`allowCertificationAuthority: false`), sans aucune lease Realtime : c'est ce
+ *      runtime (`allowCertificationAuthority: false`), sous policy lifecycle test-only et sans
+ *      aucune lease Realtime : c'est ce
  *      qui permet à un run parké de se reprendre à l'écran après la mort de la session vocale.
  *      Un hash de liaison malformé, l'autorité de harnais hors harnais et une source inconnue
  *      (le bras `default` du switch exhaustif) sont refusés `capability_rejected` — chacun avec
@@ -103,6 +104,7 @@ import {
   type JarvisEffectExecutor,
 } from '../../jobs/jarvis-work-item-dispatch.service';
 import type { ScheduledTenantDirectory } from '../../jobs/tenant-directory';
+import { TEST_ONLY_JARVIS_ACTION_RELEASE_POLICY } from '../../jarvis/jarvis-release-policy.testing';
 import { AppLogger } from '../../observability/logger';
 import type { Persistence } from '../persistence';
 import { PrismaAgentMissionUnitOfWork } from './agent-mission.persistence';
@@ -118,6 +120,7 @@ import {
 
 const RUN_CERT = process.env.RUN_AGENT_MISSION_POSTGRES_CERT === 'true';
 const DISPOSABLE = process.env.AGENT_MISSION_CERT_DATABASE_IS_DISPOSABLE === 'true';
+const ORIGINAL_DISPATCH_ENABLED = process.env.BOB_JARVIS_DISPATCH_ENABLED;
 
 /** Le parcours e2e enchaîne deux runs complets, un tick de worker et deux écritures métier. */
 const TEST_TIMEOUT_MS = 90_000;
@@ -134,15 +137,15 @@ const FINGERPRINTS: AgentMissionFingerprintPort = {
 };
 
 /**
- * CÂBLAGE DE PRODUCTION — `allowCertificationAuthority: false`, exactement ce que pose l'adapter
- * `JARVIS_ADMISSION` (SPEC_U1D §3 « HMAC/DEPS »). Le canal tactile est certifié SOUS ces deps :
- * une preuve d'autorité qui n'aurait besoin du drapeau de harnais ne prouverait rien de la prod.
+ * HARNAIS D'INTÉGRATION TEST-ONLY — il exerce le code avant promotion du catalogue. Il ne prouve
+ * ni publication, ni canary, ni configuration de production.
  */
-const PRODUCTION_DEPS: JarvisAdmissionDeps = {
+const TEST_ONLY_DEPS: JarvisAdmissionDeps = {
   fingerprints: FINGERPRINTS,
   canonicalizationVersion: 1,
   admissionEnabled: true,
   allowCertificationAuthority: false,
+  actionReleasePolicy: TEST_ONLY_JARVIS_ACTION_RELEASE_POLICY,
 };
 
 /**
@@ -153,7 +156,7 @@ const PRODUCTION_DEPS: JarvisAdmissionDeps = {
  * (`user_voice`) probant plutôt que déclaratif.
  */
 const HARNESS_DEPS: JarvisAdmissionDeps = {
-  ...PRODUCTION_DEPS,
+  ...TEST_ONLY_DEPS,
   allowCertificationAuthority: true,
 };
 
@@ -252,7 +255,7 @@ function voiceChannel(proof: AgentMissionRealtimeAuthorityProof): AdmissionChann
   const voiceSessionId = randomUUID();
   return {
     label: 'voice',
-    deps: PRODUCTION_DEPS,
+    deps: TEST_ONLY_DEPS,
     authority: { source: 'realtime_capability', proof },
     presentationAck: 'voice_presentation_ack',
     actor: 'user_voice',
@@ -275,7 +278,7 @@ function tapChannel(deviceLabel: string): AdmissionChannel {
   const registry = new Map<number, string>();
   return {
     label: 'tap',
-    deps: PRODUCTION_DEPS,
+    deps: TEST_ONLY_DEPS,
     authority: {
       source: 'authenticated_principal',
       principalBindingHash: principalBindingHash(deviceLabel),
@@ -829,6 +832,8 @@ describe.skipIf(!RUN_CERT)(
     }
 
     beforeAll(async () => {
+      // Le runtime reste fail-closed. Ce harnais ouvre explicitement le worker qu'il exerce.
+      process.env.BOB_JARVIS_DISPATCH_ENABLED = 'true';
       if (!DISPOSABLE) {
         throw new Error(
           'AGENT_MISSION_CERT_DATABASE_IS_DISPOSABLE=true est obligatoire : le journal est immuable.',
@@ -888,12 +893,17 @@ describe.skipIf(!RUN_CERT)(
         workerA?.$disconnect(),
         workerB?.$disconnect(),
       ]);
+      if (ORIGINAL_DISPATCH_ENABLED === undefined) {
+        delete process.env.BOB_JARVIS_DISPATCH_ENABLED;
+      } else {
+        process.env.BOB_JARVIS_DISPATCH_ENABLED = ORIGINAL_DISPATCH_ENABLED;
+      }
     });
 
     it(
-      'preuve 1 — autorité §14 : le tap authentifié passe EN PRODUCTION, chaque forme refusée nomme son motif',
+      'preuve 1 — autorité §14 : le tap authentifié passe sous harnais test-only, chaque forme refusée nomme son motif',
       async () => {
-        // (a) Câblage de PRODUCTION (allowCertificationAuthority: false) : le canal tactile vit
+        // (a) Autorité runtime (allowCertificationAuthority: false) sous lifecycle test-only :
         // sans lease Realtime — c'est ce qui permet la reprise à l'écran d'un run parké.
         const owner = freshOwner('tap-owner');
         const device = tapChannel('iphone-du-fondateur');
@@ -907,7 +917,7 @@ describe.skipIf(!RUN_CERT)(
           command: { type: 'start_run', intent: { mode: 'create' } },
         });
         const admitted = expectAdmission(
-          await uowA.runJarvisAdmission(seed, PRODUCTION_DEPS),
+          await uowA.runJarvisAdmission(seed, TEST_ONLY_DEPS),
           'admitted',
         );
         expect(admitted.eventSequence).toBe(1);
@@ -936,7 +946,7 @@ describe.skipIf(!RUN_CERT)(
                 resolution: { kind: 'no_duplicates' },
               },
             }),
-            PRODUCTION_DEPS,
+            TEST_ONLY_DEPS,
           ),
           'admitted',
         );
@@ -957,7 +967,7 @@ describe.skipIf(!RUN_CERT)(
           command: { type: 'start_run', intent: { mode: 'create' } },
         });
         const malformedResult = expectAdmission(
-          await uowA.runJarvisAdmission(malformed, PRODUCTION_DEPS),
+          await uowA.runJarvisAdmission(malformed, TEST_ONLY_DEPS),
           'capability_rejected',
         );
         expect(malformedResult.reason).toBe('malformed_principal_binding');
@@ -979,7 +989,7 @@ describe.skipIf(!RUN_CERT)(
           command: { type: 'start_run', intent: { mode: 'create' } },
         });
         const fixtureRefused = expectAdmission(
-          await uowA.runJarvisAdmission(fixture, PRODUCTION_DEPS),
+          await uowA.runJarvisAdmission(fixture, TEST_ONLY_DEPS),
           'capability_rejected',
         );
         expect(fixtureRefused.reason).toBe('certification_fixture_forbidden');
@@ -1214,8 +1224,8 @@ describe.skipIf(!RUN_CERT)(
         });
         expect(phoneEnvelope.commandId).not.toBe(tabletEnvelope.commandId);
         const [phoneResult, tabletResult] = await Promise.all([
-          uowA.runJarvisAdmission(phoneEnvelope, PRODUCTION_DEPS),
-          uowB.runJarvisAdmission(tabletEnvelope, PRODUCTION_DEPS),
+          uowA.runJarvisAdmission(phoneEnvelope, TEST_ONLY_DEPS),
+          uowB.runJarvisAdmission(tabletEnvelope, TEST_ONLY_DEPS),
         ]);
 
         const results = [phoneResult, tabletResult];
@@ -1283,9 +1293,9 @@ describe.skipIf(!RUN_CERT)(
         const authority = new CertificationCustomerAuthority(workerA);
         const admissionPort: JarvisAdmissionUnitOfWorkPort = {
           runJarvisAdmission: (envelope: JarvisUserAdmissionEnvelope) =>
-            uowA.runJarvisAdmission(envelope, PRODUCTION_DEPS),
+            uowA.runJarvisAdmission(envelope, TEST_ONLY_DEPS),
           runJarvisSystemAdmission: (envelope: JarvisSystemAdmissionEnvelope) =>
-            uowA.runJarvisSystemAdmission(envelope, PRODUCTION_DEPS),
+            uowA.runJarvisSystemAdmission(envelope, TEST_ONLY_DEPS),
           readJarvisStateless: <T>(
             runOwner: JarvisAdmissionOwner,
             read: (view: {
@@ -1319,7 +1329,7 @@ describe.skipIf(!RUN_CERT)(
                   expectedRevision,
                   command,
                 }),
-                PRODUCTION_DEPS,
+                TEST_ONLY_DEPS,
               ),
               'admitted',
             );
@@ -1438,7 +1448,7 @@ describe.skipIf(!RUN_CERT)(
               command,
               actionId: CUSTOMER_CONTACT_UPDATE_ACTION_ID,
             }),
-            PRODUCTION_DEPS,
+            TEST_ONLY_DEPS,
           );
         expectAdmission(
           await admitUpdate(20, 0, {
@@ -1871,6 +1881,7 @@ describe.skipIf(!RUN_CERT)(
         directory,
         admissionPort,
         executors,
+        TEST_ONLY_JARVIS_ACTION_RELEASE_POLICY,
       );
     }
   },
@@ -1898,7 +1909,7 @@ class CertificationCustomerAuthority implements JarvisCustomerEffectAuthority {
     return { customerId: target.customerId, fields };
   }
 
-  /** Même surface que l'autorité de PRODUCTION : sans elle, l'axe `targetDigest` serait muet. */
+  /** Même surface que l'autorité runtime : sans elle, l'axe `targetDigest` serait muet. */
   async readCustomerRevision(target: JarvisCustomerEffectTarget): Promise<number | null> {
     const rows = await this.prisma.withTenant(target.companyId, () =>
       this.prisma.client().customer.findFirst({

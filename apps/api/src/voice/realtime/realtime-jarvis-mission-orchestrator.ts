@@ -15,7 +15,7 @@
  * - toutes les identités dérivées (runId de session, proposalId, confirmationId) sont
  *   DÉTERMINISTES : un même tour rejoué produit exactement la même enveloppe ;
  * - la PII des champs proposés passe par le payload store scellé AVANT `stage_proposal` ;
- * - bornes d'ouverture : `U1_OPEN_ACTIONS` (source unique), jamais une liste locale.
+ * - candidates techniques : `U1_CANDIDATE_ACTIONS` (source unique), jamais une liste locale.
  */
 
 import {
@@ -28,7 +28,6 @@ import {
   JARVIS_RUN_TERMINAL_STATUSES,
   computeCustomerContactFieldsDigest,
   computeCustomerContactSensitiveDigest,
-  isU1OpenAction,
   CUSTOMER_CONTACT_SPOKEN_LABEL_LIMIT,
   deriveCustomerContactDuplicateReview,
   parseCustomerContactState,
@@ -296,7 +295,9 @@ function semanticContextFor(
 function capabilitiesFor(context: RealtimeCustomerContactSemanticContext): readonly string[] {
   switch (context.phase) {
     case 'inactive':
-      return Object.freeze(['customer_contact.run.open']);
+      // Le manifest runtime est fermé et aucune projection de publication n'est encore injectée
+      // dans cet orchestrateur. Ne jamais offrir au modèle une ouverture que l'admission refusera.
+      return Object.freeze([]);
     case 'resolving_customer':
       // U1-g — LA REPRISE EST OFFERTE EN CRÉATION. Sans elle, un run dont la résolution a été
       // refusée n'aurait d'autre issue que l'annulation : la vivacité serait un espoir, pas une
@@ -639,7 +640,6 @@ export class RealtimeJarvisMissionOrchestrator implements RealtimeJarvisMissionO
     const admission = this.admission;
     if (admission === null) return null;
     const actionId = actionIdFor(input.state);
-    if (!isU1OpenAction(actionId, CUSTOMER_CONTACT_ACTION_VERSION)) return null;
     const envelope: JarvisUserAdmissionEnvelope = Object.freeze({
       companyId: input.request.authority.owner.companyId,
       ownerUserId: input.request.authority.owner.ownerUserId,

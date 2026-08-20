@@ -7,8 +7,8 @@
   attendue, non bloquante.
 - **Parents** : spec Jarvis §5.4/§7.0/§7.1/§14/§19.3-19.4 · SPEC_U1C (port d'admission).
 - **Périmètre** : le vertical `customer_contact@1` de bout en bout — voix, tap, écran de
-  confirmation, exécuteur d'effet réel — **seules actions ouvertes : `client-creer@1`,
-  `client-modifier@1`** (source unique G2). Flags par défaut **OFF**.
+  confirmation, exécuteur d'effet réel — **candidates techniques uniquement : `client-creer@1`,
+  `client-modifier@1`** (source unique G2, jamais une publication). Flags par défaut **OFF**.
 
 ## 1. Arbitrage `commandId` (juge, vérifié contre le code)
 
@@ -73,9 +73,10 @@ tout le reste demeure `executor_unregistered` fail-closed.
 
 ## 4. Bornes d'ouverture (greffe G2)
 
-`packages/core/src/domain/action-catalog/rollout.ts` : `U1_OPEN_ACTIONS =
-{'client-creer@1','client-modifier@1'}` + helper fail-closed — source UNIQUE consommée par le
-planner, l'orchestrateur, le controller et le worker. Jamais des bornes éparpillées.
+`packages/core/src/domain/action-catalog/rollout.ts` : `U1_CANDIDATE_ACTIONS =
+{'client-creer@1','client-modifier@1'}` + helper fail-closed — inventaire technique, jamais
+policy, permission, disponibilité produit ni publication. Les frontières mutantes consomment
+l'unique autorité de publication profonde.
 
 ## 5. Preuves de la tranche (composées par le lead — §19.2/19.3/19.4)
 

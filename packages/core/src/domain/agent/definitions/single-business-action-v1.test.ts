@@ -179,6 +179,17 @@ describe('single_business_action@1 — module', () => {
     expect(resolveJarvisDefinition('single_business_action', 1)).toBe(SINGLE_BUSINESS_ACTION_V1);
   });
 
+  it('dérive l’action uniquement du state persistant', () => {
+    expect(SINGLE_BUSINESS_ACTION_V1.actionReference(makeRun(initialState()), { type: 'cancel_run' }))
+      .toEqual({ actionId: 'client-creer', actionVersion: 1 });
+    expect(
+      SINGLE_BUSINESS_ACTION_V1.actionReference(
+        { ...makeRun(initialState()), state: null },
+        { type: 'cancel_run' },
+      ),
+    ).toBeNull();
+  });
+
   it('fige les bornes §4.3 demandées par la spec U1-b', () => {
     expect(SINGLE_BUSINESS_ACTION_LIMITS).toEqual({
       maxSteps: 32,

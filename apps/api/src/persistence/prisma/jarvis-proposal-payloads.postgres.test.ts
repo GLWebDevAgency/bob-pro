@@ -43,6 +43,7 @@ import {
   JARVIS_PROPOSAL_PAYLOAD_PURGE_MAX_OWNERS_PER_TENANT,
 } from '../../jobs/jarvis-proposal-payload-purge.service';
 import { PrismaAgentMissionUnitOfWork } from './agent-mission.persistence';
+import { TEST_ONLY_JARVIS_ACTION_RELEASE_POLICY } from '../../jarvis/jarvis-release-policy.testing';
 import type { JarvisAdmissionDeps } from './jarvis-admission.persistence';
 import { PrismaJarvisProposalPayloadStore } from './jarvis-proposal-payloads.persistence';
 import { PrismaService } from './prisma.service';
@@ -75,11 +76,12 @@ const FINGERPRINTS: AgentMissionFingerprintPort = {
   },
 };
 
-const DEPS: JarvisAdmissionDeps = {
+const TEST_ONLY_ADMISSION_DEPS: JarvisAdmissionDeps = {
   fingerprints: FINGERPRINTS,
   canonicalizationVersion: 1,
   admissionEnabled: true,
   allowCertificationAuthority: true,
+  actionReleasePolicy: TEST_ONLY_JARVIS_ACTION_RELEASE_POLICY,
 };
 
 /** Champs proposés canoniques — la PII de fixture ne sort jamais de cette base jetable. */
@@ -166,7 +168,7 @@ describe.skipIf(!RUN_CERT)(
           expectedRevision: 0,
           command: { type: 'start_run', intent: { mode: 'create' } },
         }),
-        DEPS,
+        TEST_ONLY_ADMISSION_DEPS,
       );
       if (result.status !== 'admitted') {
         throw new Error(`Jarvis U1-d: seed refusé ${JSON.stringify(result)}`);

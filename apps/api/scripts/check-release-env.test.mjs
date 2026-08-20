@@ -1,9 +1,16 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import {
+  JARVIS_U1_DRAIN_SQL,
+  parseJarvisU1DrainSnapshot,
+  runJarvisU1DrainCheck,
+} from './check-jarvis-u1-drain.mjs';
 
 const script = fileURLToPath(new URL('./check-release-env.sh', import.meta.url));
+const releaseScript = fileURLToPath(new URL('./release.sh', import.meta.url));
 
 const baseEnvironment = Object.freeze({
   PATH: process.env.PATH ?? '/usr/bin:/bin',
@@ -39,6 +46,8 @@ const baseEnvironment = Object.freeze({
   MISTRAL_API_KEY: 'mistral-release-gate-test-key',
   RUN_RLS_CERT: 'true',
   RLS_CERT_CLEANUP: 'true',
+  BOB_JARVIS_ADMISSION_ENABLED: 'false',
+  BOB_JARVIS_DISPATCH_ENABLED: 'false',
 });
 
 function runReleaseGate(overrides = {}) {
@@ -82,6 +91,132 @@ test('autorise la release V1 en accès anticipé quand Stripe est entièrement a
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /release-env-ok/u);
+});
+
+test('refuse une release tant que les deux masters Jarvis ne sont pas explicitement fermés', () => {
+  for (const name of ['BOB_JARVIS_ADMISSION_ENABLED', 'BOB_JARVIS_DISPATCH_ENABLED']) {
+    const absent = runReleaseGate({ [name]: undefined });
+    assert.notEqual(absent.status, 0);
+    assert.match(absent.stderr, new RegExp(`${name} is required`, 'u'));
+
+    const open = runReleaseGate({ [name]: 'true' });
+    assert.notEqual(open.status, 0);
+    assert.match(
+      open.stderr,
+      new RegExp(`${name} must be explicitly 'false' until the Jarvis single-engine cutover`, 'u'),
+    );
+  }
+});
+
+test('le drain Jarvis relit la base sans exposer DIRECT_URL et exige un zéro stable', () => {
+  const calls = [];
+  const snapshot = runJarvisU1DrainCheck({
+    environment: baseEnvironment,
+    spawnSync: (command, args, options) => {
+      assert.equal(existsSync(options.env.PGPASSFILE), true);
+      calls.push({ command, args, options });
+      return { status: 0, stdout: '0|0|0|0|0|0\n', stderr: '' };
+    },
+  });
+
+  assert.deepEqual(snapshot, {
+    unsafeWorkItems: 0,
+    pendingSignals: 0,
+    strandedCancellations: 0,
+    invalidTerminalShapes: 0,
+    strandedRuns: 0,
+    recentMutations: 0,
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, 'psql');
+  assert.equal(calls[0].options.input, JARVIS_U1_DRAIN_SQL);
+  assert.equal(calls[0].options.input.includes('5 minutes'), true);
+  assert.equal(calls[0].options.input.includes("to_regclass('public.jarvis_work_items')"), true);
+  assert.equal(calls[0].options.input.includes("to_regclass('public.agent_missions')"), true);
+  assert.equal(calls[0].options.input.includes('\\if :jarvis_u1_schema_ready'), true);
+  assert.equal(calls[0].options.input.includes('SET LOCAL row_security = off'), true);
+  assert.match(
+    calls[0].options.input,
+    /item\.status IN \('succeeded', 'failed_terminal', 'cancelled'\)[\s\S]*"resultDigest" IS NOT NULL[\s\S]*"signalAppliedAt" IS NOT NULL[\s\S]*item\.status <> 'cancelled' OR item\."authorizedAt" IS NULL[\s\S]*\) IS NOT TRUE/u,
+  );
+  assert.match(
+    calls[0].options.input,
+    /item\.status = 'cancelled' AND item\."authorizedAt" IS NOT NULL/u,
+  );
+  assert.match(
+    calls[0].options.input,
+    /FROM public\.agent_missions AS stranded_run[\s\S]*stranded_run\.status = 'cancelling'/u,
+  );
+  assert.match(calls[0].options.input, /LEFT JOIN public\.agent_missions AS run/u);
+  assert.equal(calls[0].args.includes(baseEnvironment.DIRECT_URL), false);
+  assert.equal(calls[0].options.input.includes('runtime-secret'), false);
+  assert.equal(calls[0].options.env.PGUSER, 'postgres');
+  assert.equal(Object.hasOwn(calls[0].options.env, 'DIRECT_URL'), false);
+  assert.equal(Object.hasOwn(calls[0].options.env, 'DATABASE_URL'), false);
+  assert.equal(existsSync(calls[0].options.env.PGPASSFILE), false);
+});
+
+test('le drain Jarvis échoue fermé si PostgreSQL refuse row_security=off', () => {
+  assert.throws(
+    () =>
+      runJarvisU1DrainCheck({
+        environment: baseEnvironment,
+        spawnSync: () => ({
+          status: 3,
+          stdout: '',
+          stderr: 'query would be affected by row-level security policy',
+        }),
+      }),
+    /jarvis-u1-drain:query_failed/u,
+  );
+});
+
+test('le drain Jarvis refuse chaque classe non nulle, une sortie ambiguë et des masters ouverts', () => {
+  for (const output of [
+    '1|0|0|0|0|0',
+    '0|1|0|0|0|0',
+    '0|0|1|0|0|0',
+    '0|0|0|1|0|0',
+    '0|0|0|0|1|0',
+    '0|0|0|0|0|1',
+  ]) {
+    assert.throws(
+      () =>
+        runJarvisU1DrainCheck({
+          environment: baseEnvironment,
+          spawnSync: () => ({ status: 0, stdout: `${output}\n`, stderr: '' }),
+        }),
+      /not_zero/u,
+    );
+  }
+  assert.throws(() => parseJarvisU1DrainSnapshot('0|0|0|0|0\n'), /snapshot_invalid/u);
+  assert.throws(
+    () =>
+      runJarvisU1DrainCheck({
+        environment: { ...baseEnvironment, BOB_JARVIS_ADMISSION_ENABLED: 'true' },
+        spawnSync: () => ({ status: 0, stdout: '0|0|0|0|0|0\n', stderr: '' }),
+      }),
+    /BOB_JARVIS_ADMISSION_ENABLED_must_be_false/u,
+  );
+});
+
+test('le predeploy exécute le drain Jarvis avant toute migration', () => {
+  const source = readFileSync(releaseScript, 'utf8');
+  const drain = source.indexOf('node apps/api/scripts/check-jarvis-u1-drain.mjs');
+  const migrate = source.indexOf('pnpm --filter @bob/api exec prisma migrate deploy');
+
+  assert.notEqual(drain, -1);
+  assert.notEqual(migrate, -1);
+  assert.ok(drain < migrate);
+  assert.match(
+    source,
+    /if \[ "\$BOB_RELEASE_PHASE" = predeploy \]; then\s+node apps\/api\/scripts\/check-jarvis-u1-drain\.mjs\s+fi/u,
+  );
+  assert.match(
+    source,
+    /if \[ "\$CABINET_RELEASE_ENV" = development \]; then[\s\S]*BOB_JARVIS_ADMISSION_ENABLED="\$\{BOB_JARVIS_ADMISSION_ENABLED:-false\}"[\s\S]*BOB_JARVIS_DISPATCH_ENABLED="\$\{BOB_JARVIS_DISPATCH_ENABLED:-false\}"[\s\S]*else[\s\S]*BOB_JARVIS_ADMISSION_ENABLED=false is required before release[\s\S]*BOB_JARVIS_DISPATCH_ENABLED=false is required before release/u,
+  );
+  assert.match(source, /Both Jarvis masters must remain false during release/u);
 });
 
 test('refuse une cible attendue différente de l’environnement Railway distant', () => {

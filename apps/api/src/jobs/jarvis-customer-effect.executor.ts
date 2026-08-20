@@ -5,7 +5,7 @@
  * Le registre d'exécuteurs de U1-c est VIDE : aucun effet Jarvis n'atteint jamais le métier, et
  * chaque work item autorisé se règle `outcome_unknown` motif `executor_unregistered`. Ce fichier
  * ouvre la PREMIÈRE porte — deux actions, pas une de plus : `client-creer@1` et
- * `client-modifier@1`, les seules ouvertes par `U1_OPEN_ACTIONS` (@bob/core, source UNIQUE des
+ * `client-modifier@1`, les seules candidates de `U1_CANDIDATE_ACTIONS` (@bob/core, source UNIQUE des
  * bornes ; élargir est une décision de lot, jamais un oubli de garde ici).
  *
  * AUTORITÉ MÉTIER — l'exécuteur n'écrit RIEN lui-même. Il soumet la commande aux use cases
@@ -60,7 +60,7 @@ import {
   CUSTOMER_CONTACT_ACTION_VERSION,
   CUSTOMER_CONTACT_CREATE_ACTION_ID,
   CUSTOMER_CONTACT_UPDATE_ACTION_ID,
-  isU1OpenAction,
+  isU1CandidateAction,
   parseCustomerContactState,
   sha256Hex,
   type CustomerContactProposedFieldsV1,
@@ -684,11 +684,11 @@ function refuse(reasonCode: string): CustomerEffectIntent {
 }
 
 /**
- * Borne d'ouverture : `U1_OPEN_ACTIONS` d'abord (source unique, greffe G2), puis l'appartenance
+ * Borne technique : `U1_CANDIDATE_ACTIONS` d'abord (source unique, greffe G2), puis l'appartenance
  * au vertical `customer_contact@1`. Tout le reste reste sans exécuteur — `executor_unregistered`.
  */
 function customerEffectMode(actionId: string, actionVersion: number): CustomerEffectMode | null {
-  if (!isU1OpenAction(actionId, actionVersion)) return null;
+  if (!isU1CandidateAction(actionId, actionVersion)) return null;
   if (actionVersion !== CUSTOMER_CONTACT_ACTION_VERSION) return null;
   if (actionId === CUSTOMER_CONTACT_CREATE_ACTION_ID) return 'create';
   if (actionId === CUSTOMER_CONTACT_UPDATE_ACTION_ID) return 'update';

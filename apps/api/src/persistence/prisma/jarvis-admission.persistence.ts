@@ -17,7 +17,6 @@
 import { randomUUID } from 'node:crypto';
 
 import {
-  ACTION_CATALOG_V0,
   AGENT_MISSION_RETENTION_MS,
   computeCustomerContactTargetSensitiveDigest,
   CUSTOMER_CONTACT_MAX_DUPLICATE_CANDIDATES,
@@ -25,11 +24,12 @@ import {
   JARVIS_RUN_LEASE_RELEASING_STATUSES,
   JARVIS_RUN_STATUSES,
   JARVIS_RUN_TERMINAL_STATUSES,
+  SINGLE_BUSINESS_ACTION_V1,
+  evaluateJarvisActionPublication,
   parseCustomerContactState,
   projectQuoteMissionJarvisStatus,
   reduceJarvisRun,
   resolveJarvisDefinition,
-  SINGLE_BUSINESS_ACTION_V1,
   type ActionCatalogEntry,
   type AgentMissionFingerprintPort,
   type CustomerCandidate,
@@ -37,6 +37,8 @@ import {
   type JarvisAdmissionKind,
   type JarvisAdmissionOwner,
   type JarvisAdmissionResult,
+  type JarvisActionReleasePolicy,
+  type JarvisDefinitionActionReference,
   type JarvisRunEnvelope,
   type JarvisRunTransition,
   type JarvisSystemAdmissionEnvelope,
@@ -122,8 +124,10 @@ export interface JarvisAdmissionDeps {
   readonly canonicalizationVersion: number;
   /** Kill switch d'admission (§5.3) : bloque les NOUVELLES commandes user, jamais les signaux. */
   readonly admissionEnabled: boolean;
-  /** Harnais de certification uniquement — jamais posé par un câblage de production. */
+  /** Harnais de certification d'autorité uniquement — jamais posé par un câblage runtime. */
   readonly allowCertificationAuthority: boolean;
+  /** Manifest/cohorte serveur. Le provider runtime utilise le manifest vide tant qu'il est absent. */
+  readonly actionReleasePolicy: JarvisActionReleasePolicy;
 }
 
 interface JarvisRunRow {
@@ -167,14 +171,6 @@ function envelopeFromRow(row: JarvisRunRow): JarvisRunEnvelope {
   });
 }
 
-function catalogEntryFor(actionId: string, actionVersion: number): ActionCatalogEntry | null {
-  return (
-    ACTION_CATALOG_V0.find(
-      (entry) => entry.actionId === actionId && entry.version === actionVersion,
-    ) ?? null
-  );
-}
-
 /** Phase persistée d'un run Jarvis : le miroir du state (contrat SQL de la tranche). */
 function phaseOf(postimage: Extract<JarvisRunEnvelope, { readonly stateVersion: number }>): string {
   const state = postimage.state as { readonly phase?: unknown } | null;
@@ -189,6 +185,19 @@ type AdmissionEnvelope =
       readonly actionVersion: null;
       readonly canonicalInputDigest: string;
     });
+
+/**
+ * Seule commande user admise pour drainer un run sous fermeture opérationnelle. Elle reste
+ * soumise à l'autorité, au parser du domaine, aux CAS et aux gardes zéro-intent.
+ */
+function isJarvisDrainCommand(command: unknown): boolean {
+  return (
+    typeof command === 'object' &&
+    command !== null &&
+    !Array.isArray(command) &&
+    (command as { readonly type?: unknown }).type === 'cancel_run'
+  );
+}
 
 function canonicalCommandRequest(envelope: AdmissionEnvelope): string {
   // Canonicalisation fermée v1 : champs d'identité de la commande, ordre fixe,
@@ -497,18 +506,28 @@ async function persistTransition(
   }
   if (postimage.status === 'cancelled' || postimage.status === 'cancelling') {
     // Greffe §5.2/§5.3 (revue C9) : les work items non autorisés du run passent `cancelled`
-    // ATOMIQUEMENT avec l'événement de cancel — jamais un balayage asynchrone. L'événement
-    // de cancel EST le signal du run : signalAppliedAt est posé pour ne pas re-signaler.
+    // ATOMIQUEMENT avec l'événement de cancel — jamais un balayage asynchrone. Un run déjà
+    // terminal a été acquitté par cet événement. Un run encore `cancelling` attend au contraire
+    // le reçu canonique no-effect : son résultat reste donc dû pour la redelivery level-triggered.
+    const cancellationStillNeedsReceipt = postimage.status === 'cancelling';
     await tx.jarvisWorkItem.updateMany({
       where: {
         companyId: postimage.companyId,
         runId: postimage.runId,
         status: { in: ['prepared', 'leased', 'retry_due'] },
+        authorizedAt: null,
+        authorizationDigest: null,
+        resultDigest: null,
+        signalAppliedAt: null,
       },
       data: {
         status: 'cancelled',
         resultDigest: NO_EFFECT_RESULT_DIGEST,
-        signalAppliedAt: occurredAt,
+        signalAppliedAt: cancellationStillNeedsReceipt ? null : occurredAt,
+        leaseOwner: null,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        nextAttemptAt: null,
         updatedAt: occurredAt,
       },
     });
@@ -534,11 +553,8 @@ async function admitCore(
   await acquireMissionForegroundOwnerLock(tx, envelope);
   await acquireJarvisKindOwnerLock(tx, envelope, envelope.kind);
 
+  const drainCommand = envelope.actor === 'user' && isJarvisDrainCommand(envelope.command);
   if (envelope.actor === 'user') {
-    // Kill switch d'admission (§5.3) : les nouvelles commandes s'arrêtent, les signaux jamais.
-    if (!deps.admissionEnabled) {
-      return { status: 'action_refused', reason: 'admission_kill_switch' };
-    }
     // Principal (§5.2 étape 5) : la preuve d'autorité se résout SOUS verrou, in-tx.
     // Switch EXHAUSTIF sur l'union fermée — une source inconnue est refusée, jamais tolérée.
     switch (envelope.authority.source) {
@@ -580,13 +596,10 @@ async function admitCore(
         return { status: 'capability_rejected', reason: 'unknown_authority_source' };
       }
     }
-    // Catalogue (pur, §5.2 étape 6).
-    const entry = catalogEntryFor(envelope.actionId, envelope.actionVersion);
-    if (entry === null) return { status: 'action_refused', reason: 'unknown_action' };
-    if (entry.voiceMode === 'closed') return { status: 'action_refused', reason: 'action_closed' };
   }
 
-  // Reçu (§5.2 étape 7) — replay zéro-write ou conflit, jamais une réexécution.
+  // Reçu (§5.2 étape 7) — après preuve du principal, AVANT les gates de nouveau travail : une
+  // fermeture ne transforme jamais un retry déjà commité en faux refus.
   const receipt = await findJarvisReceipt(tx, envelope, envelope.commandId);
   if (receipt !== null) {
     if (receipt.missionId !== envelope.runId || receipt.missionKind !== envelope.kind) {
@@ -610,6 +623,21 @@ async function admitCore(
           effectId: envelope.effectId,
           resultDigest: { not: null },
           signalAppliedAt: null,
+          status: { in: ['succeeded', 'failed_terminal', 'cancelled'] },
+          AND: [
+            {
+              OR: [
+                { status: { not: 'succeeded' } },
+                { authorizedAt: { not: null }, authorizationDigest: { not: null } },
+              ],
+            },
+            {
+              OR: [
+                { status: { not: 'cancelled' } },
+                { authorizedAt: null, authorizationDigest: null },
+              ],
+            },
+          ],
         },
         data: { signalAppliedAt: new Date(now) },
       });
@@ -623,12 +651,14 @@ async function admitCore(
     };
   }
 
-  // Run courant ou seed (convention U1-b : revision 0, state null, jamais persistée).
+  // Run courant ou seed (convention U1-b : revision 0, state null, jamais persistée). Il est
+  // chargé AVANT la publication : l'action publiée vient du state/seed sous verrou, jamais du
+  // champ `actionId` contrôlé par le client.
   const row = await findJarvisRunForUpdate(tx, envelope, envelope.runId, envelope.kind);
   let run: JarvisRunEnvelope;
   let isSeed = false;
   if (row === null) {
-    if (envelope.expectedRevision !== 0 || envelope.actor !== 'user') {
+    if (drainCommand || envelope.expectedRevision !== 0 || envelope.actor !== 'user') {
       return { status: 'run_not_found' };
     }
     isSeed = true;
@@ -657,7 +687,43 @@ async function admitCore(
     run = envelopeFromRow(row);
   }
 
-  const definition = resolveJarvisDefinition(envelope.kind, envelope.definitionVersion);
+  const definition = resolveJarvisDefinition(run.kind, run.definitionVersion);
+  // Le kill switch ferme TOUTE nouvelle commande user, y compris une version de définition
+  // inconnue. La quarantaine reste disponible quand l'admission est ouverte, mais une version
+  // illisible ne doit jamais devenir un chemin d'écriture autour de la fermeture opérationnelle.
+  if (envelope.actor === 'user' && !deps.admissionEnabled && !drainCommand) {
+    return { status: 'action_refused', reason: 'admission_kill_switch' };
+  }
+  let serverAction: JarvisDefinitionActionReference | null = null;
+  if (envelope.actor === 'user' && definition !== null) {
+    serverAction = definition.actionReference(
+      run as Extract<
+        JarvisRunEnvelope,
+        { readonly kind: 'single_business_action' | 'customer_contact' }
+      >,
+      envelope.command,
+    );
+    if (
+      serverAction === null
+      || serverAction.actionId !== envelope.actionId
+      || serverAction.actionVersion !== envelope.actionVersion
+    ) {
+      return { status: 'action_refused', reason: 'action_binding_mismatch' };
+    }
+    if (!drainCommand) {
+      // Catalogue et publication évaluent la référence AUTORITAIRE dérivée ci-dessus. Le drain
+      // ne consulte même pas la policy : une policy distante en panne ne peut pas bloquer cancel.
+      const publication = evaluateJarvisActionPublication(deps.actionReleasePolicy, {
+        companyId: envelope.companyId,
+        ownerUserId: envelope.ownerUserId,
+        ...serverAction,
+      });
+      if (!publication.published) {
+        return { status: 'action_refused', reason: publication.reason };
+      }
+    }
+  }
+
   const allocatedEffectIds = Array.from({ length: definition?.limits.maxOpenWorkItems ?? 1 }, () =>
     randomUUID(),
   );
@@ -741,6 +807,31 @@ async function admitCore(
       return { status: 'stale_revision', actualRevision: reduced.error.actualRevision };
     }
     return { status: 'refused', error: reduced.error };
+  }
+  if (drainCommand && reduced.value.workItemIntents.length > 0) {
+    // Le drain contourne volontairement kill switch et publication afin qu'un run existant
+    // puisse toujours être fermé. Cette exception n'accorde JAMAIS une autorité d'effet :
+    // même une future définition défectueuse reste arrêtée avant toute persistance.
+    return {
+      status: 'refused',
+      error: { code: 'invalid_command', reason: 'drain_command_emitted_intents' },
+    };
+  }
+  if (
+    envelope.actor === 'user'
+    && serverAction !== null
+    && reduced.value.workItemIntents.some(
+      (intent) =>
+        intent.actionId !== serverAction.actionId
+        || intent.actionVersion !== serverAction.actionVersion,
+    )
+  ) {
+    // Postcondition centrale : le reducer ne peut pas substituer une action différente de celle
+    // qui a été dérivée du seed/state et évaluée par la policy dans cette même transaction.
+    return {
+      status: 'refused',
+      error: { code: 'invalid_command', reason: 'work_item_action_binding_mismatch' },
+    };
   }
   if (envelope.actor === 'system' && reduced.value.workItemIntents.length > 0) {
     // §5.6 : une observation système ne rouvre jamais le droit de créer un effet.
