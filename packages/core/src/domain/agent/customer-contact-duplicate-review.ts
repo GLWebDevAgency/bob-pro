@@ -16,9 +16,10 @@
  * deviendrait impossible pour toujours.
  *
  * « Bien formée » et « exploitable » sont DEUX questions. La première regarde la chaîne, la seconde
- * regarde le moteur : `<%` compare des trigrammes sous un seuil de similarité, si bien qu'une
- * requête d'un seul caractère ne peut RIEN trouver par ressemblance quel que soit le contenu de la
- * base. La seconde garde ne mord donc que sur la conclusion d'ABSENCE (voir `isSearchableQuery`).
+ * regarde le moteur : `<%` compare des TRIGRAMMES, et `pg_trgm` n'en tire que des caractères
+ * alphanumériques — une requête qui n'en contient aucun ne peut RIEN trouver par ressemblance, quel
+ * que soit le contenu de la base. La seconde garde ne mord donc que sur la conclusion d'ABSENCE, et
+ * seulement sur l'impossible (voir `isSearchableQuery`).
  *
  * RAPPROCHEMENT PAR NOM UNIQUEMENT. §9.1 autorise aussi SIREN, e-mail et téléphone ; ce lot ne les
  * fait pas — ces champs sont exclus de la voix par la minimisation. `matchKind` entre dans le
@@ -40,14 +41,22 @@ export const CUSTOMER_CONTACT_CANDIDATE_PROBE_LIMIT = 6;
 /**
  * Borne d'un libellé PRONONCÉ, en points de code.
  *
- * Elle protège deux choses à la fois. L'oreille d'abord : un nom de 200 caractères égrené dans une
- * liste de cinq n'est plus un choix, c'est un mur. La chaîne vocale ensuite : la parole entière
- * entre dans l'historique du tour suivant, que le planner refuse au-delà de 1 200 caractères — cinq
- * libellés de 200 plus l'ossature de la phrase franchissaient ce seuil et faisaient tomber TOUTES
- * les lanes. À 80, la parole saturée reste très en deçà, et la preuve de frontière de `@bob/ai` le
- * vérifie contre le planner lui-même plutôt que contre un nombre recopié ici.
+ * Elle protège la chaîne vocale : la parole entière entre dans l'historique du tour suivant, que le
+ * planner refuse au-delà de 1 200 caractères — cinq libellés de 200 plus l'ossature de la phrase
+ * franchissaient ce seuil et faisaient tomber TOUTES les lanes, devis compris.
+ *
+ * POURQUOI 160, ET PAS PLUS BAS. C'est la borne que le dépôt applique DÉJÀ à un libellé présenté
+ * (`MAX_CHOICE_LABEL_LENGTH` du planner, qui refuse un choix de devis au-delà) : la même chose doit
+ * se dire du même nombre. Une première version serrait à 80 pour ménager l'oreille, et fabriquait
+ * ainsi des libellés IDENTIQUES pour des fiches DISTINCTES — deux syndics au préfixe long dont
+ * seule la fin diffère. L'artisan choisissait alors à l'aveugle, et scellait un rattachement
+ * durable. Ménager l'oreille ne vaut pas de faire prendre une décision aveugle : à 160, les noms
+ * réels passent entiers, et au-delà l'élision MÉDIANE préserve le discriminant final.
+ *
+ * Cinq libellés de 160 plus l'ossature restent très en deçà de 1 200, et la preuve de frontière de
+ * `@bob/ai` le vérifie contre le planner lui-même plutôt que contre un nombre recopié ici.
  */
-export const CUSTOMER_CONTACT_SPOKEN_LABEL_LIMIT = 80;
+export const CUSTOMER_CONTACT_SPOKEN_LABEL_LIMIT = 160;
 
 const REVIEW_NAMESPACE = 'bob.jarvis-run.customer-contact.duplicate-review.v1';
 const CHOICE_NAMESPACE = 'bob.jarvis-run.customer-contact.duplicate-choice.v1';
@@ -81,26 +90,36 @@ function isUsableQuery(value: unknown): value is string {
   );
 }
 
-/** Suites de lettres et de chiffres : les MOTS, au sens ou le moteur de rapprochement les découpe. */
-const WORD_RUN = /[\p{L}\p{N}]+/gu;
+/** Lettres et chiffres : les seuls caractères dont `pg_trgm` tire des trigrammes. */
+const ALPHANUMERIC = /[\p{L}\p{N}]/u;
 
 /**
  * LA REQUÊTE EST-ELLE EXPLOITABLE PAR LE MOTEUR ? Question distincte de « est-elle bien formée ».
  *
- * Le prédicat SQL `<%` compare des TRIGRAMMES, pas des caractères, et n'accepte un mot qu'au-delà
- * de `word_similarity_threshold` (0,6 par défaut, jamais surchargé ici). Une requête d'un seul
- * caractère alphanumérique n'atteint jamais ce seuil, et une requête sans aucune lettre ni chiffre
- * ne produit même aucun trigramme : elle ne peut RIEN trouver, quel que soit le contenu de la base.
- * Vérifié sur PostgreSQL 17 : `word_similarity('d','dupont plomberie')` = 0,5 (refusé) contre
- * `word_similarity('du','dupont plomberie')` = 0,667 (accepté) ; `show_trgm('?')` = {}.
+ * Le prédicat SQL `<%` ne compare pas des caractères mais des TRIGRAMMES, et `pg_trgm` ne tire de
+ * trigrammes que des caractères alphanumériques : tout le reste est un séparateur de mots. Une
+ * requête qui n'en contient AUCUN ne produit donc aucun trigramme, et sa branche de similarité est
+ * structurellement morte — elle ne peut RIEN trouver, quel que soit le contenu de la base. Conclure
+ * « aucun doublon » sur une telle requête certifierait une absence jamais cherchée.
  *
- * D'où le seuil : au moins un mot de DEUX caractères alphanumériques.
+ * LA BORNE EST « AU MOINS UN », ET SÛREMENT PAS « AU MOINS DEUX ». Une première version exigeait un
+ * MOT de deux caractères, en généralisant à tort `word_similarity('d','dupont plomberie')` = 0,5 :
+ * ce 0,5 vient de la longueur du mot CIBLE, jamais de la requête. Mesuré sur PostgreSQL 17.6 :
+ *   show_trgm('?') = {} · show_trgm('-') = {} · show_trgm('&') = {}
+ *   show_trgm('h&m') = {"  h","  m"," h "," m "} · 'h&m' <% 'h&m paris centre' = t (ws = 1)
+ *   'j-c' <% 'j-c dupont' = t (ws = 1) · 'm' <% 'm dupont' = t (ws = 1) · '4' <% '4 murs' = t
+ * Autrement dit un mot d'UN caractère se rapproche parfaitement d'un mot d'un caractère. Exiger
+ * deux rendait « H&M », « C&A », « B&B », « J-C » IMPOSSIBLES à créer à la voix : Bob répondait
+ * « je ne peux pas vérifier » juste après avoir vérifié, et la redite reprenait la même branche
+ * indéfiniment. La garde censée empêcher « je ne sais pas » de devenir « aucun doublon » produisait
+ * exactement l'inverse : « je sais » devenait « je ne sais pas ».
+ *
+ * CE QUE CETTE GARDE NE PRÉTEND PAS ÊTRE. Elle ne juge pas de la QUALITÉ du rapprochement : « Z »
+ * ne retrouvera pas « Zorglub » (0,5 < 0,6), et c'est une limite assumée du rapprochement par nom,
+ * pas une panne — la recherche a bien eu lieu et a conclu. On ne refuse que l'impossible.
  */
 function isSearchableQuery(value: string): boolean {
-  for (const mot of value.matchAll(WORD_RUN)) {
-    if (Array.from(mot[0]).length >= 2) return true;
-  }
-  return false;
+  return ALPHANUMERIC.test(value);
 }
 
 /**

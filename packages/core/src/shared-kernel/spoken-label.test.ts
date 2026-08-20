@@ -34,17 +34,30 @@ describe('sanitizeSpokenLabel — la frontière entre la base et la parole', () 
     expect(sanitizeSpokenLabel('  Dupont   Plomberie \n SARL  ', 80)).toBe('Dupont Plomberie SARL');
   });
 
-  it('BORNE en points de code et S’ENTEND tronqué — jamais un nom coupé qui se fait passer pour entier', () => {
+  it('BORNE en points de code et S’ENTEND élidé — jamais un nom coupé qui se fait passer pour entier', () => {
     const sortie = sanitizeSpokenLabel('A'.repeat(200), 10);
-    expect(sortie).toBe(`${'A'.repeat(9)}…`);
     expect(Array.from(sortie ?? '')).toHaveLength(10);
+    expect(sortie).toContain('…');
+  });
+
+  it('ÉLIDE AU MILIEU : le discriminant FINAL survit — sinon deux fiches deviennent une seule', () => {
+    // LE DEFAUT QUE CETTE PREUVE FERME. Couper la fin rendait indiscernables deux fiches dont
+    // seule la fin diffère — et l'artisan scellait alors un rattachement durable à l'aveugle.
+    const prefixe = 'SYNDIC RESIDENCE LES JARDINS DE BELLEVUE - BATIMENT A - ESCALIER 2 - PORTE 12';
+    const onze = sanitizeSpokenLabel(`${prefixe} - PARIS 11E`, 40);
+    const douze = sanitizeSpokenLabel(`${prefixe} - PARIS 12E`, 40);
+    expect(onze).not.toBe(douze);
+    expect(onze).toContain('11E');
+    expect(douze).toContain('12E');
+    // La tête reste reconnaissable : l'artisan sait de quelle famille de fiches on parle.
+    expect(onze?.startsWith('SYNDIC')).toBe(true);
   });
 
   it('ne COUPE JAMAIS une paire de substitution — un emoji dans un nom propre reste entier', () => {
     // 5 points de code, 10 unités UTF-16 : une troncature naïve couperait au milieu de la paire
     // et fabriquerait un caractère de remplacement au beau milieu d'un nom propre.
     const sortie = sanitizeSpokenLabel('\u{1f527}\u{1f528}\u{1f529}\u{1f52a}\u{1f52b}', 4);
-    expect(sortie).toBe('\u{1f527}\u{1f528}\u{1f529}\u2026');
+    expect(sortie).toBe('\u{1f527}\u{1f528}\u2026\u{1f52b}');
     expect(sortie).not.toContain('\ufffd');
     expect(Array.from(sortie ?? '')).toHaveLength(4);
   });

@@ -30,7 +30,7 @@ const INVISIBLE_CHARACTERS = /[\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufe
 // eslint-disable-next-line no-control-regex
 const ASCII_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/gu;
 
-/** Marqueur de troncature : la parole doit S'ENTENDRE incomplète, jamais faire croire au nom entier. */
+/** Marqueur d'élision : la parole doit S'ENTENDRE incomplète, jamais faire croire au nom entier. */
 const TRUNCATION_MARK = '…';
 
 /**
@@ -46,7 +46,24 @@ export function sanitizeSpokenLabel(value: string, maximumLength: number): strin
   if (collapsed.length === 0) return null;
   const points = Array.from(collapsed);
   if (points.length <= maximumLength) return collapsed;
-  // Le marqueur occupe une place DANS la borne : la sortie ne dépasse jamais ce qui a été promis.
-  const kept = points.slice(0, Math.max(1, maximumLength - 1)).join('').trimEnd();
-  return kept.length === 0 ? null : `${kept}${TRUNCATION_MARK}`;
+  if (maximumLength === 1) return TRUNCATION_MARK;
+
+  // ÉLISION AU MILIEU, PAS À LA FIN — et c'est un correctif, pas une preference.
+  //
+  // Couper la fin fabriquait des libelles IDENTIQUES pour des fiches DISTINCTES : deux syndics
+  // « … PORTE 12 - PARIS 11E » et « … PARIS 12E » partagent un long prefixe, et c'est la FIN qui
+  // les distingue. Bob enoncait alors deux options rigoureusement indiscernables, et l'artisan
+  // scellait un rattachement durable a l'aveugle — une fois sur deux vers la mauvaise fiche.
+  // Or la fin porte presque toujours le discriminant : numero, ville, forme juridique.
+  //
+  // Ce que cela ne repare pas, et qu'il faut dire : deux noms qui ne different qu'au MILIEU
+  // restent indiscernables une fois elides. On est alors ramene au cas des vrais homonymes, que
+  // ce lot n'a jamais pretendu resoudre — mais la troncature n'en CREE plus.
+  const reste = maximumLength - 1;
+  const tete = Math.ceil(reste / 2);
+  const queue = reste - tete;
+  const debut = points.slice(0, tete).join('').trimEnd();
+  const fin = queue > 0 ? points.slice(points.length - queue).join('').trimStart() : '';
+  if (debut.length === 0 && fin.length === 0) return null;
+  return `${debut}${TRUNCATION_MARK}${fin}`;
 }

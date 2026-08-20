@@ -104,16 +104,17 @@ sur un monde changé construiraient des commandes différentes ⇒ reçu trouvé
 Revue en trois temps (6 lentilles → 34 constats → 33 réfutations indépendantes) ; 10 verdicts
 « non réfuté », regroupés en 6 défauts. Tous corrigés dans le lot, chacun avec sa preuve.
 
-- **G4 — « bien formée » ≠ « exploitable ».** `<%` compare des trigrammes sous un seuil : une
-  requête d'un seul caractère ne peut RIEN trouver par ressemblance. Elle scellait pourtant
-  `no_duplicates`. La garde ne mord que sur la conclusion d'**absence** — des candidats remontés
-  par la branche d'égalité restent présentables, donc aucune capacité n'est perdue. Seuil mesuré
-  sur PostgreSQL réel (preuve 7), jamais supposé.
+- **G4 — « bien formée » ≠ « exploitable ».** `<%` compare des TRIGRAMMES, et `pg_trgm` n'en tire
+  que des caractères alphanumériques : une requête qui n'en contient aucun (« ? », « - », « & »)
+  ne peut RIEN trouver par ressemblance, et scellait pourtant `no_duplicates`. La garde ne mord que
+  sur la conclusion d'**absence**, et seulement sur l'impossible.
 - **G5 — la parole ne peut plus rendre l'assistant muet.** Le nom relu en base entrait verbatim
   dans la parole, donc dans l'historique, que le planner refuse ENTIER — devis compris — au
   moindre invisible ou au-delà de 1 200 caractères. Les libellés sont désormais assainis et bornés
   dans le domaine (`sanitizeSpokenLabel`), et la propriété est prouvée **contre le planner
-  lui-même** (`isPlannerSafeHistoryText`), jamais contre une borne recopiée.
+  lui-même** (`isPlannerSafeHistoryText`), jamais contre une borne recopiée. Borne à **160**, celle
+  que le dépôt applique déjà à un libellé présenté, et **élision médiane** : la fin porte presque
+  toujours le discriminant.
 - **Le planner ne tue plus le tour** quand un nom traîne hors recherche : il l'IGNORE, et sa
   description suit désormais la phase. Refuser était pire qu'inutile — le refus ne changeait ni la
   phase ni la révision, donc chaque reformulation (« oui, Dupont Plomberie ») échouait à
@@ -128,6 +129,32 @@ Revue en trois temps (6 lentilles → 34 constats → 33 réfutations indépenda
   git les classait binaires, `git diff` n'affichait qu'une taille et `grep` était silencieusement
   aveugle. Tous échappés — valeur d'exécution identique, prouvée sur les 256 points de code — et la
   rechute est désormais impossible (`assert-source-control-bytes`).
+
+## 4 ter. Ce que la revue DES CORRECTIFS a corrigé (3 défauts, dont 2 de ma main)
+
+Les correctifs ci-dessus ont été soumis à leur tour à une revue adversariale (5 lentilles, 8
+constats, 16 réfutations). Trois ont survécu — deux d'entre eux étaient des régressions
+introduites par le solde lui-même, ce qui justifie à lui seul d'avoir revu les correctifs.
+
+- **P1 — la garde de recherche mismodélisait `pg_trgm`.** Elle exigeait un MOT de deux caractères
+  alphanumériques, en généralisant `word_similarity('d','dupont plomberie')` = 0,5. **Ce 0,5 vient
+  de la longueur du mot CIBLE, pas de la requête** : `pg_trgm` pade chaque mot, et un mot d'un
+  caractère se rapproche parfaitement d'un mot d'un caractère. Mesuré sur PostgreSQL 17.6 :
+  `'h&m' <% 'h&m paris centre'` = t (ws = 1), `'j-c' <% 'j-c dupont'` = t, `'4' <% '4 murs'` = t.
+  **« H&M », « C&A », « B&B », « J-C » devenaient impossibles à créer à la voix**, Bob répondant
+  « je ne peux pas vérifier » juste après avoir vérifié, indéfiniment. La garde censée empêcher
+  « je ne sais pas » de devenir « aucun doublon » produisait l'inverse exact. Corrigée en **au
+  moins un caractère alphanumérique** — l'équivalent exact de « au moins un trigramme » — et la
+  preuve PostgreSQL vérifie désormais que « H&M » retrouve bien sa fiche.
+- **P2 — la borne parlée fusionnait des fiches distinctes.** À 80 caractères avec coupe finale,
+  deux syndics au long préfixe produisaient le MÊME libellé : l'artisan choisissait à l'aveugle et
+  scellait un rattachement durable. Borne portée à 160 (`MAX_CHOICE_LABEL_LENGTH`, la convention du
+  dépôt) et **élision médiane**. Ménager l'oreille ne vaut pas de faire décider à l'aveugle.
+- **La garde anti-conflit G3 n'avait aucune preuve** — le §7 ci-dessous l'exigeait pourtant mot
+  pour mot. Elle était supprimable en entier sans faire rougir une assertion. Écrite, et vérifiée
+  par mutation.
+
+Cinq constats ont été réfutés, dont un P1 qui affirmait que le nom dicté était perdu en silence.
 
 ## 5. Ce que le lot assume, et qui doit être dit
 

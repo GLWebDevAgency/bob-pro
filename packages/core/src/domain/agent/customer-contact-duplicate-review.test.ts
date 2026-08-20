@@ -147,17 +147,40 @@ describe('deriveCustomerContactDuplicateReview — la revue de doublons', () => 
     expect(probe.labels).toContain('Zorglub Ferronnerie');
   });
 
-  it('une requête que le MOTEUR ne sait pas exploiter ne scelle JAMAIS « aucun doublon »', () => {
-    // Le prédicat `<%` compare des trigrammes sous un seuil : un seul caractère alphanumérique ne
-    // peut rien trouver par ressemblance, et une requête sans lettre ni chiffre ne produit même
-    // aucun trigramme. Zéro résultat n'y prouve donc RIEN — surtout pas une absence.
-    for (const requete of ['?', '...', '-', 'A', 'd', '4', 'J-C', '   x   ']) {
+  it('une requête SANS AUCUN trigramme ne scelle JAMAIS « aucun doublon »', () => {
+    // `pg_trgm` ne tire de trigrammes que des caractères alphanumériques. Sans un seul, la branche
+    // de similarité est structurellement morte : zéro résultat n'y prouve RIEN — surtout pas une
+    // absence. Mesuré sur PostgreSQL 17.6 : show_trgm('?') = show_trgm('-') = show_trgm('&') = {}.
+    for (const requete of ['?', '...', '-', '&', '   ...   ', '!?!']) {
       expect(derive([], requete)).toEqual({ kind: 'unusable', reason: 'invalid_query' });
     }
-    // Deux caractères suffisent au moteur : là, « aucun doublon » redevient un fait établi.
-    for (const requete of ['du', 'Dupont Plomberie', 'A1', 'Éé']) {
+  });
+
+  it('UN SEUL caractère alphanumérique suffit — refuser plus casserait « H&M » et « J-C »', () => {
+    // LE DEFAUT QUE CETTE PREUVE FERME. Une première garde exigeait un MOT de deux caractères, en
+    // généralisant a tort word_similarity('d','dupont plomberie') = 0,5 — ce 0,5 vient de la
+    // longueur du mot CIBLE, pas de la requête. Mesuré sur PostgreSQL 17.6 :
+    //   'h&m' <% 'h&m paris centre' = t (ws = 1) · 'j-c' <% 'j-c dupont' = t · '4' <% '4 murs' = t
+    // Ces noms devenaient IMPOSSIBLES à créer à la voix, et Bob répondait « je ne peux pas
+    // vérifier » juste après avoir vérifié — la garde produisait l'inverse de son objet.
+    for (const requete of ['H&M', 'C&A', 'B&B', 'J-C', 'A.B.C.', 'M. K', 'A', 'd', '4', 'Éé']) {
       expect(derive([], requete)).toEqual({ kind: 'no_duplicates' });
     }
+  });
+
+  it('deux fiches DISTINCTES restent distinctes à l’oreille — la borne ne les fusionne pas', () => {
+    // Sans l'élision médiane, ces deux syndics produisaient le MÊME libellé : l'artisan choisissait
+    // à l'aveugle et scellait un rattachement durable une fois sur deux vers la mauvaise fiche.
+    const prefixe =
+      'SYNDIC RESIDENCE LES JARDINS DE BELLEVUE - BATIMENT A - ESCALIER 2 - PORTE 12 - RESIDENCE DU PARC ET DES GRANDS JARDINS FLEURIS';
+    const probe = derive([
+      candidat({ customerId: 'c-1', canonicalName: `${prefixe} - PARIS 11E` }),
+      candidat({ customerId: 'c-2', canonicalName: `${prefixe} - PARIS 12E` }),
+    ]);
+    if (probe.kind !== 'duplicate_candidates') throw new Error('revue attendue');
+    expect(probe.labels[0]).not.toBe(probe.labels[1]);
+    expect(probe.labels[0]).toContain('11E');
+    expect(probe.labels[1]).toContain('12E');
   });
 
   it('la garde ne mord QUE sur l’absence : des candidats trouvés restent présentables', () => {
@@ -182,6 +205,10 @@ describe('deriveCustomerContactDuplicateReview — la revue de doublons', () => 
     if (probe.kind !== 'duplicate_candidates') throw new Error('revue attendue');
     expect(Array.from(probe.labels[0] ?? '')).toHaveLength(CUSTOMER_CONTACT_SPOKEN_LABEL_LIMIT);
     expect(probe.labels[0]).toContain('\u2026');
+    // Un nom RÉEL, lui, passe entier : la borne du dépôt pour un libellé présenté est 160.
+    const reel = derive([candidat({ canonicalName: 'Ateliers Bâtiment & Fils de Dupont-Plomberie' })]);
+    if (reel.kind !== 'duplicate_candidates') throw new Error('revue attendue');
+    expect(reel.labels[0]).toBe('Ateliers Bâtiment & Fils de Dupont-Plomberie');
     // Ce qui est SCELLÉ ne dépend pas de ce qui est DIT : le digest reste celui du nom complet.
     const entier = derive([candidat({ canonicalName: nom })]);
     const tronque = derive([candidat({ canonicalName: `${nom}B` })]);
