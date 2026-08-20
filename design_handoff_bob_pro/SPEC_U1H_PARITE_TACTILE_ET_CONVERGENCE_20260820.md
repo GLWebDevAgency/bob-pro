@@ -110,8 +110,9 @@ fiche — deux gestes, deux runs, deux autorités, aucune identité écrasée.
   `5a86f94d6`, `JarvisRunWireView` ne transporte pas `resolvedExistingCustomerId`.
   L'implémentation devra nommer le champ terminal exact, le codec et sa provenance depuis le
   postimage ; aucun `customerId` de candidat ne doit apparaître dans la revue.
-- **L7 — La fin d'un run cesse d'être un silence** : l'effet de convergence guette la transition
-  d'une phase d'écriture vers **`absent`**, seul signal observable. Il n'affirme rien : il relit.
+- **L7 — La fin d'un run cesse d'être un silence** : un reçu tactile autoritaire, ou une lecture
+  courante autoritaire, arme le suivi exact dès qu'un effet peut encore modifier les projections.
+  Le règlement n'affirme rien : il relit.
 - **L8 — Les paroles nomment toutes les issues** : « ou dis “annule” » à la revue ; le client retenu
   est **nommé** (libellé irrésolu ⇒ phrase sans nom, jamais un nom deviné) ; la promesse « je te dis
   dès que c'est fait » cesse (aucun tour vocal ne naît d'un reçu) et dit **où** le résultat paraît ;
@@ -153,34 +154,57 @@ le moteur Jarvis en `certified` ou `released`.
 ### 3.2 L7 — protocole binaire de convergence
 
 Le terminal ne devient pas une nouvelle projection mobile : `GET /jarvis/runs/current` conserve sa
-loi et ne sert que le foreground non terminal. Le hook mémorise la dernière vue **autoritaire** du
-même principal. Lorsqu'un run observé dans une phase d'écriture (`committing`,
-`awaiting_receipt`, `cancelling`) quitte ce canal, la lecture suivante rend soit l'absence canonique
-`{ run: null, presentation: null }`, soit un autre `runId` si un nouveau foreground a été ouvert
-pendant que le premier effet reste en vol.
+loi réelle. Il sert le run courant non terminal/non quarantiné en donnant la priorité au détenteur
+du foreground ; `waiting_external` et `cancelling` peuvent donc y être servis tout en libérant ce
+foreground, puis être masqués par un nouveau run.
 
-Ce départ ne vaut **jamais** preuve de fin : `waiting_external` libère déjà le foreground. Le hook
-suit donc chaque run parti via l'endpoint stateless existant `GET /jarvis/runs/:runId`. Tant que le
-statut exact reste `waiting_external`, `retry_due` ou `cancelling`, il ne conclut rien. Dès que la
-lecture exacte rend une sortie stable, terminale ou gelée, il invalide une fois les préfixes métier
-canoniques, puis laisse leurs écrans relire la base. Il ne déduit ni succès, ni échec, ni entité
-modifiée. Aucun endpoint neuf et aucune seconde projection terminale ne sont ajoutés.
+Le reçu tactile admis est la première postimage autoritaire. La carte ne le jette plus : elle le
+transmet à l'autorité L7 **avant** la relecture courante. Une lecture `current` qui observe elle-même
+un statut d'effet pendant reste un deuxième émetteur autoritaire. Dès l'une de ces observations, le
+run est suivi par l'endpoint stateless existant `GET /jarvis/runs/:runId` ; voir ensuite `absent` ou
+un autre `runId` n'est ni requis, ni interprété comme une fin.
+
+La décision « un effet déjà autorisé peut-il encore modifier les projections ? » appartient au
+core sous forme d'une matrice exhaustive des onze `JarvisRunStatus`. Elle vaut vrai uniquement pour
+`waiting_external`, `retry_due` et `cancelling`; ajouter un statut exige donc une décision de
+compilation, jamais un défaut mobile implicite. Dès que la lecture exacte rend un statut dont cette
+matrice vaut faux, l'autorité invalide une fois les préfixes métier canoniques et relit `current`,
+sans déduire succès, échec ou entité modifiée.
+
+Cette autorité est une instance owner-scopée unique, montée au-dessus des routes avec la capability
+Mission : assistant et fiche client ne possèdent ni file ni timer. Sa file ne garde que des `runId`
+et des métadonnées de backoff, jamais un snapshot ou de la PII. Un seul GET exact vole à la fois,
+avec un plancher global de 1 500 ms ; succès encore pendant ⇒ rotation équitable, erreur ⇒ backoff
+exponentiel plafonné à 30 s, sans qu'une cible en panne bloque les suivantes. Une panne réseau suit
+ce backoff ; le scheduler se met en pause en arrière-plan via le pont AppState/focusManager déjà
+câblé, puis reprend au signal. Changement de principal, logout ou démontage global abortent le vol
+et purgent la file. Aucun endpoint neuf, aucune seconde projection terminale et aucun polling par
+hôte ne sont ajoutés.
 
 L'acceptation L7 est fermée :
 
-- écriture → absence autoritaire arme le suivi exact ; le terminal exact invalide notamment
-  `['customers']` exactement une fois ;
-- écriture A → autre `runId` B n'invalide rien tant que A reste en vol ; la sortie exacte de A
-  applique ensuite la convergence sans confondre les deux runs ;
-- une absence initiale, une disparition depuis une phase hors écriture, une lecture en chargement
-  ou en erreur et un run vivant sans présentation n'invalident rien ;
+- confirmation tactile sur A → reçu A `waiting_external` → premier GET courant déjà absent ou B :
+  A reste suivi ; sa sortie exacte invalide notamment `['customers']` exactement une fois ;
+- une lecture courante de A dans un statut d'effet pendant arme le même suivi, y compris sans
+  présentation ; le doublon reçu/current reste un seul `runId` ;
+- une absence initiale, une lecture en chargement ou en erreur et un run dont la matrice core vaut
+  faux n'arment ni n'invalident rien ;
 - une erreur de relecture courante ou exacte ne détruit ni le dernier témoin d'écriture ni la cible
   suivie : une lecture autoritaire ultérieure converge encore ;
-- le changement de principal remet le témoin à zéro ; aucune observation d'un compte ne déclenche
-  une invalidation pour un autre ;
-- les absences répétées restent des no-op ; plusieurs effets masqués sont suivis séparément, sans
-  qu'un effet bloqué affame les suivants. Le suivi s'arrête sur toute sortie stable, terminale ou
-  gelée ; aucun polling d'un run réglé et aucune seconde autorité de cache ne sont ajoutés.
+- deux hôtes montés observent la même instance : un seul GET exact vole et un règlement n'invalide
+  qu'une fois ;
+- une cible en erreur, cinq cibles pendantes et le backoff maximal prouvent l'ordre équitable et le
+  plancher global ; la suite avance réellement le temps, puis prouve zéro GET après règlement ;
+- le changement de principal avec un vol en retard purge et abort : aucune réponse d'un compte ne
+  déclenche une invalidation pour un autre ; l'arrière-plan ne produit aucun GET ;
+- plusieurs effets sont suivis séparément, sans qu'un effet bloqué affame les suivants. Le suivi
+  s'arrête sur toute sortie stable ; aucun polling d'un run réglé et aucune seconde autorité de
+  cache ne sont ajoutés.
+
+Le canal vocal ne rend aujourd'hui aucun reçu de commande au mobile. L7 couvre donc un effet vocal
+seulement s'il est observé pendant par `GET current`; un effet vocal devenu terminal avant toute
+observation mobile reste un blocker distinct de la convergence voix→écran et interdit toute
+revendication de L7 global/certifié.
 
 ## 4. Gardes à rendre vraies avant certification
 
