@@ -866,7 +866,7 @@ describe('facturation terrain B1/B2/B4 — facture_directe, facturer_situation, 
     expect(noSite.ok && 'chantierId' in (noSite.value as Record<string, unknown>)).toBe(false);
 
     const directe = tool(terrainActions(calls), 'facture_directe')!;
-    expect(directe.parse({ customerId: 'cus-1', lines: [line], chantierId: '' }).ok).toBe(false);
+    expect(directe.parse({ customerId: 'cus-1', lines: [line], chantierId: '\u0007' }).ok).toBe(false);
     const parsedDirecte = directe.parse({ customerId: 'cus-1', lines: [line], chantierId: 'site-bastille' });
     expect(parsedDirecte.ok).toBe(true);
     if (!parsedDirecte.ok) return;

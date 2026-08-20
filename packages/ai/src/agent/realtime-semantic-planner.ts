@@ -276,6 +276,22 @@ function canonical(value: unknown, maximumLength: number): string | null {
   return normalized.length > 0 && normalized.length <= maximumLength ? normalized : null;
 }
 
+/**
+ * UN TOUR D'HISTORIQUE EST-IL RECEVABLE ? Le contrat que TOUTE parole de Bob doit respecter.
+ *
+ * Ce prédicat existe pour être vérifié AILLEURS, chez ceux qui fabriquent la parole. La parole
+ * d'un tour devient l'historique du suivant, et `validInput` refuse l'entrée ENTIÈRE — donc toutes
+ * les lanes, devis compris — dès qu'un seul tour porte un caractère invisible ou dépasse la borne.
+ * Une donnée relue en base et interpolée sans précaution (le nom d'un client, par exemple) peut
+ * ainsi rendre l'assistant muet plusieurs tours d'affilée, sans que rien ne désigne la coupable.
+ *
+ * L'exposer nomme l'invariant et en fait une SOURCE UNIQUE : les fabricants de parole le vérifient
+ * au lieu de recopier une borne qui dériverait de celle appliquée ici.
+ */
+export function isPlannerSafeHistoryText(value: string): boolean {
+  return canonical(value, MAX_HISTORY_TURN_LENGTH) === value;
+}
+
 function validIsoInstant(value: string): boolean {
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
@@ -409,6 +425,7 @@ const REDACTION_PLACEHOLDER = /\[(?:email|tel|siren|iban)\]/iu;
 
 type CustomerContactToolAction =
   | 'open_customer_creation'
+  | 'probe_duplicates'
   | 'propose_fields'
   | 'choose_duplicate'
   | 'continue_creation'
@@ -425,7 +442,11 @@ function customerContactActionsForPhase(
     case 'inactive':
       return Object.freeze(['open_customer_creation'] as const);
     case 'resolving_customer':
-      return Object.freeze(['cancel_run'] as const);
+      // U1-g — en CRÉATION, la reprise est offerte : un run dont la résolution de doublons a été
+      // refusée doit pouvoir repartir sur un nouveau nom, sans quoi il ne resterait qu'à annuler.
+      return mission.intentMode === 'create'
+        ? Object.freeze(['probe_duplicates', 'cancel_run'] as const)
+        : Object.freeze(['cancel_run'] as const);
     case 'awaiting_duplicate_review':
       return Object.freeze(['choose_duplicate', 'continue_creation', 'cancel_run'] as const);
     case 'preparing_proposal':
@@ -439,11 +460,20 @@ function customerContactActionsForPhase(
   }
 }
 
+/** Les deux seules actions où un nom sert de REQUÊTE : partout ailleurs il n'a aucun emploi. */
+function isCustomerSearchAction(action: CustomerContactToolAction): boolean {
+  return action === 'open_customer_creation' || action === 'probe_duplicates';
+}
+
 function customerContactUnderstandingTool(
   mission: RealtimeCustomerContactSemanticContext,
 ): LlmToolSpec | null {
   const actions = customerContactActionsForPhase(mission);
   if (actions.length === 0) return null;
+  // Le SCHÉMA SUIT LA PHASE, champ par champ. Un champ exposé partout mais admis nulle part est une
+  // invitation à le remplir : le modèle n'a que ce schéma pour savoir ce qu'on attend de lui.
+  const choisitUnDoublon = (actions as readonly string[]).includes('choose_duplicate');
+  const dicteDesChamps = (actions as readonly string[]).includes('propose_fields');
   return Object.freeze({
     name: CUSTOMER_CONTACT_TOOL_NAME,
     description:
@@ -452,15 +482,39 @@ function customerContactUnderstandingTool(
       type: 'object',
       properties: {
         action: { type: 'string', enum: [...actions] },
+        customer_name: {
+          type: ['string', 'null'],
+          // La description SUIT LA PHASE, comme `action.enum`. Sans cela elle disait « null si
+          // aucun nom n'a été prononcé » dans des étapes où un nom vient précisément d'être dit
+          // (« oui, Dupont Plomberie »), et invitait donc le modèle à remplir un champ qui n'y a
+          // aucun emploi. Le schéma est la seule instruction que le modèle reçoive : il doit dire
+          // le vrai à chaque étape, pas seulement à celle où le champ sert.
+          description: actions.some(isCustomerSearchAction)
+            ? 'Nom du client tel que l’artisan vient de le dire, pour que le serveur CHERCHE s’il existe déjà. null si aucun nom n’a été prononcé. Ne jamais inventer un client existant : c’est le serveur qui cherche.'
+            : 'TOUJOURS null à cette étape : plus rien n’est à chercher, même si l’artisan redit le nom du client.',
+        },
         choice_ordinal: {
           type: ['integer', 'null'],
           minimum: 1,
-          maximum: CUSTOMER_CONTACT_MAX_DUPLICATE_CANDIDATES,
+          // La FENÊTRE RÉELLE, pas la borne théorique : le modèle ne doit pas pouvoir exprimer un
+          // rang que Bob n'a jamais énoncé. Quand `choose_duplicate` est offerte, le contexte
+          // serveur garantit `presentedDuplicateCount > 0` (`validCustomerContactContext`).
+          maximum: choisitUnDoublon
+            ? mission.presentedDuplicateCount
+            : CUSTOMER_CONTACT_MAX_DUPLICATE_CANDIDATES,
+          description: choisitUnDoublon
+            ? 'Rang de la fiche choisie parmi celles que Bob vient d’énoncer, en commençant à un. null si l’artisan n’en désigne aucune.'
+            : 'TOUJOURS null à cette étape : aucune liste de fiches n’est en attente de choix.',
         },
         fields: {
           type: ['object', 'null'],
-          description:
-            'Champs dictés dans CE tour, tels qu’ils sont dits. null pour tout champ non dicté.',
+          // MÊME DISCIPLINE que `customer_name`, mais SANS la même indulgence au parse : un champ
+          // dicté qu'on ignorerait serait une perte silencieuse pour l'artisan, donc le parse
+          // refuse. Raison de plus pour que la description dise le vrai à chaque étape, au lieu de
+          // laisser croire qu'un champ entendu se dicte n'importe quand.
+          description: dicteDesChamps
+            ? 'Champs dictés dans CE tour, tels qu’ils sont dits. null pour tout champ non dicté.'
+            : 'TOUJOURS null à cette étape : aucun champ ne se dicte ici. Si l’artisan en dicte un, choisis d’abord l’action de l’étape — il le redira.',
           properties: Object.fromEntries(
             CUSTOMER_CONTACT_VOICE_FIELD_KEYS.map((key) => [
               key,
@@ -473,7 +527,7 @@ function customerContactUnderstandingTool(
           additionalProperties: false,
         },
       },
-      required: ['action', 'choice_ordinal', 'fields'],
+      required: ['action', 'customer_name', 'choice_ordinal', 'fields'],
       additionalProperties: false,
     },
   });
@@ -519,13 +573,42 @@ function parseCustomerContactSemanticToolCall(input: {
   const candidate = args as Record<string, unknown>;
   const keys = Object.keys(candidate);
   if (
-    keys.length !== 3 ||
-    !['action', 'choice_ordinal', 'fields'].every((key) => Object.hasOwn(candidate, key))
+    keys.length !== 4 ||
+    !['action', 'customer_name', 'choice_ordinal', 'fields'].every((key) =>
+      Object.hasOwn(candidate, key),
+    )
   )
     return null;
   const action = candidate['action'];
   const actions = customerContactActionsForPhase(input.mission);
   if (typeof action !== 'string' || !(actions as readonly string[]).includes(action)) return null;
+
+  // LE NOM N'EST LU QUE LÀ OÙ IL SERT DE REQUÊTE ; ailleurs il est IGNORÉ, pas fatal.
+  //
+  // Refuser tout le tour dès qu'un nom traînait dans le champ coûtait bien plus qu'il ne
+  // protégeait : le refus est global (« Je n'ai pas pu sécuriser cette demande »), il ne change ni
+  // la phase ni la révision, donc une redite portant encore le nom échouait à l'identique — et
+  // toutes les issues humaines de la revue de doublons se disent naturellement AVEC le nom
+  // (« oui, Dupont Plomberie »). Ignorer est sûr : `operation` est reconstruite clé par clé
+  // ci-dessous, jamais recopiée, et `customerName` n'entre que dans les kinds de recherche.
+  //
+  // La dissymétrie avec `fields` est voulue. Un champ dicté qu'on ignorerait serait une PERTE
+  // silencieuse pour l'artisan (« et son adresse c'est 12 rue des Lilas ») : là, le refus est le
+  // seul comportement honnête. Un nom hors recherche, lui, ne porte aucune information neuve.
+  //
+  // Le TYPE, lui, reste exigé partout : un nom qui n'est ni une chaîne ni `null` ne vient pas d'un
+  // artisan qui a prononcé un nom, il vient d'un modèle qui délire — et un modèle qui délire sur
+  // un champ délire peut-être aussi sur l'action.
+  const nomBrut = candidate['customer_name'];
+  if (nomBrut !== null && typeof nomBrut !== 'string') return null;
+  const cherche = isCustomerSearchAction(action as CustomerContactToolAction);
+  let customerName: string | null = null;
+  if (cherche && nomBrut !== null) {
+    const nom = nomBrut.trim();
+    // Un placeholder de minimisation recopié en guise de nom signale une fuite de rédaction.
+    if (nom.length < 1 || nom.length > 200 || REDACTION_PLACEHOLDER.test(nom)) return null;
+    customerName = nom;
+  }
 
   let operation: Record<string, unknown>;
   if (action === 'propose_fields') {
@@ -543,6 +626,11 @@ function parseCustomerContactSemanticToolCall(input: {
     )
       return null;
     operation = { kind: 'choose_duplicate', ordinal };
+  } else if (cherche) {
+    if (candidate['choice_ordinal'] !== null || candidate['fields'] !== null) return null;
+    // La REPRISE exige un nom : sans terme de recherche, il n'y a rien à reprendre.
+    if (action === 'probe_duplicates' && customerName === null) return null;
+    operation = { kind: action, customerName };
   } else {
     if (candidate['choice_ordinal'] !== null || candidate['fields'] !== null) return null;
     operation = { kind: action };
@@ -614,7 +702,7 @@ function validInput(input: RealtimeSemanticPlannerInput): boolean {
     input.history.some(
       (turn) =>
         (turn.role !== 'user' && turn.role !== 'bob') ||
-        canonical(turn.text, MAX_HISTORY_TURN_LENGTH) !== turn.text,
+        !isPlannerSafeHistoryText(turn.text),
     ) ||
     input.quoteMission.presentedChoices.length > MAX_PRESENTED_CHOICES ||
     !input.quoteMission.presentedChoices.every(validChoice) ||

@@ -847,7 +847,7 @@ describe('RealtimeBobAgentTurnAdapter — planner unique', () => {
 const CONTACT_FRAME: CustomerContactSemanticFrameV1 = Object.freeze({
   schema: 'bob.semantic.customer-contact',
   version: 1,
-  operation: Object.freeze({ kind: 'open_customer_creation' }),
+  operation: Object.freeze({ kind: 'open_customer_creation', customerName: 'Dupont Plomberie' }),
   model: 'gpt-test',
 });
 

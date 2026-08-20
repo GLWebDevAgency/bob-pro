@@ -899,6 +899,16 @@ function contactInput(
   });
 }
 
+/** Contexte serveur d'un run PAS ENCORE OUVERT — cohérent par construction (§ validCustomerContactContext). */
+const INACTIF = Object.freeze({
+  runAlias: null,
+  runRevision: 0,
+  phase: 'inactive',
+  intentMode: null,
+  presentedDuplicateCount: 0,
+  proposalPresented: false,
+} as const);
+
 function voiceFields(over: Record<string, string | null> = {}): Record<string, string | null> {
   return {
     displayName: 'Dupont Plomberie',
@@ -945,6 +955,7 @@ describe('planRealtimeSemanticTurn — customer_contact@1 (U1-d)', () => {
           name: CUSTOMER_CONTACT_TOOL,
           arguments: {
             action: 'propose_fields',
+            customer_name: null,
             choice_ordinal: null,
             fields: voiceFields({ city: '  Paris  ' }),
           },
@@ -983,13 +994,245 @@ describe('planRealtimeSemanticTurn — customer_contact@1 (U1-d)', () => {
     expect(JSON.stringify(call?.[0])).toContain('customerContact');
   });
 
+  it('CHERCHE sur le nom prononcé — l’unique chemin par lequel le serveur reçoit un terme', async () => {
+    const model = fakeLlm({
+      text: null,
+      toolCalls: [
+        {
+          name: CUSTOMER_CONTACT_TOOL,
+          arguments: {
+            action: 'open_customer_creation',
+            customer_name: '  Dupont Plomberie  ',
+            choice_ordinal: null,
+            fields: null,
+          },
+        },
+      ],
+      model: 'gpt-semantic-planner',
+    });
+
+    const result = await planRealtimeSemanticTurn(model.llm, contactInput(INACTIF));
+
+    expect(result.status).toBe('mission_frame');
+    if (result.status !== 'mission_frame') throw new Error('frame attendue');
+    if (result.missionKind !== CUSTOMER_CONTACT_MISSION_KIND_V1) throw new Error('kind attendu');
+    expect(result.frame.operation).toEqual({
+      kind: 'open_customer_creation',
+      customerName: 'Dupont Plomberie',
+    });
+  });
+
+  it('REPREND un run parqué par `probe_duplicates`, et l’exige NOMMÉ', async () => {
+    const nomme = fakeLlm({
+      text: null,
+      toolCalls: [
+        {
+          name: CUSTOMER_CONTACT_TOOL,
+          arguments: {
+            action: 'probe_duplicates',
+            customer_name: 'Dupont Plomberie',
+            choice_ordinal: null,
+            fields: null,
+          },
+        },
+      ],
+      model: 'gpt-semantic-planner',
+    });
+    const repris = await planRealtimeSemanticTurn(
+      nomme.llm,
+      contactInput({ phase: 'resolving_customer', intentMode: 'create' }),
+    );
+    expect(repris.status).toBe('mission_frame');
+    if (repris.status !== 'mission_frame') throw new Error('frame attendue');
+    if (repris.missionKind !== CUSTOMER_CONTACT_MISSION_KIND_V1) throw new Error('kind attendu');
+    expect(repris.frame.operation).toEqual({
+      kind: 'probe_duplicates',
+      customerName: 'Dupont Plomberie',
+    });
+
+    // Sans terme de recherche, il n'y a rien à reprendre : le refus est le seul comportement juste.
+    const anonyme = fakeLlm({
+      text: null,
+      toolCalls: [
+        {
+          name: CUSTOMER_CONTACT_TOOL,
+          arguments: {
+            action: 'probe_duplicates',
+            customer_name: null,
+            choice_ordinal: null,
+            fields: null,
+          },
+        },
+      ],
+      model: 'gpt-semantic-planner',
+    });
+    await expect(
+      planRealtimeSemanticTurn(
+        anonyme.llm,
+        contactInput({ phase: 'resolving_customer', intentMode: 'create' }),
+      ),
+    ).resolves.toMatchObject({ status: 'rejected', reason: 'invalid_mission_frame' });
+  });
+
+  it('n’offre la reprise QU’EN CRÉATION : une modification parquée n’a aucun doublon à chercher', async () => {
+    const model = fakeLlm({
+      text: null,
+      toolCalls: [
+        {
+          name: CUSTOMER_CONTACT_TOOL,
+          arguments: {
+            action: 'probe_duplicates',
+            customer_name: 'Dupont Plomberie',
+            choice_ordinal: null,
+            fields: null,
+          },
+        },
+      ],
+      model: 'gpt-semantic-planner',
+    });
+    await expect(
+      planRealtimeSemanticTurn(
+        model.llm,
+        contactInput({ phase: 'resolving_customer', intentMode: 'update' }),
+      ),
+    ).resolves.toMatchObject({ status: 'rejected', reason: 'invalid_mission_frame' });
+  });
+
+  it('IGNORE un nom prononcé hors recherche au lieu de tuer le tour — et le dit dans le schéma', async () => {
+    // « Oui, Dupont Plomberie » est la façon NORMALE de confirmer. Refuser tout le tour laissait
+    // l'artisan dans une boucle : le refus ne change ni la phase ni la révision, donc chaque
+    // reformulation portant encore le nom échouait à l'identique.
+    const model = fakeLlm({
+      text: null,
+      toolCalls: [
+        {
+          name: CUSTOMER_CONTACT_TOOL,
+          arguments: {
+            action: 'propose_fields',
+            customer_name: 'Dupont Plomberie',
+            choice_ordinal: null,
+            fields: voiceFields(),
+          },
+        },
+      ],
+      model: 'gpt-semantic-planner',
+    });
+
+    const result = await planRealtimeSemanticTurn(model.llm, contactInput());
+
+    expect(result.status).toBe('mission_frame');
+    if (result.status !== 'mission_frame') throw new Error('frame attendue');
+    if (result.missionKind !== CUSTOMER_CONTACT_MISSION_KIND_V1) throw new Error('kind attendu');
+    // Le nom est ignoré, PAS propagé : l'opération n'en porte aucune trace.
+    expect(JSON.stringify(result.frame.operation)).not.toContain('customerName');
+
+    // Et le schéma envoyé au modèle lui dit lui-même de ne pas remplir ce champ ici.
+    const outil = model.complete.mock.calls[0]?.[1]?.tools?.find(
+      (tool) => tool.name === CUSTOMER_CONTACT_TOOL,
+    );
+    const description = (
+      outil?.parameters as { properties?: { customer_name?: { description?: string } } }
+    ).properties?.customer_name?.description;
+    expect(description).toContain('TOUJOURS null');
+  });
+
+  it('refuse un nom qui n’en est pas un : un placeholder de rédaction signale une fuite', async () => {
+    const model = fakeLlm({
+      text: null,
+      toolCalls: [
+        {
+          name: CUSTOMER_CONTACT_TOOL,
+          arguments: {
+            action: 'open_customer_creation',
+            customer_name: '[email]',
+            choice_ordinal: null,
+            fields: null,
+          },
+        },
+      ],
+      model: 'gpt-semantic-planner',
+    });
+    await expect(
+      planRealtimeSemanticTurn(model.llm, contactInput(INACTIF)),
+    ).resolves.toMatchObject({ status: 'rejected', reason: 'invalid_mission_frame' });
+  });
+
+  it('refuse un `customer_name` qui n’est même pas une chaîne — c’est un modèle qui délire', async () => {
+    const model = fakeLlm({
+      text: null,
+      toolCalls: [
+        {
+          name: CUSTOMER_CONTACT_TOOL,
+          arguments: {
+            action: 'propose_fields',
+            customer_name: 42,
+            choice_ordinal: null,
+            fields: voiceFields(),
+          },
+        },
+      ],
+      model: 'gpt-semantic-planner',
+    });
+    await expect(planRealtimeSemanticTurn(model.llm, contactInput())).resolves.toMatchObject({
+      status: 'rejected',
+      reason: 'invalid_mission_frame',
+    });
+  });
+
+  it('le SCHÉMA suit la phase sur les trois champs — un champ inutile s’y déclare inutile', async () => {
+    // Un champ exposé partout mais admis nulle part est une invitation à le remplir : le schéma est
+    // la seule instruction que le modèle reçoive. Le parse refuse déjà `fields` et `choice_ordinal`
+    // hors de leur action ; encore faut-il ne pas les avoir suggérés d'abord.
+    async function schemaPour(mission: Partial<RealtimeCustomerContactSemanticContext>) {
+      const model = fakeLlm({ text: null, toolCalls: [], model: 'gpt-semantic-planner' });
+      await planRealtimeSemanticTurn(model.llm, contactInput(mission));
+      const outil = model.complete.mock.calls[0]?.[1]?.tools?.find(
+        (tool) => tool.name === CUSTOMER_CONTACT_TOOL,
+      );
+      return (
+        outil?.parameters as {
+          properties: Record<string, { description?: string; maximum?: number }>;
+        }
+      ).properties;
+    }
+
+    // En préparation de proposition : seuls les champs se dictent.
+    const preparation = await schemaPour({ phase: 'preparing_proposal' });
+    expect(preparation['fields']?.description).not.toContain('TOUJOURS null');
+    expect(preparation['customer_name']?.description).toContain('TOUJOURS null');
+    expect(preparation['choice_ordinal']?.description).toContain('TOUJOURS null');
+
+    // En revue de doublons : seul le rang se choisit — et la borne est la FENÊTRE RÉELLE,
+    // pas le plafond théorique : le modèle ne peut pas désigner une fiche jamais énoncée.
+    const revue = await schemaPour({ phase: 'awaiting_duplicate_review', presentedDuplicateCount: 2 });
+    expect(revue['choice_ordinal']?.maximum).toBe(2);
+    expect(revue['choice_ordinal']?.description).not.toContain('TOUJOURS null');
+    expect(revue['fields']?.description).toContain('TOUJOURS null');
+    expect(revue['customer_name']?.description).toContain('TOUJOURS null');
+
+    // En reprise de création : seul le nom sert, et il sert de REQUÊTE.
+    const reprise = await schemaPour({ phase: 'resolving_customer', intentMode: 'create' });
+    expect(reprise['customer_name']?.description).toContain('CHERCHE');
+    expect(reprise['fields']?.description).toContain('TOUJOURS null');
+    expect(reprise['choice_ordinal']?.description).toContain('TOUJOURS null');
+  });
+
   it('refuse une action hors phase, un ordinal hors fenêtre et un champ masqué', async () => {
+    // LES QUATRE CLÉS SONT OBLIGATOIRES ICI, et ce n'est pas un détail de fixture : la porte
+    // d'arité du parse mord AVANT la garde de phase et avant la fenêtre d'ordinal. Une fixture à
+    // trois clés serait refusée pour la mauvaise raison — le test passerait au vert en n'ayant
+    // rien prouvé, et les deux gardes deviendraient supprimables sans faire rougir la suite.
     const outOfPhase = fakeLlm({
       text: null,
       toolCalls: [
         {
           name: CUSTOMER_CONTACT_TOOL,
-          arguments: { action: 'confirm_proposal', choice_ordinal: null, fields: null },
+          arguments: {
+            action: 'confirm_proposal',
+            customer_name: null,
+            choice_ordinal: null,
+            fields: null,
+          },
         },
       ],
       model: 'gpt-semantic-planner',
@@ -1004,7 +1247,12 @@ describe('planRealtimeSemanticTurn — customer_contact@1 (U1-d)', () => {
       toolCalls: [
         {
           name: CUSTOMER_CONTACT_TOOL,
-          arguments: { action: 'choose_duplicate', choice_ordinal: 3, fields: null },
+          arguments: {
+            action: 'choose_duplicate',
+            customer_name: null,
+            choice_ordinal: 3,
+            fields: null,
+          },
         },
       ],
       model: 'gpt-semantic-planner',
@@ -1023,6 +1271,7 @@ describe('planRealtimeSemanticTurn — customer_contact@1 (U1-d)', () => {
           name: CUSTOMER_CONTACT_TOOL,
           arguments: {
             action: 'propose_fields',
+            customer_name: null,
             choice_ordinal: null,
             fields: voiceFields({ recipientName: '[email]' }),
           },

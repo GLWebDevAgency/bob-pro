@@ -177,11 +177,11 @@ export function runQuery(sql, variables, dependencies = {}) {
 /** Découpe la sortie psql. Les séparateurs réservés survivent aux retours à la ligne du contenu. */
 export function parseRows(stdout, fieldCount) {
   return stdout
-    .split('')
+    .split('\u001e')
     .map((row) => row.replace(/^\n+/u, '').trim())
     .filter((row) => row.length > 0)
     .map((row) => {
-      const fields = row.split('');
+      const fields = row.split('\u001f');
       if (fields.length !== fieldCount) {
         fail(`ligne illisible (${fields.length} champs, ${fieldCount} attendus)`);
       }
@@ -191,9 +191,9 @@ export function parseRows(stdout, fieldCount) {
 
 /* ------------------------------------------------------------------ rendu français */
 
-const RESET = '[0m';
-const BOLD = '[1m';
-const DIM = '[2m';
+const RESET = '\u001b[0m';
+const BOLD = '\u001b[1m';
+const DIM = '\u001b[2m';
 const paint = (code, text) => (process.stdout.isTTY ? `${code}${text}${RESET}` : text);
 
 const OUTCOME_LABEL = {
@@ -204,9 +204,9 @@ const OUTCOME_LABEL = {
 };
 
 const LEVEL_BADGE = {
-  info: paint('[32m', '  OK  '),
-  warn: paint('[33m', ' REFUS'),
-  error: paint('[31m', ' ERREUR'),
+  info: paint('\u001b[32m', '  OK  '),
+  warn: paint('\u001b[33m', ' REFUS'),
+  error: paint('\u001b[31m', ' ERREUR'),
 };
 
 function duration(ms) {
@@ -287,7 +287,7 @@ export function renderSessions(rows) {
   for (const [sessionId, companyId, userId, startedAt, turns, warns, errors] of rows) {
     const alerts = [
       Number(warns) > 0 ? `${warns} refus` : null,
-      Number(errors) > 0 ? paint('[31m', `${errors} erreur(s)`) : null,
+      Number(errors) > 0 ? paint('\u001b[31m', `${errors} erreur(s)`) : null,
     ].filter(Boolean);
     out.push(
       `${startedAt}  ${sessionId}  ${paint(DIM, `${turns} tour(s) · tenant ${companyId} · testeur ${userId || 'inconnu'}`)}`

@@ -107,7 +107,19 @@ const FIELD_MAX_LENGTHS: Readonly<Record<CustomerContactProposedFieldKey, number
  * la collecte passe par `propose_fields`, seule étape où la PII est scellée dans le store.
  */
 export type CustomerContactSemanticOperationV1 =
-  | { readonly kind: 'open_customer_creation' }
+  /**
+   * U1-g — `customerName` est une REQUÊTE DE RAPPROCHEMENT, jamais un champ collecté : le serveur
+   * s'en sert pour CHERCHER des doublons, et rien d'autre. §8 l'autorise explicitement — le modèle
+   * peut proposer un libellé, il ne fournit jamais l'autorité d'une entité. `null` quand l'artisan
+   * n'a nommé personne : Bob demande alors le nom plutôt que d'ouvrir à l'aveugle.
+   */
+  | { readonly kind: 'open_customer_creation'; readonly customerName: string | null }
+  /**
+   * REPRISE d'un run resté en `resolving_customer` (le second maillon a été refusé). Sans elle, un
+   * run parqué n'aurait d'autre issue que l'annulation — la vivacité serait un espoir, pas une
+   * propriété.
+   */
+  | { readonly kind: 'probe_duplicates'; readonly customerName: string }
   | { readonly kind: 'propose_fields'; readonly fields: CustomerContactProposedFieldsV1 }
   | { readonly kind: 'choose_duplicate'; readonly ordinal: number }
   | { readonly kind: 'continue_creation' }
@@ -181,10 +193,43 @@ export function parseCustomerContactProposedFields(
   return Object.freeze(fields) as unknown as CustomerContactProposedFieldsV1;
 }
 
+/**
+ * Requête de rapprochement : une phrase d'artisan, bornée. Un PLACEHOLDER de minimisation (`[email]`,
+ * `[tel]`…) est refusé FERMÉ : il signalerait que le modèle a recopié une valeur masquée, donc que
+ * la rédaction a fuité dans un champ métier.
+ */
+function parseCustomerNameQuery(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const requete = value.trim();
+  if (requete.length < 1 || requete.length > 200) return null;
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(requete)) return null;
+  if (/\[(email|tel|iban|siren)\]/i.test(requete)) return null;
+  return requete;
+}
+
 function parseOperation(value: unknown): CustomerContactSemanticOperationV1 | null {
   if (!isPlainRecord(value)) return null;
   switch (value['kind']) {
-    case 'open_customer_creation':
+    case 'open_customer_creation': {
+      if (!exactKeys(value, ['kind', 'customerName'])) return null;
+      const nom = value['customerName'];
+      if (nom === null) {
+        return Object.freeze({ kind: 'open_customer_creation' as const, customerName: null });
+      }
+      const requete = parseCustomerNameQuery(nom);
+      return requete === null
+        ? null
+        : Object.freeze({ kind: 'open_customer_creation' as const, customerName: requete });
+    }
+    case 'probe_duplicates': {
+      if (!exactKeys(value, ['kind', 'customerName'])) return null;
+      // La reprise EXIGE un nom : sans terme de recherche, il n'y a rien à reprendre.
+      const requete = parseCustomerNameQuery(value['customerName']);
+      return requete === null
+        ? null
+        : Object.freeze({ kind: 'probe_duplicates' as const, customerName: requete });
+    }
     case 'continue_creation':
     case 'acknowledge_presentation':
     case 'confirm_proposal':

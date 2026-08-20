@@ -12,5 +12,6 @@ export * from './sha256';
 export * from './realtime-turn-id';
 export * from './french-vat-id';
 export * from './control-characters';
+export * from './spoken-label';
 export * from './iana-time-zone';
 export * from './confirmed-time-zone';

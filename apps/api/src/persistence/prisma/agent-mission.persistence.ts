@@ -11,6 +11,8 @@ import type {
 import {
   readJarvisCurrentRun,
   readJarvisRunById,
+  readJarvisCustomerCandidates,
+  readJarvisCustomerLabels,
   readJarvisTargetSnapshot,
   runJarvisAdmissionInTransaction,
   runJarvisSystemAdmissionInTransaction,
@@ -75,6 +77,11 @@ import {
 } from '@prisma/client';
 import { prepareRealtimeContext } from '../../voice/realtime/realtime-admission';
 import { PrismaCatalogueCandidateSearch } from './catalogue-candidate.persistence';
+import {
+  customerCandidateSearchSql,
+  customerReferenceByIdSql,
+  customerReferenceByIdsSql,
+} from './customer-candidate-sql';
 import { canonicalPrismaVatRate } from './prisma-vat-rate';
 import type { PrismaService } from './prisma.service';
 
@@ -1682,44 +1689,16 @@ class PrismaAgentMissionCustomerRepository
     readonly query: string;
     readonly limit: 6;
   }): Promise<readonly CustomerCandidate[]> {
-    const rows = await this.transaction.$queryRaw<CustomerCandidateRow[]>`
-      SELECT
-        c."id" AS "customerId",
-        c."name" AS "canonicalName",
-        CASE
-          WHEN immutable_unaccent(lower(c."name"))
-            = immutable_unaccent(lower(${input.query}))
-          THEN 'exact'::text
-          ELSE 'fuzzy'::text
-        END AS "matchKind",
-        CASE
-          WHEN immutable_unaccent(lower(c."name"))
-            = immutable_unaccent(lower(${input.query}))
-          THEN 1.0::double precision
-          ELSE word_similarity(
-            immutable_unaccent(lower(${input.query})),
-            immutable_unaccent(lower(c."name"))
-          )::double precision
-        END AS "score"
-      FROM public.customers c
-      WHERE c."companyId" = ${input.companyId}
-        AND (
-          immutable_unaccent(lower(c."name"))
-            = immutable_unaccent(lower(${input.query}))
-          OR immutable_unaccent(lower(${input.query}))
-            <% immutable_unaccent(lower(c."name"))
-        )
-      ORDER BY
-        (
-          immutable_unaccent(lower(c."name"))
-            = immutable_unaccent(lower(${input.query}))
-        ) DESC,
-        "score" DESC,
-        immutable_unaccent(lower(c."name")) COLLATE "C" ASC,
-        c."id" ASC
-      LIMIT ${input.limit}
-      FOR SHARE OF c
-    `;
+    const rows = await this.transaction.$queryRaw<CustomerCandidateRow[]>(
+      customerCandidateSearchSql({
+        companyId: input.companyId,
+        query: input.query,
+        limit: input.limit,
+        // Transaction de DÉCISION : le candidat retenu devient la cible d'une écriture dans la
+        // MÊME transaction, donc il doit rester stable jusqu'au commit.
+        lock: 'share',
+      }),
+    );
     return rows.map((row) =>
       Object.freeze({
         customerId: row.customerId,
@@ -1734,14 +1713,13 @@ class PrismaAgentMissionCustomerRepository
     readonly companyId: string;
     readonly customerId: string;
   }): Promise<CustomerCandidateReference | null> {
-    const rows = await this.transaction.$queryRaw<CustomerCandidateReferenceRow[]>`
-      SELECT c."id" AS "customerId", c."name" AS "canonicalName"
-      FROM public.customers c
-      WHERE c."companyId" = ${input.companyId}
-        AND c."id" = ${input.customerId}
-      LIMIT 1
-      FOR SHARE
-    `;
+    const rows = await this.transaction.$queryRaw<CustomerCandidateReferenceRow[]>(
+      customerReferenceByIdSql({
+        companyId: input.companyId,
+        customerId: input.customerId,
+        lock: 'share',
+      }),
+    );
     const row = rows[0];
     return row === undefined
       ? null
@@ -1756,14 +1734,14 @@ class PrismaAgentMissionCustomerRepository
     readonly customerIds: readonly string[];
   }): Promise<readonly CustomerCandidateReference[]> {
     if (input.customerIds.length === 0) return [];
-    const rows = await this.transaction.$queryRaw<CustomerCandidateReferenceRow[]>`
-      SELECT c."id" AS "customerId", c."name" AS "canonicalName"
-      FROM public.customers c
-      WHERE c."companyId" = ${input.companyId}
-        AND c."id" IN (${Prisma.join(input.customerIds)})
-      ORDER BY c."id" ASC
-      FOR SHARE
-    `;
+    const rows = await this.transaction.$queryRaw<CustomerCandidateReferenceRow[]>(
+      customerReferenceByIdsSql({
+        companyId: input.companyId,
+        customerIds: input.customerIds,
+        // Décision : les références retenues seront écrites dans cette transaction.
+        lock: 'share',
+      }),
+    );
     return rows.map((row) =>
       Object.freeze({
         ...row,
@@ -1796,13 +1774,15 @@ class PrismaAgentMissionResumeCustomerRepository {
     readonly customerIds: readonly string[];
   }): Promise<readonly CustomerCandidateReference[]> {
     if (input.customerIds.length === 0) return [];
-    const rows = await this.transaction.$queryRaw<CustomerCandidateReferenceRow[]>`
-      SELECT c."id" AS "customerId", c."name" AS "canonicalName"
-      FROM public.customers c
-      WHERE c."companyId" = ${input.companyId}
-        AND c."id" IN (${Prisma.join(input.customerIds)})
-      ORDER BY c."id" ASC
-    `;
+    const rows = await this.transaction.$queryRaw<CustomerCandidateReferenceRow[]>(
+      customerReferenceByIdsSql({
+        companyId: input.companyId,
+        customerIds: input.customerIds,
+        // Reprise FROIDE, lecture seule : aucun verrou — PostgreSQL refuserait
+        // `FOR SHARE` dans une transaction READ ONLY.
+        lock: 'none',
+      }),
+    );
     return rows.map((row) =>
       Object.freeze({
         ...row,
@@ -2236,6 +2216,9 @@ export class PrismaAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort 
           // U1-f §4/§5 : la fiche cible, sur le MÊME snapshot que le run — pour la NOMMER et
           // montrer l'« avant ». Display-only : la garde §9.1 reste la seule autorité.
           targetSnapshot: (customerId) => readJarvisTargetSnapshot(transaction, owner, customerId),
+          // U1-g §2 : candidats de doublon et libellés, sur le MÊME snapshot, SANS verrou.
+          customerCandidates: (query) => readJarvisCustomerCandidates(transaction, owner, query),
+          customerLabels: (ids) => readJarvisCustomerLabels(transaction, owner, ids),
         });
         return { status: 'executed' as const, value, readAt: readAt.toISOString() };
       },
