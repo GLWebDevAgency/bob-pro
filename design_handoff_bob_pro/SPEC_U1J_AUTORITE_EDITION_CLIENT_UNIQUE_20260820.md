@@ -87,32 +87,52 @@ et release. Le manifest runtime demeure fermé.
 
 ## 6. Critères d'acceptation binaires
 
-- [ ] Le geste manuel et l'effet `client-modifier@1` appellent la même autorité applicative
+- [x] Le geste manuel et l'effet `client-modifier@1` appellent la même autorité applicative
       d'édition ; aucun des deux ne recopie son ordre transactionnel.
-- [ ] L'adapter Jarvis n'instancie ni `UpdateCustomer` ni une variante métier propre à Jarvis.
-- [ ] Chaque règle d'intégrité d'archive listée au §3 possède une seule implémentation, consommée
+- [x] L'adapter Jarvis n'instancie ni `UpdateCustomer` ni une variante métier propre à Jarvis.
+- [x] Chaque règle d'intégrité d'archive listée au §3 possède une seule implémentation, consommée
       par le parcours manuel et l'autorité canonique.
-- [ ] L'ordre observé est tenant -> transaction -> verrou société -> clôture -> devis signés ->
+- [x] L'ordre observé est tenant -> transaction -> verrou société -> clôture -> devis signés ->
       factures émises -> écriture/CAS.
-- [ ] Société absente ou clôturée : refus nommé, zéro lecture d'archive après la clôture et zéro
+- [x] Société absente ou clôturée : refus nommé, zéro lecture d'archive après la clôture et zéro
       mutation client, pour les deux entrées.
-- [ ] Archive de devis signé incomplète : refus `signed_quote_archive_missing`, sans contrôle de
+- [x] Archive de devis signé incomplète : refus `signed_quote_archive_missing`, sans contrôle de
       facture ni mutation ; archive de facture émise incomplète : refus
       `issued_invoice_archive_missing`, sans mutation.
-- [ ] Deux écritures partant de la même révision conservent le CAS U1-i : une seule gagne, l'autre
+- [x] Deux écritures partant de la même révision conservent le CAS U1-i : une seule gagne, l'autre
       rend `target_revision_stale`, sans retry.
-- [ ] Une course réelle avec fermeture de société prouve que les deux mutations se sérialisent sur
+- [x] Une course réelle avec fermeture de société prouve que les deux mutations se sérialisent sur
       le même verrou et qu'aucune édition ne commite après une clôture gagnante.
-- [ ] Le diff ne touche ni controller/codec U1-h, ni mobile, ni directory/catalogue/reducer, ni
+- [x] Le diff ne touche ni controller/codec U1-h, ni mobile, ni directory/catalogue/reducer, ni
       schéma/flag/manifest.
 
 ## 7. Definition of Done
 
-- [ ] Spec U1-j commitée avant le premier changement de code, statut conservé à `specified`.
-- [ ] Tests unitaires ciblés de l'autorité, de la délégation Jarvis et des refus nommés verts.
-- [ ] Régressions d'archives de devis signés et de factures/Factur-X vertes.
-- [ ] Preuve PostgreSQL discriminante : verrou société concurrent, clôture gagnante, CAS stale et
+- [x] Spec U1-j commitée avant le premier changement de code, statut conservé à `specified`.
+- [x] Tests unitaires ciblés de l'autorité, de la délégation Jarvis et des refus nommés verts.
+- [x] Régressions d'archives de devis signés et de factures/Factur-X vertes.
+- [x] Preuve PostgreSQL discriminante : verrou société concurrent, clôture gagnante, CAS stale et
       barrières d'archives, sous tenant/RLS réels lorsque l'environnement local le permet.
-- [ ] Typecheck API, lint ciblé et `git diff --check` verts.
+- [x] Typecheck API, lint ciblé et `git diff --check` verts.
 - [ ] Commits petits et cohérents ; aucune modification Claude recouverte ; handoff final avec les
       preuves et les limites non vérifiées.
+
+## 8. Reçu d'implémentation local — 2026-08-20
+
+Le statut normatif reste volontairement `specified` : ces preuves ferment U1-j localement mais ne
+ferment pas la gate moteur unique du parent §17/§21.2 et n'autorisent aucune publication.
+
+- spec préalable : `a40136e96` ; extraction archive unique : `80e3eed0d` ; autorité client unique :
+  `73e556419` ; câblage partagé manuel/Jarvis : `0ce19cb20` ; harnais réduits fail-closed :
+  `53c91fe70` ; certificat PostgreSQL U1-j : `a0bc357b6` ;
+- unitaires ciblés finaux : 5 fichiers, 59/59 ; régressions archive/Factur-X lors de l'extraction :
+  26/26 ; certificat AgentMission local après câblage : 8 fichiers, 121/121 ;
+- PostgreSQL 17 jetable, 182 migrations et `rls.sql`, rôle `bob_app` non-superuser et
+  `NOBYPASSRLS` : 6/6 scénarios U1-j (posture/FORCE RLS, deux barrières d'archives, CAS à un seul
+  gagnant, puis les deux ordres édition Jarvis ↔ clôture avec observation `pg_blocking_pids`) ;
+- `pnpm --filter @bob/api exec tsc --noEmit`, ESLint ciblé et `git diff --check` : verts ; le
+  wrapper `typecheck` avec régénération Prisma n'a pas été rejoué, faute d'espace disque local,
+  mais le client généré utilisé et le `schema.prisma` courant portent exactement le même SHA-256
+  `922d064df25508ab8c11623179043d3a3a768b9e06325e7116265129569b0069` ;
+- contre-revue indépendante du snapshot final : P0 = 0, P1 = 0 ; worktree Claude U1-h propre à
+  `ab7b4439d`, sans commit ni diff chevauchant U1-j.
