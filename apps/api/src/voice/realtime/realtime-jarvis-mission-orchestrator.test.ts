@@ -710,6 +710,51 @@ describe('RealtimeJarvisMissionOrchestrator — runPlanned', () => {
     expect(parole).toContain('au moins');
   });
 
+  it('U1-g G3 : sur un monde MUTÉ, le second maillon n’est pas émis — zéro écriture, parole honnête', async () => {
+    // LA PREUVE QUE LA SPEC §7 EXIGE, ET QUI MANQUAIT. Sans elle, la garde G3 était supprimable
+    // en entier sans faire rougir la moindre assertion : les deux tests qui atteignent le
+    // chaînage la franchissent TOUJOURS au positif, et un prédicat jamais faux ne prouve rien.
+    //
+    // La fenêtre réelle est la double livraison CONCURRENTE d'un même tour : A et B relisent tous
+    // deux `inactive`, A gagne le CAS puis commite sa résolution (révision 2), et le semis de B se
+    // sérialise après — il retrouve le reçu de son `commandId` et rend `replayed`, mais avec le
+    // postimage du run TEL QU'IL EST DEVENU. Émettre alors le second maillon serait dangereux :
+    // son `commandId` est DÉRIVÉ et sa commande porte le jeu de candidats, donnée VOLATILE. Si la
+    // base a bougé entre les deux sondes, l'empreinte diverge du reçu déjà écrit et l'admission
+    // rend `command_conflict` — sur un run pourtant déjà résolu correctement par A.
+    for (const mutation of [
+      // Le run a déjà été résolu par la livraison concurrente : révision 2, phase avancée.
+      { revision: 2, state: state({ phase: 'preparing_proposal', steps: 2 }) },
+      // Même révision qu'un semis neuf, mais phase incohérente : la garde regarde les DEUX.
+      { revision: 1, state: state({ phase: 'preparing_proposal', steps: 1 }) },
+    ]) {
+      const h = harness({
+        run: null,
+        candidates: [],
+        admissionResult: {
+          status: 'replayed',
+          postimage: runEnvelope(mutation),
+          eventSequence: 2,
+          signalRestamped: false,
+        },
+      });
+      const prepared = await h.orchestrator.prepare(request());
+      if (prepared.status !== 'prepared') throw new Error('préparation attendue');
+
+      const outcome = await h.orchestrator.runPlanned({
+        request: request(),
+        prepared: prepared.prepared,
+        frame: frame({ kind: 'open_customer_creation', customerName: 'Dupont Plomberie' }),
+      });
+
+      // UNE seule admission : le semis. Le second maillon n'est JAMAIS parti.
+      expect(h.runJarvisAdmission).toHaveBeenCalledTimes(1);
+      expect(outcome.status).toBe('failed');
+      // Et Bob ne prétend pas avoir vérifié quoi que ce soit.
+      expect(outcome.canonicalSpeech).not.toContain('J’ai vérifié');
+    }
+  });
+
   it('CORRÉLATION REALTIME : l’enveloppe la porte, sinon l’admission refuse TOUTE commande vocale', async () => {
     // DÉFAUT TROUVÉ PAR LA REVUE. L'enveloppe déclarait `authority.source = realtime_capability`
     // SANS `realtimeCorrelation` : l'admission refuse alors `capability_rejected` /
