@@ -276,6 +276,11 @@ export function JarvisConfirmationCard({
         <Text accessibilityRole="header" style={[font('cardTitle'), { color: colors.ink900 }]}>
           {TITLES[presentation.intent]}
         </Text>
+        {presentation.targetLabel === null ? null : (
+          <Text style={[font('sub'), { color: colors.ink900, marginTop: 2 }]}>
+            {presentation.targetLabel}
+          </Text>
+        )}
         <Text
           accessibilityLiveRegion="polite"
           style={[font('sub'), { color: colors.slate500, marginTop: space[2] }]}
@@ -315,6 +320,17 @@ export function JarvisConfirmationCard({
             <Text accessibilityRole="header" style={[font('cardTitle'), { color: colors.ink900 }]}>
               {TITLES[presentation.intent]}
             </Text>
+            {/* U1-f §4 — DE QUI parle-t-on. Sur l'onglet assistant, rien d'autre ne le dit : sans
+                ce nom, l'artisan confirmerait une modification sans savoir sur quelle fiche elle
+                porte. `null` quand le serveur n'a pas pu le nommer — jamais un identifiant. */}
+            {presentation.targetLabel === null ? null : (
+              <Text
+                selectable
+                style={[font('sub'), { color: colors.ink900, marginTop: 2, fontWeight: '600' }]}
+              >
+                {presentation.targetLabel}
+              </Text>
+            )}
             <Text style={[font('sub'), { color: colors.slate500, marginTop: 2 }]}>
               Vérifiez avant que Bob enregistre.
             </Text>

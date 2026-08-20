@@ -231,6 +231,7 @@ function presentation(): CustomerContactPresentationV1 {
     phase: server.phase,
     intent: server.intent,
     targetCustomerId: server.targetCustomerId,
+    targetLabel: 'SARL Martin',
     proposal: {
       proposalId: PROPOSAL_ID,
       proposalHash: HASH,

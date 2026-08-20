@@ -645,11 +645,19 @@ describe.skipIf(!RUN_CERT)(
           {
             field: 'postal_code',
             label: 'Code postal',
-            before: null,
+            // U1-f §5 : l'AVANT vient d'une relecture display-only de la fiche — la garde §9.1
+            // au `confirm` reste la seule autorité, celui-ci n'engage rien.
+            before: '75011',
             after: '69003',
             sensitiveField: 'address',
           },
-          { field: 'city', label: 'Ville', before: null, after: 'Lyon', sensitiveField: 'address' },
+          {
+            field: 'city',
+            label: 'Ville',
+            before: 'Paris',
+            after: 'Lyon',
+            sensitiveField: 'address',
+          },
         ]);
 
         // (d) OWNER-SCOPÉ, dans les deux sens. Le voisin a SON run vivant : chacun ne voit que le
@@ -1340,6 +1348,54 @@ describe.skipIf(!RUN_CERT)(
         await expect(directory.listDispatchCoordinates(companyId, 51)).rejects.toThrow(
           /Borne de l'annuaire de dispatch/,
         );
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "preuve 6 — U1-f §4/§5 : la carte NOMME la fiche visée et montre l'« avant » réel",
+      async () => {
+        // CE QUE CETTE PREUVE ÉTABLIT. Sur l'onglet assistant, l'artisan confirmait une
+        // modification `privacy_sensitive` sans savoir DE QUI il s'agissait (la présentation ne
+        // portait que l'identifiant), et le diff n'avait aucun « avant » (`before: null` en dur).
+        // Les deux viennent maintenant d'une relecture SERVEUR de la fiche.
+        const owner: JarvisAdmissionOwner = { companyId, ownerUserId: freshOwner('libelle') };
+        const customerId = await seedTargetCustomer(owner, {
+          name: 'SARL Ancienne Raison',
+          address: { line1: '3 quai du Port', zip: '13001', city: 'Marseille' },
+        });
+        const opened = await openRun(controllerA, owner, {
+          commandId: randomUUID(),
+          customerId,
+        });
+        const runId = opened.run.runId;
+
+        // Dès l'ouverture, AVANT toute proposition : la cible est déjà nommée.
+        const decouvert = await currentRun(controllerA, owner);
+        expect(decouvert.presentation).toMatchObject({
+          intent: 'update',
+          targetCustomerId: customerId,
+          targetLabel: 'SARL Ancienne Raison',
+        });
+
+        // Proposition qui CHANGE la ville : le diff doit montrer l'avant réel.
+        const fields = proposedFields({ city: 'Lyon', postalCode: '69003' });
+        await presentProposal({
+          owner,
+          runId,
+          customerId,
+          targetRevision: 1,
+          expectedRevision: 2,
+          fields,
+        });
+        const presente = await currentRun(controllerA, owner);
+        expect(presente.presentation?.targetLabel).toBe('SARL Ancienne Raison');
+        const champs = presente.presentation?.proposal?.fields ?? [];
+        const ville = champs.find((champ) => champ.field === 'city');
+        // L'AVANT est celui de la base, l'APRÈS celui de la proposition scellée.
+        expect(ville).toMatchObject({ before: 'Marseille', after: 'Lyon' });
+        const codePostal = champs.find((champ) => champ.field === 'postal_code');
+        expect(codePostal).toMatchObject({ before: '13001', after: '69003' });
       },
       TEST_TIMEOUT_MS,
     );

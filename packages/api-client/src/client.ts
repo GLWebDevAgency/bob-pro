@@ -1270,6 +1270,8 @@ export interface CustomerContactPresentationV1 {
   readonly phase: CustomerContactPhase;
   readonly intent: 'create' | 'update';
   readonly targetCustomerId: string | null;
+  /** U1-f §4 — nom de la fiche visée, composé SERVEUR. `null` si introuvable ou imprésentable. */
+  readonly targetLabel: string | null;
   readonly proposal: {
     readonly proposalId: string;
     readonly proposalHash: string;

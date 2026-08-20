@@ -95,6 +95,7 @@ import {
   type JarvisRunStatus,
   type JarvisUserAdmissionEnvelope,
   type Result,
+  type JarvisTargetSnapshot,
 } from '@bob/core';
 
 import { unwrap } from '../http/result';
@@ -560,6 +561,13 @@ export interface CustomerContactPresentationWire {
   readonly phase: CustomerContactPhase;
   readonly intent: 'create' | 'update';
   readonly targetCustomerId: string | null;
+  /**
+   * U1-f §4 — QUI est visé, en clair. Sans lui, l'onglet assistant fait confirmer une
+   * modification `privacy_sensitive` sans dire de quelle fiche il s'agit : la fiche client, elle,
+   * a le nom sous les yeux par construction. TOUJOURS présent, `null` quand la cible est
+   * introuvable ou son nom imprésentable — jamais un identifiant technique en guise de nom.
+   */
+  readonly targetLabel: string | null;
   readonly proposal:
     | {
         readonly proposalId: string;
@@ -646,11 +654,19 @@ function presentedValue(
 
 /**
  * Champs présentés : uniquement ceux réellement PROPOSÉS, dans l'ordre canonique du digest.
- * `before` reste `null` en U1-d — l'« avant » d'une modification est la fiche RELUE (§8), que ce
- * canal ne possède pas : mieux vaut ne rien montrer qu'un avant reconstitué de mémoire.
+ *
+ * U1-f §5 — L'« AVANT » EST REMPLI, depuis une relecture DISPLAY-ONLY de la fiche (§8 reste
+ * l'autorité : la garde §9.1 invalide au `confirm` toute proposition dont la cible a bougé, donc
+ * un avant légèrement daté n'engage rien). Deux règles d'imprésentabilité, volontairement
+ * DIFFÉRENTES :
+ *   · un `after` imprésentable annule TOUTE la présentation — c'est ce que l'artisan confirme ;
+ *   · un `before` imprésentable devient `null` pour CE champ seulement. Cas réel :
+ *     `billingChannelType` vaut `chorus` ou `portail`, hors de la table de libellés de la
+ *     proposition — refuser la fiche entière pour un avant illisible la rendrait inconfirmable.
  */
 export function presentCustomerContactFields(
   fields: CustomerContactProposedFieldsV1,
+  target: JarvisTargetSnapshot | null = null,
 ): readonly CustomerContactPresentedFieldWire[] | null {
   const presented: CustomerContactPresentedFieldWire[] = [];
   for (const key of CUSTOMER_CONTACT_PROPOSED_FIELD_KEYS) {
@@ -659,10 +675,19 @@ export function presentCustomerContactFields(
     const after = presentedText(raw);
     // Une valeur impossible à présenter honnêtement rend TOUTE la présentation absente.
     if (after === null) return null;
+    const courant = target === null ? null : (target.fields[key] ?? null);
+    const before =
+      courant === null
+        ? null
+        : key === 'billingChannel'
+          ? ((BILLING_CHANNEL_LABELS as Readonly<Record<string, string>>)[courant] ?? null)
+          : presentedText(courant);
     presented.push(Object.freeze({
       field: PRESENTED_FIELDS[key].id,
       label: PRESENTED_FIELDS[key].label,
-      before: null,
+      // Un avant identique à l'après n'est pas un changement : l'écran ne montre pas une flèche
+      // entre deux valeurs égales.
+      before: before === after ? null : before,
       after,
       sensitiveField: SENSITIVE_FIELD_BY_KEY.get(key) ?? null,
     }));
@@ -673,8 +698,14 @@ export function presentCustomerContactFields(
 export function projectCustomerContactPresentation(
   state: CustomerContactStateV1,
   fields: CustomerContactProposedFieldsV1 | null,
+  target: JarvisTargetSnapshot | null = null,
 ): CustomerContactPresentationWire | null {
   const targetCustomerId = state.intent.mode === 'update' ? state.intent.target.customerId : null;
+  // Le libellé passe par les MÊMES bornes de présentation que les valeurs (§G4 allégé) : un nom
+  // illisible devient `null`, il n'annule JAMAIS la présentation. Le libellé informe, il n'engage
+  // rien — contrairement à l'`after` d'un champ, que l'artisan confirme.
+  const targetLabel =
+    target === null || target.displayName === null ? null : presentedText(target.displayName);
   const proposal = state.proposal;
   if (proposal === null) {
     // Rien de proposé : la présentation existe (phase, intention) mais n'offre AUCUN geste.
@@ -684,13 +715,14 @@ export function projectCustomerContactPresentation(
       phase: state.phase,
       intent: state.intent.mode,
       targetCustomerId,
+      targetLabel,
       proposal: null,
       confirmation: null,
     });
   }
   // Charge absente ou digest divergent (G4) : fail-closed, l'écran ne confirme rien.
   if (fields === null) return null;
-  const presented = presentCustomerContactFields(fields);
+  const presented = presentCustomerContactFields(fields, target);
   if (presented === null) return null;
   const confirmation = state.confirmation;
   return Object.freeze({
@@ -699,6 +731,7 @@ export function projectCustomerContactPresentation(
     phase: state.phase,
     intent: state.intent.mode,
     targetCustomerId,
+    targetLabel,
     proposal: Object.freeze({
       proposalId: proposal.proposalId,
       proposalHash: proposal.proposalHash,
@@ -1181,8 +1214,12 @@ export class JarvisRunController {
   ): Promise<CustomerContactPresentationWire | null> {
     const state = customerContactStateOf(envelope);
     if (state === null) return null;
+    // U1-f §4/§5 — la fiche cible, DISPLAY-ONLY : elle NOMME la cible et fournit l'« avant » du
+    // diff. Une panne de cette lecture n'annule RIEN : la présentation sort sans libellé ni
+    // avant, ce qui est exactement l'état d'avant ce lot.
+    const target = await this.targetSnapshot(owner, state);
     const proposal = state.proposal;
-    if (proposal === null) return projectCustomerContactPresentation(state, null);
+    if (proposal === null) return projectCustomerContactPresentation(state, null, target);
     const payloads = this.payloads;
     if (payloads === null) return null;
     const payload = await payloads.readProposalPayload({
@@ -1192,6 +1229,34 @@ export class JarvisRunController {
       proposalId: proposal.proposalId,
       fieldsDigest: proposal.fieldsDigest,
     });
-    return payload === null ? null : projectCustomerContactPresentation(state, payload.fields);
+    return payload === null
+      ? null
+      : projectCustomerContactPresentation(state, payload.fields, target);
+  }
+
+  /**
+   * Lecture DISPLAY-ONLY de la fiche visée. `targetSnapshot` est optionnel sur la vue : un
+   * adaptateur qui ne sait pas lire la fiche ne fournit pas une moitié d'annuaire — on rend
+   * alors `null`, et l'écran se contente de ce qu'il sait vraiment.
+   */
+  private async targetSnapshot(
+    owner: JarvisAdmissionOwner,
+    state: CustomerContactStateV1,
+  ): Promise<JarvisTargetSnapshot | null> {
+    if (state.intent.mode !== 'update') return null;
+    const admission = this.admission;
+    if (admission === null) return null;
+    const customerId = state.intent.target.customerId;
+    try {
+      const read = await admission.readJarvisStateless(owner, async (view) => {
+        const snapshot = view.targetSnapshot;
+        return typeof snapshot === 'function' ? snapshot(customerId) : null;
+      });
+      return read.value;
+    } catch {
+      // Une fiche illisible ne casse JAMAIS la présentation : elle la prive seulement de son
+      // libellé et de son avant — le geste, lui, reste offert.
+      return null;
+    }
   }
 }

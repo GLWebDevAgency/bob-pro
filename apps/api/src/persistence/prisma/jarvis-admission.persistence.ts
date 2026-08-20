@@ -25,6 +25,7 @@ import {
   JARVIS_RUN_TERMINAL_STATUSES,
   SINGLE_BUSINESS_ACTION_V1,
   computeCustomerContactTargetSensitiveDigest,
+  type JarvisTargetSnapshot,
   parseCustomerContactState,
   projectQuoteMissionJarvisStatus,
   reduceJarvisRun,
@@ -808,6 +809,67 @@ const JARVIS_TERMINAL_OR_FROZEN_STATUSES: readonly string[] = [
  * garantit l'unicité), puis le plus récemment muté, puis l'identifiant — deux lectures du même
  * état rendent donc toujours le même run, jamais un choix au hasard du plan d'exécution.
  */
+/**
+ * U1-f §4/§5 — LA FICHE CIBLE, TELLE QU'ELLE EST, pour que l'écran puisse la NOMMER et montrer
+ * l'« avant » d'une modification.
+ *
+ * DISPLAY-ONLY, assumé : lue SANS verrou, sur le snapshot de la lecture stateless. Le TOCTOU est
+ * réel (la fiche peut bouger juste après) et il est SANS CONSÉQUENCE : rien ici n'autorise une
+ * écriture. La seule autorité reste `readJarvisTargetRevalidation`, sous `FOR UPDATE`, dans la
+ * transaction d'admission au moment du `confirm` (§9.1) — c'est elle qui invalide une proposition
+ * dont la cible a changé. Montrer un « avant » légèrement daté est honnête ; ne rien montrer du
+ * tout obligeait l'artisan à confirmer une modification sans savoir sur QUI elle portait.
+ *
+ * Le mapping colonnes → clés du frame est celui de la revalidation, étendu au nom et au téléphone
+ * (que le sceau sensible n'inclut pas mais que l'écran présente).
+ */
+export async function readJarvisTargetSnapshot(
+  tx: Prisma.TransactionClient,
+  owner: JarvisAdmissionOwner,
+  customerId: string,
+): Promise<JarvisTargetSnapshot | null> {
+  const rows = await tx.$queryRaw<
+    Array<{
+      name: string | null;
+      contactName: string | null;
+      email: string | null;
+      phone: string | null;
+      addrLine1: string | null;
+      addrZip: string | null;
+      addrCity: string | null;
+      tvaIntracom: string | null;
+      billingChannelType: string | null;
+    }>
+  >`
+    SELECT "name", "contactName", "email", "phone", "addrLine1", "addrZip", "addrCity",
+           "tvaIntracom", "billingChannelType"
+    FROM public.customers
+    WHERE "id" = ${customerId}
+      AND "companyId" = ${owner.companyId}
+    LIMIT 1
+  `;
+  const row = rows[0];
+  if (row === undefined) return null;
+  return Object.freeze({
+    displayName: row.name,
+    fields: Object.freeze({
+      // `displayName` et `legalName` partagent la colonne `name` : le dépôt n'en porte qu'une.
+      // On la rend sous les DEUX clés plutôt que d'en inventer une seconde — l'écran n'affiche
+      // de toute façon l'« avant » que des champs réellement proposés.
+      displayName: row.name,
+      legalName: row.name,
+      email: row.email,
+      phone: row.phone,
+      addressLine: row.addrLine1,
+      postalCode: row.addrZip,
+      city: row.addrCity,
+      vatNumber: row.tvaIntracom,
+      recipientName: row.contactName,
+      billingChannel: row.billingChannelType,
+    }),
+  });
+}
+
 export async function readJarvisCurrentRun(
   tx: Prisma.TransactionClient,
   owner: JarvisAdmissionOwner,

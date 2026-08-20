@@ -11,6 +11,7 @@ import type {
 import {
   readJarvisCurrentRun,
   readJarvisRunById,
+  readJarvisTargetSnapshot,
   runJarvisAdmissionInTransaction,
   runJarvisSystemAdmissionInTransaction,
   type JarvisAdmissionDeps,
@@ -2232,6 +2233,9 @@ export class PrismaAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort 
           // il fournit la moitié optionnelle du port — un adaptateur qui ne saurait pas doit
           // l'omettre, et l'appelant échoue fermé plutôt que d'affirmer « aucun run ».
           currentRun: () => readJarvisCurrentRun(transaction, owner),
+          // U1-f §4/§5 : la fiche cible, sur le MÊME snapshot que le run — pour la NOMMER et
+          // montrer l'« avant ». Display-only : la garde §9.1 reste la seule autorité.
+          targetSnapshot: (customerId) => readJarvisTargetSnapshot(transaction, owner, customerId),
         });
         return { status: 'executed' as const, value, readAt: readAt.toISOString() };
       },

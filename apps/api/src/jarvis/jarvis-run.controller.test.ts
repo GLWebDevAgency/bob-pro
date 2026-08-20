@@ -609,6 +609,7 @@ describe('présentation écran (greffe G4) — jamais une proposition non scell�
       phase: 'awaiting_confirmation',
       intent: 'create',
       targetCustomerId: null,
+      targetLabel: null,
       proposal: {
         proposalId: PROPOSAL_ID,
         proposalHash: PROPOSAL_HASH,

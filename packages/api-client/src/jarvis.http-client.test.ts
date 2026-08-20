@@ -58,6 +58,7 @@ function presentation() {
     phase: 'awaiting_confirmation',
     intent: 'create',
     targetCustomerId: null,
+    targetLabel: null,
     proposal: {
       proposalId: PROPOSAL_ID,
       proposalHash: HASH,
