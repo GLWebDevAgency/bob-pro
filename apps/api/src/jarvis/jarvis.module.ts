@@ -197,12 +197,7 @@ export function buildJarvisCustomerEffectAuthority(
   persistence: Persistence,
   customerUpdates: CustomerUpdateAuthorityPort,
 ): JarvisCustomerEffectAuthority | null {
-  const candidate = persistence as unknown as Record<string, unknown>;
-  const factory = candidate.createJarvisCustomerEffectAuthority;
-  if (typeof factory !== 'function') return null;
-  return (factory.call(persistence, customerUpdates) ?? null) as
-    | JarvisCustomerEffectAuthority
-    | null;
+  return persistence.createJarvisCustomerEffectAuthority(customerUpdates);
 }
 
 const jarvisCustomerEffectAuthorityProvider: Provider = {

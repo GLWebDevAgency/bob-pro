@@ -1,11 +1,7 @@
 import { ok, type Company } from '@bob/core';
 
 import { CustomerUpdateAuthority } from '../customers/customer-update.authority';
-import {
-  DocumentArchiveIntegrityAuthority,
-  type DocumentArchiveMutationBarrier,
-} from '../documents/document-archive-integrity.authority';
-import { UnavailableDocumentStorage } from '../documents/storage';
+import type { DocumentArchiveMutationBarrier } from '../documents/document-archive-integrity.authority';
 import type {
   JarvisCustomerEffectAuthority,
   JarvisCustomerEffectTarget,
@@ -14,7 +10,6 @@ import type {
   JarvisCustomerWriteResult,
 } from '../jobs/jarvis-customer-effect.executor';
 import type { Persistence } from '../persistence/persistence';
-import { PrismaPersistence } from '../persistence/prisma/prisma-persistence';
 import {
   PrismaCustomerRepository,
   PrismaInvoiceRepository,
@@ -27,21 +22,6 @@ const ARCHIVES_READY: DocumentArchiveMutationBarrier = {
   assertSignedQuoteArchivesComplete: async () => ok(undefined),
   assertIssuedInvoiceArchivesComplete: async () => ok(undefined),
 };
-
-/** Composition de production complète, sur le même client et les mêmes autorités. */
-export function createPrismaCustomerEffectAuthorityForTesting(
-  prisma: PrismaService,
-): PrismaJarvisCustomerEffectAuthority {
-  const persistence = new PrismaPersistence(prisma);
-  const archives = new DocumentArchiveIntegrityAuthority(
-    persistence,
-    new UnavailableDocumentStorage(),
-  );
-  return new PrismaJarvisCustomerEffectAuthority(
-    prisma,
-    new CustomerUpdateAuthority(persistence, archives),
-  );
-}
 
 /**
  * Composition réservée aux vieux schémas minimaux des oracles Jarvis. Elle conserve l'autorité

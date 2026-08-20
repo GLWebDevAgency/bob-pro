@@ -54,7 +54,7 @@ import { PrismaService } from '../persistence/prisma/prisma.service';
 import { PrismaCustomerRepository } from '../persistence/prisma/repositories';
 import {
   CountingJarvisCustomerEffectAuthority,
-  createPrismaCustomerEffectAuthorityForTesting,
+  createReducedSchemaCustomerEffectAuthorityForTesting,
 } from '../jarvis/jarvis-customer-effect.authority.testing';
 import {
   JarvisCustomerEffectExecutor,
@@ -360,7 +360,7 @@ describe.skipIf(!RUN_CERT)(
       store = new PrismaJarvisProposalPayloadStore(worker);
       workItems = new PrismaJarvisWorkItemsRepository(worker);
       authority = new CountingJarvisCustomerEffectAuthority(
-        createPrismaCustomerEffectAuthorityForTesting(worker),
+        createReducedSchemaCustomerEffectAuthorityForTesting(worker),
       );
       admission = {
         runJarvisAdmission: (envelope: JarvisUserAdmissionEnvelope) =>

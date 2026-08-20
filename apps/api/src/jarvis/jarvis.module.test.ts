@@ -240,6 +240,7 @@ describe('graphe d’injection réel', () => {
     return {
       createAgentMissionUnitOfWork: vi.fn(() => CAPABLE_UNIT_OF_WORK),
       createJarvisProposalPayloadStore: vi.fn(() => store),
+      createJarvisCustomerEffectAuthority: vi.fn(() => null),
     };
   }
 
@@ -354,14 +355,14 @@ describe('graphe d’injection réel', () => {
     }
   });
 
-  it('registre : un adapter SANS autorité métier laisse le registre vide (fail-closed)', async () => {
+  it('registre : une fabrique qui refuse l’autorité métier laisse le registre vide (fail-closed)', async () => {
     const persistence = bootPersistence(FAKE_PAYLOADS);
     const moduleRef = await compileJarvis(persistence);
 
     try {
-      // Un adapter de persistance qui ne SAIT PAS fabriquer l'autorité métier (double de test,
-      // génération antérieure) laisse le registre VIDE : le worker règle `executor_unregistered`,
-      // jamais un effet exécuté sans son autorité. C'est le pendant fail-closed de l'armement.
+      // La fabrique obligatoire peut refuser de fournir une autorité quand l'adapter ne peut pas
+      // la prouver : le registre reste VIDE et le worker règle `executor_unregistered`, jamais un
+      // effet exécuté sans son autorité. C'est le pendant fail-closed de l'armement.
       expect((moduleRef.get(JARVIS_EFFECT_EXECUTORS) as ReadonlyMap<string, unknown>).size).toBe(0);
       // Et dès que cette autorité arrive, le MÊME magasin arme les deux actions du lot.
       const registry = buildJarvisCustomerEffectExecutors({
