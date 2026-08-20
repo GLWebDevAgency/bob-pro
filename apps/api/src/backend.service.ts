@@ -51,7 +51,6 @@ import {
   appDomain,
   Company,
   Customer,
-  UpdateCustomer,
   ListCustomerContacts,
   CreateCustomerContact,
   UpdateCustomerContact,
@@ -371,6 +370,7 @@ import {
 import type { TtsResult } from '@bob/ai';
 import { UuidGenerator } from './id-generator';
 import { appErrorSummary } from './app-error-summary';
+import { CustomerUpdateAuthority } from './customers/customer-update.authority';
 import { RechercheEntreprisesAdapter } from './adapters/recherche-entreprises.adapter';
 import { ViesVatAdapter } from './adapters/vies-vat.adapter';
 import { BanAddressAdapter } from './adapters/ban-address.adapter';
@@ -1496,9 +1496,11 @@ export class BackendService {
     private readonly voiceTrace: VoiceTraceRecorderPort | null = null,
   ) {
     this.documentArchiveIntegrity = new DocumentArchiveIntegrityAuthority(p, documentStorage);
+    this.customerUpdates = new CustomerUpdateAuthority(p, this.documentArchiveIntegrity);
   }
 
   private readonly documentArchiveIntegrity: DocumentArchiveIntegrityAuthority;
+  private readonly customerUpdates: CustomerUpdateAuthority;
 
   private mapQuote(q: Quote): QuoteView {
     return {
@@ -11219,28 +11221,7 @@ export class BackendService {
     input: Omit<CustomerProps, 'id' | 'companyId'>,
   ): Promise<Result<{ id: string }, AppError>> {
     const companyId = this.companyId();
-    const r = await this.p.runInTransaction(async (): Promise<Result<{ id: string }, AppError>> => {
-      // Ordre global anti-deadlock : Company FOR UPDATE avant toute autre ligne (même ordre que
-      // updateCompanyProfile) — sérialise l'édition avec les signatures/émissions en cours.
-      const company = await this.p.companies.lockById(companyId);
-      if (!company) return err(appNotFound('company', companyId));
-      if (company.isClosed()) return err(appForbidden('Compte clôturé.'));
-      const quoteArchiveReady = await this.documentArchiveIntegrity
-        .assertSignedQuoteArchivesComplete(companyId);
-      if (!quoteArchiveReady.ok) return quoteArchiveReady;
-      const invoiceArchiveReady = await this.documentArchiveIntegrity
-        .assertIssuedInvoiceArchivesComplete(companyId);
-      if (!invoiceArchiveReady.ok) return invoiceArchiveReady;
-      return new UpdateCustomer({
-        customers: this.p.customers,
-        quotes: this.p.quotes,
-        invoices: this.p.invoices,
-      }).execute({
-        id,
-        companyId,
-        ...input,
-      });
-    });
+    const r = await this.customerUpdates.execute({ id, companyId, ...input });
     if (r.ok) this.logger.audit('customer.updated', { id, companyId });
     return r;
   }
