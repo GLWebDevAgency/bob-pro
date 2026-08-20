@@ -4,9 +4,9 @@
   + juge (wf_00b3e76f), **faits porteurs re-vérifiés de ma main** avant rédaction.
 - **Amendement** : Codex, 2026-08-20 — état réel après Safety, intégration et contre-revue U1-h.
 - **Statut normatif** : `specified` — la gate moteur unique du parent Jarvis §17/§21.2 reste
-  fermée. L0/L1/L9 (`3a51593f6`) et L2/L3 (`ab7b4439d` + durcissement `5a86f94d6`) sont réalisés
-  et prouvés localement ; L4–L8 et L10–L11 restent à réaliser. Aucun livrable U1-h n'est
-  `certified` ni `released`.
+  fermée. L0/L1/L9 (`3a51593f6`), L2/L3 (`ab7b4439d` + durcissement `5a86f94d6`) et L4
+  (`d4742b35d`) sont réalisés et prouvés localement ; L5–L8 et L10–L11 restent à réaliser.
+  Aucun livrable U1-h n'est `certified` ni `released`.
 - **Deltas mesurés** : `3a51593f6` = 7 fichiers, +453/-15 ; `ab7b4439d` = 6 fichiers,
   +503/-13 ; `5a86f94d6` = 4 fichiers, +359/-16. Safety et U1-i ne sont pas attribués à U1-h.
 - **Parents** : SPEC_U1G §6 (hors-lot tracé) · spec Jarvis §7.0/§8/§9.1/§14/§17.1 · FD-2026-0817-06.
@@ -122,6 +122,26 @@ fiche — deux gestes, deux runs, deux autorités, aucune identité écrasée.
 - **L11 — Spec, AIPD, mesures** : cette spec ; ligne AIPD étendue (libellés affichés à l'**écran**,
   hors LLM, hors historique) ; **M1** (foreground vs `waiting_user`) et **M2** (survie de la session
   realtime au changement d'onglet) consignées **avant** toute ligne qui en dépend.
+
+### 3.1 M1 — protocole binaire avant correction
+
+M1 ne se déduit pas du seul index. La mesure doit traverser le vrai writer devis et PostgreSQL :
+
+1. persister, pour un propriétaire neuf, un run `customer_contact@1` valide en
+   `status = waiting_user` et `phase = awaiting_duplicate_review` ;
+2. appeler le vrai `StartQuoteAgentMission` sous l'autorité realtime de ce même propriétaire ;
+3. relire missions, événements et brouillon après la transaction.
+
+Le défaut est confirmé si le writer tente l'insert puis retourne
+`insert_conflict_without_active_foreground`. L'acceptation après correction est fermée :
+
+- le résultat est le conflit métier `agent_mission_foreground/active_mission_exists` ;
+- le run Jarvis existant est la seule mission du propriétaire ;
+- aucun événement devis et aucun `quote_draft_slot` ne sont créés ;
+- `findForeground` et `findForegroundForUpdate` utilisent la **même** liste core exportée que
+  l'index `agent_missions_one_active_owner_key` ;
+- la matrice exacte reste `active | waiting_user | waiting_screen | retry_due`, gardée contre la
+  migration par le test de vocabulaire ; aucune migration ni modification de schéma n'est requise.
 
 ## 4. Gardes à rendre vraies avant certification
 
