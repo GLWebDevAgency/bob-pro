@@ -240,7 +240,13 @@ afterEach(() => {
 
 describe('deriveJarvisConfirmationCardMode', () => {
   it('projette toute phase hors confirmation vers un état informatif', () => {
+    // U1-h — `resolving_customer` et `preparing_proposal` ne disent plus la meme chose : pendant
+    // que Bob CHERCHE des doublons rien n'est attendu de l'artisan, alors qu'en preparation c'est
+    // LUI qui doit dicter. Les confondre le laissait attendre un tour qui ne venait pas.
     expect(deriveJarvisConfirmationCardMode(presentation({ phase: 'resolving_customer' }))).toEqual(
+      { kind: 'notice', reason: 'resolving' },
+    );
+    expect(deriveJarvisConfirmationCardMode(presentation({ phase: 'preparing_proposal' }))).toEqual(
       { kind: 'notice', reason: 'preparing' },
     );
     expect(deriveJarvisConfirmationCardMode(presentation({ phase: 'completed' }))).toEqual({
@@ -371,7 +377,7 @@ describe('JarvisConfirmationCard', () => {
     );
 
     expect(coordinator.acknowledgePresentation).not.toHaveBeenCalled();
-    expect(texts(renderer)).toContain('Bob prépare la proposition…');
+    expect(texts(renderer)).toContain('Dites à Bob ce qu’il faut mettre dans la fiche.');
     // UN SEUL geste ici, et c'est l'abandon : ni confirmer (il n'y a rien à confirmer) ni
     // écarter. Sans lui, un run PARKÉ — celui dont la résolution de cible n'a pas abouti —
     // tiendrait le premier plan de l'artisan sans aucun recours à l'écran.

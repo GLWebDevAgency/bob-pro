@@ -43,8 +43,26 @@ export type JarvisConfirmationCardMode =
       readonly confirmable: boolean;
     }
   | {
+      /**
+       * U1-h — Bob a trouvé des fiches proches et attend une décision. C'est la SEULE branche de
+       * cette carte qui fasse choisir entre des entités : elle porte donc le rang PRONONCÉ, et
+       * jamais un ordre reconstruit à l'écran.
+       */
+      readonly kind: 'duplicate_review';
+      readonly reviewId: string;
+      readonly choices: readonly {
+        readonly ordinal: number;
+        readonly choiceId: string;
+        readonly label: string | null;
+      }[];
+    }
+  | {
       readonly kind: 'notice';
       readonly reason:
+        // U1-h — `preparing` disait la même chose de deux étapes très différentes : pendant que
+        // Bob CHERCHE des doublons, et pendant que l'artisan doit DICTER les champs. La seconde
+        // attend un geste de lui ; la première non. Les confondre laissait l'artisan attendre.
+        | 'resolving'
         | 'preparing'
         | 'recording'
         | 'cancelling'
@@ -53,6 +71,7 @@ export type JarvisConfirmationCardMode =
         | 'expired'
         | 'invalidated'
         | 'completed'
+        | 'existing_selected'
         | 'cancelled'
         | 'failed';
     };
@@ -60,7 +79,8 @@ export type JarvisConfirmationCardMode =
 const NOTICES: Readonly<
   Record<Extract<JarvisConfirmationCardMode, { kind: 'notice' }>['reason'], string>
 > = {
-  preparing: 'Bob prépare la proposition…',
+  resolving: 'Bob vérifie si ce client existe déjà chez vous…',
+  preparing: 'Dites à Bob ce qu’il faut mettre dans la fiche.',
   recording: 'Bob enregistre la fiche client…',
   cancelling: 'Bob referme cette demande…',
   consumed: 'C’est confirmé. Bob enregistre la fiche client.',
@@ -68,6 +88,8 @@ const NOTICES: Readonly<
   expired: 'Cette proposition a expiré. Redemandez-la à Bob.',
   invalidated: 'Ces informations ont changé entre-temps : Bob va vous en proposer une nouvelle.',
   completed: 'La fiche client est enregistrée.',
+  // U1-h — n'affirme AUCUNE écriture : l'artisan a retenu une fiche qui existait déjà.
+  existing_selected: 'Bob a retenu la fiche qui existait déjà. Aucune nouvelle fiche n’a été créée.',
   cancelled: 'Demande annulée.',
   failed: 'Bob n’a pas pu terminer cette demande.',
 };
@@ -86,7 +108,11 @@ export function deriveJarvisConfirmationCardMode(
 ): JarvisConfirmationCardMode {
   switch (presentation.phase) {
     case 'completed':
-      return { kind: 'notice', reason: 'completed' };
+      // La fin se raconte de DEUX façons, et elles n'affirment pas la même chose. Le serveur a
+      // déjà tranché dans `completion` : l'écran ne le redevine pas.
+      return presentation.completion?.kind === 'existing_selected'
+        ? { kind: 'notice', reason: 'existing_selected' }
+        : { kind: 'notice', reason: 'completed' };
     case 'cancelled':
       return { kind: 'notice', reason: 'cancelled' };
     case 'failed':
@@ -98,6 +124,18 @@ export function deriveJarvisConfirmationCardMode(
       return { kind: 'notice', reason: 'cancelling' };
     case 'awaiting_confirmation':
       break;
+    case 'awaiting_duplicate_review':
+      // Sans revue rendue (libellés indisponibles, port absent), l'écran ne revendique RIEN : il
+      // dit que Bob cherche, plutôt que d'afficher une liste vide ou d'inventer des rangs.
+      return presentation.duplicateReview === null
+        ? { kind: 'notice', reason: 'resolving' }
+        : {
+            kind: 'duplicate_review',
+            reviewId: presentation.duplicateReview.reviewId,
+            choices: presentation.duplicateReview.choices,
+          };
+    case 'resolving_customer':
+      return { kind: 'notice', reason: 'resolving' };
     default:
       return { kind: 'notice', reason: 'preparing' };
   }
@@ -270,7 +308,7 @@ export function JarvisConfirmationCard({
     // pourtant le premier plan de l'artisan. Sans ce geste il n'aurait AUCUN recours à l'écran :
     // ni confirmer (pas de proposition), ni écarter, ni reprendre. On ne l'offre pas sur
     // `recording`/`cancelling` : l'écriture est partie, dire « annulé » y serait un mensonge.
-    const abandonnable = mode.reason === 'preparing';
+    const abandonnable = mode.reason === 'preparing' || mode.reason === 'resolving';
     return (
       <Card padding={space[7]}>
         <Text accessibilityRole="header" style={[font('cardTitle'), { color: colors.ink900 }]}>
@@ -301,6 +339,84 @@ export function JarvisConfirmationCard({
             />
           </View>
         ) : null}
+      </Card>
+    );
+  }
+
+  if (mode.kind === 'duplicate_review') {
+    // CE QUE CET ÉCRAN NE FAIT PAS, et qui compte autant que ce qu'il fait : il ne renumérote
+    // rien, ne retrie rien, ne recherche rien. Les rangs viennent du jeu SCELLÉ, dans l'ordre où
+    // Bob les a prononcés — « le troisième » à l'oreille doit rester le troisième au doigt, parce
+    // que le geste qui suit crée un rattachement DURABLE.
+    const occupe = busy !== null;
+    return (
+      <Card padding={space[7]}>
+        <Text accessibilityRole="header" style={[font('cardTitle'), { color: colors.ink900 }]}>
+          {TITLES[presentation.intent]}
+        </Text>
+        {/* On ne revendique JAMAIS d'exhaustivité : « des fiches proches », jamais « vos fiches »
+            ni un compte. La recherche est bornée, et le dire est la moitié de l'honnêteté. */}
+        <Text
+          accessibilityLiveRegion="polite"
+          style={[font('sub'), { color: colors.slate500, marginTop: space[2] }]}
+        >
+          Bob a trouvé des fiches proches. Rien n’a été créé.
+        </Text>
+
+        <View style={{ gap: space[3], marginTop: space[5] }}>
+          {mode.choices.map((choix) => (
+            <View key={choix.choiceId} style={{ gap: space[2] }}>
+              <Text style={[font('sub'), { color: colors.ink900 }]} selectable>
+                {choix.ordinal}. {choix.label ?? 'Fiche introuvable'}
+              </Text>
+              <View style={{ alignSelf: 'flex-start' }}>
+                <Button
+                  title="C’est celle-là"
+                  variant="secondary"
+                  loading={busy === 'use_existing'}
+                  // Un rang dont le nom ne s'est pas résolu N'EST PAS choisissable : on ne fait
+                  // pas rattacher une fiche que l'artisan n'a pas pu lire. Il garde pourtant son
+                  // rang — le faire disparaître décalerait tous les suivants.
+                  disabled={occupe || choix.label === null}
+                  accessibilityState={{ disabled: occupe || choix.label === null }}
+                  accessibilityLabel={
+                    choix.label === null
+                      ? `${choix.ordinal}. Fiche introuvable. Ce choix n’est pas disponible.`
+                      : `${choix.ordinal}. ${choix.label}. Choisir cette fiche — Bob n’en créera pas une nouvelle.`
+                  }
+                  onPress={() => {
+                    void run('use_existing', () =>
+                      coordinator.chooseExistingCustomer(frame, choix.choiceId, ports),
+                    );
+                  }}
+                />
+              </View>
+            </View>
+          ))}
+        </View>
+
+        <View style={{ gap: space[3], marginTop: space[5] }}>
+          <Button
+            title="Créer quand même"
+            variant="secondary"
+            loading={busy === 'continue_create'}
+            disabled={occupe}
+            accessibilityLabel="Créer quand même. Bob créera une nouvelle fiche malgré les fiches proches."
+            onPress={() => {
+              void run('continue_create', () => coordinator.continueCreation(frame, ports));
+            }}
+          />
+          <Button
+            title="Annuler"
+            variant="secondary"
+            loading={busy === 'cancel'}
+            disabled={occupe}
+            accessibilityLabel="Annuler. Bob abandonne cette demande, rien ne sera enregistré."
+            onPress={() => {
+              void run('cancel', () => coordinator.cancel(frame, ports));
+            }}
+          />
+        </View>
       </Card>
     );
   }
