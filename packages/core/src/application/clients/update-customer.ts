@@ -1,5 +1,5 @@
 import { type Result, ok, err } from '../../shared-kernel/result';
-import { type AppError, appDomain, appNotFound } from '../result';
+import { type AppError, appConflict, appDomain, appNotFound } from '../result';
 import {
   type CustomerRepository,
   type InvoiceRepository,
@@ -36,6 +36,52 @@ export class UpdateCustomer {
   constructor(private readonly deps: UpdateCustomerDeps) {}
 
   async execute(input: UpdateCustomerInput): Promise<Result<{ id: string }, AppError>> {
+    const prepared = await this.prepare(input);
+    if (!prepared.ok) return err(prepared.error);
+    await this.deps.customers.save(prepared.value);
+    return ok({ id: input.id });
+  }
+
+  /**
+   * Même use case, mêmes validations, mais commit CAS pour une proposition dont la révision a été
+   * scellée. Le check préalable ne remplace jamais le prédicat du writer : une autre main peut
+   * écrire après `findById` et avant le commit.
+   */
+  async executeAtRevision(
+    input: UpdateCustomerInput,
+    expectedRevision: number,
+  ): Promise<Result<{ id: string }, AppError>> {
+    if (
+      !Number.isSafeInteger(expectedRevision)
+      || expectedRevision < 1
+      || expectedRevision >= 2_147_483_647
+    ) {
+      return err(
+        appDomain({
+          code: 'VALIDATION',
+          field: 'expectedRevision',
+          message: 'Révision client invalide.',
+        }),
+      );
+    }
+    const saveIfRevision = this.deps.customers.saveIfRevision?.bind(this.deps.customers);
+    if (saveIfRevision === undefined) {
+      return err({
+        kind: 'dependency',
+        port: 'CustomerRepository.saveIfRevision',
+        cause: 'customer_revision_writer_missing',
+      });
+    }
+    const prepared = await this.prepare(input);
+    if (!prepared.ok) return err(prepared.error);
+    const saved = await saveIfRevision(prepared.value, expectedRevision);
+    if (saved === 'revision_conflict') {
+      return err(appConflict('customer', 'stale_revision'));
+    }
+    return ok({ id: input.id });
+  }
+
+  private async prepare(input: UpdateCustomerInput): Promise<Result<Customer, AppError>> {
     const existing = await this.deps.customers.findById(input.id);
     if (!existing || existing.companyId !== input.companyId) return err(appNotFound('customer', input.id));
     if (input.type !== existing.type) {
@@ -67,7 +113,6 @@ export class UpdateCustomer {
     }
     const r = Customer.of({ ...input });
     if (!r.ok) return err(appDomain(r.error));
-    await this.deps.customers.save(r.value);
-    return ok({ id: input.id });
+    return ok(r.value);
   }
 }

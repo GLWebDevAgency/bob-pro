@@ -16,6 +16,7 @@ import {
   CUSTOMER_CONTACT_UPDATE_ACTION_ID,
   computeCustomerContactFieldsDigest,
   computeCustomerContactSensitiveDigest,
+  computeCustomerContactUpdateTargetDigest,
   sha256Hex,
   type CustomerContactProposedFieldsV1,
   type JarvisAdmissionUnitOfWorkPort,
@@ -29,6 +30,7 @@ import type {
 import {
   JarvisCustomerEffectExecutor,
   deriveJarvisEffectCustomerId,
+  jarvisCustomerEffectFailureDigest,
   jarvisCustomerEffectSuccessDigest,
   jarvisCustomerEffectUnknownDigest,
   type JarvisCustomerEffectAuthority,
@@ -84,11 +86,13 @@ type ReadStep = 'absent' | 'present' | 'throws';
 /** Autorité métier fake, scriptable et NON complaisante : elle ne devine jamais à la place du code. */
 class ScriptedAuthority implements JarvisCustomerEffectAuthority {
   readonly reads: JarvisCustomerEffectTarget[] = [];
+  readonly expectedRevisions: number[] = [];
   writes = 0;
 
   constructor(
     private readonly readScript: ReadStep[],
     private readonly write: () => Promise<JarvisCustomerWriteResult>,
+    private readonly currentRevision = 2,
   ) {}
 
   async readCustomer(target: JarvisCustomerEffectTarget): Promise<JarvisCustomerSnapshot | null> {
@@ -103,13 +107,25 @@ class ScriptedAuthority implements JarvisCustomerEffectAuthority {
     return this.write();
   }
 
-  async updateCustomer(): Promise<JarvisCustomerWriteResult> {
+  async readCustomerRevision(): Promise<number> {
+    return this.currentRevision;
+  }
+
+  async updateCustomerAtRevision(
+    _target: JarvisCustomerEffectTarget,
+    _fields: JarvisCustomerFields,
+    expectedRevision: number,
+  ): Promise<JarvisCustomerWriteResult> {
     this.writes += 1;
+    this.expectedRevisions.push(expectedRevision);
     return this.write();
   }
 }
 
-function stateFixture(mode: 'create' | 'update'): unknown {
+function stateFixture(
+  mode: 'create' | 'update',
+  proposalTargetRevision: number | null = mode === 'update' ? 2 : null,
+): unknown {
   return {
     schema: CUSTOMER_CONTACT_STATE_SCHEMA,
     version: CUSTOMER_CONTACT_STATE_VERSION,
@@ -126,7 +142,7 @@ function stateFixture(mode: 'create' | 'update'): unknown {
       proposalCommandId: PROPOSAL_COMMAND_ID,
       fieldsDigest: FIELDS_DIGEST,
       sensitiveDigest: SENSITIVE_DIGEST,
-      targetRevision: mode === 'update' ? 2 : null,
+      targetRevision: proposalTargetRevision,
       // Sceau de cible §9.1 posé par l'admission à la mise en proposition (les deux moitiés
       // vont ensemble : pas de révision sans digest, pas de digest sans révision).
       targetSensitiveDigest: mode === 'update' ? sha256Hex('cible-relue') : null,
@@ -153,7 +169,10 @@ function stateFixture(mode: 'create' | 'update'): unknown {
   };
 }
 
-function admissionFor(mode: 'create' | 'update'): JarvisAdmissionUnitOfWorkPort {
+function admissionFor(
+  mode: 'create' | 'update',
+  proposalTargetRevision?: number | null,
+): JarvisAdmissionUnitOfWorkPort {
   const run = {
     kind: 'customer_contact',
     runId: RUN_ID,
@@ -163,7 +182,7 @@ function admissionFor(mode: 'create' | 'update'): JarvisAdmissionUnitOfWorkPort 
     status: 'waiting_external',
     revision: 7,
     stateVersion: CUSTOMER_CONTACT_STATE_VERSION,
-    state: stateFixture(mode),
+    state: stateFixture(mode, proposalTargetRevision),
     nextWakeAt: null,
     terminalAt: null,
   } as unknown as JarvisRunEnvelope;
@@ -208,7 +227,10 @@ function leaseFixture(mode: 'create' | 'update'): JarvisWorkItemLease {
     actionVersion: CUSTOMER_CONTACT_ACTION_VERSION,
     authorizationSource: { source: 'confirmation', receiptId: RECEIPT_ID },
     actingPrincipalId: OWNER_USER_ID,
-    targetDigest: null,
+    targetDigest:
+      mode === 'update'
+        ? computeCustomerContactUpdateTargetDigest(TARGET_CUSTOMER_ID, 2)
+        : null,
     payloadRef: { proposalId: PROPOSAL_ID, fieldsDigest: FIELDS_DIGEST },
     executeBy: '2026-08-19T12:00:00.000Z',
     attempts: 0,
@@ -222,10 +244,12 @@ function executorFor(
   mode: 'create' | 'update',
   readScript: ReadStep[],
   write: () => Promise<JarvisCustomerWriteResult>,
+  currentRevision = 2,
+  proposalTargetRevision?: number | null,
 ): { executor: JarvisCustomerEffectExecutor; authority: ScriptedAuthority } {
-  const authority = new ScriptedAuthority(readScript, write);
+  const authority = new ScriptedAuthority(readScript, write, currentRevision);
   const executor = new JarvisCustomerEffectExecutor({
-    admission: admissionFor(mode),
+    admission: admissionFor(mode, proposalTargetRevision),
     payloads: PAYLOADS,
     customers: authority,
     // Le type légal n'est pas encore proposé par la frame (§8) : le harnais le fournit, comme
@@ -343,6 +367,78 @@ describe('JarvisCustomerEffectExecutor — l’indécidable de création se tran
     // (la fiche existe des deux côtés, et le postimage ne dit pas QUI l'a écrit) — le trou est
     // nommé dans le code, pas masqué par une relecture qui rassurerait à tort.
     expect(authority.reads.map((target) => target.customerId)).toEqual([TARGET_CUSTOMER_ID]);
+    expect(authority.expectedRevisions).toEqual([2]);
+  });
+
+  it('édition nominale : la révision scellée atteint exactement le writer CAS', async () => {
+    const { executor, authority } = executorFor(
+      'update',
+      ['present'],
+      async () => ({ status: 'written' }),
+    );
+
+    await expect(
+      executor.execute({ coordinates: COORDINATES, lease: leaseFixture('update') }),
+    ).resolves.toEqual({
+      status: 'succeeded',
+      resultDigest: jarvisCustomerEffectSuccessDigest(EFFECT_ID, TARGET_CUSTOMER_ID),
+    });
+    expect(authority.expectedRevisions).toEqual([2]);
+    expect(authority.writes).toBe(1);
+  });
+
+  it('édition : un targetDigest incohérent échoue avant toute lecture ou écriture métier', async () => {
+    const { executor, authority } = executorFor(
+      'update',
+      ['present'],
+      async () => ({ status: 'written' }),
+    );
+
+    await expect(
+      executor.execute({
+        coordinates: COORDINATES,
+        lease: { ...leaseFixture('update'), targetDigest: null },
+      }),
+    ).resolves.toEqual({
+      status: 'failed_terminal',
+      resultDigest: jarvisCustomerEffectFailureDigest(EFFECT_ID, 'target_digest_mismatch'),
+    });
+    expect(authority.reads).toHaveLength(0);
+    expect(authority.writes).toBe(0);
+  });
+
+  it('édition : une révision de proposition incohérente échoue avant toute lecture ou écriture', async () => {
+    const { executor, authority } = executorFor(
+      'update',
+      ['present'],
+      async () => ({ status: 'written' }),
+      2,
+      1,
+    );
+
+    const outcome = await executor.execute({
+      coordinates: COORDINATES,
+      lease: leaseFixture('update'),
+    });
+
+    expect(outcome).toEqual({
+      status: 'failed_terminal',
+      resultDigest: jarvisCustomerEffectFailureDigest(EFFECT_ID, 'target_revision_mismatch'),
+    });
+    expect(authority.reads).toHaveLength(0);
+    expect(authority.writes).toBe(0);
+  });
+
+  it('description du succès : une correction ultérieure N+2 ne réécrit pas le reçu N+1', async () => {
+    const { executor } = executorFor('update', [], throwing, 4);
+
+    await expect(
+      executor.describeSucceededEffect({ coordinates: COORDINATES, effectId: EFFECT_ID }),
+    ).resolves.toEqual({
+      kind: 'succeeded',
+      customerId: TARGET_CUSTOMER_ID,
+      customerRevision: 3,
+    });
   });
 
   it('réconciliation : création atterrie ⇒ `landed` avec le digest de succès ; jamais exécutée ⇒ `not_landed`', async () => {
@@ -366,13 +462,14 @@ describe('JarvisCustomerEffectExecutor — l’indécidable de création se tran
     expect(landed.authority.writes + never.authority.writes).toBe(0);
   });
 
-  it('réconciliation : édition rejouable, base muette indécidable', async () => {
+  it('réconciliation : édition indécidable sans reçu, base muette indécidable', async () => {
     const update = executorFor('update', ['present'], throwing);
     const mute = executorFor('create', ['throws'], throwing);
 
     await expect(
       update.executor.reconcileEffect({ coordinates: COORDINATES, lease: leaseFixture('update') }),
-    ).resolves.toEqual({ kind: 'safe_to_replay' });
+    ).resolves.toEqual({ kind: 'undecidable' });
+    expect(update.authority.writes).toBe(0);
     await expect(
       mute.executor.reconcileEffect({ coordinates: COORDINATES, lease: leaseFixture('create') }),
     ).resolves.toEqual({ kind: 'undecidable' });

@@ -6,12 +6,12 @@
  * n'écrit JAMAIS sa fiche — le run reste en `committing`, où même `cancel_run` ne fait
  * qu'observer un reçu qui ne viendra pas. C'est le dernier maillon manquant du parcours.
  *
- * CE QU'IL EST, ET CE QU'IL N'EST PAS. Il APPELLE les use cases du domaine (`Customer.of` +
- * `CustomerRepository.save` en création, `UpdateCustomer` en modification) et ne fait jamais une
- * écriture SQL métier directe. Ce partage couvre les invariants internes de ces use cases, mais
- * ne prouve PAS encore la parité complète avec le parcours manuel : le verrou société, le refus
- * d'un compte clôturé, les barrières d'archives et le CAS de révision au point d'écriture restent
- * à unifier avant toute publication. Le manifest runtime demeure donc fermé.
+ * CE QU'IL EST, ET CE QU'IL N'EST PAS. Il appelle les use cases CANONIQUES du domaine
+ * (`Customer.of` en création, `UpdateCustomer.executeAtRevision` en modification) et ne contourne
+ * jamais leurs validations. Le CAS ferme le lost-update au commit. En revanche, cet adapter ne
+ * partage pas encore le verrou société, le refus de compte clôturé et les barrières d'archives du
+ * parcours manuel `BackendService.updateCustomer` : la publication reste fermée jusqu'à cette
+ * extraction commune. Ne pas présenter ce lot comme une parité complète humain↔Bob.
  *
  * TENANT. Chaque geste s'exécute sous `withTenant(target.companyId)` : les GUC de RLS sont posés
  * par la persistance, jamais devinés ici. Le `companyId` vient du work item (donc de l'admission
@@ -90,9 +90,10 @@ export class PrismaJarvisCustomerEffectAuthority implements JarvisCustomerEffect
     return { status: 'written' };
   }
 
-  async updateCustomer(
+  async updateCustomerAtRevision(
     target: JarvisCustomerEffectTarget,
     fields: JarvisCustomerFields,
+    expectedRevision: number,
   ): Promise<JarvisCustomerWriteResult> {
     // `UpdateCustomer` est le SEUL chemin de modification du dépôt : il porte les invariants
     // métier (facturation, rattachements) et déclenche l'incrément de révision sur lequel la
@@ -102,11 +103,23 @@ export class PrismaJarvisCustomerEffectAuthority implements JarvisCustomerEffect
         customers: new PrismaCustomerRepository(this.prisma),
         quotes: new PrismaQuoteRepository(this.prisma),
         invoices: new PrismaInvoiceRepository(this.prisma),
-      }).execute({ id: target.customerId, companyId: target.companyId, ...fields }),
+      }).executeAtRevision(
+        { id: target.customerId, companyId: target.companyId, ...fields },
+        expectedRevision,
+      ),
     );
     if (result.ok) return { status: 'written' };
+    if (result.error.kind === 'conflict' && result.error.reason === 'stale_revision') {
+      return { status: 'refused', reasonCode: 'target_revision_stale' };
+    }
+    if (result.error.kind === 'not_found') {
+      return { status: 'refused', reasonCode: 'customer_missing' };
+    }
+    if (result.error.kind === 'dependency' || result.error.kind === 'unavailable') {
+      return { status: 'unavailable' };
+    }
     // Le use case rend une erreur fermée : on la NOMME plutôt que de rendre un « refused » muet.
-    const code = (result.error as { code?: unknown } | undefined)?.code;
+    const code = result.error.kind === 'domain' ? result.error.error.code : undefined;
     return {
       status: 'refused',
       reasonCode: typeof code === 'string' ? `domain_${code.toLowerCase()}` : 'domain_refused',

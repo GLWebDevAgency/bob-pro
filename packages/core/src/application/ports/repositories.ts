@@ -21,6 +21,15 @@ export interface CustomerRepository {
   findById(id: string): Promise<Customer | null>;
   listByCompany(companyId: string): Promise<Customer[]>;
   save(c: Customer): Promise<void>;
+  /**
+   * Écriture CAS optionnelle pour les commandes qui ont scellé une révision autoritaire.
+   * `save` reste l'entrée historique ; un use case CAS échoue fermé si son adapter ne fournit pas
+   * cette capacité. Une cible absente ou avancée ne doit jamais être créée par cette méthode.
+   */
+  saveIfRevision?(
+    customer: Customer,
+    expectedRevision: number,
+  ): Promise<'saved' | 'revision_conflict'>;
 }
 
 export interface QuoteRepository {

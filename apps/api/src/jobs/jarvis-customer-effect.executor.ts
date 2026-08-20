@@ -2,23 +2,22 @@
  * Jarvis U1-d — exécuteur d'effet du vertical fiche client (spec Jarvis §5.3/§9.1,
  * SPEC_U1D_CALLERS_REELS_20260819 §3 « EXÉCUTEUR D'EFFET »).
  *
- * Le registre d'exécuteurs de U1-c est VIDE : aucun effet Jarvis n'atteint jamais le métier, et
- * chaque work item autorisé se règle `outcome_unknown` motif `executor_unregistered`. Ce fichier
- * ouvre la PREMIÈRE porte — deux actions, pas une de plus : `client-creer@1` et
- * `client-modifier@1`, les seules candidates de `U1_CANDIDATE_ACTIONS` (@bob/core, source UNIQUE des
- * bornes ; élargir est une décision de lot, jamais un oubli de garde ici).
+ * Le module enregistre cet exécuteur pour deux candidates techniques, pas une de plus :
+ * `client-creer@1` et `client-modifier@1`. Cette présence ne publie aucune capacité : l'autorité
+ * de release runtime reste fermée, l'admission profonde tranche toute nouvelle commande, et
+ * élargir `U1_CANDIDATE_ACTIONS` reste une décision de lot explicite.
  *
  * AUTORITÉ MÉTIER — l'exécuteur n'écrit RIEN lui-même. Il soumet la commande aux use cases
- * canoniques de la fiche client, ceux de l'écran Clients et de l'outil vocal `creer_client` :
- *   · création  : `BackendService.createCustomer` (apps/api/src/backend.service.ts:11506) —
- *     `Customer.of` + `customers.save`, cité par le catalogue (`client-creer@1`,
- *     commandAuthority « useCreateCustomer → BobClient.createCustomer ») ;
- *   · édition   : `BackendService.updateCustomer` (backend.service.ts:11527) — verrou société,
- *     BARRIÈRE D'ARCHIVES (A8) puis le use case pur `UpdateCustomer` (@bob/core) avec sa garde
- *     légale du TYPE (A3/A4).
- * Le port `JarvisCustomerEffectAuthority` ci-dessous est la surface EXACTE consommée sur cette
- * autorité ; l'adapter qui l'y branche (vague B) pose la portée tenant/principal comme le fait
- * déjà `RealtimeBackendEntitlementAdapter` (requestContext + runWithTenant).
+ * canoniques de la fiche client :
+ *   · création  : `Customer.of` + `customers.save`, avec l'identifiant dérivé de l'effet ;
+ *   · édition   : le use case pur `UpdateCustomer.executeAtRevision` (@bob/core), avec sa garde
+ *     légale du TYPE (A3/A4) et un commit CAS.
+ * Le verrou société, le refus de compte clôturé et les barrières d'archives du parcours manuel
+ * `BackendService.updateCustomer` ne sont PAS encore partagés par cet adapter. La publication
+ * reste donc fermée jusqu'à leur extraction commune.
+ * Le port `JarvisCustomerEffectAuthority` ci-dessous est la surface exacte consommée. L'adapter
+ * pose uniquement la portée tenant `companyId`; le principal a été authentifié et lié au run en
+ * amont par l'admission, mais n'est pas réinstallé par cette autorité métier.
  *
  * COORDINATEUR IDEMPOTENT §9.1 — « même effectId et même intention ⇒ même customerId ; crash ou
  * réponse perdue ⇒ replay sans doublon ». Il n'existe AUCUNE colonne pour mémoriser « quel effet
@@ -35,15 +34,16 @@
  *   · le signal de succès reste reconstructible depuis la seule ligne persistée, puisque le
  *     `customerId` se redérive de l'`effectId` (verrou identifié en tête de
  *     jarvis-work-item-dispatch.service.ts).
- * L'édition, elle, est idempotente par construction : la cible est celle du run et les champs
- * proposés sont réappliqués à l'identique.
+ * L'édition n'est PAS rejouable par simple répétition : elle porte la révision scellée jusqu'au
+ * CAS du repository. Sans reçu purpose-specific par `effectId`, une reprise indécidable reste
+ * inconnue et ne lance jamais un second UPDATE.
  *
  * FAIL-CLOSED — rien n'est deviné et rien n'est perdu : tout champ CONFIRMÉ qui n'atterrirait
  * pas dans l'écriture canonique (canal postal, n° de TVA sans SIREN, type légal non proposé)
  * arrête l'effet AVANT toute écriture (`failed_terminal`), jamais un enregistrement partiel et
  * silencieux de ce que l'artisan a validé à l'écran.
  *
- * GATE OUVERT, À REFERMER PAR LA LANE VOIX — `CustomerContactProposedFieldsV1` ne propose PAS le
+ * GATE DE CRÉATION FERMÉ — `CustomerContactProposedFieldsV1` ne propose PAS le
  * type légal du client (b2c/b2b/b2g). Or `Customer.of` l'exige, et §8 interdit qu'un défaut non
  * confirmé entre dans un fait engageant : le type décide de la rétractation et de la TVA, et
  * devient immuable dès la première pièce signée. La création est donc REFUSÉE tant que la frame
@@ -52,9 +52,9 @@
  * Refermer le gate = un champ de plus dans la frame, puis `resolveProposedCustomerType` le lit —
  * rien d'autre ne bouge ici.
  *
- * NON ENREGISTRÉ ICI : la classe est exportée, le registre du worker reste VIDE dans cette
- * tranche. La vague B câble le module (adapter d'autorité + registre) — un exécuteur enregistré
- * sans son adapter serait un effet sans autorité.
+ * CÂBLÉ MAIS NON PUBLIÉ : le worker et l'adapter existent afin que les preuves d'intégration
+ * exercent la vraie chaîne. Le manifest runtime fermé empêche toute nouvelle action utilisateur ;
+ * l'existence du code ne vaut ni activation, ni certification, ni release.
  */
 import {
   CUSTOMER_CONTACT_ACTION_VERSION,
@@ -165,7 +165,9 @@ export interface JarvisCustomerEffectTarget {
  *    unique : l'identifiant est IMPOSÉ par le coordinateur §9.1 au lieu d'être minté par
  *    `UuidGenerator`. C'est précisément cette différence qui rend l'effet idempotent ; le reste
  *    (`Customer.of` puis `customers.save`, mêmes invariants que l'écran) est inchangé ;
- *  · `updateCustomer` -> `BackendService.updateCustomer(id, fields)`, signature pour signature.
+ *  · `updateCustomerAtRevision` -> `UpdateCustomer.executeAtRevision`, mêmes validations de
+ *    domaine avec un commit CAS. Le verrou société et les barrières d'archives du parcours manuel
+ *    restent un gate d'activation séparé ; cet adapter ne prétend pas encore à leur parité complète.
  */
 export interface JarvisCustomerEffectAuthority {
   readCustomer(target: JarvisCustomerEffectTarget): Promise<JarvisCustomerSnapshot | null>;
@@ -181,9 +183,10 @@ export interface JarvisCustomerEffectAuthority {
     target: JarvisCustomerEffectTarget,
     fields: JarvisCustomerFields,
   ): Promise<JarvisCustomerWriteResult>;
-  updateCustomer(
+  updateCustomerAtRevision(
     target: JarvisCustomerEffectTarget,
     fields: JarvisCustomerFields,
+    expectedRevision: number,
   ): Promise<JarvisCustomerWriteResult>;
 }
 
@@ -322,7 +325,6 @@ function projectUpdateFields(
  * `reconcileReclaimedAuthorized` — revue C9) :
  *  · `landed` — la fiche dérivée EXISTE : l'effet est parti et a abouti, le résultat est décidé ;
  *  · `not_landed` — création : aucune fiche à l'identifiant dérivé, donc rien n'est parti ;
- *  · `safe_to_replay` — édition : l'effet est idempotent, le rejouer ne peut pas doubler ;
  *  · `undecidable` — la base ne répond pas : on ne clôt rien (jamais une issue inventée).
  */
 export type JarvisCustomerEffectReconciliation = JarvisEffectReconciliation;
@@ -364,13 +366,20 @@ export class JarvisCustomerEffectExecutor implements JarvisEffectExecutor {
       }
       const projected = projectCreateFields(intent.fields, this.deps.certificationCustomerType);
       if (!projected.ok) return failed(lease.effectId, projected.reasonCode);
-      return this.write(lease.effectId, target, projected.fields, 'create');
+      return this.write(lease.effectId, target, projected.fields, 'create', null);
     }
 
     if (existing === null) return failed(lease.effectId, 'customer_missing');
     const projected = projectUpdateFields(existing.fields, intent.fields);
     if (!projected.ok) return failed(lease.effectId, projected.reasonCode);
-    return this.write(lease.effectId, target, projected.fields, 'update');
+    if (intent.expectedRevision === null) return failed(lease.effectId, 'target_revision_missing');
+    return this.write(
+      lease.effectId,
+      target,
+      projected.fields,
+      'update',
+      intent.expectedRevision,
+    );
   }
 
   /**
@@ -386,7 +395,9 @@ export class JarvisCustomerEffectExecutor implements JarvisEffectExecutor {
    * après un redémarrage :
    *   · en création, le `customerId` est DÉRIVÉ de l'`effectId` (namespace d'idempotence) ;
    *   · en modification, il est porté par l'intention du run, relue en stateless.
-   * La révision, elle, est RELUE : c'est l'entier réellement écrit, jamais un compteur supposé.
+   * La révision écrite est DÉTERMINISTE : 1 en création, `target.revision + 1` en modification.
+   * La relecture tardive prouve seulement que cette révision a existé ; elle ne remplace pas le
+   * reçu par une correction humaine plus récente.
    *
    * `null` à la moindre incertitude — fiche absente, autorité muette, run illisible : le signal
    * reste alors inconstructible et le work item DÛ. Un reçu approximatif refermerait un run sur
@@ -422,16 +433,25 @@ export class JarvisCustomerEffectExecutor implements JarvisEffectExecutor {
     // autre fiche que celle qui a été touchée.
     const customerId =
       intent.mode === 'update' ? intent.target.customerId : deriveJarvisEffectCustomerId(effectId);
-    // L'effet doit être VÉRIFIABLE : une fiche absente signifie que rien n'a atterri, donc
-    // qu'aucun succès ne peut être acquitté.
+    const writtenRevision = intent.mode === 'update' ? intent.target.revision + 1 : 1;
+    if (!Number.isSafeInteger(writtenRevision) || writtenRevision < 1) return null;
+    // L'effet doit être VÉRIFIABLE : une fiche absente ou moins avancée que le postimage attendu
+    // signifie qu'aucun succès ne peut être acquitté. Une révision PLUS avancée appartient à une
+    // correction ultérieure et ne réécrit pas l'histoire de cet effet.
     try {
-      const revision = await readRevision({
+      const currentRevision = await readRevision({
         companyId: coordinates.companyId,
         ownerUserId: coordinates.ownerUserId,
         customerId,
       });
-      if (revision === null || !Number.isSafeInteger(revision) || revision < 1) return null;
-      return { kind: 'succeeded', customerId, customerRevision: revision };
+      if (
+        currentRevision === null
+        || !Number.isSafeInteger(currentRevision)
+        || currentRevision < writtenRevision
+      ) {
+        return null;
+      }
+      return { kind: 'succeeded', customerId, customerRevision: writtenRevision };
     } catch {
       return null;
     }
@@ -493,7 +513,9 @@ export class JarvisCustomerEffectExecutor implements JarvisEffectExecutor {
     const { coordinates, lease } = input;
     const mode = customerEffectMode(lease.actionId, lease.actionVersion);
     if (mode === null) return { kind: 'undecidable' };
-    if (mode === 'update') return { kind: 'safe_to_replay' };
+    // Sans reçu purpose-specific par effectId, une fiche existante ne permet pas de distinguer
+    // « mon UPDATE a committé » de « une autre main a écrit ». Rejouer serait un lost-update.
+    if (mode === 'update') return { kind: 'undecidable' };
     const customerId = deriveJarvisEffectCustomerId(lease.effectId);
     try {
       const existing = await this.deps.customers.readCustomer({
@@ -514,13 +536,20 @@ export class JarvisCustomerEffectExecutor implements JarvisEffectExecutor {
     target: JarvisCustomerEffectTarget,
     fields: JarvisCustomerFields,
     mode: CustomerEffectMode,
+    expectedRevision: number | null,
   ): Promise<JarvisEffectExecutionOutcome> {
     let result: JarvisCustomerWriteResult;
     try {
       result =
         mode === 'create'
           ? await this.deps.customers.createCustomer(target, fields)
-          : await this.deps.customers.updateCustomer(target, fields);
+          : expectedRevision === null
+            ? { status: 'refused', reasonCode: 'target_revision_missing' }
+            : await this.deps.customers.updateCustomerAtRevision(
+                target,
+                fields,
+                expectedRevision,
+              );
     } catch {
       // Une exception APRÈS l'autorisation est indécidable par principe : l'écriture a pu
       // partir — on la TRANCHE par une lecture avant d'annoncer quoi que ce soit (revue C10).
@@ -554,11 +583,10 @@ export class JarvisCustomerEffectExecutor implements JarvisEffectExecutor {
    * dérivée, et la fiche existe des DEUX côtés de l'écriture. Relire ne distinguerait pas « mon
    * écriture a atterri » d'« une autre main a écrit la même chose », et le postimage seul ne dit
    * pas QUI l'a écrit : trancher exigerait que l'autorité rende la révision/le reçu de son
-   * écriture (`updateCustomer` ne rend aujourd'hui qu'un statut). L'issue reste donc
-   * `outcome_unknown` motivée — et elle est TERMINALE : un résultat persisté n'est plus repris,
-   * la réconciliation `safe_to_replay` ne concerne QUE le worker mort avant `storeResult`. On ne
-   * promet donc pas un rattrapage qui n'existe pas : on dit à l'artisan qu'on ne sait pas, et
-   * refaire l'édition reste sans danger (elle est idempotente par construction).
+   * écriture (`updateCustomerAtRevision` ne rend aujourd'hui qu'un statut). L'issue reste donc
+   * `outcome_unknown` motivée. Une reprise après mort du worker reste elle aussi `undecidable` :
+   * sans reçu purpose-specific, répéter l'UPDATE pourrait écraser une correction plus récente.
+   * On ne promet donc pas un rattrapage qui n'existe pas et on ne rejoue rien à l'aveugle.
    */
   private async decideAfterIndecidableWrite(
     effectId: string,
@@ -628,7 +656,29 @@ export class JarvisCustomerEffectExecutor implements JarvisEffectExecutor {
       state.intent.mode === 'update'
         ? state.intent.target.customerId
         : deriveJarvisEffectCustomerId(lease.effectId);
-    return { kind: 'ready', customerId, fields: payload.fields };
+    if (state.intent.mode === 'update') {
+      const expectedRevision = state.intent.target.revision;
+      if (proposal.targetRevision !== expectedRevision) {
+        return refuse('target_revision_mismatch');
+      }
+      if (expectedRevision >= 2_147_483_647) {
+        return refuse('target_revision_overflow');
+      }
+      const expectedTargetDigest = computeCustomerContactUpdateTargetDigest(
+        customerId,
+        expectedRevision,
+      );
+      if (lease.targetDigest !== expectedTargetDigest) {
+        return refuse('target_digest_mismatch');
+      }
+      return {
+        kind: 'ready',
+        customerId,
+        fields: payload.fields,
+        expectedRevision,
+      };
+    }
+    return { kind: 'ready', customerId, fields: payload.fields, expectedRevision: null };
   }
 
   /** Lecture stateless du run, traduite en intention refusée/indisponible plutôt qu'en exception. */
@@ -671,6 +721,7 @@ type CustomerEffectIntent =
       readonly kind: 'ready';
       readonly customerId: string;
       readonly fields: CustomerContactProposedFieldsV1;
+      readonly expectedRevision: number | null;
     }
   | { readonly kind: 'refused'; readonly reasonCode: string }
   | { readonly kind: 'unavailable'; readonly reasonCode: string };

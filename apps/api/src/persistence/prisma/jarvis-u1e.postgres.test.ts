@@ -875,9 +875,10 @@ describe.skipIf(!RUN_CERT)(
         });
         if (before === null) throw new Error('Jarvis U1-e: fiche cible introuvable.');
         await expect(
-          authorityA.updateCustomer(
+          authorityA.updateCustomerAtRevision(
             { companyId: owner.companyId, ownerUserId: owner.ownerUserId, customerId },
             { ...before.fields, email: mutatedEmail },
+            1,
           ),
         ).resolves.toEqual({ status: 'written' });
         await expect(auditCustomer(customerId)).resolves.toMatchObject({
@@ -1812,9 +1813,10 @@ describe.skipIf(!RUN_CERT)(
 
 /**
  * Autorité métier de certification : elle ne SIMULE rien — elle appelle les use cases canoniques
- * de la fiche client (`Customer.of` + `PrismaCustomerRepository.save` à la création, le use case
- * `UpdateCustomer` à l'édition), dans une portée tenant, exactement comme le fera l'adapter de la
- * vague B. Le compteur d'écritures sert la preuve « la proposition invalidée n'a rien écrit ».
+ * de la fiche client (`Customer.of` + `PrismaCustomerRepository.save` à la création,
+ * `UpdateCustomer.executeAtRevision` à l'édition), dans une portée tenant. Ce harnais prouve le
+ * CAS mais pas encore les barrières société/archives du parcours manuel. Le compteur d'écritures
+ * sert la preuve « la proposition invalidée n'a rien écrit ».
  */
 class CertificationCustomerAuthority implements JarvisCustomerEffectAuthority {
   public writes = 0;
@@ -1858,9 +1860,10 @@ class CertificationCustomerAuthority implements JarvisCustomerEffectAuthority {
     return { status: 'written' };
   }
 
-  async updateCustomer(
+  async updateCustomerAtRevision(
     target: JarvisCustomerEffectTarget,
     fields: JarvisCustomerFields,
+    expectedRevision: number,
   ): Promise<JarvisCustomerWriteResult> {
     this.writes += 1;
     const result = await this.prisma.withTenant(target.companyId, () =>
@@ -1868,7 +1871,10 @@ class CertificationCustomerAuthority implements JarvisCustomerEffectAuthority {
         customers: new PrismaCustomerRepository(this.prisma),
         quotes: new PrismaQuoteRepository(this.prisma),
         invoices: new PrismaInvoiceRepository(this.prisma),
-      }).execute({ id: target.customerId, companyId: target.companyId, ...fields }),
+      }).executeAtRevision(
+        { id: target.customerId, companyId: target.companyId, ...fields },
+        expectedRevision,
+      ),
     );
     return result.ok ? { status: 'written' } : { status: 'refused', reasonCode: 'domain_refused' };
   }

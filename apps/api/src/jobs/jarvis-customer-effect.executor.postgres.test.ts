@@ -12,8 +12,8 @@
  *      MÊME digest, l'autorité n'est écrite qu'UNE fois et la base ne porte qu'UNE fiche ;
  *  (2) réconciliation par effectId (U1-c revue C10) : après l'atterrissage, la relecture tranche
  *      `landed` ; un effet jamais exécuté rend `not_landed` — aucune issue inventée ;
- *  (3) édition : les champs PROPOSÉS recouvrent la fiche, les autres survivent, et le rejeu
- *      converge sur le même état (aucune seconde fiche, aucun champ perdu) ;
+ *  (3) édition : le CAS recouvre la révision confirmée une seule fois ; une reprise sans reçu
+ *      est indécidable et une correction ultérieure ne réécrit pas la révision du reçu ;
  *  (4) fail-closed G4 : charge scellée absente ⇒ `failed_terminal`, ZÉRO écriture métier ;
  *  (5) borne technique (G2) : une action hors `U1_CANDIDATE_ACTIONS` ne touche rien ;
  *  (6) §8 : sans type légal PROPOSÉ, la création est refusée — jamais un régime légal deviné.
@@ -24,7 +24,6 @@ import {
   CUSTOMER_CONTACT_CREATE_ACTION_ID,
   CUSTOMER_CONTACT_UPDATE_ACTION_ID,
   Customer,
-  UpdateCustomer,
   computeCustomerContactFieldsDigest,
   computeCustomerContactProposalHash,
   computeCustomerContactSensitiveDigest,
@@ -52,11 +51,8 @@ import {
   type JarvisWorkItemLease,
 } from '../persistence/prisma/jarvis-work-items.persistence';
 import { PrismaService } from '../persistence/prisma/prisma.service';
-import {
-  PrismaCustomerRepository,
-  PrismaInvoiceRepository,
-  PrismaQuoteRepository,
-} from '../persistence/prisma/repositories';
+import { PrismaCustomerRepository } from '../persistence/prisma/repositories';
+import { PrismaJarvisCustomerEffectAuthority } from '../jarvis/jarvis-customer-effect.authority';
 import {
   JarvisCustomerEffectExecutor,
   deriveJarvisEffectCustomerId,
@@ -112,55 +108,40 @@ function proposedFields(
 }
 
 /**
- * Autorité métier de certification : elle ne SIMULE rien — elle appelle les use cases canoniques
- * (`Customer.of` + `PrismaCustomerRepository.save` pour la création, le use case pur
- * `UpdateCustomer` pour l'édition), exactement comme `BackendService`, dans une portée tenant.
- * Le compteur d'écritures sert la preuve « le rejeu n'écrit pas ».
+ * Observateur du VRAI adapter runtime : les appels sont comptés, mais toute lecture/écriture est
+ * déléguée à `PrismaJarvisCustomerEffectAuthority`. Le test ne recopie donc pas le writer CAS.
  */
 class CertificationCustomerAuthority implements JarvisCustomerEffectAuthority {
   public writes = 0;
+  private readonly delegate: PrismaJarvisCustomerEffectAuthority;
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(prisma: PrismaService) {
+    this.delegate = new PrismaJarvisCustomerEffectAuthority(prisma);
+  }
 
   async readCustomer(target: JarvisCustomerEffectTarget): Promise<JarvisCustomerSnapshot | null> {
-    const customer = await this.prisma.withTenant(target.companyId, () =>
-      new PrismaCustomerRepository(this.prisma).findById(target.customerId),
-    );
-    if (customer === null) return null;
-    const { id, companyId, ...fields } = customer.toProps();
-    void id;
-    void companyId;
-    return { customerId: target.customerId, fields };
+    return this.delegate.readCustomer(target);
+  }
+
+  async readCustomerRevision(target: JarvisCustomerEffectTarget): Promise<number | null> {
+    return this.delegate.readCustomerRevision(target);
   }
 
   async createCustomer(
     target: JarvisCustomerEffectTarget,
     fields: JarvisCustomerFields,
   ): Promise<JarvisCustomerWriteResult> {
-    const created = Customer.of({ id: target.customerId, companyId: target.companyId, ...fields });
-    if (!created.ok) {
-      return { status: 'refused', reasonCode: `domain_${created.error.code.toLowerCase()}` };
-    }
     this.writes += 1;
-    await this.prisma.withTenant(target.companyId, () =>
-      new PrismaCustomerRepository(this.prisma).save(created.value),
-    );
-    return { status: 'written' };
+    return this.delegate.createCustomer(target, fields);
   }
 
-  async updateCustomer(
+  async updateCustomerAtRevision(
     target: JarvisCustomerEffectTarget,
     fields: JarvisCustomerFields,
+    expectedRevision: number,
   ): Promise<JarvisCustomerWriteResult> {
     this.writes += 1;
-    const result = await this.prisma.withTenant(target.companyId, () =>
-      new UpdateCustomer({
-        customers: new PrismaCustomerRepository(this.prisma),
-        quotes: new PrismaQuoteRepository(this.prisma),
-        invoices: new PrismaInvoiceRepository(this.prisma),
-      }).execute({ id: target.customerId, companyId: target.companyId, ...fields }),
-    );
-    return result.ok ? { status: 'written' } : { status: 'refused', reasonCode: 'domain_refused' };
+    return this.delegate.updateCustomerAtRevision(target, fields, expectedRevision);
   }
 }
 
@@ -173,6 +154,7 @@ interface CustomerAuditRow {
   readonly addrLine1: string;
   readonly addrZip: string;
   readonly addrCity: string;
+  readonly revision: number;
 }
 
 describe.skipIf(!RUN_CERT)(
@@ -240,7 +222,7 @@ describe.skipIf(!RUN_CERT)(
     async function auditCustomer(customerId: string): Promise<CustomerAuditRow | null> {
       const rows = await admin.$queryRaw<CustomerAuditRow[]>`
         SELECT "id", "name", "type"::text AS "type", "email", "phone",
-               "addrLine1", "addrZip", "addrCity"
+               "addrLine1", "addrZip", "addrCity", "revision"
           FROM public.customers
          WHERE "id" = ${customerId}
       `;
@@ -504,7 +486,7 @@ describe.skipIf(!RUN_CERT)(
     );
 
     it(
-      'preuve 3 — édition : les champs proposés recouvrent la fiche, le reste survit, le rejeu converge',
+      'preuve 3 — édition : CAS unique, reprise indécidable et reçu stable malgré N+2',
       async () => {
         const ownerUserId = `jarvis-effect-owner-${randomUUID()}`;
         const seedFields = proposedFields({ displayName: 'Entreprise Martin' });
@@ -542,14 +524,128 @@ describe.skipIf(!RUN_CERT)(
         expect(afterUpdate?.name).toBe('Entreprise Martin');
         expect(afterUpdate?.email).toBe('marie.dupont@example.test');
         expect(afterUpdate?.addrLine1).toBe('12 rue des Lilas');
+        expect(afterUpdate?.revision).toBe(2);
 
-        const replay = await executor().execute({
-          coordinates: update.coordinates,
-          lease: update.lease,
+        // Crash logique après commit métier mais avant storeResult : sans reçu purpose-specific,
+        // la reprise n'essaie JAMAIS un second UPDATE.
+        const beforeReconcileCalls = authority.writes;
+        await expect(
+          executor().reconcileEffect({ coordinates: update.coordinates, lease: update.lease }),
+        ).resolves.toEqual({ kind: 'undecidable' });
+        expect(authority.writes).toBe(beforeReconcileCalls);
+        expect((await auditCustomer(customerId))?.revision).toBe(2);
+
+        // Une correction humaine ultérieure avance la fiche à N+2. Le reçu de CET effet reste
+        // pourtant N+1 : une redelivery ne réécrit pas l'histoire avec la révision courante.
+        const current = await worker.withTenant(companyId, () =>
+          new PrismaCustomerRepository(worker).findById(customerId),
+        );
+        if (current === null) throw new Error('fiche CAS absente');
+        const human = Customer.of({ ...current.toProps(), name: 'Correction humaine ultérieure' });
+        if (!human.ok) throw new Error('postimage humain invalide');
+        await worker.withTenant(companyId, () =>
+          new PrismaCustomerRepository(worker).save(human.value),
+        );
+        expect((await auditCustomer(customerId))?.revision).toBe(3);
+        await expect(
+          executor().describeSucceededEffect({
+            coordinates: update.coordinates,
+            effectId: update.effectId,
+          }),
+        ).resolves.toEqual({
+          kind: 'succeeded',
+          customerId,
+          customerRevision: 2,
         });
-        expect(replay).toEqual(first);
-        const afterReplay = await auditCustomer(customerId);
-        expect(afterReplay).toEqual(afterUpdate);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it(
+      'preuve CAS — une mutation humaine entre le préflight et l’effet reste intacte',
+      async () => {
+        const ownerUserId = `jarvis-effect-owner-${randomUUID()}`;
+        const created = await driveRun({ ownerUserId, fields: proposedFields() });
+        const customerId = deriveJarvisEffectCustomerId(created.effectId);
+        expect(
+          (await executor().execute({ coordinates: created.coordinates, lease: created.lease }))
+            .status,
+        ).toBe('succeeded');
+
+        const update = await driveRun({
+          ownerUserId,
+          fields: proposedFields({ displayName: 'Écriture Bob obsolète' }),
+          target: { customerId, revision: 1 },
+        });
+        const current = await worker.withTenant(companyId, () =>
+          new PrismaCustomerRepository(worker).findById(customerId),
+        );
+        if (current === null) throw new Error('fiche à concurrencer absente');
+        const human = Customer.of({ ...current.toProps(), name: 'Écriture humaine autoritaire' });
+        if (!human.ok) throw new Error('postimage humain invalide');
+        await worker.withTenant(companyId, () =>
+          new PrismaCustomerRepository(worker).save(human.value),
+        );
+
+        await expect(
+          executor().execute({ coordinates: update.coordinates, lease: update.lease }),
+        ).resolves.toEqual({
+          status: 'failed_terminal',
+          resultDigest: jarvisCustomerEffectFailureDigest(
+            update.effectId,
+            'target_revision_stale',
+          ),
+        });
+        const after = await auditCustomer(customerId);
+        expect(after?.name).toBe('Écriture humaine autoritaire');
+        expect(after?.revision).toBe(2);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it(
+      'preuve repository — deux CAS sur N ont un gagnant unique et une absence ne devient jamais un insert',
+      async () => {
+        const seedRun = await driveRun({
+          ownerUserId: `jarvis-effect-owner-${randomUUID()}`,
+          fields: proposedFields(),
+        });
+        const customerId = deriveJarvisEffectCustomerId(seedRun.effectId);
+        await executor().execute({ coordinates: seedRun.coordinates, lease: seedRun.lease });
+        const persisted = await worker.withTenant(companyId, () =>
+          new PrismaCustomerRepository(worker).findById(customerId),
+        );
+        if (persisted === null) throw new Error('fiche de course absente');
+        const left = Customer.of({ ...persisted.toProps(), name: 'Gagnant gauche' });
+        const right = Customer.of({ ...persisted.toProps(), name: 'Gagnant droite' });
+        if (!left.ok || !right.ok) throw new Error('postimages de course invalides');
+
+        const outcomes = await Promise.all([
+          worker.withTenant(companyId, () =>
+            new PrismaCustomerRepository(worker).saveIfRevision(left.value, 1),
+          ),
+          worker.withTenant(companyId, () =>
+            new PrismaCustomerRepository(worker).saveIfRevision(right.value, 1),
+          ),
+        ]);
+        expect([...outcomes].sort()).toEqual(['revision_conflict', 'saved']);
+        const winner = await auditCustomer(customerId);
+        expect(['Gagnant gauche', 'Gagnant droite']).toContain(winner?.name);
+        expect(winner?.revision).toBe(2);
+
+        const ghostId = randomUUID();
+        const ghost = Customer.of({
+          ...persisted.toProps(),
+          id: ghostId,
+          name: 'Ne doit pas être inséré',
+        });
+        if (!ghost.ok) throw new Error('fantôme invalide');
+        await expect(
+          worker.withTenant(companyId, () =>
+            new PrismaCustomerRepository(worker).saveIfRevision(ghost.value, 1),
+          ),
+        ).resolves.toBe('revision_conflict');
+        await expect(countCustomers(ghostId)).resolves.toBe(0);
       },
       TEST_TIMEOUT_MS,
     );
