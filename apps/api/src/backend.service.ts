@@ -370,6 +370,7 @@ import {
 } from '@bob/ai';
 import type { TtsResult } from '@bob/ai';
 import { UuidGenerator } from './id-generator';
+import { appErrorSummary } from './app-error-summary';
 import { RechercheEntreprisesAdapter } from './adapters/recherche-entreprises.adapter';
 import { ViesVatAdapter } from './adapters/vies-vat.adapter';
 import { BanAddressAdapter } from './adapters/ban-address.adapter';
@@ -384,6 +385,7 @@ import { StripeBillingService } from './payments/stripe-billing.service';
 import { PDF_RENDERER } from './documents/pdf-renderer';
 import { inspectInvoicePdfRepresentation } from './documents/pdfa3';
 import { DOCUMENT_STORAGE, UnavailableDocumentStorage, documentSha256 } from './documents/storage';
+import { DocumentArchiveIntegrityAuthority } from './documents/document-archive-integrity.authority';
 import {
   openDocumentArchiveRenderSnapshot,
   sealDocumentArchiveRenderSnapshot,
@@ -975,21 +977,6 @@ function validateUploadedDocument(input: {
     : ok({ filename, mimeType });
 }
 
-function appErrorSummary(error: AppError): string {
-  if (error.kind === 'domain')
-    return `${error.error.code}:${'field' in error.error ? error.error.field : ''}`;
-  if (error.kind === 'not_found') return `not_found:${error.entity}:${error.id}`;
-  if (error.kind === 'gone') return `gone:${error.entity}:${error.reason}`;
-  if (error.kind === 'forbidden') return `forbidden:${error.reason}`;
-  if (error.kind === 'validation')
-    return `validation:${error.issues.map((i) => `${i.field}:${i.message}`).join(';')}`;
-  if (error.kind === 'conflict') return `conflict:${error.entity}:${error.reason}`;
-  if (error.kind === 'rate_limited')
-    return `rate_limited:${error.reason}:${error.retryAfterSeconds}`;
-  if (error.kind === 'unavailable') return `unavailable:${error.service}`;
-  return `dependency:${error.port}:${error.cause}`;
-}
-
 const DOCUMENT_ANALYSIS_TYPE_LABEL: Readonly<Record<DocumentAnalysis['type'], string>> = {
   supplier_invoice: 'Facture fournisseur',
   receipt: 'Ticket ou reçu',
@@ -1215,14 +1202,6 @@ const DOCUMENT_ARCHIVE_COMPLETION_REJECTED =
 
 function archiveLeaseUntil(now: string): string {
   return new Date(Date.parse(now) + DOCUMENT_ARCHIVE_LEASE_MS).toISOString();
-}
-
-interface ExpectedArchiveArtifact {
-  kind: DocumentArchiveArtifactProof['kind'];
-  documentId: string;
-  versionId: string;
-  filename: string;
-  mimeType: string;
 }
 
 interface RenderedArchiveArtifact {
@@ -1515,7 +1494,11 @@ export class BackendService {
     @Optional()
     @Inject(VOICE_TRACE_RECORDER)
     private readonly voiceTrace: VoiceTraceRecorderPort | null = null,
-  ) {}
+  ) {
+    this.documentArchiveIntegrity = new DocumentArchiveIntegrityAuthority(p, documentStorage);
+  }
+
+  private readonly documentArchiveIntegrity: DocumentArchiveIntegrityAuthority;
 
   private mapQuote(q: Quote): QuoteView {
     return {
@@ -7786,14 +7769,16 @@ export class BackendService {
       if (!company) return err(appNotFound('company', companyId));
       if (company.isClosed()) return err(appForbidden('Compte clôturé.'));
       if (changesArchivedPdf) {
-        const archiveReady = await this.assertIssuedInvoiceArchivesComplete(companyId);
+        const archiveReady = await this.documentArchiveIntegrity
+          .assertIssuedInvoiceArchivesComplete(companyId);
         if (!archiveReady.ok) return archiveReady;
       }
       // A8 — l'accent est désormais RELU au rendu du devis (quotePdfData) : tant qu'un ordre
       // d'archivage de devis signé n'est pas abouti, le changer fabriquerait une archive
       // différente du document signé par le client (même doctrine que le régime de TVA).
       if (validated.value.pdfAccentColor !== undefined) {
-        const quoteArchiveReady = await this.assertSignedQuoteArchivesComplete(companyId);
+        const quoteArchiveReady = await this.documentArchiveIntegrity
+          .assertSignedQuoteArchivesComplete(companyId);
         if (!quoteArchiveReady.ok) return quoteArchiveReady;
       }
       const result = await this.p.billingSettings.update({
@@ -7828,12 +7813,14 @@ export class BackendService {
       // Le profil (métier/régime TVA) participe à la représentation fiscale d'une facture.
       // Tant que PDF + XML ne sont pas tous deux figés, le changer ouvrirait une course avec
       // le job d'archivage et pourrait produire deux originaux divergents.
-      const invoiceArchiveReady = await this.assertIssuedInvoiceArchivesComplete(companyId);
+      const invoiceArchiveReady = await this.documentArchiveIntegrity
+        .assertIssuedInvoiceArchivesComplete(companyId);
       if (!invoiceArchiveReady.ok) return invoiceArchiveReady;
       // A8 — le régime de TVA est relu au RENDU du devis (mention art. 293 B CGI via
       // buildMentions) : tant qu'un contrat signé n'a pas son original archivé, le changer
       // fabriquerait une archive différente du document signé par le client.
-      const quoteArchiveReady = await this.assertSignedQuoteArchivesComplete(companyId);
+      const quoteArchiveReady = await this.documentArchiveIntegrity
+        .assertSignedQuoteArchivesComplete(companyId);
       if (!quoteArchiveReady.ok) return quoteArchiveReady;
       const updated = Company.of({
         ...current.toProps(),
@@ -7869,7 +7856,8 @@ export class BackendService {
       const current = await this.p.companies.lockById(companyId);
       if (!current) return err(appNotFound('company', companyId));
       if (current.isClosed()) return err(appForbidden('Compte clôturé.'));
-      const archiveReady = await this.assertIssuedInvoiceArchivesComplete(companyId);
+      const archiveReady = await this.documentArchiveIntegrity
+        .assertIssuedInvoiceArchivesComplete(companyId);
       if (!archiveReady.ok) return archiveReady;
       const props = current.toProps();
       const updated = Company.of({
@@ -7925,12 +7913,14 @@ export class BackendService {
       const current = await this.p.companies.lockById(companyId);
       if (!current) return err(appNotFound('company', companyId));
       if (current.isClosed()) return err(appForbidden('Compte clôturé.'));
-      const archiveReady = await this.assertIssuedInvoiceArchivesComplete(companyId);
+      const archiveReady = await this.documentArchiveIntegrity
+        .assertIssuedInvoiceArchivesComplete(companyId);
       if (!archiveReady.ok) return archiveReady;
       // A8 — capital (A6) et médiateur (A2) s'impriment AUSSI sur le devis, relus au rendu
       // (quoteMentions) : un contrat signé dont l'original n'est pas encore archivé bloque.
       // Idem rcsOrRm/address : le bloc émetteur est relu à chaque rendu.
-      const quoteArchiveReady = await this.assertSignedQuoteArchivesComplete(companyId);
+      const quoteArchiveReady = await this.documentArchiveIntegrity
+        .assertSignedQuoteArchivesComplete(companyId);
       if (!quoteArchiveReady.ok) return quoteArchiveReady;
       const props = current.toProps();
       const updated = Company.of({
@@ -8142,101 +8132,6 @@ export class BackendService {
       source: 'immutable_archive',
     });
     return bytes;
-  }
-
-  /**
-   * Changer une donnée qui influe sur le PDF est interdit tant qu'une facture émise n'a pas son
-   * original archivé. Cette barrière ferme la fenêtre émission→job et protège aussi les imports
-   * legacy incomplets contre une régénération rétroactive.
-   */
-  private async assertIssuedInvoiceArchivesComplete(
-    companyId: string,
-  ): Promise<Result<void, AppError>> {
-    const [fullIncomplete, pdfOnlyIncomplete, invoices, customers] = await Promise.all([
-      this.p.documentArchiveJobs.countIncomplete(companyId, 'invoice-issued'),
-      this.p.documentArchiveJobs.countIncomplete(companyId, 'invoice-issued-pdf-only-b2c'),
-      this.p.invoices.listByCompany(companyId),
-      this.p.customers.listByCompany(companyId),
-    ]);
-    if (fullIncomplete + pdfOnlyIncomplete > 0) {
-      return err(appConflict('company_billing_settings', 'issued_invoice_archive_missing'));
-    }
-    const customerTypes = new Map(customers.map((customer) => [customer.id, customer.type]));
-    for (const invoice of invoices) {
-      if (invoice.number === null || invoice.issuedAt === null) continue;
-      const customerType = customerTypes.get(invoice.customerId);
-      if (customerType === undefined) {
-        return err(appConflict('company_billing_settings', 'issued_invoice_archive_missing'));
-      }
-      const reason: Extract<DocumentArchiveJobReason, `invoice-${string}`> =
-        customerType === 'b2c' ? 'invoice-issued-pdf-only-b2c' : 'invoice-issued';
-      const proof = await this.proveDocumentArchiveIntegrity({
-        companyId,
-        pieceId: invoice.id,
-        reason,
-        linkedEntityType: 'invoice',
-        expected: this.expectedInvoiceArchiveArtifacts(invoice, reason),
-      });
-      if (!proof.ok) {
-        return err(appConflict('company_billing_settings', 'issued_invoice_archive_missing'));
-      }
-      const job = await this.p.documentArchiveJobs.findByPiece(
-        companyId,
-        invoice.id,
-        reason,
-      );
-      if (
-        job !== null
-        && (
-          job.status !== 'done'
-          || job.integrityProof === null
-          || job.integrityProofSha256 !== documentArchiveIntegrityProofSha256(proof.value)
-        )
-      ) {
-        return err(appConflict('company_billing_settings', 'issued_invoice_archive_missing'));
-      }
-    }
-    return ok(undefined);
-  }
-
-  /**
-   * A8 — même doctrine que assertIssuedInvoiceArchivesComplete, pour le CONTRAT : tant qu'un
-   * ordre d'archivage de devis signé n'est pas abouti (fenêtre signature→job, job en échec),
-   * aucune donnée relue au rendu du devis ne peut changer — sinon l'archive produite en retard
-   * ne serait plus le document que le client a signé (art. 1366-1367 c. civ.). Les devis signés
-   * AVANT A8 n'ont aucun ordre d'archivage : jamais rétro-générés (un rendu actuel ne serait
-   * pas le contrat d'époque), donc hors barrière, honnêtement.
-   */
-  private async assertSignedQuoteArchivesComplete(
-    companyId: string,
-  ): Promise<Result<void, AppError>> {
-    const incomplete = await this.p.documentArchiveJobs.countIncomplete(companyId, 'quote-signed');
-    if (incomplete > 0) {
-      return err(appConflict('company_billing_settings', 'signed_quote_archive_missing'));
-    }
-    const quotes = await this.p.quotes.listByCompany(companyId);
-    for (const quote of quotes) {
-      if (quote.signature === null) continue;
-      const job = await this.p.documentArchiveJobs.findByPiece(companyId, quote.id, 'quote-signed');
-      // Devis signé avant l'introduction de l'outbox A8 : aucune archive n'est inventée.
-      if (job === null) continue;
-      const proof = await this.proveDocumentArchiveIntegrity({
-        companyId,
-        pieceId: quote.id,
-        reason: 'quote-signed',
-        linkedEntityType: 'quote',
-        expected: this.expectedSignedQuoteArchiveArtifacts(quote),
-      });
-      if (
-        !proof.ok
-        || job.status !== 'done'
-        || job.integrityProof === null
-        || job.integrityProofSha256 !== documentArchiveIntegrityProofSha256(proof.value)
-      ) {
-        return err(appConflict('company_billing_settings', 'signed_quote_archive_missing'));
-      }
-    }
-    return ok(undefined);
   }
 
   /**
@@ -8920,39 +8815,6 @@ export class BackendService {
     });
   }
 
-  private expectedInvoiceArchiveArtifacts(
-    inv: Invoice,
-    reason: Extract<DocumentArchiveJobReason, `invoice-${string}`>,
-  ): readonly ExpectedArchiveArtifact[] {
-    if (!inv.number) throw new Error('Invoice archive expectations require an issued invoice.');
-    const pdf: ExpectedArchiveArtifact = {
-      kind: 'invoice_pdf',
-      documentId: generatedInvoiceDocumentId(inv.companyId, inv.id, 'invoice_pdf'),
-      versionId: generatedInvoiceDocumentVersionId(inv.companyId, inv.id, 'invoice_pdf'),
-      filename: `facture-${inv.number}.pdf`,
-      mimeType: 'application/pdf',
-    };
-    return reason === 'invoice-issued-pdf-only-b2c'
-      ? [pdf]
-      : [pdf, {
-        kind: 'facturx_xml',
-        documentId: generatedInvoiceDocumentId(inv.companyId, inv.id, 'facturx_xml'),
-        versionId: generatedInvoiceDocumentVersionId(inv.companyId, inv.id, 'facturx_xml'),
-        filename: `factur-x-${inv.number}.xml`,
-        mimeType: 'application/xml',
-      }];
-  }
-
-  private expectedSignedQuoteArchiveArtifacts(q: Quote): readonly ExpectedArchiveArtifact[] {
-    return [{
-      kind: 'signed_quote',
-      documentId: generatedQuoteDocumentId(q.companyId, q.id, 'signed_quote'),
-      versionId: generatedQuoteDocumentVersionId(q.companyId, q.id, 'signed_quote'),
-      filename: `devis-signe-${q.number ?? q.id}.pdf`,
-      mimeType: 'application/pdf',
-    }];
-  }
-
   private buildRenderedArchiveArtifact(input: {
     companyId: string;
     plan: DocumentArchiveArtifactPlan;
@@ -9217,7 +9079,7 @@ export class BackendService {
       if (stored.created) created += 1;
       else skipped += 1;
     }
-    const proof = await this.proveDocumentArchiveIntegrity({
+    const proof = await this.documentArchiveIntegrity.proveDocumentArchiveIntegrity({
       companyId: job.companyId,
       pieceId: job.pieceId,
       reason: job.reason,
@@ -9231,178 +9093,6 @@ export class BackendService {
       })),
     });
     return proof.ok ? ok({ created, skipped, proof: proof.value }) : proof;
-  }
-
-  /**
-   * Construit une preuve uniquement depuis les originaux effectivement relus. Une ligne SQL,
-   * même active, ne suffit jamais ; cardinalité, identité déterministe, version et stockage sont
-   * tous vérifiés avant qu'un job puisse devenir `done`.
-   */
-  private async proveDocumentArchiveIntegrity(input: {
-    companyId: string;
-    pieceId: string;
-    reason: DocumentArchiveJobReason;
-    linkedEntityType: 'invoice' | 'quote';
-    expected: readonly ExpectedArchiveArtifact[];
-  }): Promise<Result<DocumentArchiveIntegrityProof, AppError>> {
-    const fail = (cause: string): Result<DocumentArchiveIntegrityProof, AppError> => ({
-      ok: false,
-      error: { kind: 'dependency', port: 'document-archive-integrity', cause },
-    });
-    const documents = await this.p.runWithTenant(input.companyId, () =>
-      this.p.documents.findByEntity(
-        input.companyId,
-        input.linkedEntityType,
-        input.pieceId,
-      ),
-    );
-    const artifacts: DocumentArchiveArtifactProof[] = [];
-    let invoicePdfEmbeddedXmlSha256: string | null | undefined;
-    for (const expected of input.expected) {
-      const candidates = documents.filter(
-        (document) => document.kind === expected.kind && document.status === 'active',
-      );
-      if (candidates.length !== 1) {
-        return fail(`Cardinalité ${expected.kind} invalide : ${candidates.length}.`);
-      }
-      const document = candidates[0]!;
-      const props = document.toProps();
-      if (
-        document.id !== expected.documentId
-        || props.companyId !== input.companyId
-        || props.origin !== 'generated'
-        || props.filename !== expected.filename
-        || props.mimeType !== expected.mimeType
-        || props.linkedEntityType !== input.linkedEntityType
-        || props.linkedEntityId !== input.pieceId
-        || props.versions.length !== 1
-      ) {
-        return fail(`Identité immuable ${expected.kind} incohérente.`);
-      }
-      const version = props.versions[0]!;
-      const expectedStorageKey = buildDocumentStorageKey({
-        companyId: input.companyId,
-        documentId: expected.documentId,
-        version: 1,
-        sha256: props.sha256,
-        filename: expected.filename,
-        mimeType: expected.mimeType,
-      });
-      if (
-        version.id !== expected.versionId
-        || version.version !== 1
-        || version.documentId !== expected.documentId
-        || version.storageKey !== props.storageKey
-        || version.sha256 !== props.sha256
-        || version.mimeType !== props.mimeType
-        || version.byteSize !== props.byteSize
-        || props.storageKey !== expectedStorageKey
-      ) {
-        return fail(`Version initiale ${expected.kind} incohérente.`);
-      }
-      const verified = await loadVerifiedStoredObject(this.documentStorage, {
-        companyId: input.companyId,
-        key: props.storageKey,
-        sizeBytes: props.byteSize,
-        sha256: props.sha256,
-        contentType: props.mimeType,
-      });
-      if (!verified.ok) {
-        return fail(`Octets ${expected.kind} non vérifiables : ${appErrorSummary(verified.error)}.`);
-      }
-      if (version.reason !== input.reason) {
-        return fail(`Provenance de représentation ${expected.kind} incohérente.`);
-      }
-      let contentProfile: DocumentArchiveArtifactProof['contentProfile'];
-      if (expected.kind === 'invoice_pdf') {
-        const observed = await inspectInvoicePdfRepresentation(verified.value.bytes);
-        const required = input.reason === 'invoice-issued-pdf-only-b2c'
-          ? 'plain_pdf'
-          : 'facturx_pdfa3';
-        if (
-          !observed.ok
-          || observed.profile !== required
-          || observed.documentSha256 !== props.sha256
-        ) {
-          return fail(
-            `Représentation PDF incompatible avec ${input.reason} (attendu ${required}).`,
-          );
-        }
-        const attestationInput = observed.profile === 'plain_pdf'
-          ? {
-              companyId: input.companyId,
-              documentId: expected.documentId,
-              versionId: expected.versionId,
-              documentSha256: observed.documentSha256,
-              profile: 'plain_pdf' as const,
-              embeddedXmlSha256: null,
-              detectorVersion: observed.detectorVersion,
-            }
-          : {
-              companyId: input.companyId,
-              documentId: expected.documentId,
-              versionId: expected.versionId,
-              documentSha256: observed.documentSha256,
-              profile: 'facturx_pdfa3' as const,
-              embeddedXmlSha256: observed.embeddedXmlSha256,
-              detectorVersion: observed.detectorVersion,
-            };
-        const attested = await this.p.runWithTenant(input.companyId, () =>
-          this.p.documents.attestInvoicePdf(attestationInput),
-        );
-        if (!attested) return fail('Attestation immuable de la représentation PDF refusée.');
-        contentProfile = observed.profile;
-        invoicePdfEmbeddedXmlSha256 = observed.embeddedXmlSha256;
-      } else if (expected.kind === 'signed_quote') {
-        const observed = await inspectInvoicePdfRepresentation(verified.value.bytes);
-        if (
-          !observed.ok
-          || observed.profile !== 'plain_pdf'
-          || observed.documentSha256 !== props.sha256
-        ) {
-          return fail('Le PDF du devis signé contient une représentation embarquée inattendue.');
-        }
-        contentProfile = 'plain_pdf';
-      } else {
-        contentProfile = 'facturx_xml';
-      }
-      artifacts.push({
-        kind: expected.kind,
-        contentProfile,
-        documentId: expected.documentId,
-        versionId: expected.versionId,
-        version: 1,
-        storageKey: props.storageKey,
-        mimeType: props.mimeType,
-        byteSize: props.byteSize,
-        sha256: props.sha256,
-      });
-    }
-    artifacts.sort((left, right) => left.kind.localeCompare(right.kind));
-    if (input.reason === 'invoice-issued') {
-      const xmlArtifact = artifacts.find((artifact) => artifact.kind === 'facturx_xml');
-      if (
-        xmlArtifact === undefined
-        || invoicePdfEmbeddedXmlSha256 === undefined
-        || invoicePdfEmbeddedXmlSha256 === null
-        || invoicePdfEmbeddedXmlSha256 !== xmlArtifact.sha256
-      ) {
-        return fail('Le XML Factur-X embarqué diffère de l’original XML séparé.');
-      }
-    } else if (
-      input.reason === 'invoice-issued-pdf-only-b2c'
-      && invoicePdfEmbeddedXmlSha256 !== null
-    ) {
-      return fail('Une facture consommateur ne peut contenir de XML Factur-X embarqué.');
-    }
-    return ok({
-      version: 1,
-      algorithm: 'sha256',
-      companyId: input.companyId,
-      pieceId: input.pieceId,
-      reason: input.reason,
-      artifacts,
-    });
   }
 
   private async archiveIssuedInvoiceDocumentsForCompany(
@@ -9419,7 +9109,7 @@ export class BackendService {
     let created = 0;
     let skipped = 0;
     try {
-      const expected = this.expectedInvoiceArchiveArtifacts(inv, reason);
+      const expected = this.documentArchiveIntegrity.expectedInvoiceArchiveArtifacts(inv, reason);
       const existing = await this.p.runWithTenant(companyId, () =>
         this.p.documents.findByEntity(companyId, 'invoice', invoiceId),
       );
@@ -9573,7 +9263,7 @@ export class BackendService {
       } else if (reason === 'invoice-issued') {
         skipped += 1;
       }
-      const proof = await this.proveDocumentArchiveIntegrity({
+      const proof = await this.documentArchiveIntegrity.proveDocumentArchiveIntegrity({
         companyId,
         pieceId: invoiceId,
         reason,
@@ -9611,7 +9301,7 @@ export class BackendService {
     if (q.signature === null)
       return { ok: false, error: appForbidden('Devis non signé : archivage impossible.') };
     try {
-      const expected = this.expectedSignedQuoteArchiveArtifacts(q);
+      const expected = this.documentArchiveIntegrity.expectedSignedQuoteArchiveArtifacts(q);
       const existing = await this.p.runWithTenant(companyId, () =>
         this.p.documents.findByEntity(companyId, 'quote', quoteId),
       );
@@ -9645,7 +9335,7 @@ export class BackendService {
         if (!archived.ok) return archived;
         created = 1;
       }
-      const proof = await this.proveDocumentArchiveIntegrity({
+      const proof = await this.documentArchiveIntegrity.proveDocumentArchiveIntegrity({
         companyId,
         pieceId: quoteId,
         reason: 'quote-signed',
@@ -11535,9 +11225,11 @@ export class BackendService {
       const company = await this.p.companies.lockById(companyId);
       if (!company) return err(appNotFound('company', companyId));
       if (company.isClosed()) return err(appForbidden('Compte clôturé.'));
-      const quoteArchiveReady = await this.assertSignedQuoteArchivesComplete(companyId);
+      const quoteArchiveReady = await this.documentArchiveIntegrity
+        .assertSignedQuoteArchivesComplete(companyId);
       if (!quoteArchiveReady.ok) return quoteArchiveReady;
-      const invoiceArchiveReady = await this.assertIssuedInvoiceArchivesComplete(companyId);
+      const invoiceArchiveReady = await this.documentArchiveIntegrity
+        .assertIssuedInvoiceArchivesComplete(companyId);
       if (!invoiceArchiveReady.ok) return invoiceArchiveReady;
       return new UpdateCustomer({
         customers: this.p.customers,
