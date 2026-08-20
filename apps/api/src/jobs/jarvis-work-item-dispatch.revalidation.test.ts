@@ -565,6 +565,35 @@ describe('Revalidation §3 — liste fermée, axes restants (revue C20)', () => 
     expect(summary).toMatchObject({ cancelled: 1, failures: 0 });
   });
 
+  it('targetDigest sans recalculateur ⇒ cancel no-effect, jamais un préflight facultatif', async () => {
+    const calls: string[] = [];
+    const executor: JarvisEffectExecutor = {
+      execute: async () => {
+        calls.push('executor.execute');
+        throw new Error('inattendu : aucune cible scellée ne part sans recalcul autoritaire');
+      },
+    };
+    const h = harness({
+      executors: new Map([
+        [jarvisEffectExecutorKey(CANDIDATE_ACTION.actionId, CANDIDATE_ACTION.version), executor],
+      ]),
+    });
+    h.repository.leases = [leaseFixture({ targetDigest: sha256Hex('cible-originale') })];
+
+    const summary = await h.service.runAllCompanies();
+
+    expectRefusedWithoutAuthorize(h);
+    expect(calls).toEqual([]);
+    expect(h.repository.cancelInputs).toEqual([
+      {
+        id: 'wi_reval',
+        expectedLeaseFence: 1n,
+        noEffectResultDigest: noEffectDigestFor('target_digest_revalidator_unavailable'),
+      },
+    ]);
+    expect(summary).toMatchObject({ cancelled: 1, failures: 0 });
+  });
+
   it('recalcul du targetDigest en PANNE ⇒ retry_due (transitoire), jamais un cancel ni une exécution', async () => {
     const executor: JarvisEffectExecutor = {
       execute: async () => {

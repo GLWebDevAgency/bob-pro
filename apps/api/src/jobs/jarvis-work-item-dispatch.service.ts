@@ -1129,13 +1129,18 @@ export class JarvisWorkItemDispatchService {
       return { kind: 'cancel', reason: 'execute_window_expired' };
     }
     // targetDigest recalculé si présent — par l'exécuteur de l'action, qui seul sait relire la
-    // cible. Sans exécuteur enregistré (U1-c), aucune I/O ne partira de toute façon : l'axe est
-    // sans objet et l'item se règle `outcome_unknown` après autorisation.
+    // cible. La méthode est optionnelle seulement pour les effets SANS targetDigest : accepter un
+    // digest scellé sans savoir le recalculer transformerait la liste fermée U1-c en préflight
+    // facultatif. Un registre sans exécuteur reste réglé no-effect par `processLease`, avant toute
+    // autorisation ; un exécuteur présent mais incomplet est refusé ici, également sans I/O.
     if (lease.targetDigest !== null) {
       const executor = this.executors.get(
         jarvisEffectExecutorKey(lease.actionId, lease.actionVersion),
       );
-      if (executor?.recalculateTargetDigest !== undefined) {
+      if (executor !== undefined) {
+        if (executor.recalculateTargetDigest === undefined) {
+          return { kind: 'cancel', reason: 'target_digest_revalidator_unavailable' };
+        }
         let recalculated: string | null;
         try {
           recalculated = await executor.recalculateTargetDigest({ coordinates, lease });
