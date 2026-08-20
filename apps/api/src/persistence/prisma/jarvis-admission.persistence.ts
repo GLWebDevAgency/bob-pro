@@ -19,21 +19,21 @@ import { randomUUID } from 'node:crypto';
 import {
   ACTION_CATALOG_V0,
   AGENT_MISSION_RETENTION_MS,
+  computeCustomerContactTargetSensitiveDigest,
+  CUSTOMER_CONTACT_MAX_DUPLICATE_CANDIDATES,
   CUSTOMER_CONTACT_V1,
   JARVIS_RUN_LEASE_RELEASING_STATUSES,
   JARVIS_RUN_STATUSES,
   JARVIS_RUN_TERMINAL_STATUSES,
-  SINGLE_BUSINESS_ACTION_V1,
-  computeCustomerContactTargetSensitiveDigest,
-  type CustomerCandidate,
-  type CustomerCandidateReference,
-  type JarvisTargetSnapshot,
   parseCustomerContactState,
   projectQuoteMissionJarvisStatus,
   reduceJarvisRun,
   resolveJarvisDefinition,
+  SINGLE_BUSINESS_ACTION_V1,
   type ActionCatalogEntry,
   type AgentMissionFingerprintPort,
+  type CustomerCandidate,
+  type CustomerCandidateReference,
   type JarvisAdmissionKind,
   type JarvisAdmissionOwner,
   type JarvisAdmissionResult,
@@ -41,10 +41,12 @@ import {
   type JarvisRunTransition,
   type JarvisSystemAdmissionEnvelope,
   type JarvisTargetRevalidation,
+  type JarvisTargetSnapshot,
   type JarvisUserAdmissionEnvelope,
 } from '@bob/core';
 import { Prisma } from '@prisma/client';
 import {
+  canonicalCustomerName,
   CUSTOMER_CANDIDATE_SEARCH_LIMIT,
   customerCandidateSearchSql,
   customerReferenceByIdsSql,
@@ -334,6 +336,12 @@ async function persistTransition(
     readonly limitsTtl: { idleMs: number; hardMs: number };
     /** Horloge BASE de la transaction (§5.2) — jamais l'Instant client. */
     readonly now: string;
+    /**
+     * Borne DURE du run, telle qu'elle est en base — lue avec le preimage, jamais recalculée.
+     * Elle plafonne le rafraîchissement d'inactivité : une transition ne repousse jamais
+     * l'échéance ferme. Absente au semis, où les deux bornes naissent ensemble.
+     */
+    readonly hardExpiresAt: Date;
   },
 ): Promise<{ readonly sequence: number; readonly workItemIds: readonly string[] }> {
   const postimage = transition.postimage;
@@ -404,6 +412,26 @@ async function persistTransition(
         nextWakeAt: postimage.nextWakeAt === null ? null : new Date(postimage.nextWakeAt),
         terminalAt: postimage.terminalAt === null ? null : new Date(postimage.terminalAt),
         updatedAt: occurredAt,
+        // L'INACTIVITÉ SE MESURE DEPUIS LA DERNIÈRE TRANSITION, jamais depuis la naissance du run.
+        //
+        // Sans cette valeur, `idleExpiresAt` restait figé à celle du semis : la colonne mesurait
+        // l'ÂGE du run, si bien qu'un run activement travaillé pendant 25 h se serait présenté
+        // comme inactif au premier balayeur qui la lirait. Surtout, les lignes Jarvis VIOLAIENT
+        // ainsi l'invariant que le noyau applique déjà aux lignes legacy (`agent-mission.ts`,
+        // branche `status === 'active'` : `idleExpiresAt` doit valoir exactement
+        // `min(updatedAt + idleTtl, hardExpiresAt)`, sinon `timestamps/inconsistent_state`) —
+        // invariant que la projection déterministe du cutover §17 relira sur CES lignes.
+        //
+        // POURQUOI LE CLAMP EST CALCULÉ ICI, et pas par un `LEAST` SQL. Un UPDATE séparé qui
+        // n'aurait touché que cette colonne est REFUSÉ par le garde du dépôt
+        // (`AGENT_MISSION_IDENTITY_OR_REVISION_INVALID` : tout UPDATE doit porter
+        // `revision = OLD.revision + 1`) — et ce refus est juste, il interdit toute écriture qui
+        // contournerait le compare-and-swap. La borne voyage donc DANS le CAS, et `hardExpiresAt`
+        // vient du preimage déjà lu `FOR UPDATE` : aucun aller-retour de plus, aucune course —
+        // la borne dure est immuable après le semis.
+        idleExpiresAt: new Date(
+          Math.min(occurredAt.getTime() + options.limitsTtl.idleMs, options.hardExpiresAt.getTime()),
+        ),
       },
     });
     if (updated.count !== 1) {
@@ -732,6 +760,9 @@ async function admitCore(
         hardMs: limits?.hardTtlMs ?? 7 * 24 * 60 * 60 * 1_000,
       },
       now,
+      // Au semis la ligne n'existe pas encore : la valeur n'est alors pas lue (les deux bornes
+      // naissent de la même horloge base, quelques lignes plus haut).
+      hardExpiresAt: row?.hardExpiresAt ?? new Date(now),
     });
   } catch (error) {
     if (error instanceof JarvisSeedRaceError) {
@@ -928,11 +959,19 @@ export async function readJarvisCustomerLabels(
   customerIds: readonly string[],
 ): Promise<readonly CustomerCandidateReference[]> {
   if (customerIds.length === 0) return [];
+  // LA BORNE EST PINCEE ICI, pas laissee a l'appelant : un adaptateur qui accepterait une liste
+  // sans limite ferait de la borne du domaine une politesse. Le jeu presente ne depasse jamais
+  // `CUSTOMER_CONTACT_MAX_DUPLICATE_CANDIDATES` (meme constante que la revue elle-meme).
+  const bornes = customerIds.slice(0, CUSTOMER_CONTACT_MAX_DUPLICATE_CANDIDATES);
   const rows = await tx.$queryRaw<Array<{ customerId: string; canonicalName: string }>>(
-    customerReferenceByIdsSql({ companyId: owner.companyId, customerIds, lock: 'none' }),
+    customerReferenceByIdsSql({ companyId: owner.companyId, customerIds: bornes, lock: 'none' }),
   );
+  // MEME REGLE DE FRONTIERE QUE SES JUMELLES DU DEVIS : le nom sort normalise, jamais brut.
   return rows.map((row) =>
-    Object.freeze({ customerId: row.customerId, canonicalName: row.canonicalName }),
+    Object.freeze({
+      customerId: row.customerId,
+      canonicalName: canonicalCustomerName(row.canonicalName),
+    }),
   );
 }
 

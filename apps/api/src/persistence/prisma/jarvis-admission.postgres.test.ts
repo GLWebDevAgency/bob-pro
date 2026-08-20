@@ -39,8 +39,9 @@
 import { randomUUID } from 'node:crypto';
 
 import {
-  CUSTOMER_CONTACT_CREATE_ACTION_ID,
   computeCustomerContactProposalHash,
+  CUSTOMER_CONTACT_CREATE_ACTION_ID,
+  CUSTOMER_CONTACT_LIMITS,
   deriveJarvisSystemCommandId,
   sha256Hex,
   type AgentMissionFingerprintPort,
@@ -229,6 +230,25 @@ describe.skipIf(!RUN_CERT)(
         effectId: input.effectId,
         occurredAt: new Date().toISOString(),
       });
+    }
+
+    /** TTL d'inactivite du vertical fiche client — miroir de `CUSTOMER_CONTACT_LIMITS`. */
+    const IDLE_TTL_MS = CUSTOMER_CONTACT_LIMITS.idleTtlMs;
+
+    /** Les trois horodatages qui portent l'invariant de TTL, lus par l'auditeur. */
+    async function timestamps(
+      runId: string,
+    ): Promise<{ idle: Date; hard: Date; updated: Date }> {
+      const rows = await admin.$queryRaw<
+        Array<{ idleExpiresAt: Date; hardExpiresAt: Date; updatedAt: Date }>
+      >`
+        SELECT "idleExpiresAt", "hardExpiresAt", "updatedAt"
+          FROM public.agent_missions
+         WHERE "id" = ${runId}::uuid
+      `;
+      const row = rows[0];
+      if (row === undefined) throw new Error(`U1-h: run introuvable ${runId}`);
+      return { idle: row.idleExpiresAt, hard: row.hardExpiresAt, updated: row.updatedAt };
     }
 
     async function auditRun(runId: string): Promise<RunAuditRow | null> {
@@ -1334,5 +1354,67 @@ describe.skipIf(!RUN_CERT)(
       },
       TEST_TIMEOUT_MS,
     );
+
+    it(
+      "U1-h L9 — `idleExpiresAt` mesure l'INACTIVITE et suit chaque transition",
+      async () => {
+        // CE QUE CETTE PREUVE DEFEND. La colonne etait ecrite au semis et JAMAIS rafraichie : elle
+        // mesurait l'AGE du run, si bien qu'un run activement travaille pendant 25 h se serait
+        // presente comme inactif au premier balayeur qui la lirait. Surtout, les lignes Jarvis
+        // VIOLAIENT ainsi l'invariant que le noyau applique deja aux lignes legacy
+        // (`agent-mission.ts`, branche `status === 'active'` : `idleExpiresAt` doit valoir
+        // exactement `min(updatedAt + idleTtl, hardExpiresAt)`) — invariant que la projection
+        // deterministe du cutover §17 relira sur CES lignes.
+        //
+        // ELLE NE MANIPULE RIEN, ET C'EST UNE CONTRAINTE SUBIE, PAS UN CHOIX DE CONFORT :
+        // `agent_missions` refuse toute ecriture hors du chemin applicatif — l'auditeur comme le
+        // deployeur se voient opposer `permission denied`, et un UPDATE qui n'incrementerait pas la
+        // revision est de toute facon refuse par le garde `AGENT_MISSION_IDENTITY_OR_REVISION_INVALID`.
+        // On observe donc le run tel que le VRAI port le laisse, entre deux transitions reelles.
+        //
+        // CE QU'ELLE N'EXERCE PAS, ET QU'IL FAUT DIRE : le CLAMP sur `hardExpiresAt`. Avec les TTL
+        // reels du vertical (24 h d'inactivite contre 7 jours de borne dure), il ne joue qu'au
+        // septieme jour de vie d'un run — inatteignable ici sans maquiller la ligne, ce que la base
+        // interdit. Le clamp est donc prouve la ou il vit, dans la formule
+        // (`jarvis-admission.persistence.ts`), et l'invariant `idle <= hard` est verifie ci-dessous
+        // a chaque etape.
+        const ownerUserId = freshOwner();
+        const { runId } = await seedRun(ownerUserId);
+
+        const apresSemis = await timestamps(runId);
+        expect(apresSemis.idle.getTime()).toBeGreaterThan(apresSemis.updated.getTime());
+        expect(apresSemis.idle.getTime()).toBeLessThanOrEqual(apresSemis.hard.getTime());
+
+        // Un delai REEL, court et explicite : sans lui, deux transitions tombent a quelques
+        // millisecondes et l'ecart observe ne prouverait rien de solide.
+        await new Promise((resolve) => setTimeout(resolve, 250));
+
+        expectAdmission(
+          await uowA.runJarvisAdmission(
+            userEnvelope({
+              ownerUserId,
+              runId,
+              expectedRevision: 1,
+              command: { type: 'record_customer_resolution', resolution: { kind: 'no_duplicates' } },
+            }),
+            DEPS,
+          ),
+          'admitted',
+        );
+
+        const apresTransition = await timestamps(runId);
+        // LA MESURE QUI COMPTE : la borne a AVANCE avec la transition. Sans le rafraichissement,
+        // elle serait restee EXACTEMENT celle du semis.
+        expect(apresTransition.idle.getTime()).toBeGreaterThan(apresSemis.idle.getTime() + 100);
+        // Et elle vaut exactement `updatedAt + idleTtl` — l'invariant que le noyau exigera.
+        const attendu = apresTransition.updated.getTime() + IDLE_TTL_MS;
+        expect(Math.abs(apresTransition.idle.getTime() - attendu)).toBeLessThanOrEqual(50);
+        // La borne DURE, elle, n'a pas bouge : une transition ne repousse jamais l'echeance ferme.
+        expect(apresTransition.hard.getTime()).toBe(apresSemis.hard.getTime());
+        expect(apresTransition.idle.getTime()).toBeLessThanOrEqual(apresTransition.hard.getTime());
+      },
+      TEST_TIMEOUT_MS,
+    );
+
   },
 );

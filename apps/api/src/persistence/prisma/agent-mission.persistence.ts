@@ -24,7 +24,6 @@ import {
   AGENT_MISSION_PROTOCOL_VERSIONS,
   AgentMission,
   AgentMissionEvent,
-  normalizeCustomerName,
   parseAgentMissionQuoteLineWork,
   parseCustomPrestation,
   parseQuoteDraftPayload,
@@ -78,6 +77,7 @@ import {
 import { prepareRealtimeContext } from '../../voice/realtime/realtime-admission';
 import { PrismaCatalogueCandidateSearch } from './catalogue-candidate.persistence';
 import {
+  canonicalCustomerName,
   customerCandidateSearchSql,
   customerReferenceByIdSql,
   customerReferenceByIdsSql,
@@ -247,12 +247,6 @@ function canonicalAgentMissionResumeCatalogueRecord(
   return Object.freeze({ ...prestation, revision: row.revision });
 }
 
-function canonicalCustomerName(value: string): string {
-  // Les lignes historiques précèdent parfois la normalisation du domaine. Une valeur réellement
-  // invalide reste inchangée afin que le validateur core échoue fermé ; seuls les espaces sans
-  // sémantique sont réparés à la frontière Prisma.
-  return normalizeCustomerName(value) ?? value;
-}
 
 function canonicalPersistedAgentMissionProtocolVersion(value: number): AgentMissionProtocolVersion {
   if (

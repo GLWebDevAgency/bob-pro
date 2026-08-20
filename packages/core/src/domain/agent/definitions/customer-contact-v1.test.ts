@@ -21,7 +21,9 @@ import {
   computeCustomerContactCandidateSetHash,
   customerContactStatusForPhase,
   parseCustomerContactState,
+  type CustomerContactCommand,
   type CustomerContactDuplicateDecision,
+  type CustomerContactPhase,
   type CustomerContactStateV1,
 } from './customer-contact-v1';
 
@@ -1396,5 +1398,107 @@ describe('customer_contact@1 — statuts §5.1 et registre racine', () => {
         ctx(unknownVersion, { allocatedEffectIds: [EFFECT_ID] }),
       ),
     ).toEqual({ ok: false, quarantine: { kind: 'customer_contact', definitionVersion: 99 } });
+  });
+});
+
+describe('U1-h — ORACLE « DOMAINE INTACT » : ce lot n’ajoute AUCUNE capacité', () => {
+  /**
+   * CE QUE CET ORACLE DEFEND, et pourquoi il vaut son inconfort.
+   *
+   * U1-h donne un EMETTEUR TACTILE a un chemin qui existait deja : `choose_duplicate_resolution`
+   * etait declaree, parsee, reduite et gardee par sa phase — il ne lui manquait qu'une main pour
+   * l'emettre. Tout le lot tient dans les adaptateurs (controller, codec, mobile, paroles).
+   *
+   * Le risque n'est donc pas de mal coder : c'est de PROFITER du lot pour « juste » elargir une
+   * union, ajouter une phase ou assouplir une transition — chacune de ces trois choses touche un
+   * journal IMMUABLE, la grille de projection du cutover §17 et la fermeture sur laquelle repose
+   * la garantie FD-06.
+   *
+   * COMMENT IL MORD, et pourquoi ce n'est pas une liste. Une liste annotee
+   * (`const x: readonly T['kind'][] = [...]`) accepte un SOUS-ENSEMBLE : elargir l'union ne la
+   * casse pas, et l'assertion se contente alors de comparer une liste ecrite a une liste ecrite —
+   * une preuve rigoureusement circulaire. Le mecanisme employe ici est un `Record` EXHAUSTIF
+   * indexe par l'union : un membre ajoute au type rend l'objet incomplet et la COMPILATION echoue
+   * (`pnpm typecheck`, et le rituel de sortie), tandis que les cles restent verifiables a
+   * l'execution. C'est le TYPE qui est la source ; la liste n'en est que la lecture.
+   *
+   * Un ajout legitime fera donc rougir ce fichier. C'est VOULU : il faudra le mettre a jour a la
+   * main, dans un lot qui l'assume et qui traite le cutover — jamais en passant.
+   */
+  it('l’union des commandes est EXACTEMENT celle-ci', () => {
+    // Un membre AJOUTE a `CustomerContactCommand` rend ce Record incomplet -> erreur TS2739.
+    // Un membre RETIRE rend une cle surnumeraire -> erreur TS2353. Les deux sens sont fermes.
+    const COMMANDES: Record<CustomerContactCommand['type'], true> = {
+      start_run: true,
+      record_customer_resolution: true,
+      choose_duplicate_resolution: true,
+      stage_proposal: true,
+      record_presentation_ack: true,
+      confirm: true,
+      reject_proposal: true,
+      record_target_mutation: true,
+      record_effect_submitted: true,
+      record_effect_receipt: true,
+      cancel_run: true,
+      wake_run: true,
+    };
+    expect(Object.keys(COMMANDES).sort()).toEqual([
+      'cancel_run',
+      'choose_duplicate_resolution',
+      'confirm',
+      'record_customer_resolution',
+      'record_effect_receipt',
+      'record_effect_submitted',
+      'record_presentation_ack',
+      'record_target_mutation',
+      'reject_proposal',
+      'stage_proposal',
+      'start_run',
+      'wake_run',
+    ]);
+  });
+
+  it('les phases sont EXACTEMENT celles-ci, DANS CET ORDRE', () => {
+    // L'ORDRE compte : `CUSTOMER_CONTACT_PHASES` est une valeur runtime dont derive la grille de
+    // projection du cutover §17 — une phase inseree au milieu deplacerait les suivantes en silence.
+    expect(CUSTOMER_CONTACT_PHASES).toEqual([
+      'resolving_customer',
+      'awaiting_duplicate_review',
+      'preparing_proposal',
+      'awaiting_confirmation',
+      'committing',
+      'awaiting_receipt',
+      'cancelling',
+      'completed',
+      'cancelled',
+      'failed',
+    ]);
+    // Et chaque phase se projette en statut : la totalite est verifiee, pas echantillonnee.
+    const STATUTS: Record<CustomerContactPhase, string> = {
+      resolving_customer: customerContactStatusForPhase('resolving_customer'),
+      awaiting_duplicate_review: customerContactStatusForPhase('awaiting_duplicate_review'),
+      preparing_proposal: customerContactStatusForPhase('preparing_proposal'),
+      awaiting_confirmation: customerContactStatusForPhase('awaiting_confirmation'),
+      committing: customerContactStatusForPhase('committing'),
+      awaiting_receipt: customerContactStatusForPhase('awaiting_receipt'),
+      cancelling: customerContactStatusForPhase('cancelling'),
+      completed: customerContactStatusForPhase('completed'),
+      cancelled: customerContactStatusForPhase('cancelled'),
+      failed: customerContactStatusForPhase('failed'),
+    };
+    expect(Object.keys(STATUTS)).toHaveLength(CUSTOMER_CONTACT_PHASES.length);
+  });
+
+  it('l’issue de revue reste FERMEE a deux membres — c’est elle qui porte la garantie FD-06', () => {
+    // `adopt_existing` a ete examine et CLOS (SPEC_U1H §2) : sous un mauvais choix, la mise a jour
+    // RECOUVRE nom, adresse, e-mail, telephone et destinataire de la fiche existante — un
+    // `use_existing` errone, lui, ne fait qu'ACHEVER le run sans rien ecrire. Rouvrir cette union
+    // sans l'appareil d'une action distincte et renforcee (§9.1) transformerait une erreur
+    // d'oreille en ECRASEMENT D'IDENTITE. La fermeture EST la garantie.
+    const DECISIONS: Record<CustomerContactDuplicateDecision['kind'], true> = {
+      use_existing: true,
+      continue_create: true,
+    };
+    expect(Object.keys(DECISIONS).sort()).toEqual(['continue_create', 'use_existing']);
   });
 });

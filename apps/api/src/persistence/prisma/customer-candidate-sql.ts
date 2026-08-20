@@ -25,11 +25,31 @@
  * explicite — ceinture et bretelles, comme partout ailleurs dans ce dépôt.
  */
 import { Prisma } from '@prisma/client';
+import { normalizeCustomerName } from '@bob/core';
 
 /** Borne du rapprochement, PINCÉE ICI. Un `limit` choisi par l'appelant serait une mini-autorité. */
 export const CUSTOMER_CANDIDATE_SEARCH_LIMIT = 6;
 
 export type CustomerCandidateLock = 'share' | 'none';
+
+/**
+ * LE NOM D'UNE FICHE, TEL QU'IL DOIT SORTIR DE LA BASE — source unique.
+ *
+ * Les lignes historiques precedent parfois la normalisation du domaine : une valeur reellement
+ * invalide reste INCHANGEE, pour que le validateur du noyau echoue ferme ; seules les espaces sans
+ * semantique sont reparees a la frontiere Prisma.
+ *
+ * POURQUOI ELLE VIT ICI, et pas dans un seul adaptateur. Elle etait privee dans
+ * `agent-mission.persistence.ts`, ou quatre lectures du devis l'appliquaient — pendant que son
+ * jumeau Jarvis (`readJarvisCustomerLabels`) rendait la colonne BRUTE. Deux regles de frontiere
+ * pour la meme donnee, dont une seule etait exercee : le chemin Jarvis etait livre sans appelant.
+ * Deux Bob ne doivent pas prononcer deux noms differents pour la meme fiche, et la seule facon de
+ * le garantir est qu'il n'existe qu'une regle. Une fixture d'egalite couvre les cinq sites.
+ */
+export function canonicalCustomerName(value: string): string {
+  return normalizeCustomerName(value) ?? value;
+}
+
 
 function lockClause(lock: CustomerCandidateLock, alias: string): Prisma.Sql {
   return lock === 'share' ? Prisma.raw(`FOR SHARE OF ${alias}`) : Prisma.empty;
