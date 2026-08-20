@@ -150,6 +150,29 @@ preuves PostgreSQL, test core 14/14, synchronisation SQL 13/13, typechecks core/
 `git diff --check` verts. Cette preuve établit `implemented` localement ; elle ne promeut ni U1-h ni
 le moteur Jarvis en `certified` ou `released`.
 
+### 3.2 L7 — protocole binaire de convergence
+
+Le terminal ne devient pas une nouvelle projection mobile : `GET /jarvis/runs/current` conserve sa
+loi et ne sert que le foreground non terminal. Le hook mémorise la dernière vue **autoritaire** du
+même principal. Lorsqu'un run observé dans une phase d'écriture (`committing`,
+`awaiting_receipt`, `cancelling`) quitte le foreground, la lecture suivante rend soit l'absence
+canonique `{ run: null, presentation: null }`, soit un autre `runId` si un nouveau foreground a été
+ouvert entre les deux lectures. Cette transition invalide une fois les préfixes métier canoniques,
+puis laisse leurs écrans relire la base. Elle ne déduit ni succès, ni échec, ni entité modifiée.
+
+L'acceptation L7 est fermée :
+
+- écriture → absence autoritaire invalide notamment `['customers']` exactement une fois ;
+- écriture → autre `runId` applique la même convergence sans confondre les deux runs ;
+- une absence initiale, une disparition depuis une phase hors écriture, une lecture en chargement
+  ou en erreur et un run vivant sans présentation n'invalident rien ;
+- une erreur de relecture ne détruit pas le dernier témoin d'écriture : une lecture autoritaire
+  ultérieure qui constate l'absence converge encore ;
+- le changement de principal remet le témoin à zéro ; aucune observation d'un compte ne déclenche
+  une invalidation pour un autre ;
+- les absences répétées restent des no-op. Aucun polling permanent, aucun endpoint terminal et
+  aucune seconde autorité de cache ne sont ajoutés.
+
 ## 4. Gardes à rendre vraies avant certification
 
 - **G1** — une revue ne peut plus se résoudre à la seule voix.
