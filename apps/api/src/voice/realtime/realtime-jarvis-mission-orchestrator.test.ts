@@ -454,6 +454,31 @@ describe('RealtimeJarvisMissionOrchestrator — runPlanned', () => {
     }
   });
 
+  it('U1-f §6 : une DÉRIVE DE CIBLE se dit, elle ne se cache pas derrière un générique', async () => {
+    // `target_revision_stale` signifie que la fiche a changé depuis la vérification de Bob. Le
+    // message générique (« l'étape enregistrée ne permet pas cette action ») laissait l'artisan
+    // croire à une erreur de sa part et rejouer indéfiniment le même tour.
+    const h = harness({
+      admissionResult: {
+        status: 'refused',
+        error: { code: 'invalid_command', reason: 'target_revision_stale' },
+      } as unknown as JarvisAdmissionResult,
+    });
+    const prepared = await h.orchestrator.prepare(request());
+    if (prepared.status !== 'prepared') throw new Error('préparation attendue');
+
+    const outcome = await h.orchestrator.runPlanned({
+      request: request(),
+      prepared: prepared.prepared,
+      frame: frame({ kind: 'propose_fields', fields: fields() }),
+    });
+
+    expect(outcome.status).toBe('failed');
+    expect(outcome.canonicalSpeech).toContain('La fiche a changé');
+    // Et l'engagement fondamental tient : rien n'a été exécuté.
+    expect(outcome.canonicalSpeech).toContain('Rien n’a été exécuté');
+  });
+
   it('refuse une opération que la phase relue n’admet pas', async () => {
     const h = harness();
     const prepared = await h.orchestrator.prepare(request());
