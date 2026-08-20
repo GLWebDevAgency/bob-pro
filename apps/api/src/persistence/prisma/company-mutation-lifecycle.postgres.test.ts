@@ -7,19 +7,37 @@ import {
   type AppError,
   type CompanyRegistrationInput,
   type DocumentFolderRepository,
+  type InvoicePdfData,
   type OcrPort,
   type PaymentGatewayPort,
   type PdfRendererPort,
+  type QuotePdfData,
   type Result,
 } from '@bob/core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { BackendService } from '../../backend.service';
 import type { SupabaseAdminPort } from '../../auth/supabase-admin';
+import { CustomerUpdateAuthority } from '../../customers/customer-update.authority';
+import { DocumentArchiveIntegrityAuthority } from '../../documents/document-archive-integrity.authority';
+import { sealDocumentArchiveRenderSnapshot } from '../../documents/document-archive-render-snapshot';
+import {
+  generatedInvoiceDocumentId,
+  generatedInvoiceDocumentVersionId,
+  generatedQuoteDocumentId,
+  generatedQuoteDocumentVersionId,
+} from '../../documents/generated-document-ids';
+import { UnavailableDocumentStorage } from '../../documents/storage';
+import { PrismaJarvisCustomerEffectAuthority } from '../../jarvis/jarvis-customer-effect.authority';
 import type { NotificationDeliveryService } from '../../jobs/notification-delivery.service';
+import type {
+  JarvisCustomerEffectTarget,
+  JarvisCustomerFields,
+} from '../../jobs/jarvis-customer-effect.executor';
 import { requestContext, type AppLogger, type Principal } from '../../observability/logger';
 import type { Metrics } from '../../observability/metrics';
 import type { Persistence, ServerCompanyRepository } from '../persistence';
 import { PrismaPersistence } from './prisma-persistence';
+import { PrismaDocumentArchiveJobRepository } from './repositories';
 import { PrismaService } from './prisma.service';
 
 const RUN_POSTGRES_CERT = process.env.RUN_POSTGRES_COMPANY_MUTATION_LIFECYCLE_CERT === 'true';
@@ -295,6 +313,167 @@ function makeBackend(persistence: Persistence): {
   };
 }
 
+function makeJarvisCustomerAuthority(
+  worker: PrismaService,
+  persistence: Persistence,
+): PrismaJarvisCustomerEffectAuthority {
+  const archives = new DocumentArchiveIntegrityAuthority(
+    persistence,
+    new UnavailableDocumentStorage(),
+  );
+  return new PrismaJarvisCustomerEffectAuthority(
+    worker,
+    new CustomerUpdateAuthority(persistence, archives),
+  );
+}
+
+function jarvisTarget(fixture: Fixture, customerId: string): JarvisCustomerEffectTarget {
+  return {
+    companyId: fixture.companyId,
+    ownerUserId: `owner-${fixture.companyId}`,
+    customerId,
+  };
+}
+
+function jarvisCustomerFields(name: string): JarvisCustomerFields {
+  return {
+    type: 'b2b',
+    name,
+    address: { line1: '2 rue de la Certification', zip: '75002', city: 'Paris' },
+    email: 'comptabilite@example.test',
+  };
+}
+
+function signedQuoteArchiveSnapshot(input: {
+  readonly fixture: Fixture;
+  readonly quoteId: string;
+  readonly number: string;
+}) {
+  const documentId = generatedQuoteDocumentId(
+    input.fixture.companyId,
+    input.quoteId,
+    'signed_quote',
+  );
+  const data: QuotePdfData = {
+    number: input.number,
+    companyName: input.fixture.companyName,
+    companyAddress: '1 rue de la Certification, 75001 Paris',
+    companyRcsOrRm: null,
+    customerName: 'Client Archive Cert',
+    customerAddress: '2 rue de la Certification, 75002 Paris',
+    validUntil: '2026-08-18',
+    documentCreatedAt: CERT_NOW,
+    lines: [{ label: 'Certification', qty: 1, unitPriceHT: 10_000, vatRate: 20 }],
+    totals: { ht: 10_000, vat: 2_000, ttc: 12_000, netToPay: 12_000 },
+    depositPct: null,
+    signedBy: 'Client Archive Cert',
+    signedAt: CERT_NOW,
+    mentions: [],
+  };
+  return sealDocumentArchiveRenderSnapshot({
+    schemaVersion: 1,
+    rendererVersion: 1,
+    companyId: input.fixture.companyId,
+    pieceId: input.quoteId,
+    reason: 'quote-signed',
+    metadataCreatedAt: CERT_NOW,
+    artifacts: [{
+      kind: 'signed_quote',
+      expectedContentProfile: 'plain_pdf',
+      documentId,
+      versionId: generatedQuoteDocumentVersionId(
+        input.fixture.companyId,
+        input.quoteId,
+        'signed_quote',
+      ),
+      filename: `devis-signe-${input.number}.pdf`,
+      mimeType: 'application/pdf',
+      linkedEntityType: 'quote',
+      documentDate: '2026-07-18',
+      issuedAt: '2026-07-18',
+    }],
+    payload: { kind: 'quote', data },
+  });
+}
+
+function issuedInvoiceArchiveSnapshot(input: {
+  readonly fixture: Fixture;
+  readonly invoiceId: string;
+  readonly number: string;
+}) {
+  const pdfDocumentId = generatedInvoiceDocumentId(
+    input.fixture.companyId,
+    input.invoiceId,
+    'invoice_pdf',
+  );
+  const xmlDocumentId = generatedInvoiceDocumentId(
+    input.fixture.companyId,
+    input.invoiceId,
+    'facturx_xml',
+  );
+  const data: InvoicePdfData = {
+    number: input.number,
+    companyName: input.fixture.companyName,
+    companyAddress: '1 rue de la Certification, 75001 Paris',
+    companyRcsOrRm: null,
+    customerName: 'Client Archive Cert',
+    customerAddress: '2 rue de la Certification, 75002 Paris',
+    issuedAt: '2026-07-18',
+    dueAt: '2026-08-18',
+    documentCreatedAt: CERT_NOW,
+    kind: 'final',
+    lines: [{ label: 'Certification', qty: 1, unitPriceHT: 10_000, vatRate: 20 }],
+    totals: { ht: 10_000, vat: 2_000, ttc: 12_000, netToPay: 12_000 },
+    mentions: [],
+    billingPresentation: { accentColor: 'navy', rib: null, insurance: null },
+  };
+  return sealDocumentArchiveRenderSnapshot({
+    schemaVersion: 1,
+    rendererVersion: 1,
+    companyId: input.fixture.companyId,
+    pieceId: input.invoiceId,
+    reason: 'invoice-issued',
+    metadataCreatedAt: CERT_NOW,
+    artifacts: [
+      {
+        kind: 'invoice_pdf',
+        expectedContentProfile: 'facturx_pdfa3',
+        documentId: pdfDocumentId,
+        versionId: generatedInvoiceDocumentVersionId(
+          input.fixture.companyId,
+          input.invoiceId,
+          'invoice_pdf',
+        ),
+        filename: `facture-${input.number}.pdf`,
+        mimeType: 'application/pdf',
+        linkedEntityType: 'invoice',
+        documentDate: '2026-07-18',
+        issuedAt: '2026-07-18',
+      },
+      {
+        kind: 'facturx_xml',
+        expectedContentProfile: 'facturx_xml',
+        documentId: xmlDocumentId,
+        versionId: generatedInvoiceDocumentVersionId(
+          input.fixture.companyId,
+          input.invoiceId,
+          'facturx_xml',
+        ),
+        filename: `factur-x-${input.number}.xml`,
+        mimeType: 'application/xml',
+        linkedEntityType: 'invoice',
+        documentDate: '2026-07-18',
+        issuedAt: '2026-07-18',
+      },
+    ],
+    payload: {
+      kind: 'invoice',
+      data,
+      facturXXml: '<rsm:CrossIndustryInvoice />',
+    },
+  });
+}
+
 function withLuhnCheckDigit(prefix: string): string {
   let sum = 0;
   let double = true;
@@ -536,6 +715,23 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       return fixture;
     }
 
+    async function seedCustomer(fixture: Fixture, label: string): Promise<string> {
+      const customerId = `company-mutation-customer-${randomUUID()}`;
+      await admin.customer.create({
+        data: {
+          id: customerId,
+          companyId: fixture.companyId,
+          type: 'b2b',
+          name: `Client initial ${label}`,
+          addrLine1: '2 rue de la Certification',
+          addrZip: '75002',
+          addrCity: 'Paris',
+          email: 'initial@example.test',
+        },
+      });
+      return customerId;
+    }
+
     async function assertClosed(fixture: Fixture): Promise<void> {
       const [company, subscription] = await Promise.all([
         admin.company.findUniqueOrThrow({ where: { id: fixture.companyId } }),
@@ -616,19 +812,27 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           const where = { companyId: { in: companyIds } };
           await admin.$transaction(async (tx) => {
             // Réouverture technique locale des seules fixtures : neutralise le trigger de cycle
-            // de vie, puis réactive immédiatement tous les triggers/FK AVANT les DELETE. Ainsi,
-            // une future dépendance oubliée fait échouer le cleanup au lieu de devenir orpheline.
+            // de vie et les seules fixtures d'archive append-only, puis réactive les triggers/FK
+            // AVANT le graphe de DELETE ordinaire. Une future dépendance oubliée y fait ainsi
+            // échouer le cleanup au lieu de devenir orpheline.
             await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'replica'");
             await tx.company.updateMany({
               where: { id: { in: companyIds } },
               data: { closedAt: null, closureReason: null },
             });
+            await tx.documentArchiveJobArtifact.deleteMany({ where });
+            await tx.documentArchiveArtifactIntent.deleteMany({ where });
+            await tx.documentArchiveRenderSnapshot.deleteMany({ where });
             await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'origin'");
+            await tx.documentArchiveJob.deleteMany({ where });
             await tx.documentFolderDeletionPlan.deleteMany({ where });
             await tx.documentFolder.deleteMany({ where });
             await tx.publicAccessToken.deleteMany({ where });
             await tx.subscription.deleteMany({ where });
             await tx.companyBillingSettings.deleteMany({ where });
+            await tx.invoice.deleteMany({ where });
+            await tx.quote.deleteMany({ where });
+            await tx.customer.deleteMany({ where });
             await tx.company.deleteMany({ where: { id: { in: companyIds } } });
           });
         }
@@ -678,8 +882,12 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           AND class.relname IN (
             'companies',
             'company_billing_settings',
+            'customers',
+            'document_archive_jobs',
             'document_folders',
+            'invoices',
             'public_access_tokens',
+            'quotes',
             'subscriptions'
           )
         ORDER BY class.relname
@@ -687,8 +895,12 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       expect(rlsRows).toEqual([
         { tableName: 'companies', enabled: true, forced: true },
         { tableName: 'company_billing_settings', enabled: true, forced: true },
+        { tableName: 'customers', enabled: true, forced: true },
+        { tableName: 'document_archive_jobs', enabled: true, forced: true },
         { tableName: 'document_folders', enabled: true, forced: true },
+        { tableName: 'invoices', enabled: true, forced: true },
         { tableName: 'public_access_tokens', enabled: true, forced: true },
+        { tableName: 'quotes', enabled: true, forced: true },
         { tableName: 'subscriptions', enabled: true, forced: true },
       ]);
 
@@ -935,6 +1147,267 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       },
       30_000,
     );
+
+    it('Jarvis refuse une édition devant un devis signé non archivé, sans atteindre les factures ni muter la fiche', async () => {
+      const fixture = await seedFixture('jarvis-signed-quote-archive-gap');
+      const customerId = await seedCustomer(fixture, 'archive devis');
+      const quoteId = `company-mutation-quote-${randomUUID()}`;
+      const quoteNumber = `D-CERT-${randomUUID()}`;
+      await admin.quote.create({
+        data: {
+          id: quoteId,
+          companyId: fixture.companyId,
+          customerId,
+          status: 'signed',
+          number: quoteNumber,
+          issuedAt: new Date(CERT_NOW),
+          signerName: 'Client Archive Cert',
+          signedAt: new Date(CERT_NOW),
+          signatureCustomerType: 'b2b',
+        },
+      });
+      const archiveJobs = new PrismaDocumentArchiveJobRepository(firstWorker);
+      await firstWorker.withTenant(fixture.companyId, () =>
+        archiveJobs.enqueue({
+          id: randomUUID(),
+          companyId: fixture.companyId,
+          pieceId: quoteId,
+          reason: 'quote-signed',
+          now: CERT_NOW,
+          renderSnapshot: signedQuoteArchiveSnapshot({ fixture, quoteId, number: quoteNumber }),
+        }),
+      );
+      const authority = makeJarvisCustomerAuthority(firstWorker, firstPersistence);
+
+      await expect(
+        authority.updateCustomerAtRevision(
+          jarvisTarget(fixture, customerId),
+          jarvisCustomerFields('Nom qui ne doit pas être écrit'),
+          1,
+        ),
+      ).resolves.toEqual({ status: 'refused', reasonCode: 'signed_quote_archive_missing' });
+      await expect(admin.customer.findUniqueOrThrow({ where: { id: customerId } })).resolves.toMatchObject({
+        name: 'Client initial archive devis',
+        revision: 1,
+      });
+    }, 30_000);
+
+    it('Jarvis refuse une édition devant une facture émise non archivée, sans muter la fiche', async () => {
+      const fixture = await seedFixture('jarvis-issued-invoice-archive-gap');
+      const customerId = await seedCustomer(fixture, 'archive facture');
+      const invoiceId = `company-mutation-invoice-${randomUUID()}`;
+      const invoiceNumber = `F-CERT-${randomUUID()}`;
+      await admin.invoice.create({
+        data: {
+          id: invoiceId,
+          companyId: fixture.companyId,
+          customerId,
+          kind: 'invoice',
+          status: 'draft',
+        },
+      });
+      await admin.invoice.update({
+        where: { id: invoiceId },
+        data: {
+          status: 'issued',
+          number: invoiceNumber,
+          issuedAt: new Date(CERT_NOW),
+          dueAt: new Date('2026-08-18T08:00:00.000Z'),
+        },
+      });
+      const archiveJobs = new PrismaDocumentArchiveJobRepository(firstWorker);
+      await firstWorker.withTenant(fixture.companyId, () =>
+        archiveJobs.enqueue({
+          id: randomUUID(),
+          companyId: fixture.companyId,
+          pieceId: invoiceId,
+          reason: 'invoice-issued',
+          now: CERT_NOW,
+          renderSnapshot: issuedInvoiceArchiveSnapshot({
+            fixture,
+            invoiceId,
+            number: invoiceNumber,
+          }),
+        }),
+      );
+      const authority = makeJarvisCustomerAuthority(firstWorker, firstPersistence);
+
+      await expect(
+        authority.updateCustomerAtRevision(
+          jarvisTarget(fixture, customerId),
+          jarvisCustomerFields('Nom qui ne doit pas être écrit'),
+          1,
+        ),
+      ).resolves.toEqual({ status: 'refused', reasonCode: 'issued_invoice_archive_missing' });
+      await expect(admin.customer.findUniqueOrThrow({ where: { id: customerId } })).resolves.toMatchObject({
+        name: 'Client initial archive facture',
+        revision: 1,
+      });
+    }, 30_000);
+
+    it('deux éditions Jarvis parties de la même révision ne committent qu’une fois et rendent le CAS stale sans retry', async () => {
+      const fixture = await seedFixture('jarvis-cas');
+      const customerId = await seedCustomer(fixture, 'CAS');
+      const target = jarvisTarget(fixture, customerId);
+      const firstAuthority = makeJarvisCustomerAuthority(firstWorker, firstPersistence);
+      const secondAuthority = makeJarvisCustomerAuthority(secondWorker, secondPersistence);
+
+      const outcomes = await Promise.all([
+        firstAuthority.updateCustomerAtRevision(
+          target,
+          jarvisCustomerFields('Nom gagnant A'),
+          1,
+        ),
+        secondAuthority.updateCustomerAtRevision(
+          target,
+          jarvisCustomerFields('Nom gagnant B'),
+          1,
+        ),
+      ]);
+
+      expect(outcomes.filter((outcome) => outcome.status === 'written')).toHaveLength(1);
+      expect(outcomes.filter(
+        (outcome) => outcome.status === 'refused'
+          && outcome.reasonCode === 'target_revision_stale',
+      )).toHaveLength(1);
+      const customer = await admin.customer.findUniqueOrThrow({ where: { id: customerId } });
+      expect(customer.revision).toBe(2);
+      expect(['Nom gagnant A', 'Nom gagnant B']).toContain(customer.name);
+    }, 30_000);
+
+    it('édition Jarvis gagnante : la clôture attend son verrou société puis committe après la fiche', async () => {
+      const fixture = await seedFixture('jarvis-wins-close');
+      const customerId = await seedCustomer(fixture, 'Jarvis gagnant');
+      const gate: Gate<number> = {
+        acquired: deferred<number>(),
+        release: deferred<void>(),
+      };
+      const gatedPersistence = persistenceWith(firstPersistence, {
+        companies: gateCompanyLock({
+          repository: firstPersistence.companies,
+          worker: firstWorker,
+          companyId: fixture.companyId,
+          gate,
+        }),
+      });
+      const authority = makeJarvisCustomerAuthority(firstWorker, gatedPersistence);
+      const updatePromise = authority.updateCustomerAtRevision(
+        jarvisTarget(fixture, customerId),
+        jarvisCustomerFields('Nom écrit avant clôture'),
+        1,
+      );
+      const writerPid = await waitForGateOrFailure(
+        gate.acquired.promise,
+        updatePromise,
+        'jarvis-wins-close:writer',
+      );
+
+      const closePid = deferred<number>();
+      const closePromise = runCloseAccount({
+        worker: secondWorker,
+        persistence: secondPersistence,
+        fixture,
+        onStart: (pid) => closePid.resolve(pid),
+      });
+      let blockingError: unknown;
+      let observation: BlockingObservation | undefined;
+      try {
+        observation = await waitUntilBlockedBy({
+          admin,
+          blockedPid: await waitForGateOrFailure(
+            closePid.promise,
+            closePromise,
+            'jarvis-wins-close:closer-start',
+          ),
+          blockerPid: writerPid,
+          context: 'jarvis-wins-close',
+          expectedQuery: isCompanyForUpdate,
+        });
+      } catch (error) {
+        blockingError = error;
+      } finally {
+        gate.release.resolve(undefined);
+      }
+
+      const [written, closed] = await Promise.all([updatePromise, closePromise]);
+      if (blockingError) throw blockingError;
+      expect(observation?.blockerPids).toEqual([writerPid]);
+      expect(written).toEqual({ status: 'written' });
+      expect(closed.ok).toBe(true);
+      await expect(admin.customer.findUniqueOrThrow({ where: { id: customerId } })).resolves.toMatchObject({
+        name: 'Nom écrit avant clôture',
+        revision: 2,
+      });
+      await assertClosed(fixture);
+    }, 30_000);
+
+    it('clôture gagnante contre Jarvis : l’édition attend le même verrou puis refuse sans mutation', async () => {
+      const fixture = await seedFixture('close-wins-jarvis');
+      const customerId = await seedCustomer(fixture, 'Clôture gagnante');
+      const gate: Gate<number> = {
+        acquired: deferred<number>(),
+        release: deferred<void>(),
+      };
+      const closePromise = runCloseAccount({
+        worker: firstWorker,
+        persistence: firstPersistence,
+        fixture,
+        companies: gateCompanyLock({
+          repository: firstPersistence.companies,
+          worker: firstWorker,
+          companyId: fixture.companyId,
+          gate,
+        }),
+      });
+      const closerPid = await waitForGateOrFailure(
+        gate.acquired.promise,
+        closePromise,
+        'close-wins-jarvis:closer',
+      );
+
+      const tenantStarted = deferred<number>();
+      const observedPersistence = persistenceObservingFirstTenantStart({
+        base: secondPersistence,
+        worker: secondWorker,
+        started: tenantStarted,
+      });
+      const authority = makeJarvisCustomerAuthority(secondWorker, observedPersistence);
+      const updatePromise = authority.updateCustomerAtRevision(
+        jarvisTarget(fixture, customerId),
+        jarvisCustomerFields('Nom qui ne doit pas être écrit'),
+        1,
+      );
+      let blockingError: unknown;
+      let observation: BlockingObservation | undefined;
+      try {
+        observation = await waitUntilBlockedBy({
+          admin,
+          blockedPid: await waitForGateOrFailure(
+            tenantStarted.promise,
+            updatePromise,
+            'close-wins-jarvis:writer-start',
+          ),
+          blockerPid: closerPid,
+          context: 'close-wins-jarvis',
+          expectedQuery: isCompanyForUpdate,
+        });
+      } catch (error) {
+        blockingError = error;
+      } finally {
+        gate.release.resolve(undefined);
+      }
+
+      const [closed, written] = await Promise.all([closePromise, updatePromise]);
+      if (blockingError) throw blockingError;
+      expect(observation?.blockerPids).toEqual([closerPid]);
+      expect(closed.ok).toBe(true);
+      expect(written).toEqual({ status: 'refused', reasonCode: 'company_closed' });
+      await expect(admin.customer.findUniqueOrThrow({ where: { id: customerId } })).resolves.toMatchObject({
+        name: 'Client initial Clôture gagnante',
+        revision: 1,
+      });
+      await assertClosed(fixture);
+    }, 30_000);
 
     it('retry de provisioning gagnant : la clôture attend son verrou puis ferme sans écraser la première identité', async () => {
       const userId = randomUUID();
