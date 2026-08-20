@@ -52,6 +52,11 @@ function presentation(overrides: Record<string, unknown> = {}): Record<string, u
     intent: 'create',
     targetCustomerId: null,
     targetLabel: null,
+    // U1-h — LOCKSTEP : le decodeur refuse A LA FORME sur cle inconnue, donc toute cle
+    // ajoutee au wire serveur doit apparaitre ICI, sinon la presentation entiere devient
+    // `null` et PLUS AUCUNE carte ne s'affiche — y compris le parcours de modification.
+    duplicateReview: null,
+    completion: null,
     proposal: {
       proposalId: PROPOSAL_ID,
       proposalHash: HASH,
@@ -447,5 +452,153 @@ describe('jarvis-codec — bornes du lot et contrat du commandId', () => {
     expect(isJarvisUserCommandId('11111111-1111-8111-8111-111111111111')).toBe(false);
     expect(isJarvisUserCommandId('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee')).toBe(true);
     expect(isJarvisUserCommandId('AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE')).toBe(false);
+  });
+});
+
+describe('jarvis-codec — U1-h : la revue énoncée, et la fin du run', () => {
+  const REVIEW_ID = '77777777-7777-4777-8777-777777777777';
+  const CHOICE_A = '88888888-8888-4888-8888-888888888888';
+  const CHOICE_B = '99999999-9999-4999-8999-999999999999';
+
+  function revue(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      reviewId: REVIEW_ID,
+      choices: [
+        { ordinal: 1, choiceId: CHOICE_A, label: 'Dupont Plomberie' },
+        { ordinal: 2, choiceId: CHOICE_B, label: 'Dupont Plomberie SARL' },
+      ],
+      ...overrides,
+    };
+  }
+
+  it('décode la revue en conservant le rang que Bob a PRONONCÉ', () => {
+    const decoded = decodeCustomerContactPresentation(presentation({ duplicateReview: revue() }));
+    expect(decoded?.duplicateReview?.reviewId).toBe(REVIEW_ID);
+    expect(decoded?.duplicateReview?.choices.map((choice) => choice.ordinal)).toEqual([1, 2]);
+    expect(decoded?.duplicateReview?.choices[0]?.label).toBe('Dupont Plomberie');
+  });
+
+  it('REFUSE un rang qui ne suit pas sa position — l’écran ne renumérote JAMAIS', () => {
+    // C'est la garantie centrale du lot côté écran : « le troisième » à l'oreille doit rester le
+    // troisième au doigt. Un ordre reçu au hasard porterait un rattachement DURABLE vers la
+    // mauvaise fiche, et l'artisan n'aurait aucun moyen de s'en apercevoir.
+    for (const choices of [
+      [{ ordinal: 2, choiceId: CHOICE_A, label: 'A' }],
+      [
+        { ordinal: 1, choiceId: CHOICE_A, label: 'A' },
+        { ordinal: 3, choiceId: CHOICE_B, label: 'B' },
+      ],
+      [
+        { ordinal: 2, choiceId: CHOICE_A, label: 'A' },
+        { ordinal: 1, choiceId: CHOICE_B, label: 'B' },
+      ],
+    ]) {
+      expect(
+        decodeCustomerContactPresentation(presentation({ duplicateReview: revue({ choices }) })),
+      ).toBeNull();
+    }
+  });
+
+  it('GARDE un rang dont le nom ne se résout plus — il ne disparaît pas', () => {
+    const decoded = decodeCustomerContactPresentation(
+      presentation({
+        duplicateReview: revue({
+          choices: [
+            { ordinal: 1, choiceId: CHOICE_A, label: null },
+            { ordinal: 2, choiceId: CHOICE_B, label: 'Dupont Plomberie SARL' },
+          ],
+        }),
+      }),
+    );
+    expect(decoded?.duplicateReview?.choices).toHaveLength(2);
+    expect(decoded?.duplicateReview?.choices[0]?.label).toBeNull();
+    expect(decoded?.duplicateReview?.choices[0]?.ordinal).toBe(1);
+  });
+
+  it('REFUSE deux rangs qui désignent la même fiche — un jeu dérivé ne se déduplique pas', () => {
+    expect(
+      decodeCustomerContactPresentation(
+        presentation({
+          duplicateReview: revue({
+            choices: [
+              { ordinal: 1, choiceId: CHOICE_A, label: 'A' },
+              { ordinal: 2, choiceId: CHOICE_A, label: 'A' },
+            ],
+          }),
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it('REFUSE une revue hors forme À LA FORME : clé inconnue, id non canonique, libellé impropre', () => {
+    for (const mauvaise of [
+      revue({ inconnue: true }),
+      revue({ reviewId: 'pas-un-uuid' }),
+      revue({ choices: [] }),
+      revue({ choices: [{ ordinal: 1, choiceId: CHOICE_A, label: 42 }] }),
+      revue({ choices: [{ ordinal: 1, choiceId: 'x', label: 'A' }] }),
+      revue({ choices: [{ ordinal: 1, choiceId: CHOICE_A }] }),
+    ]) {
+      expect(
+        decodeCustomerContactPresentation(presentation({ duplicateReview: mauvaise })),
+      ).toBeNull();
+    }
+  });
+
+  it('décode les DEUX fins de run, et `existing_selected` n’affirme aucune écriture', () => {
+    const ecrit = decodeCustomerContactPresentation(
+      presentation({ completion: { kind: 'recorded' } }),
+    );
+    expect(ecrit?.completion).toEqual({ kind: 'recorded' });
+
+    const retenu = decodeCustomerContactPresentation(
+      presentation({ completion: { kind: 'existing_selected', label: 'Dupont Plomberie' } }),
+    );
+    expect(retenu?.completion).toEqual({ kind: 'existing_selected', label: 'Dupont Plomberie' });
+
+    // Une fin inconnue, ou une fin `recorded` qui porterait un libellé, sont refusées.
+    for (const mauvaise of [
+      { kind: 'adopted' },
+      { kind: 'recorded', label: 'X' },
+      { kind: 'existing_selected' },
+      { kind: 'existing_selected', label: 42 },
+    ]) {
+      expect(decodeCustomerContactPresentation(presentation({ completion: mauvaise }))).toBeNull();
+    }
+  });
+
+  it('encode l’issue de revue en la RECONSTRUISANT, et refuse toute autre décision', () => {
+    expect(
+      encodeJarvisRunCommand({
+        type: 'choose_duplicate_resolution',
+        reviewId: REVIEW_ID,
+        decision: { kind: 'use_existing', choiceId: CHOICE_A },
+      }),
+    ).toEqual({
+      type: 'choose_duplicate_resolution',
+      reviewId: REVIEW_ID,
+      decision: { kind: 'use_existing', choiceId: CHOICE_A },
+    });
+    expect(
+      encodeJarvisRunCommand({
+        type: 'choose_duplicate_resolution',
+        reviewId: REVIEW_ID,
+        decision: { kind: 'continue_create' },
+      }),
+    ).toEqual({
+      type: 'choose_duplicate_resolution',
+      reviewId: REVIEW_ID,
+      decision: { kind: 'continue_create' },
+    });
+    // `adopt_existing` est CLOS (SPEC_U1H §2) : sous un mauvais choix, la mise à jour recouvrirait
+    // l'identité de la fiche existante par celle qu'on saisit. La fermeture EST la garantie FD-06.
+    for (const mauvaise of [
+      { type: 'choose_duplicate_resolution', reviewId: REVIEW_ID, decision: { kind: 'adopt_existing', choiceId: CHOICE_A } },
+      { type: 'choose_duplicate_resolution', reviewId: REVIEW_ID, decision: { kind: 'use_existing' } },
+      { type: 'choose_duplicate_resolution', reviewId: 'x', decision: { kind: 'continue_create' } },
+      { type: 'choose_duplicate_resolution', reviewId: REVIEW_ID, decision: { kind: 'continue_create', choiceId: CHOICE_A } },
+    ]) {
+      expect(encodeJarvisRunCommand(mauvaise)).toBeNull();
+    }
   });
 });

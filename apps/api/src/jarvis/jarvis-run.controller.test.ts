@@ -610,6 +610,10 @@ describe('présentation écran (greffe G4) — jamais une proposition non scell�
       intent: 'create',
       targetCustomerId: null,
       targetLabel: null,
+      // U1-h — la projection est TOTALE : un run sans revue ni fin les porte a `null`,
+      // jamais absentes. Le decodeur client refuse a la forme sur cle manquante.
+      duplicateReview: null,
+      completion: null,
       proposal: {
         proposalId: PROPOSAL_ID,
         proposalHash: PROPOSAL_HASH,

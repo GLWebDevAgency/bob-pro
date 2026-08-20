@@ -59,6 +59,11 @@ function presentation() {
     intent: 'create',
     targetCustomerId: null,
     targetLabel: null,
+    // U1-h — LOCKSTEP : le decodeur refuse A LA FORME sur cle inconnue, donc toute cle
+    // ajoutee au wire serveur doit apparaitre ICI, sinon la presentation entiere devient
+    // `null` et PLUS AUCUNE carte ne s'affiche — y compris le parcours de modification.
+    duplicateReview: null,
+    completion: null,
     proposal: {
       proposalId: PROPOSAL_ID,
       proposalHash: HASH,

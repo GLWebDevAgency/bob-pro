@@ -58,24 +58,26 @@ import { Throttle } from '@nestjs/throttler';
 import {
   AGENT_MISSION_INT4_MAX,
   AGENT_MISSION_KIND,
-  CUSTOMER_CONTACT_ACTION_VERSION,
-  CUSTOMER_CONTACT_DEFINITION_VERSION,
-  CUSTOMER_CONTACT_PROPOSED_FIELD_KEYS,
-  CUSTOMER_CONTACT_SENSITIVE_FIELDS,
-  CUSTOMER_CONTACT_SENSITIVE_FIELD_SOURCES,
-  CUSTOMER_CONTACT_UPDATE_ACTION_ID,
-  JARVIS_RUN_KINDS,
-  JARVIS_RUN_TERMINAL_STATUSES,
   appConflict,
   appForbidden,
   appNotFound,
   appUnavailable,
+  CUSTOMER_CONTACT_ACTION_VERSION,
+  CUSTOMER_CONTACT_DEFINITION_VERSION,
+  CUSTOMER_CONTACT_PROPOSED_FIELD_KEYS,
+  CUSTOMER_CONTACT_SENSITIVE_FIELD_SOURCES,
+  CUSTOMER_CONTACT_SENSITIVE_FIELDS,
+  CUSTOMER_CONTACT_SPOKEN_LABEL_LIMIT,
+  CUSTOMER_CONTACT_UPDATE_ACTION_ID,
   err,
   isCanonicalAgentMissionUserCommandId,
   isCanonicalAgentMissionUuid,
   isU1OpenAction,
+  JARVIS_RUN_KINDS,
+  JARVIS_RUN_TERMINAL_STATUSES,
   ok,
   parseCustomerContactState,
+  sanitizeSpokenLabel,
   sha256Hex,
   type AppError,
   type CustomerContactConfirmationStatus,
@@ -93,9 +95,9 @@ import {
   type JarvisReduceError,
   type JarvisRunEnvelope,
   type JarvisRunStatus,
+  type JarvisTargetSnapshot,
   type JarvisUserAdmissionEnvelope,
   type Result,
-  type JarvisTargetSnapshot,
 } from '@bob/core';
 
 import { unwrap } from '../http/result';
@@ -257,7 +259,25 @@ export type JarvisTapCommand =
     }
   | { readonly type: 'confirm'; readonly confirmationId: string; readonly proposalHash: string }
   | { readonly type: 'reject_proposal'; readonly confirmationId: string }
-  | { readonly type: 'cancel_run'; readonly reason: 'user_cancelled' | 'manual_handoff' };
+  | { readonly type: 'cancel_run'; readonly reason: 'user_cancelled' | 'manual_handoff' }
+  /**
+   * U1-h — L'ISSUE DE LA REVUE DE DOUBLONS, AU DOIGT.
+   *
+   * C'est un CHOIX STRUCTURÉ (§8 point 4), pas une confirmation d'effet : la table §7.0 n'y attache
+   * ni reçu de présentation ni step-up. `use_existing` n'écrit RIEN — il achève le run sur une
+   * fiche qui existait déjà ; `continue_create` poursuit la création en connaissance de cause.
+   *
+   * L'union reste FERMÉE À DEUX MEMBRES et c'est elle qui porte la garantie FD-06 : un troisième
+   * membre qui adopterait la fiche trouvée ferait RECOUVRIR son identité par celle qu'on saisit
+   * (voir SPEC_U1H §2, `adopt_existing` clos).
+   */
+  | {
+      readonly type: 'choose_duplicate_resolution';
+      readonly reviewId: string;
+      readonly decision:
+        | { readonly kind: 'continue_create' }
+        | { readonly kind: 'use_existing'; readonly choiceId: string };
+    };
 
 export function parseJarvisTapCommand(value: unknown): JarvisTapCommand {
   const candidate = jsonObject(value);
@@ -296,6 +316,39 @@ export function parseJarvisTapCommand(value: unknown): JarvisTapCommand {
         invalidBody('command.confirmationId', 'UUID canonique requis.');
       }
       return { type: 'reject_proposal', confirmationId: body.confirmationId };
+    }
+    case 'choose_duplicate_resolution': {
+      const body = exactBody(candidate, ['type', 'reviewId', 'decision']);
+      if (!isCanonicalAgentMissionUuid(body.reviewId)) {
+        invalidBody('command.reviewId', 'UUID canonique requis.');
+      }
+      const decision = jsonObject(body.decision);
+      if (decision === null) invalidBody('command.decision', 'Décision JSON objet requise.');
+      // RECONSTRUITE CLÉ PAR CLÉ, jamais recopiée : le corps du client ne devient jamais la
+      // commande. Un membre inconnu tombe dans le `default` et fait échouer le tour, fermé.
+      if (decision.kind === 'continue_create') {
+        exactBody(decision, ['kind']);
+        return {
+          type: 'choose_duplicate_resolution',
+          reviewId: body.reviewId,
+          decision: { kind: 'continue_create' },
+        };
+      }
+      if (decision.kind === 'use_existing') {
+        const choix = exactBody(decision, ['kind', 'choiceId']);
+        if (!isCanonicalAgentMissionUuid(choix.choiceId)) {
+          invalidBody('command.decision.choiceId', 'UUID canonique requis.');
+        }
+        return {
+          type: 'choose_duplicate_resolution',
+          reviewId: body.reviewId,
+          decision: { kind: 'use_existing', choiceId: choix.choiceId },
+        };
+      }
+      // `adopt_existing` et tout autre membre : refusés ICI, nommément. La fermeture EST la
+      // garantie FD-06 — l'élargir demanderait une action distincte et renforcée (§9.1).
+      invalidBody('command.decision.kind', 'Décision de revue inconnue.');
+      break;
     }
     case 'cancel_run': {
       const body = exactBody(candidate, ['type', 'reason']);
@@ -584,6 +637,44 @@ export interface CustomerContactPresentationWire {
         readonly presentedAt: string | null;
       }
     | null;
+  /**
+   * U1-h §3 L2 — CE QUE BOB VIENT D'ÉNONCER, pour que l'écran puisse le résoudre au doigt.
+   *
+   * Sans ce bloc, `awaiting_duplicate_review` se projetait en « préparation » et l'écran ne savait
+   * littéralement RIEN de la liste que Bob avait lue à voix haute : la revue ne se résolvait qu'à
+   * la voix, et l'artisan qui posait son téléphone n'avait plus que « Annuler ».
+   *
+   * IDENTITÉS ET ORDRE VIENNENT DU JEU SCELLÉ (`state.duplicateReview.candidates`), jamais d'une
+   * nouvelle recherche : l'ordinal est le rang que Bob a PRONONCÉ, et re-chercher ferait de
+   * « le troisième » à l'oreille un « 2 » à l'écran, sur un rattachement durable.
+   *
+   * AUCUN `customerId` de candidat n'y figure. `choiceId` est opaque et dérivé de la revue : il
+   * suffit à désigner un rang sans jamais livrer l'annuaire clients de l'artisan à l'appareil.
+   *
+   * `label: null` sur un rang dont le nom ne se résout plus : le rang GARDE sa place et son
+   * numéro, l'écran le montre introuvable et n'en propose pas le choix. Il ne disparaît pas.
+   */
+  readonly duplicateReview:
+    | {
+        readonly reviewId: string;
+        readonly choices: readonly {
+          readonly ordinal: number;
+          readonly choiceId: string;
+          readonly label: string | null;
+        }[];
+      }
+    | null;
+  /**
+   * U1-h §3 L2 — COMMENT LE RUN S'EST TERMINÉ, dérivé SERVEUR de l'état scellé.
+   *
+   * `recorded` : un effet a été acquitté, la fiche est écrite. `existing_selected` : l'artisan a
+   * retenu une fiche existante — AUCUNE écriture n'a eu lieu, et la phrase ne doit rien en
+   * affirmer. Le libellé suit la même règle que partout : assaini, borné, ou `null`.
+   */
+  readonly completion:
+    | { readonly kind: 'recorded' }
+    | { readonly kind: 'existing_selected'; readonly label: string | null }
+    | null;
 }
 
 /**
@@ -702,10 +793,31 @@ export function presentCustomerContactFields(
   return presented.length === 0 ? null : Object.freeze(presented);
 }
 
+/**
+ * NOMME une fiche pour l'écran, ou rend `null` — jamais un identifiant en guise de nom.
+ *
+ * Le nom traverse le MÊME assainissement et la MÊME borne que la parole de Bob
+ * (`sanitizeSpokenLabel`, 160) AVANT les bornes de présentation : l'ordre compte, c'est le premier
+ * qui décide de ce qui est réellement borné. Ce que l'artisan lit est donc exactement ce qu'il a
+ * entendu — deux frontières différentes produiraient deux noms pour la même fiche.
+ */
+function presentedLabelOf(labels: ReadonlyMap<string, string>, customerId: string): string | null {
+  const brut = labels.get(customerId);
+  if (brut === undefined) return null;
+  const parle = sanitizeSpokenLabel(brut, CUSTOMER_CONTACT_SPOKEN_LABEL_LIMIT);
+  return parle === null ? null : presentedText(parle);
+}
+
 export function projectCustomerContactPresentation(
   state: CustomerContactStateV1,
   fields: CustomerContactProposedFieldsV1 | null,
   target: JarvisTargetSnapshot | null = null,
+  /**
+   * Libellés des fiches CITÉES par le run — ceux de la revue scellée, et celui de la fiche retenue.
+   * Résolus par l'appelant dans sa propre lecture stateless, jamais par cette fonction pure.
+   * Une entrée absente vaut « nom irrésolu » : le rang garde sa place, sans son nom.
+   */
+  labels: ReadonlyMap<string, string> = new Map(),
 ): CustomerContactPresentationWire | null {
   const targetCustomerId = state.intent.mode === 'update' ? state.intent.target.customerId : null;
   // Le libellé passe par les MÊMES bornes de présentation que les valeurs (§G4 allégé) : un nom
@@ -713,6 +825,34 @@ export function projectCustomerContactPresentation(
   // rien — contrairement à l'`after` d'un champ, que l'artisan confirme.
   const targetLabel =
     target === null || target.displayName === null ? null : presentedText(target.displayName);
+  // Le rang que Bob a prononcé est la POSITION dans le jeu scellé : `index + 1`, jamais un compte
+  // recalculé et jamais un tri neuf. `labels` ne fait que NOMMER ce que le sceau a déjà ordonné.
+  const duplicateReview =
+    state.duplicateReview === null
+      ? null
+      : Object.freeze({
+          reviewId: state.duplicateReview.reviewId,
+          choices: Object.freeze(
+            state.duplicateReview.candidates.map((candidate, index) =>
+              Object.freeze({
+                ordinal: index + 1,
+                choiceId: candidate.choiceId,
+                label: presentedLabelOf(labels, candidate.customerId),
+              }),
+            ),
+          ),
+        });
+  // La fin d'un run se dit de DEUX façons, et elles n'affirment pas la même chose : un effet
+  // acquitté a écrit ; une fiche retenue n'a rien écrit du tout.
+  const completion: CustomerContactPresentationWire['completion'] =
+    state.receipt !== null
+      ? Object.freeze({ kind: 'recorded' as const })
+      : state.resolvedExistingCustomerId !== null
+        ? Object.freeze({
+            kind: 'existing_selected' as const,
+            label: presentedLabelOf(labels, state.resolvedExistingCustomerId),
+          })
+        : null;
   const proposal = state.proposal;
   if (proposal === null) {
     // Rien de proposé : la présentation existe (phase, intention) mais n'offre AUCUN geste.
@@ -725,6 +865,8 @@ export function projectCustomerContactPresentation(
       targetLabel,
       proposal: null,
       confirmation: null,
+      duplicateReview,
+      completion,
     });
   }
   // Charge absente ou digest divergent (G4) : fail-closed, l'écran ne confirme rien.
@@ -753,6 +895,8 @@ export function projectCustomerContactPresentation(
           expiresAt: confirmation.expiresAt,
           presentedAt: confirmation.presentedAt,
         }),
+    duplicateReview,
+    completion,
   });
 }
 
@@ -1225,8 +1369,11 @@ export class JarvisRunController {
     // diff. Une panne de cette lecture n'annule RIEN : la présentation sort sans libellé ni
     // avant, ce qui est exactement l'état d'avant ce lot.
     const target = await this.targetSnapshot(owner, state);
+    const labels = await this.duplicateLabels(owner, state);
     const proposal = state.proposal;
-    if (proposal === null) return projectCustomerContactPresentation(state, null, target);
+    if (proposal === null) {
+      return projectCustomerContactPresentation(state, null, target, labels);
+    }
     const payloads = this.payloads;
     if (payloads === null) return null;
     const payload = await payloads.readProposalPayload({
@@ -1238,7 +1385,58 @@ export class JarvisRunController {
     });
     return payload === null
       ? null
-      : projectCustomerContactPresentation(state, payload.fields, target);
+      : projectCustomerContactPresentation(state, payload.fields, target, labels);
+  }
+
+  /**
+   * NOMME les fiches que le run CITE : celles de la revue scellée, et celle qui a été retenue.
+   *
+   * CONDITIONNÉE, jamais systématique. `GET runs/current` est appelé au montage, au focus, à la
+   * reconnexion, et rafraîchi à 1,5 s pendant les phases d'écriture — qui n'ont ni revue ni fiche
+   * retenue. Une lecture inconditionnelle ajouterait donc un troisième aller-retour stateless à
+   * chaque battement, pour rien.
+   *
+   * `customerLabels` est OPTIONNEL sur la vue, comme `currentRun` et `targetSnapshot` : on le
+   * narrowe par `typeof === 'function'`. Son absence, comme une panne, rend une table VIDE — la
+   * revue sort alors sans noms plutôt qu'à moitié nommée, et la ligne d'audit dit pourquoi. Une
+   * garde `?.` silencieuse ferait disparaître la revue sans que personne ne l'apprenne.
+   */
+  private async duplicateLabels(
+    owner: JarvisAdmissionOwner,
+    state: CustomerContactStateV1,
+  ): Promise<ReadonlyMap<string, string>> {
+    const cites = new Set<string>();
+    for (const candidate of state.duplicateReview?.candidates ?? []) {
+      cites.add(candidate.customerId);
+    }
+    if (state.resolvedExistingCustomerId !== null) cites.add(state.resolvedExistingCustomerId);
+    if (cites.size === 0) return new Map();
+    const admission = this.admission;
+    if (admission === null) return new Map();
+    const identites = [...cites];
+    try {
+      const read = await admission.readJarvisStateless(owner, async (view) => {
+        const lire = view.customerLabels;
+        return typeof lire === 'function' ? lire(identites) : null;
+      });
+      const references = read.value;
+      if (references === null) {
+        this.logger.audit('jarvis.presentation.duplicate_labels_unavailable', {
+          companyId: owner.companyId,
+          reason: 'view_member_absent',
+        });
+        return new Map();
+      }
+      return new Map(
+        references.map((reference) => [reference.customerId, reference.canonicalName] as const),
+      );
+    } catch (cause) {
+      this.logger.audit('jarvis.presentation.duplicate_labels_unavailable', {
+        companyId: owner.companyId,
+        reason: cause instanceof Error ? cause.message : String(cause),
+      });
+      return new Map();
+    }
   }
 
   /**
