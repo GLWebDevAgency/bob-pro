@@ -59,6 +59,21 @@ export class PrismaJarvisCustomerEffectAuthority implements JarvisCustomerEffect
     return { customerId: target.customerId, fields };
   }
 
+  /**
+   * Révision persistée — lue SOUS TENANT, jamais devinée. Le reçu de succès du run la porte : un
+   * run refermé sur une révision fausse rendrait la garde §9.1 aveugle pour la proposition
+   * suivante. Fiche absente ⇒ `null` : le signal reste dû plutôt que d'acquitter un fantôme.
+   */
+  async readCustomerRevision(target: JarvisCustomerEffectTarget): Promise<number | null> {
+    const rows = await this.prisma.withTenant(target.companyId, () =>
+      this.prisma.client().customer.findFirst({
+        where: { id: target.customerId, companyId: target.companyId },
+        select: { revision: true },
+      }),
+    );
+    return rows === null ? null : rows.revision;
+  }
+
   async createCustomer(
     target: JarvisCustomerEffectTarget,
     fields: JarvisCustomerFields,

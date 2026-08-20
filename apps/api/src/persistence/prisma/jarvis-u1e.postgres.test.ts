@@ -99,6 +99,8 @@ import { agentMissionPrincipalBindingHash } from '../../voice/realtime/realtime-
 import type { Persistence } from '../persistence';
 import { PrismaAgentMissionUnitOfWork } from './agent-mission.persistence';
 import type { JarvisAdmissionDeps } from './jarvis-admission.persistence';
+import { PrismaJarvisCustomerEffectAuthority } from '../../jarvis/jarvis-customer-effect.authority';
+import { PrismaJarvisDispatchRunDirectory } from './jarvis-dispatch-directory.persistence';
 import { PrismaJarvisProposalPayloadStore } from './jarvis-proposal-payloads.persistence';
 import { PrismaJarvisWorkItemsRepository } from './jarvis-work-items.persistence';
 import { PrismaService } from './prisma.service';
@@ -1187,6 +1189,157 @@ describe.skipIf(!RUN_CERT)(
         `;
         expect(remaining.map((row) => row.ownerUserId)).toEqual([livingOwner.ownerUserId]);
         expect(await storeA.listRetentionOwners(companyId, 50)).toEqual([]);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "preuve 5 — U1-f : la chaîne ARMÉE, adaptateurs de PRODUCTION — l'annuaire d'autorité trouve le travail dû et l'effet s'exécute",
+      async () => {
+        // CE QUE CETTE PREUVE ÉTABLIT, et qu'aucune autre ne pouvait établir : le worker de
+        // production, câblé sur les TROIS adaptateurs réels (repository, annuaire SECURITY
+        // DEFINER, autorité métier sur les use cases canoniques), trouve SEUL le travail dû et
+        // écrit la fiche. Jusqu'à ce lot ces trois liaisons n'existaient pas : le tick rendait
+        // `dependencies_absent` et un `confirm` d'artisan n'écrivait JAMAIS rien.
+        const owner: JarvisAdmissionOwner = { companyId, ownerUserId: freshOwner('chaine-armee') };
+        const customerId = await seedTargetCustomer(owner);
+        const opened = await openRun(controllerA, owner, {
+          commandId: randomUUID(),
+          customerId,
+        });
+        expect(opened.outcome).toBe('admitted');
+        const runId = opened.run.runId;
+
+        // L'ANNUAIRE DE PRODUCTION, avant tout travail : un run ouvert n'a AUCUN work item, donc
+        // il ne doit PAS apparaître. La borne de la policy n'est pas décorative — sans elle,
+        // l'autorité énumérerait tous les runs actifs du tenant.
+        const directory = new PrismaJarvisDispatchRunDirectory(workerA);
+        const harnessPersistence = {
+          companies: {
+            findById: async (id: string) => {
+              const rows = await admin.$queryRaw<Array<{ closedAt: Date | null }>>`
+                SELECT "closedAt" FROM public.companies WHERE "id" = ${id}
+              `;
+              const row = rows[0];
+              return row === undefined ? null : { isClosed: () => row.closedAt !== null };
+            },
+          },
+          runWithTenant: <T>(tenantId: string, work: () => Promise<T>): Promise<T> =>
+            workerA.withTenant(tenantId, () => work()),
+        } as unknown as Persistence;
+        const auRepos = await directory.listDispatchCoordinates(companyId, 50);
+        expect(auRepos.some((coordinate) => coordinate.runId === runId)).toBe(false);
+
+        // Parcours jusqu'à la confirmation, par les ROUTES (le canal réel de l'artisan).
+        const fields = proposedFields({ city: 'Lyon', postalCode: '69003' });
+        const { confirmationId } = await presentProposal({
+          owner,
+          runId,
+          customerId,
+          targetRevision: 1,
+          expectedRevision: 2,
+          fields,
+        });
+        const presented = await requireRun(runId);
+        const proposalHash = stateOf(presented).proposal?.proposalHash;
+        if (proposalHash === undefined) throw new Error('Jarvis U1-f: proposition attendue');
+        const confirmed = await asOwner(owner, () =>
+          controllerA.submitCommand(runId, {
+            kind: 'customer_contact',
+            definitionVersion: CUSTOMER_CONTACT_DEFINITION_VERSION,
+            commandId: randomUUID(),
+            expectedRevision: presented.revision,
+            actionId: CUSTOMER_CONTACT_UPDATE_ACTION_ID,
+            actionVersion: 1,
+            command: { type: 'confirm', confirmationId, proposalHash },
+          }));
+        expect(confirmed.outcome).toBe('admitted');
+        await expect(countWorkItems(runId)).resolves.toBe(1);
+
+        // L'ANNUAIRE LE TROUVE MAINTENANT — sans qu'on lui ait dit QUI est l'owner. C'est la
+        // question à laquelle aucun rôle tenanté ne peut répondre (les policies de
+        // `jarvis_work_items` sont owner-scopées), et c'est exactement celle du worker.
+        const duList = await directory.listDispatchCoordinates(companyId, 50);
+        const trouve = duList.find((coordinate) => coordinate.runId === runId);
+        expect(trouve).toEqual({ companyId, ownerUserId: owner.ownerUserId, runId });
+
+        // Le voisin ne voit RIEN de ce travail : l'autorité ne traverse jamais le tenant.
+        await expect(
+          directory.listDispatchCoordinates(neighborCompanyId, 50),
+        ).resolves.toEqual(expect.not.arrayContaining([expect.objectContaining({ runId })]));
+
+        // LE WORKER, câblé sur les DEUX adaptateurs que ce lot livre : l'annuaire d'autorité
+        // (SECURITY DEFINER) et l'autorité métier (use cases canoniques). Le repository de
+        // dispatch est déjà le vrai (`workItems`).
+        //
+        // SEULE la lecture de `companies` reste celle du harnais, et c'est une limite du HARNAIS,
+        // pas du lot : ce cluster crée une surface `companies` N-1 volontairement réduite (id,
+        // name, siren, closedAt…), alors que `PrismaCompanyRepository` projette le schéma COURANT
+        // — il y meurt sur `companies.apeCode does not exist`. Le remplacer ici prouverait la
+        // complétude du harnais, pas celle de la chaîne. La lecture réelle de société est par
+        // ailleurs exercée par toute la suite API.
+        const productionWorker = new JarvisWorkItemDispatchService(
+          harnessPersistence,
+          { listCompanyIds: async () => [companyId] } as unknown as ScheduledTenantDirectory,
+          new AppLogger(),
+          workItems,
+          directory,
+          admissionPortOf(uowA),
+          new Map<string, JarvisEffectExecutor>([
+            [
+              jarvisEffectExecutorKey(CUSTOMER_CONTACT_UPDATE_ACTION_ID, 1),
+              new JarvisCustomerEffectExecutor({
+                admission: admissionPortOf(uowA),
+                payloads: storeA,
+                customers: new PrismaJarvisCustomerEffectAuthority(workerA),
+              }),
+            ],
+          ]),
+        );
+        const tick = await productionWorker.runForCompany(companyId);
+        expect(tick).toMatchObject({ failures: 0, claimed: 1, executed: 1 });
+
+        // LA FICHE EST ÉCRITE — relue par l'auditeur, jamais le seul résumé du tick. Et sa
+        // révision a été incrémentée par le use case CANONIQUE : c'est cet entier que la garde
+        // §9.1 compare au sceau d'une proposition, donc la parité humain↔Bob est réelle.
+        const edited = await auditCustomer(customerId);
+        expect(edited).toMatchObject({ addrCity: 'Lyon', addrZip: '69003', revision: 2 });
+
+        // LE RUN EST REFERMÉ, dans le MÊME tick : exécution, résultat persisté, PUIS signal
+        // acquitté au run. C'est ce dernier maillon qui manquait — le reçu de succès d'un
+        // `customer_contact` exige l'identité ET la révision écrites, que le worker ne pouvait
+        // pas construire ; il les demande désormais à l'exécuteur, qui les RELIT.
+        const acheve = await requireRun(runId);
+        expect(acheve.status).not.toBe('active');
+        expect(acheve.phase).toBe('completed');
+
+        const etatItems = await admin.$queryRaw<
+          Array<{
+            status: string;
+            resultDigest: string | null;
+            signalAppliedAt: Date | null;
+            leaseExpiresAt: Date | null;
+            nextAttemptAt: Date | null;
+          }>
+        >`
+          SELECT "status", "resultDigest", "signalAppliedAt", "leaseExpiresAt", "nextAttemptAt"
+            FROM public.jarvis_work_items WHERE "runId" = ${runId}::uuid
+        `;
+        // Le work item est RÉGLÉ : résultat persisté ET signal appliqué. Tant que ce dernier
+        // manquait, la ligne restait éternellement « due » — un effet réussi que le run
+        // n'apprenait jamais.
+        expect(etatItems).toHaveLength(1);
+        expect(etatItems[0]?.status).toBe('succeeded');
+        expect(etatItems[0]?.signalAppliedAt).not.toBeNull();
+
+        // Le travail est CONSOMMÉ : l'annuaire se tait, il n'a plus rien à orienter.
+        const apres = await directory.listDispatchCoordinates(companyId, 50);
+        expect(apres.some((coordinate) => coordinate.runId === runId)).toBe(false);
+
+        // Bornes de l'annuaire : une demande hors plafond est REFUSÉE, jamais rognée en silence.
+        await expect(directory.listDispatchCoordinates(companyId, 51)).rejects.toThrow(
+          /Borne de l'annuaire de dispatch/,
+        );
       },
       TEST_TIMEOUT_MS,
     );

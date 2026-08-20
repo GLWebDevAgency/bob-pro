@@ -117,6 +117,18 @@ export interface JarvisEffectExecutionInput {
 }
 
 /**
+ * Question posée à l'exécuteur pour DÉCRIRE un effet déjà réussi (U1-f). Volontairement plus
+ * pauvre qu'une exécution : au moment du signal, le worker ne DÉTIENT AUCUNE LEASE — la
+ * description doit être reconstructible depuis les seules coordonnées, l'`effectId` de la ligne
+ * et l'état réel en base. C'est ce qui rend la redelivery level-triggered possible après un
+ * redémarrage, sans mémoire d'aucune sorte.
+ */
+export interface JarvisSucceededEffectQuery {
+  readonly coordinates: JarvisWorkItemCoordinates;
+  readonly effectId: string;
+}
+
+/**
  * Issue d'exécution — mêmes statuts que le résultat persistable du repository. Un exécuteur qui
  * LÈVE après `authorized` est réglé `outcome_unknown` par le worker : l'issue externe est
  * indécidable, jamais rejouée aveuglément (§5.3).
@@ -155,6 +167,18 @@ export interface JarvisEffectExecutor {
   execute(input: JarvisEffectExecutionInput): Promise<JarvisEffectExecutionOutcome>;
   recalculateTargetDigest?(input: JarvisEffectExecutionInput): Promise<string | null>;
   reconcileEffect?(input: JarvisEffectExecutionInput): Promise<JarvisEffectReconciliation>;
+  /**
+   * U1-f — DÉCRIT L'EFFET RÉUSSI pour que le run puisse être refermé sur la VÉRITÉ écrite.
+   *
+   * Certaines définitions exigent un reçu de succès RICHE : `customer_contact` veut l'identité et
+   * la révision de la fiche réellement écrite (§5.3), qu'un `resultDigest` opaque ne porte pas.
+   * Le worker ne peut pas les inventer — seul l'exécuteur connaît sa cible et son autorité.
+   *
+   * Reste RECONSTRUCTIBLE depuis la ligne persistée (condition de la redelivery level-triggered) :
+   * l'implémentation dérive sa cible du run et de l'`effectId`, puis RELIT l'état réel. Rendre
+   * `null` laisse le signal inconstructible, donc le work item DÛ — jamais un reçu inventé.
+   */
+  describeSucceededEffect?(input: JarvisSucceededEffectQuery): Promise<unknown | null>;
 }
 
 export function jarvisEffectExecutorKey(actionId: string, actionVersion: number): string {
@@ -344,6 +368,7 @@ function buildReceiptCommand(
   status: JarvisWorkItemStatus,
   effectId: string,
   resultDigest: string,
+  describedOutcome: unknown | null,
 ): unknown | null {
   if (status === 'succeeded') {
     if (kind === 'single_business_action') {
@@ -353,7 +378,11 @@ function buildReceiptCommand(
         receipt: { kind: 'succeeded', resultDigest },
       };
     }
-    return null;
+    // `customer_contact` veut l'identité ET la révision écrites (§5.3) : un digest opaque ne
+    // referme pas honnêtement le run. L'exécuteur les a DÉCRITES ; sans description, le signal
+    // reste inconstructible et le work item DÛ — c'est le fail-closed, jamais un reçu inventé.
+    if (describedOutcome === null) return null;
+    return { type: 'record_effect_receipt', effectId, outcome: describedOutcome };
   }
   // cancelled / failed_terminal / outcome_unknown : clôture d'échec. Pour outcome_unknown,
   // cette clôture n'est honnête que parce que rien n'a pu partir sans être observé : registre
@@ -1094,14 +1123,40 @@ export class JarvisWorkItemDispatchService {
         this.logger.warn('Signal Jarvis: kind de run non signalable', 'jarvis-dispatch');
         return false;
       }
+      // La DESCRIPTION de l'effet réussi vient de l'exécuteur de CETTE action : lui seul connaît
+      // sa cible et son autorité. Une panne de description ne rend jamais un reçu approximatif —
+      // elle laisse le travail dû, et le tick suivant réessaiera (level-triggered).
+      let describedOutcome: unknown | null = null;
+      if (stored.status === 'succeeded' && run.kind === 'customer_contact') {
+        // Le work item pendant ne porte pas son action : on interroge TOUS les exécuteurs capables
+        // de décrire, et le premier qui reconnaît l'effet répond. Chacun est borné à son propre
+        // namespace d'idempotence — un exécuteur d'une autre action rend `null`.
+        for (const executor of this.executors.values()) {
+          if (executor.describeSucceededEffect === undefined) continue;
+          try {
+            describedOutcome = await executor.describeSucceededEffect({
+              coordinates,
+              effectId: stored.effectId,
+            });
+            if (describedOutcome !== null) break;
+          } catch (e) {
+            this.logger.warn(
+              `Description d'effet Jarvis impossible: ${e instanceof Error ? e.message : String(e)}`,
+              'jarvis-dispatch',
+            );
+            describedOutcome = null;
+          }
+        }
+      }
       const command = buildReceiptCommand(
         run.kind,
         stored.status,
         stored.effectId,
         stored.resultDigest,
+        describedOutcome,
       );
       if (command === null) {
-        // Succès customer_contact : reçu non reconstructible ici (voir buildReceiptCommand).
+        // Succès customer_contact sans description : reçu non reconstructible (fail-closed).
         this.logger.audit('jarvis.dispatch.signal_unbuildable', {
           companyId: coordinates.companyId,
           workItemId: stored.id,
