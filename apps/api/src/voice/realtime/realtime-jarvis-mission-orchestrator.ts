@@ -29,8 +29,10 @@ import {
   computeCustomerContactFieldsDigest,
   computeCustomerContactSensitiveDigest,
   isU1OpenAction,
+  CUSTOMER_CONTACT_SPOKEN_LABEL_LIMIT,
   deriveCustomerContactDuplicateReview,
   parseCustomerContactState,
+  sanitizeSpokenLabel,
   sha256Hex,
   type CustomerContactProposedFieldsV1,
   type CustomerContactDuplicateProbe,
@@ -143,13 +145,35 @@ function duplicateResolutionOf(probe: CustomerContactDuplicateProbe): unknown | 
  * `resumed` distingue l'OUVERTURE de la REPRISE : à la reprise, la fiche est déjà ouverte depuis le
  * tour précédent, et annoncer « j'ouvre une fiche » ferait croire à l'artisan qu'il en a désormais
  * deux. Bob raconte l'état réel, jamais une formule passe-partout.
+ *
+ * LE NOM DU MODÈLE EST ASSAINI COMME CELUI DE LA BASE. Il a beau venir d'un transcript normalisé en
+ * amont, il traverse un LLM avant d'arriver ici, et le parse ne lui oppose qu'un `trim()`, une
+ * borne et le refus des contrôles ASCII : une espace insécable ou double INTÉRIEURE survit. Elle
+ * suffirait à rendre la parole non canonique, donc à faire refuser l'historique ENTIER au tour
+ * suivant — toutes les lanes muettes, devis compris. N'assainir que le nom relu en base et pas
+ * celui du modèle serait un partage arbitraire de la confiance.
  */
 function openedSpeech(
   nom: string,
   probe: CustomerContactDuplicateProbe,
   moment: 'opened' | 'resumed' = 'opened',
 ): string {
-  const ouverture = moment === 'resumed' ? `Je reprends la fiche de ${nom}` : `J’ouvre une fiche pour ${nom}`;
+  const nomParle = sanitizeSpokenLabel(nom, CUSTOMER_CONTACT_SPOKEN_LABEL_LIMIT);
+  // Un nom qui ne laisse RIEN d'audible (invisibles seuls) ne se prononce pas : Bob parle alors de
+  // « la fiche » sans la nommer, plutôt que d'énoncer un blanc ou d'inventer un libellé.
+  //
+  // CE REPLI EST UNE DÉFENSE EN PROFONDEUR, PAS UN CHEMIN NOMINAL : un tel nom ne contient aucun
+  // caractère alphanumérique, donc `isSearchableQuery` a déjà refusé de conclure et le tour a
+  // échoué avant d'arriver ici. Une preuve fige cette relève entre les deux gardes, pour qu'un lot
+  // futur qui déplacerait l'une sache ce que l'autre tenait.
+  const ouverture =
+    nomParle === null
+      ? moment === 'resumed'
+        ? 'Je reprends la fiche client'
+        : 'J’ouvre une fiche client'
+      : moment === 'resumed'
+        ? `Je reprends la fiche de ${nomParle}`
+        : `J’ouvre une fiche pour ${nomParle}`;
   if (probe.kind !== 'duplicate_candidates') {
     return `${ouverture}. J’ai vérifié : tu n’as aucune fiche à ce nom. Dis-moi ce qu’il faut y mettre — adresse, ville, destinataire. Rien ne sera enregistré tant que tu n’auras pas confirmé.`;
   }

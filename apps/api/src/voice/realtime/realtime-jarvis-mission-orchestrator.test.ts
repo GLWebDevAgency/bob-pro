@@ -679,6 +679,57 @@ describe('RealtimeJarvisMissionOrchestrator — runPlanned', () => {
     expect(outcome.canonicalSpeech).not.toContain('\u00a0');
   });
 
+  it('U1-g : le nom venu du MODELE est assaini comme celui de la base', async () => {
+    // Le nom du modele traverse un LLM avant d'arriver dans la parole, et le parse ne lui oppose
+    // qu'un trim(), une borne et le refus des controles ASCII : une espace insecable ou double
+    // INTERIEURE survit. Elle suffirait a rendre la parole non canonique, donc a faire refuser
+    // l'historique ENTIER au tour suivant — toutes les lanes muettes, devis compris.
+    // N'assainir que le nom relu en base et pas celui du modele serait arbitraire.
+    for (const hostile of [
+      'Dupont\u00a0Plomberie',
+      'Dupont  Plomberie',
+      'Dupont\u202fPlomberie',
+      'Dupont\u200bPlomberie',
+      'Dupont\ufeffPlomberie',
+    ]) {
+      const h = harness({ run: null, candidates: [] });
+      const prepared = await h.orchestrator.prepare(request());
+      if (prepared.status !== 'prepared') throw new Error('préparation attendue');
+
+      const outcome = await h.orchestrator.runPlanned({
+        request: request(),
+        prepared: prepared.prepared,
+        frame: frame({ kind: 'open_customer_creation', customerName: hostile }),
+      });
+
+      expect(outcome.status).toBe('handled');
+      const parole = outcome.status === 'handled' ? outcome.canonicalSpeech : '';
+      expect(isPlannerSafeHistoryText(parole)).toBe(true);
+    }
+  });
+
+  it('U1-g : un nom SANS RIEN d’audible est refusé AVANT la parole, par la garde de recherche', () => {
+    // Les deux gardes se relaient, et il faut le montrer : un nom fait d'invisibles seuls ne
+    // contient aucun caractère alphanumérique, donc `isSearchableQuery` refuse de conclure et le
+    // tour échoue AVANT qu'aucune parole ne soit construite. Le repli sans nom d'`openedSpeech`
+    // est donc une défense en profondeur, jamais le chemin nominal — c'est ce que cette preuve fige.
+    return (async () => {
+      const h = harness({ run: null, candidates: [] });
+      const prepared = await h.orchestrator.prepare(request());
+      if (prepared.status !== 'prepared') throw new Error('préparation attendue');
+
+      const outcome = await h.orchestrator.runPlanned({
+        request: request(),
+        prepared: prepared.prepared,
+        frame: frame({ kind: 'open_customer_creation', customerName: '\u200b\ufeff' }),
+      });
+
+      expect(outcome.status).toBe('failed');
+      expect(h.runJarvisAdmission).not.toHaveBeenCalled();
+      expect(outcome.canonicalSpeech).toContain('Je n’ai rien ouvert');
+    })();
+  });
+
   it('U1-g : la PIRE parole possible reste recevable par le planner du tour suivant', async () => {
     // LA PROPRIÉTÉ QUI COMPTE, prouvée contre le planner lui-même et non contre un nombre recopié.
     // Cinq fiches aux noms saturés, page saturée, un invisible glissé dans chacune.
