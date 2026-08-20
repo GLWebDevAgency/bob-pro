@@ -77,9 +77,13 @@ export function useJarvisOpenRun(input: {
       void openRun({ commandId, intent: { mode: 'update', target: { customerId } } })
         .then((result) => {
           if (result.ok) {
-            // REÇU OBTENU : la mémoïsation a fait son office, on la libère pour que le prochain
-            // geste sur cette fiche ouvre un run NEUF au lieu de rejouer celui-ci.
-            commandIds.release(key);
+            // LE REÇU NE SUFFIT PAS : l'ouverture est un DOUBLE maillon serveur (semis puis
+            // résolution de cible §8). Si la résolution a été différée — le serveur rend alors
+            // honnêtement le postimage du semis —, le run est PARKÉ en `resolving_customer` et
+            // aucune commande humaine ne l'en sortira. On garde donc la mémoïsation : le geste
+            // suivant rejouera le MÊME commandId et le serveur reprendra où il s'est arrêté.
+            const parke = result.value.presentation?.phase === 'resolving_customer';
+            if (!parke) commandIds.release(key);
             setState({ kind: 'idle' });
             input.onOpened();
             return;

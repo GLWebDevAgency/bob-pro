@@ -1152,14 +1152,17 @@ export default function ClientDetail() {
                 />
               ) : null}
 
-              {/* ── 4 actions rapides — QuickAction kit (Lot 4 ; parité humain ↔ Bob ;
+              {/* ── Actions rapides — QuickAction kit (Lot 4 ; parité humain ↔ Bob ;
                    tel:/mailto: = device). Tones : devis b2b (même canal que la Home),
                    relance ai (c'est Bob qui agit — l'indigo est SON canal), appel success,
-                   email warning — pastilles distinctes, icônes teintées comme la Home. ── */}
-              <View style={{ flexDirection: 'row', gap: 9 }}>
+                   email warning — pastilles distinctes, icônes teintées comme la Home.
+                   U1-f ajoute « Modifier avec Bob » (tone ai) : la rangée peut donc porter CINQ
+                   tuiles. Elle passe en `flexWrap` — à cinq, des `flex:1` sur une seule ligne
+                   tronqueraient les libellés sur un écran étroit, y compris ceux d'avant. ── */}
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}>
                 {jarvisOpen.supported ? (
                   <QuickAction
-                    style={{ flex: 1 }}
+                    style={{ flexGrow: 1, flexBasis: 96 }}
                     label={t('fiche.actionBobEdit', { personality })}
                     tone="ai"
                     icon={<PencilIcon color={semantic.ai} size={18} />}
@@ -1170,7 +1173,7 @@ export default function ClientDetail() {
                   />
                 ) : null}
                 <QuickAction
-                  style={{ flex: 1 }}
+                  style={{ flexGrow: 1, flexBasis: 96 }}
                   label={t('fiche.actionQuote', { personality })}
                   tone="b2b"
                   icon={<FileTextIcon color={semantic.b2b} size={18} />}
@@ -1178,7 +1181,7 @@ export default function ClientDetail() {
                   onPress={() => router.push('/devis/new')}
                 />
                 <QuickAction
-                  style={{ flex: 1 }}
+                  style={{ flexGrow: 1, flexBasis: 96 }}
                   label={t('fiche.actionRelance', { personality })}
                   tone="ai"
                   icon={<SendIcon color={semantic.ai} size={18} />}
@@ -1188,7 +1191,7 @@ export default function ClientDetail() {
                   }
                 />
                 <QuickAction
-                  style={{ flex: 1 }}
+                  style={{ flexGrow: 1, flexBasis: 96 }}
                   label={t('fiche.actionCall', { personality })}
                   tone="success"
                   icon={<PhoneIcon color={semantic.success} size={18} />}
@@ -1198,7 +1201,7 @@ export default function ClientDetail() {
                     : {})}
                 />
                 <QuickAction
-                  style={{ flex: 1 }}
+                  style={{ flexGrow: 1, flexBasis: 96 }}
                   label={t('fiche.actionEmail', { personality })}
                   tone="warning"
                   icon={<MailIcon color={semantic.warning} size={18} />}
@@ -1207,17 +1210,25 @@ export default function ClientDetail() {
                 />
               </View>
 
-              {jarvisOpen.state.kind === 'busy' || jarvisOpen.state.kind === 'failed' ? (
+              {/* Une demande DÉJÀ EN COURS n'est pas une panne : rien à réessayer, l'artisan doit
+                  seulement savoir où la retrouver. Un bouton « Réessayer » y serait un mensonge —
+                  il ne rouvrirait rien. L'échec, lui, se réessaie vraiment. */}
+              {jarvisOpen.state.kind === 'busy' ? (
+                <View accessibilityLiveRegion="polite" style={{ marginTop: 9 }}>
+                  <Text selectable style={[font('sub'), { color: colors.slate500 }]}>
+                    {t('fiche.bobEditBusy', { personality })}
+                  </Text>
+                </View>
+              ) : null}
+              {jarvisOpen.state.kind === 'failed' ? (
                 <View accessibilityLiveRegion="polite" style={{ marginTop: 9 }}>
                   <ErrorRetry
-                    message={
-                      jarvisOpen.state.kind === 'busy'
-                        ? t('fiche.bobEditBusy', { personality })
-                        : t('fiche.bobEditFailed', { personality })
-                    }
-                    onRetry={() =>
-                      jarvisOpen.state.kind === 'busy' ? jarvisOpen.dismiss() : jarvisOpen.open(id)
-                    }
+                    message={t('fiche.bobEditFailed', { personality })}
+                    // Même gate d'écriture que la tuile : sur une fiche qu'on n'a pas pu relire,
+                    // on ne rouvre pas de demande.
+                    onRetry={() => {
+                      if (customerFresh) jarvisOpen.open(id);
+                    }}
                   />
                 </View>
               ) : null}

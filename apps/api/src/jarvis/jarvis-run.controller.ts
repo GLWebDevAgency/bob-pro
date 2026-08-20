@@ -676,18 +676,25 @@ export function presentCustomerContactFields(
     // Une valeur impossible à présenter honnêtement rend TOUTE la présentation absente.
     if (after === null) return null;
     const courant = target === null ? null : (target.fields[key] ?? null);
+    // `before: null` a UN SEUL sens pour l'écran : « ce champ n'avait pas de valeur », donc un
+    // AJOUT. On ne le surcharge JAMAIS avec « avant inconnu » ou « avant identique » : un
+    // remplacement déguisé en ajout ferait croire à l'artisan qu'il n'efface rien.
+    //   · canal de facturation hors table de libellés (`chorus`, `portail`) : on rend la valeur
+    //     BRUTE — ce sont des noms que l'artisan reconnaît, et c'est plus honnête qu'un silence
+    //     qui transformerait « Chorus remplacé par e-mail » en « e-mail ajouté » ;
+    //   · valeur illisible (contrôle, longueur) : on garde `null` faute de mieux, mais c'est un
+    //     cas que la borne d'écriture rend déjà quasi impossible.
     const before =
       courant === null
         ? null
         : key === 'billingChannel'
-          ? ((BILLING_CHANNEL_LABELS as Readonly<Record<string, string>>)[courant] ?? null)
+          ? ((BILLING_CHANNEL_LABELS as Readonly<Record<string, string>>)[courant] ??
+            presentedText(courant))
           : presentedText(courant);
     presented.push(Object.freeze({
       field: PRESENTED_FIELDS[key].id,
       label: PRESENTED_FIELDS[key].label,
-      // Un avant identique à l'après n'est pas un changement : l'écran ne montre pas une flèche
-      // entre deux valeurs égales.
-      before: before === after ? null : before,
+      before,
       after,
       sensitiveField: SENSITIVE_FIELD_BY_KEY.get(key) ?? null,
     }));

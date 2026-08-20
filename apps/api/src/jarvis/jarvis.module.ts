@@ -39,13 +39,11 @@ import {
   JARVIS_PROPOSAL_PAYLOAD_RETENTION_OWNERS,
   asJarvisProposalPayloadRetentionOwners,
 } from '../jobs/jarvis-proposal-payload-purge.service';
-import type { JarvisWorkItemsDispatchRepository } from '../persistence/prisma/jarvis-work-items.persistence';
 import {
   JARVIS_DISPATCH_ADMISSION,
   JARVIS_DISPATCH_RUN_DIRECTORY,
   JARVIS_EFFECT_EXECUTORS,
   JARVIS_WORK_ITEMS_DISPATCH,
-  type JarvisDispatchRunDirectoryPort,
   jarvisEffectExecutorKey,
   type JarvisEffectExecutor,
 } from '../jobs/jarvis-work-item-dispatch.service';
@@ -144,24 +142,32 @@ export function buildJarvisCustomerEffectExecutors(deps: {
  * porte pas la méthode rend `null` — le boot reste VERT et le worker garde son no-op audité. Un
  * `TypeError` au démarrage serait le pire des deux mondes : ni service, ni diagnostic.
  */
-function fabriqueOuNull<T>(persistence: Persistence, nom: string): T | null {
+function fabriqueOuNull<K extends keyof Persistence>(
+  persistence: Persistence,
+  nom: K,
+): ReturnType<Extract<Persistence[K], (...args: never[]) => unknown>> | null {
+  // `nom` est contraint aux CLÉS de `Persistence` : un renommage de fabrique casse la
+  // compilation ici, au lieu de désarmer la chaîne en silence à l'exécution.
   const candidate = persistence as unknown as Record<string, unknown>;
-  const fabrique = candidate[nom];
-  return typeof fabrique === 'function' ? ((fabrique.call(persistence) as T) ?? null) : null;
+  const fabrique = candidate[nom as string];
+  if (typeof fabrique !== 'function') return null;
+  return (fabrique.call(persistence) ?? null) as ReturnType<
+    Extract<Persistence[K], (...args: never[]) => unknown>
+  > | null;
 }
 
 const jarvisWorkItemsDispatchProvider: Provider = {
   provide: JARVIS_WORK_ITEMS_DISPATCH,
   inject: [PERSISTENCE],
   useFactory: (persistence: Persistence) =>
-    fabriqueOuNull<JarvisWorkItemsDispatchRepository>(persistence, 'createJarvisWorkItemsDispatch'),
+    fabriqueOuNull(persistence, 'createJarvisWorkItemsDispatch'),
 };
 
 const jarvisDispatchRunDirectoryProvider: Provider = {
   provide: JARVIS_DISPATCH_RUN_DIRECTORY,
   inject: [PERSISTENCE],
   useFactory: (persistence: Persistence) =>
-    fabriqueOuNull<JarvisDispatchRunDirectoryPort>(persistence, 'createJarvisDispatchRunDirectory'),
+    fabriqueOuNull(persistence, 'createJarvisDispatchRunDirectory'),
 };
 
 /**
@@ -173,10 +179,7 @@ const jarvisCustomerEffectAuthorityProvider: Provider = {
   provide: JARVIS_CUSTOMER_EFFECT_AUTHORITY,
   inject: [PERSISTENCE],
   useFactory: (persistence: Persistence) =>
-    fabriqueOuNull<JarvisCustomerEffectAuthority>(
-      persistence,
-      'createJarvisCustomerEffectAuthority',
-    ),
+fabriqueOuNull(persistence, 'createJarvisCustomerEffectAuthority'),
 };
 
 const jarvisEffectExecutorsProvider: Provider = {

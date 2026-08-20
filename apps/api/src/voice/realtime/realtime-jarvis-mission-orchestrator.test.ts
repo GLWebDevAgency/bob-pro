@@ -454,6 +454,32 @@ describe('RealtimeJarvisMissionOrchestrator — runPlanned', () => {
     }
   });
 
+  it('CORRÉLATION REALTIME : l’enveloppe la porte, sinon l’admission refuse TOUTE commande vocale', async () => {
+    // DÉFAUT TROUVÉ PAR LA REVUE. L'enveloppe déclarait `authority.source = realtime_capability`
+    // SANS `realtimeCorrelation` : l'admission refuse alors `capability_rejected` /
+    // `missing_realtime_correlation` (le CHECK SQL du journal exige qu'un événement vocal porte sa
+    // session, son tour et le contexte réellement vu). Autrement dit, AUCUNE commande Jarvis à la
+    // voix ne pouvait aboutir — le vertical vocal était mort sans que rien ne le dise.
+    const h = harness();
+    const prepared = await h.orchestrator.prepare(request());
+    if (prepared.status !== 'prepared') throw new Error('préparation attendue');
+
+    await h.orchestrator.runPlanned({
+      request: request(),
+      prepared: prepared.prepared,
+      frame: frame({ kind: 'propose_fields', fields: fields() }),
+    });
+
+    expect(h.runJarvisAdmission).toHaveBeenCalledTimes(1);
+    const envelope = h.runJarvisAdmission.mock.calls[0]?.[0];
+    expect(envelope?.realtimeCorrelation).toEqual({
+      realtimeSessionId: SESSION_ID,
+      turnId: TURN_ID,
+      contextRevision: 3,
+      contextDigest: 'd'.repeat(64),
+    });
+  });
+
   it('U1-f §6 : une DÉRIVE DE CIBLE se dit, elle ne se cache pas derrière un générique', async () => {
     // `target_revision_stale` signifie que la fiche a changé depuis la vérification de Bob. Le
     // message générique (« l'étape enregistrée ne permet pas cette action ») laissait l'artisan

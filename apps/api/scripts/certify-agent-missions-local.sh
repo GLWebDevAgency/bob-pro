@@ -5277,6 +5277,10 @@ SQL
 # release — migration d'abord (fonction SECURITY INVOKER, donc FERMEE), provisionnement ensuite.
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
   -f "$ROOT_DIR/apps/api/prisma/migrations/20260820100000_jarvis_dispatch_directory/migration.sql"
+# Correctif P0 de la revue : la borne doit voir les LEASES MORTES, sinon un worker tombe entre le
+# claim et le reglement perd l'effet confirme a jamais.
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260820140000_jarvis_dispatch_directory_leased/migration.sql"
 
 # Fail-closed NATIF : tant que le provisionnement n'a pas eu lieu, meme le deployeur est refuse.
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'

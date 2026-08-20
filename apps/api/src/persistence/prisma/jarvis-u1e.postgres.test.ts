@@ -1348,6 +1348,69 @@ describe.skipIf(!RUN_CERT)(
         await expect(directory.listDispatchCoordinates(companyId, 51)).rejects.toThrow(
           /Borne de l'annuaire de dispatch/,
         );
+
+        // LEASE MORTE — le worker tombé entre le claim et le règlement. C'est le P0 que la revue
+        // adversariale a trouvé : la borne omettait `leased`, donc `claimDue` — qui sait pourtant
+        // reprendre exactement cet état — n'était JAMAIS rappelé pour ce run, et l'effet confirmé
+        // était perdu à vie. On simule la panne au plus près du réel : la ligne est laissée
+        // `leased` avec une lease déjà expirée, exactement ce qu'un processus tué laisse derrière.
+        const orphelin: JarvisAdmissionOwner = { companyId, ownerUserId: freshOwner('lease-morte') };
+        const orphelinCustomerId = await seedTargetCustomer(orphelin);
+        const orphelinRun = await openRun(controllerA, orphelin, {
+          commandId: randomUUID(),
+          customerId: orphelinCustomerId,
+        });
+        const orphelinRunId = orphelinRun.run.runId;
+        const orphelinFields = proposedFields({ city: 'Nantes', postalCode: '44000' });
+        const { confirmationId: orphelinConfirmation } = await presentProposal({
+          owner: orphelin,
+          runId: orphelinRunId,
+          customerId: orphelinCustomerId,
+          targetRevision: 1,
+          expectedRevision: 2,
+          fields: orphelinFields,
+        });
+        const orphelinPresente = await requireRun(orphelinRunId);
+        const orphelinHash = stateOf(orphelinPresente).proposal?.proposalHash;
+        if (orphelinHash === undefined) throw new Error('Jarvis U1-f: proposition attendue');
+        await asOwner(orphelin, () =>
+          controllerA.submitCommand(orphelinRunId, {
+            kind: 'customer_contact',
+            definitionVersion: CUSTOMER_CONTACT_DEFINITION_VERSION,
+            commandId: randomUUID(),
+            expectedRevision: orphelinPresente.revision,
+            actionId: CUSTOMER_CONTACT_UPDATE_ACTION_ID,
+            actionVersion: 1,
+            command: {
+              type: 'confirm',
+              confirmationId: orphelinConfirmation,
+              proposalHash: orphelinHash,
+            },
+          }));
+        // La panne : claim effectué, puis plus rien. La lease meurt.
+        await admin.$executeRaw`
+          UPDATE public.jarvis_work_items
+             SET "status" = 'leased',
+                 "leaseOwner" = 'jarvis-dispatch:mort',
+                 "leaseToken" = ${randomUUID()}::uuid,
+                 "leaseFence" = "leaseFence" + 1,
+                 "leaseExpiresAt" = statement_timestamp() - interval '1 hour',
+                 "updatedAt" = statement_timestamp()
+           WHERE "runId" = ${orphelinRunId}::uuid
+        `;
+
+        // L'ANNUAIRE LE VOIT — c'est tout l'objet du correctif. Sans la quatrième branche, cette
+        // coordonnée était invisible et le run restait en `committing` pour toujours.
+        const reprises = await directory.listDispatchCoordinates(companyId, 50);
+        expect(reprises.some((coordinate) => coordinate.runId === orphelinRunId)).toBe(true);
+
+        // Et le worker le REPREND vraiment : l'effet s'exécute, la fiche est écrite.
+        const rattrapage = await productionWorker.runForCompany(companyId);
+        expect(rattrapage.failures).toBe(0);
+        await expect(auditCustomer(orphelinCustomerId)).resolves.toMatchObject({
+          addrCity: 'Nantes',
+          addrZip: '44000',
+        });
       },
       TEST_TIMEOUT_MS,
     );
@@ -1475,6 +1538,17 @@ class CertificationCustomerAuthority implements JarvisCustomerEffectAuthority {
     void id;
     void companyId;
     return { customerId: target.customerId, fields };
+  }
+
+  /** Même surface que l'autorité de PRODUCTION : sans elle, l'axe `targetDigest` serait muet. */
+  async readCustomerRevision(target: JarvisCustomerEffectTarget): Promise<number | null> {
+    const rows = await this.prisma.withTenant(target.companyId, () =>
+      this.prisma.client().customer.findFirst({
+        where: { id: target.customerId, companyId: target.companyId },
+        select: { revision: true },
+      }),
+    );
+    return rows === null ? null : rows.revision;
   }
 
   async createCustomer(
