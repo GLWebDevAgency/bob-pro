@@ -7,8 +7,15 @@ import { UpdateCustomer } from './update-customer';
 
 class MemoryCustomers implements CustomerRepository {
   private readonly map = new Map<string, Customer>();
-  constructor(seed: Customer[]) {
-    for (const c of seed) this.map.set(c.id, c);
+  private readonly revisions = new Map<string, number>();
+  constructor(
+    seed: Customer[],
+    private readonly beforeCas?: () => void,
+  ) {
+    for (const c of seed) {
+      this.map.set(c.id, c);
+      this.revisions.set(c.id, 1);
+    }
   }
   async findById(id: string): Promise<Customer | null> {
     return this.map.get(id) ?? null;
@@ -18,9 +25,29 @@ class MemoryCustomers implements CustomerRepository {
   }
   async save(c: Customer): Promise<void> {
     this.map.set(c.id, c);
+    this.revisions.set(c.id, (this.revisions.get(c.id) ?? 0) + 1);
+  }
+  async saveIfRevision(
+    c: Customer,
+    expectedRevision: number,
+  ): Promise<'saved' | 'revision_conflict'> {
+    this.beforeCas?.();
+    if (this.revisions.get(c.id) !== expectedRevision || !this.map.has(c.id)) {
+      return 'revision_conflict';
+    }
+    this.map.set(c.id, c);
+    this.revisions.set(c.id, expectedRevision + 1);
+    return 'saved';
   }
   get(id: string): Customer | undefined {
     return this.map.get(id);
+  }
+  revision(id: string): number | undefined {
+    return this.revisions.get(id);
+  }
+  delete(id: string): void {
+    this.map.delete(id);
+    this.revisions.delete(id);
   }
 }
 
@@ -93,6 +120,79 @@ describe('UpdateCustomer', () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.kind).toBe('domain');
     expect(customers.get('cust-1')?.siren).toBeUndefined();
+  });
+
+  it('commit CAS : la révision scellée gagne une seule fois', async () => {
+    const customers = new MemoryCustomers([customer(base)]);
+    const useCase = new UpdateCustomer({ customers, quotes: emptyQuotes, invoices: emptyInvoices });
+
+    const result = await useCase.executeAtRevision({ ...base, name: 'Martin corrigé' }, 1);
+
+    expect(result).toEqual({ ok: true, value: { id: 'cust-1' } });
+    expect(customers.get('cust-1')?.name).toBe('Martin corrigé');
+    expect(customers.revision('cust-1')).toBe(2);
+  });
+
+  it('commit CAS : une écriture concurrente reste intacte et Bob reçoit stale_revision', async () => {
+    const customers = new MemoryCustomers([customer(base)]);
+    await customers.save(customer({ ...base, name: 'Correction humaine' }));
+    const useCase = new UpdateCustomer({ customers, quotes: emptyQuotes, invoices: emptyInvoices });
+
+    const result = await useCase.executeAtRevision({ ...base, name: 'Correction Bob' }, 1);
+
+    expect(result).toEqual({
+      ok: false,
+      error: { kind: 'conflict', entity: 'customer', reason: 'stale_revision' },
+    });
+    expect(customers.get('cust-1')?.name).toBe('Correction humaine');
+    expect(customers.revision('cust-1')).toBe(2);
+  });
+
+  it('commit CAS : une cible supprimée entre relecture et UPDATE n’est jamais recréée', async () => {
+    const customers = new MemoryCustomers([customer(base)], () => customers.delete('cust-1'));
+    const useCase = new UpdateCustomer({ customers, quotes: emptyQuotes, invoices: emptyInvoices });
+
+    const result = await useCase.executeAtRevision({ ...base, name: 'Fantôme' }, 1);
+
+    expect(result).toEqual({
+      ok: false,
+      error: { kind: 'conflict', entity: 'customer', reason: 'stale_revision' },
+    });
+    expect(customers.get('cust-1')).toBeUndefined();
+  });
+
+  it('commit CAS : adapter sans writer révisionné et révision invalide échouent fermés', async () => {
+    const seeded = customer(base);
+    const withoutCas: CustomerRepository = {
+      findById: async (id) => (id === seeded.id ? seeded : null),
+      listByCompany: async () => [seeded],
+      save: async () => undefined,
+    };
+    const useCase = new UpdateCustomer({
+      customers: withoutCas,
+      quotes: emptyQuotes,
+      invoices: emptyInvoices,
+    });
+
+    await expect(useCase.executeAtRevision({ ...base, name: 'Bob' }, 1)).resolves.toEqual({
+      ok: false,
+      error: {
+        kind: 'dependency',
+        port: 'CustomerRepository.saveIfRevision',
+        cause: 'customer_revision_writer_missing',
+      },
+    });
+    await expect(useCase.executeAtRevision({ ...base, name: 'Bob' }, 0)).resolves.toEqual({
+      ok: false,
+      error: {
+        kind: 'domain',
+        error: {
+          code: 'VALIDATION',
+          field: 'expectedRevision',
+          message: 'Révision client invalide.',
+        },
+      },
+    });
   });
 });
 

@@ -241,8 +241,9 @@ export class PrismaCustomerRepository implements CustomerRepository {
     );
   }
   /**
-   * UNIQUE writer de la fiche : `createCustomer` (insert) et le use case canonique
-   * `UpdateCustomer` (@bob/core) passent tous deux par ici. La RÉVISION (Jarvis §9.1) est un
+   * Entrée historique du repository : `createCustomer` (insert) et l'édition manuelle passent
+   * par `save`; une proposition révisionnée utilise l'entrée CAS `saveIfRevision` ci-dessous.
+   * La RÉVISION (Jarvis §9.1) est un
    * compteur de persistance — le domaine ne la porte pas, exactement comme `updatedAt` : elle
    * naît à 1 sur l'insert (DEFAULT SQL) et s'incrémente sur CHAQUE recouvrement d'une ligne
    * existante. Un rejeu idempotent (même contenu) l'incrémente aussi : la garde §9.1 préfère
@@ -255,6 +256,23 @@ export class PrismaCustomerRepository implements CustomerRepository {
       create: data,
       update: { ...data, revision: { increment: 1 } },
     });
+  }
+
+  /**
+   * Commit CAS de l'édition confirmée. Contrairement à `save`, cette entrée ne peut ni insérer une
+   * cible supprimée, ni recouvrir une révision avancée entre le préflight et l'effet réel.
+   */
+  async saveIfRevision(
+    customer: Customer,
+    expectedRevision: number,
+  ): Promise<'saved' | 'revision_conflict'> {
+    const data = customerPropsToCreate(customer.toProps());
+    const { id, companyId, ...postimage } = data;
+    const written = await this.prisma.client().customer.updateMany({
+      where: { id, companyId, revision: expectedRevision },
+      data: { ...postimage, revision: { increment: 1 } },
+    });
+    return written.count === 1 ? 'saved' : 'revision_conflict';
   }
 }
 

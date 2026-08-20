@@ -96,7 +96,7 @@ const FAKE_PAYLOADS = {
 const FAKE_CUSTOMERS = {
   readCustomer: () => Promise.resolve(null),
   createCustomer: () => Promise.resolve({ status: 'unavailable' as const }),
-  updateCustomer: () => Promise.resolve({ status: 'unavailable' as const }),
+  updateCustomerAtRevision: () => Promise.resolve({ status: 'unavailable' as const }),
 } satisfies JarvisCustomerEffectAuthority;
 
 /**

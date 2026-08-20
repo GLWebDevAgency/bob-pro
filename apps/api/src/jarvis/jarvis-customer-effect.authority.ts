@@ -6,12 +6,12 @@
  * n'écrit JAMAIS sa fiche — le run reste en `committing`, où même `cancel_run` ne fait
  * qu'observer un reçu qui ne viendra pas. C'est le dernier maillon manquant du parcours.
  *
- * CE QU'IL EST, ET CE QU'IL N'EST PAS. Il n'ouvre aucun chemin d'écriture nouveau : il APPELLE
- * les use cases CANONIQUES du domaine (`Customer.of` + `CustomerRepository.save` en création,
- * `UpdateCustomer` en modification) — exactement ceux qu'emprunte l'artisan quand il édite sa
- * fiche à la main. C'est la condition de la parité humain↔Bob : mêmes invariants, mêmes refus,
- * même incrément de révision (§9.1). Une écriture directe en table contournerait la validation
- * du domaine et ferait de Bob un citoyen privilégié — jamais.
+ * CE QU'IL EST, ET CE QU'IL N'EST PAS. Il appelle les use cases CANONIQUES du domaine
+ * (`Customer.of` en création, `UpdateCustomer.executeAtRevision` en modification) et ne contourne
+ * jamais leurs validations. Le CAS ferme le lost-update au commit. En revanche, cet adapter ne
+ * partage pas encore le verrou société, le refus de compte clôturé et les barrières d'archives du
+ * parcours manuel `BackendService.updateCustomer` : la publication reste fermée jusqu'à cette
+ * extraction commune. Ne pas présenter ce lot comme une parité complète humain↔Bob.
  *
  * TENANT. Chaque geste s'exécute sous `withTenant(target.companyId)` : les GUC de RLS sont posés
  * par la persistance, jamais devinés ici. Le `companyId` vient du work item (donc de l'admission
@@ -19,8 +19,8 @@
  *
  * REFUS. Un refus du domaine devient un `refused` NOMMÉ (`domain_*`), jamais une exception nue :
  * le worker doit pouvoir régler l'effet en `failed_terminal` avec une cause lisible. Une panne
- * d'infrastructure, elle, remonte telle quelle — le worker la traduira en `outcome_unknown` et
- * réessaiera : confondre les deux ferait perdre des écritures ou en rejouerait d'impossibles.
+ * d'infrastructure, elle, remonte telle quelle — le worker la traduit en `outcome_unknown` sans
+ * rejeu aveugle : confondre les deux ferait perdre des écritures ou en rejouerait d'impossibles.
  */
 import { Inject, Injectable } from '@nestjs/common';
 import { Customer, UpdateCustomer } from '@bob/core';
@@ -90,9 +90,10 @@ export class PrismaJarvisCustomerEffectAuthority implements JarvisCustomerEffect
     return { status: 'written' };
   }
 
-  async updateCustomer(
+  async updateCustomerAtRevision(
     target: JarvisCustomerEffectTarget,
     fields: JarvisCustomerFields,
+    expectedRevision: number,
   ): Promise<JarvisCustomerWriteResult> {
     // `UpdateCustomer` est le SEUL chemin de modification du dépôt : il porte les invariants
     // métier (facturation, rattachements) et déclenche l'incrément de révision sur lequel la
@@ -102,11 +103,23 @@ export class PrismaJarvisCustomerEffectAuthority implements JarvisCustomerEffect
         customers: new PrismaCustomerRepository(this.prisma),
         quotes: new PrismaQuoteRepository(this.prisma),
         invoices: new PrismaInvoiceRepository(this.prisma),
-      }).execute({ id: target.customerId, companyId: target.companyId, ...fields }),
+      }).executeAtRevision(
+        { id: target.customerId, companyId: target.companyId, ...fields },
+        expectedRevision,
+      ),
     );
     if (result.ok) return { status: 'written' };
+    if (result.error.kind === 'conflict' && result.error.reason === 'stale_revision') {
+      return { status: 'refused', reasonCode: 'target_revision_stale' };
+    }
+    if (result.error.kind === 'not_found') {
+      return { status: 'refused', reasonCode: 'customer_missing' };
+    }
+    if (result.error.kind === 'dependency' || result.error.kind === 'unavailable') {
+      return { status: 'unavailable' };
+    }
     // Le use case rend une erreur fermée : on la NOMME plutôt que de rendre un « refused » muet.
-    const code = (result.error as { code?: unknown } | undefined)?.code;
+    const code = result.error.kind === 'domain' ? result.error.error.code : undefined;
     return {
       status: 'refused',
       reasonCode: typeof code === 'string' ? `domain_${code.toLowerCase()}` : 'domain_refused',
