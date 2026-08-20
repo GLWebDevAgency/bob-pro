@@ -165,9 +165,8 @@ export interface JarvisCustomerEffectTarget {
  *    unique : l'identifiant est IMPOSÉ par le coordinateur §9.1 au lieu d'être minté par
  *    `UuidGenerator`. C'est précisément cette différence qui rend l'effet idempotent ; le reste
  *    (`Customer.of` puis `customers.save`, mêmes invariants que l'écran) est inchangé ;
- *  · `updateCustomerAtRevision` -> `UpdateCustomer.executeAtRevision`, mêmes validations de
- *    domaine avec un commit CAS. Le verrou société et les barrières d'archives du parcours manuel
- *    restent un gate d'activation séparé ; cet adapter ne prétend pas encore à leur parité complète.
+ *  · `updateCustomerAtRevision` -> l'autorité applicative partagée avec le geste manuel : tenant,
+ *    verrou société, clôture, archives puis `UpdateCustomer.executeAtRevision` et commit CAS.
  */
 export interface JarvisCustomerEffectAuthority {
   readCustomer(target: JarvisCustomerEffectTarget): Promise<JarvisCustomerSnapshot | null>;

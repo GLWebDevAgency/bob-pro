@@ -10,7 +10,7 @@ import { paymentGatewayProvider } from './payments/payment-gateway';
 import { StripeBillingService } from './payments/stripe-billing.service';
 import { StripeWebhookController } from './payments/stripe-webhook.controller';
 import { PDF_RENDERER, PdfRenderer } from './documents/pdf-renderer';
-import { DOCUMENT_STORAGE, buildDocumentStorage } from './documents/storage';
+import { CustomerUpdateModule } from './customers/customer-update.module';
 import { ocrProvider } from './ocr/ocr';
 import { documentIntelligenceProvider } from './documents/document-intelligence';
 import { notifierProvider } from './notifications/notifier';
@@ -89,6 +89,7 @@ import {
     ThrottlerModule.forRoot(createApiThrottlerOptions()),
     ObservabilityModule,
     PersistenceModule,
+    CustomerUpdateModule,
     RealtimeVoiceModule,
     FiscalModule,
     AgentMissionModule,
@@ -169,7 +170,6 @@ import {
     ocrProvider,
     documentIntelligenceProvider,
     { provide: PDF_RENDERER, useClass: PdfRenderer },
-    { provide: DOCUMENT_STORAGE, useFactory: buildDocumentStorage },
     notifierProvider,
     expoPushProvider,
     supabaseAdminProvider,

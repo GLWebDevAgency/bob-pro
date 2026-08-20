@@ -53,8 +53,6 @@ import { HttpException } from '@nestjs/common';
 import {
   CUSTOMER_CONTACT_DEFINITION_VERSION,
   CUSTOMER_CONTACT_UPDATE_ACTION_ID,
-  Customer,
-  UpdateCustomer,
   computeCustomerContactFieldsDigest,
   computeCustomerContactSensitiveDigest,
   sha256Hex,
@@ -73,11 +71,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   JarvisCustomerEffectExecutor,
-  type JarvisCustomerEffectAuthority,
-  type JarvisCustomerEffectTarget,
   type JarvisCustomerFields,
-  type JarvisCustomerSnapshot,
-  type JarvisCustomerWriteResult,
 } from '../../jobs/jarvis-customer-effect.executor';
 import {
   JarvisWorkItemDispatchService,
@@ -95,21 +89,19 @@ import {
   type JarvisCurrentRunWire,
 } from '../../jarvis/jarvis-run.controller';
 import { TEST_ONLY_JARVIS_ACTION_RELEASE_POLICY } from '../../jarvis/jarvis-release-policy.testing';
+import {
+  CountingJarvisCustomerEffectAuthority,
+  createReducedSchemaCustomerEffectAuthorityForTesting,
+} from '../../jarvis/jarvis-customer-effect.authority.testing';
 import { AppLogger, requestContext } from '../../observability/logger';
 import { agentMissionPrincipalBindingHash } from '../../voice/realtime/realtime-agent-mission-admission';
 import type { Persistence } from '../persistence';
 import { PrismaAgentMissionUnitOfWork } from './agent-mission.persistence';
 import type { JarvisAdmissionDeps } from './jarvis-admission.persistence';
-import { PrismaJarvisCustomerEffectAuthority } from '../../jarvis/jarvis-customer-effect.authority';
 import { PrismaJarvisDispatchRunDirectory } from './jarvis-dispatch-directory.persistence';
 import { PrismaJarvisProposalPayloadStore } from './jarvis-proposal-payloads.persistence';
 import { PrismaJarvisWorkItemsRepository } from './jarvis-work-items.persistence';
 import { PrismaService } from './prisma.service';
-import {
-  PrismaCustomerRepository,
-  PrismaInvoiceRepository,
-  PrismaQuoteRepository,
-} from './repositories';
 
 const RUN_CERT = process.env.RUN_AGENT_MISSION_POSTGRES_CERT === 'true';
 const DISPOSABLE = process.env.AGENT_MISSION_CERT_DATABASE_IS_DISPOSABLE === 'true';
@@ -246,7 +238,7 @@ describe.skipIf(!RUN_CERT)(
     let workItems: PrismaJarvisWorkItemsRepository;
     let controllerA: JarvisRunController;
     let controllerB: JarvisRunController;
-    let authorityA: CertificationCustomerAuthority;
+    let authorityA: CountingJarvisCustomerEffectAuthority;
 
     function freshOwner(prefix: string): string {
       return `jarvis-u1e-${prefix}-${randomUUID()}`;
@@ -542,7 +534,9 @@ describe.skipIf(!RUN_CERT)(
       workItems = new PrismaJarvisWorkItemsRepository(workerA);
       controllerA = tapController(uowA, workerA);
       controllerB = tapController(uowB, workerB);
-      authorityA = new CertificationCustomerAuthority(workerA);
+      authorityA = new CountingJarvisCustomerEffectAuthority(
+        createReducedSchemaCustomerEffectAuthorityForTesting(workerA),
+      );
       await Promise.all([admin.$connect(), workerA.$connect(), workerB.$connect()]);
       await admin.$executeRaw`
         INSERT INTO public.companies (
@@ -1322,7 +1316,9 @@ describe.skipIf(!RUN_CERT)(
               new JarvisCustomerEffectExecutor({
                 admission: admissionPortOf(uowA),
                 payloads: storeA,
-                customers: new PrismaJarvisCustomerEffectAuthority(workerA),
+                customers: new CountingJarvisCustomerEffectAuthority(
+                  createReducedSchemaCustomerEffectAuthorityForTesting(workerA),
+                ),
               }),
             ],
           ]),
@@ -1810,72 +1806,3 @@ describe.skipIf(!RUN_CERT)(
     }
   },
 );
-
-/**
- * Autorité métier de certification : elle ne SIMULE rien — elle appelle les use cases canoniques
- * de la fiche client (`Customer.of` + `PrismaCustomerRepository.save` à la création,
- * `UpdateCustomer.executeAtRevision` à l'édition), dans une portée tenant. Ce harnais prouve le
- * CAS mais pas encore les barrières société/archives du parcours manuel. Le compteur d'écritures
- * sert la preuve « la proposition invalidée n'a rien écrit ».
- */
-class CertificationCustomerAuthority implements JarvisCustomerEffectAuthority {
-  public writes = 0;
-
-  constructor(private readonly prisma: PrismaService) {}
-
-  async readCustomer(target: JarvisCustomerEffectTarget): Promise<JarvisCustomerSnapshot | null> {
-    const customer = await this.prisma.withTenant(target.companyId, () =>
-      new PrismaCustomerRepository(this.prisma).findById(target.customerId),
-    );
-    if (customer === null) return null;
-    const { id, companyId, ...fields } = customer.toProps();
-    void id;
-    void companyId;
-    return { customerId: target.customerId, fields };
-  }
-
-  /** Même surface que l'autorité runtime : sans elle, l'axe `targetDigest` serait muet. */
-  async readCustomerRevision(target: JarvisCustomerEffectTarget): Promise<number | null> {
-    const rows = await this.prisma.withTenant(target.companyId, () =>
-      this.prisma.client().customer.findFirst({
-        where: { id: target.customerId, companyId: target.companyId },
-        select: { revision: true },
-      }),
-    );
-    return rows === null ? null : rows.revision;
-  }
-
-  async createCustomer(
-    target: JarvisCustomerEffectTarget,
-    fields: JarvisCustomerFields,
-  ): Promise<JarvisCustomerWriteResult> {
-    const created = Customer.of({ id: target.customerId, companyId: target.companyId, ...fields });
-    if (!created.ok) {
-      return { status: 'refused', reasonCode: `domain_${created.error.code.toLowerCase()}` };
-    }
-    this.writes += 1;
-    await this.prisma.withTenant(target.companyId, () =>
-      new PrismaCustomerRepository(this.prisma).save(created.value),
-    );
-    return { status: 'written' };
-  }
-
-  async updateCustomerAtRevision(
-    target: JarvisCustomerEffectTarget,
-    fields: JarvisCustomerFields,
-    expectedRevision: number,
-  ): Promise<JarvisCustomerWriteResult> {
-    this.writes += 1;
-    const result = await this.prisma.withTenant(target.companyId, () =>
-      new UpdateCustomer({
-        customers: new PrismaCustomerRepository(this.prisma),
-        quotes: new PrismaQuoteRepository(this.prisma),
-        invoices: new PrismaInvoiceRepository(this.prisma),
-      }).executeAtRevision(
-        { id: target.customerId, companyId: target.companyId, ...fields },
-        expectedRevision,
-      ),
-    );
-    return result.ok ? { status: 'written' } : { status: 'refused', reasonCode: 'domain_refused' };
-  }
-}

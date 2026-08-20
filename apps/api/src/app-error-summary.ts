@@ -1,8 +1,8 @@
 import type { AppError } from '@bob/core';
 
 /**
- * Projection technique bornée d'une erreur applicative. Elle ne remplace jamais l'erreur
- * structurée rendue à l'appelant et ne doit contenir ni payload libre, ni secret.
+ * Projection technique d'une erreur applicative. Elle ne remplace jamais l'erreur structurée
+ * rendue à l'appelant ; son appelant reste responsable de ne pas la journaliser avec un secret.
  */
 export function appErrorSummary(error: AppError): string {
   if (error.kind === 'domain')

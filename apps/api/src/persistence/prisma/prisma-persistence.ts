@@ -28,6 +28,7 @@ import {
   PrismaAgentMissionUnitOfWork,
 } from './agent-mission.persistence';
 import type { JarvisCustomerEffectAuthority } from '../../jobs/jarvis-customer-effect.executor';
+import type { CustomerUpdateAuthorityPort } from '../../customers/customer-update.authority';
 import type { JarvisDispatchRunDirectoryPort } from '../../jobs/jarvis-work-item-dispatch.service';
 import { PrismaJarvisCustomerEffectAuthority } from '../../jarvis/jarvis-customer-effect.authority';
 import { PrismaJarvisDispatchRunDirectory } from './jarvis-dispatch-directory.persistence';
@@ -215,8 +216,10 @@ export class PrismaPersistence implements Persistence {
    * Autorité métier de l'effet fiche client (U1-f §1) : elle appelle les use cases canoniques
    * sous `withTenant`, exactement comme l'artisan qui édite sa fiche à la main.
    */
-  createJarvisCustomerEffectAuthority(): JarvisCustomerEffectAuthority {
-    return new PrismaJarvisCustomerEffectAuthority(this.prisma);
+  createJarvisCustomerEffectAuthority(
+    customerUpdates: CustomerUpdateAuthorityPort,
+  ): JarvisCustomerEffectAuthority {
+    return new PrismaJarvisCustomerEffectAuthority(this.prisma, customerUpdates);
   }
 
   createAgentMissionResumeUnitOfWork(): AgentMissionResumeUnitOfWorkPort {

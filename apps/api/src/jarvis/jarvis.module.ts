@@ -35,6 +35,11 @@ import {
 
 import { AgentMissionModule } from '../agent-missions/agent-mission.module';
 import {
+  CustomerUpdateAuthority,
+  type CustomerUpdateAuthorityPort,
+} from '../customers/customer-update.authority';
+import { CustomerUpdateModule } from '../customers/customer-update.module';
+import {
   JarvisCustomerEffectExecutor,
   type JarvisCustomerEffectAuthority,
 } from '../jobs/jarvis-customer-effect.executor';
@@ -188,11 +193,22 @@ const jarvisDispatchRunDirectoryProvider: Provider = {
  * les use cases CANONIQUES sous `withTenant` : mêmes invariants, mêmes refus et même incrément de
  * révision que l'artisan qui édite sa fiche à la main (§9.1, parité humain↔Bob).
  */
+export function buildJarvisCustomerEffectAuthority(
+  persistence: Persistence,
+  customerUpdates: CustomerUpdateAuthorityPort,
+): JarvisCustomerEffectAuthority | null {
+  const candidate = persistence as unknown as Record<string, unknown>;
+  const factory = candidate.createJarvisCustomerEffectAuthority;
+  if (typeof factory !== 'function') return null;
+  return (factory.call(persistence, customerUpdates) ?? null) as
+    | JarvisCustomerEffectAuthority
+    | null;
+}
+
 const jarvisCustomerEffectAuthorityProvider: Provider = {
   provide: JARVIS_CUSTOMER_EFFECT_AUTHORITY,
-  inject: [PERSISTENCE],
-  useFactory: (persistence: Persistence) =>
-fabriqueOuNull(persistence, 'createJarvisCustomerEffectAuthority'),
+  inject: [PERSISTENCE, CustomerUpdateAuthority],
+  useFactory: buildJarvisCustomerEffectAuthority,
 };
 
 const jarvisEffectExecutorsProvider: Provider = {
@@ -221,7 +237,7 @@ const jarvisEffectExecutorsProvider: Provider = {
 };
 
 @Module({
-  imports: [ObservabilityModule, PersistenceModule, AgentMissionModule],
+  imports: [ObservabilityModule, PersistenceModule, AgentMissionModule, CustomerUpdateModule],
   controllers: [JarvisRunController],
   providers: [
     jarvisActionReleasePolicyProvider,

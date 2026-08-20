@@ -42,6 +42,7 @@ import type {
   WorksiteMediaStorage,
 } from '@bob/core';
 import type { JarvisCustomerEffectAuthority } from '../jobs/jarvis-customer-effect.executor';
+import type { CustomerUpdateAuthorityPort } from '../customers/customer-update.authority';
 import type { JarvisWorkItemsDispatchRepository } from './prisma/jarvis-work-items.persistence';
 import type { JarvisDispatchRunDirectoryPort } from '../jobs/jarvis-work-item-dispatch.service';
 import type { CabinetInfrastructure } from '../cabinet/cabinet-infrastructure';
@@ -207,7 +208,9 @@ export interface Persistence {
    * jamais une écriture directe. `null` laisse le registre d'exécuteurs VIDE : le worker règle
    * `executor_unregistered`, jamais un effet exécuté sans son autorité.
    */
-  createJarvisCustomerEffectAuthority(): JarvisCustomerEffectAuthority | null;
+  createJarvisCustomerEffectAuthority(
+    customerUpdates: CustomerUpdateAuthorityPort,
+  ): JarvisCustomerEffectAuthority | null;
   /**
    * Snapshot froid JWT+RLS des missions Jarvis. `null` reste fail-closed pour tout adapter qui
    * ne peut pas prouver READ ONLY + REPEATABLE READ + scoping owner.

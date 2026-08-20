@@ -52,17 +52,15 @@ import {
 } from '../persistence/prisma/jarvis-work-items.persistence';
 import { PrismaService } from '../persistence/prisma/prisma.service';
 import { PrismaCustomerRepository } from '../persistence/prisma/repositories';
-import { PrismaJarvisCustomerEffectAuthority } from '../jarvis/jarvis-customer-effect.authority';
+import {
+  CountingJarvisCustomerEffectAuthority,
+  createPrismaCustomerEffectAuthorityForTesting,
+} from '../jarvis/jarvis-customer-effect.authority.testing';
 import {
   JarvisCustomerEffectExecutor,
   deriveJarvisEffectCustomerId,
   jarvisCustomerEffectFailureDigest,
   jarvisCustomerEffectSuccessDigest,
-  type JarvisCustomerEffectAuthority,
-  type JarvisCustomerEffectTarget,
-  type JarvisCustomerFields,
-  type JarvisCustomerSnapshot,
-  type JarvisCustomerWriteResult,
 } from './jarvis-customer-effect.executor';
 
 const RUN_CERT = process.env.RUN_AGENT_MISSION_POSTGRES_CERT === 'true';
@@ -107,44 +105,6 @@ function proposedFields(
   });
 }
 
-/**
- * Observateur du VRAI adapter runtime : les appels sont comptés, mais toute lecture/écriture est
- * déléguée à `PrismaJarvisCustomerEffectAuthority`. Le test ne recopie donc pas le writer CAS.
- */
-class CertificationCustomerAuthority implements JarvisCustomerEffectAuthority {
-  public writes = 0;
-  private readonly delegate: PrismaJarvisCustomerEffectAuthority;
-
-  constructor(prisma: PrismaService) {
-    this.delegate = new PrismaJarvisCustomerEffectAuthority(prisma);
-  }
-
-  async readCustomer(target: JarvisCustomerEffectTarget): Promise<JarvisCustomerSnapshot | null> {
-    return this.delegate.readCustomer(target);
-  }
-
-  async readCustomerRevision(target: JarvisCustomerEffectTarget): Promise<number | null> {
-    return this.delegate.readCustomerRevision(target);
-  }
-
-  async createCustomer(
-    target: JarvisCustomerEffectTarget,
-    fields: JarvisCustomerFields,
-  ): Promise<JarvisCustomerWriteResult> {
-    this.writes += 1;
-    return this.delegate.createCustomer(target, fields);
-  }
-
-  async updateCustomerAtRevision(
-    target: JarvisCustomerEffectTarget,
-    fields: JarvisCustomerFields,
-    expectedRevision: number,
-  ): Promise<JarvisCustomerWriteResult> {
-    this.writes += 1;
-    return this.delegate.updateCustomerAtRevision(target, fields, expectedRevision);
-  }
-}
-
 interface CustomerAuditRow {
   readonly id: string;
   readonly name: string;
@@ -168,7 +128,7 @@ describe.skipIf(!RUN_CERT)(
     let uow: PrismaAgentMissionUnitOfWork;
     let store: PrismaJarvisProposalPayloadStore;
     let workItems: PrismaJarvisWorkItemsRepository;
-    let authority: CertificationCustomerAuthority;
+    let authority: CountingJarvisCustomerEffectAuthority;
     /** Adapter port mono-argument -> UoW(envelope, deps) : exactement ce que câblera la vague B. */
     let admission: JarvisAdmissionUnitOfWorkPort;
 
@@ -399,7 +359,9 @@ describe.skipIf(!RUN_CERT)(
       uow = new PrismaAgentMissionUnitOfWork(worker);
       store = new PrismaJarvisProposalPayloadStore(worker);
       workItems = new PrismaJarvisWorkItemsRepository(worker);
-      authority = new CertificationCustomerAuthority(worker);
+      authority = new CountingJarvisCustomerEffectAuthority(
+        createPrismaCustomerEffectAuthorityForTesting(worker),
+      );
       admission = {
         runJarvisAdmission: (envelope: JarvisUserAdmissionEnvelope) =>
           uow.runJarvisAdmission(envelope, TEST_ONLY_ADMISSION_DEPS),

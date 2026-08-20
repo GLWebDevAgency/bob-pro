@@ -15,6 +15,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentMissionModule } from '../agent-missions/agent-mission.module';
 import { AGENT_MISSION_FINGERPRINTS } from '../agent-missions/agent-mission-fingerprint.provider';
 import { AppModule } from '../app.module';
+import { CustomerUpdateAuthority } from '../customers/customer-update.authority';
+import { CustomerUpdateModule } from '../customers/customer-update.module';
+import { DOCUMENT_STORAGE, UnavailableDocumentStorage } from '../documents/storage';
 import { JarvisCustomerEffectExecutor } from '../jobs/jarvis-customer-effect.executor';
 import type { JarvisCustomerEffectAuthority } from '../jobs/jarvis-customer-effect.executor';
 import {
@@ -129,6 +132,7 @@ afterEach(() => vi.restoreAllMocks());
 describe('tranche verticale Jarvis (U1-d)', () => {
   it('est importée par AppModule et déclare elle-même ses providers', () => {
     expect(metadata(MODULE_METADATA.IMPORTS, AppModule)).toContain(JarvisModule);
+    expect(metadata(MODULE_METADATA.IMPORTS, AppModule)).toContain(CustomerUpdateModule);
     expect(metadata(MODULE_METADATA.CONTROLLERS, JarvisModule)).toEqual([JarvisRunController]);
     const providers = metadata(MODULE_METADATA.PROVIDERS, JarvisModule);
     expect(providers).toContain(jarvisActionReleasePolicyProvider);
@@ -141,9 +145,10 @@ describe('tranche verticale Jarvis (U1-d)', () => {
     expect(appProviders).not.toContain(jarvisTapAuthorityProvider);
   });
 
-  it('importe Observability, Persistence et AgentMission — et rien d’autre', () => {
-    expect(metadata(MODULE_METADATA.IMPORTS, JarvisModule)).toHaveLength(3);
+  it('importe ses dépendances et l’autorité client canonique — sans service historique', () => {
+    expect(metadata(MODULE_METADATA.IMPORTS, JarvisModule)).toHaveLength(4);
     expect(metadata(MODULE_METADATA.IMPORTS, JarvisModule)).toContain(AgentMissionModule);
+    expect(metadata(MODULE_METADATA.IMPORTS, JarvisModule)).toContain(CustomerUpdateModule);
   });
 
   it('EXPORTE ce qui est injecté hors du module (worker de dispatch d’AppModule)', () => {
@@ -242,6 +247,8 @@ describe('graphe d’injection réel', () => {
     return Test.createTestingModule({ imports: [JarvisModule] })
       .overrideProvider(PERSISTENCE)
       .useValue(persistence as unknown as Persistence)
+      .overrideProvider(DOCUMENT_STORAGE)
+      .useValue(new UnavailableDocumentStorage())
       .overrideProvider(AppLogger)
       .useValue({ audit: vi.fn(), warn: vi.fn(), log: vi.fn(), error: vi.fn() })
       .overrideProvider(AGENT_MISSION_FINGERPRINTS)
@@ -290,6 +297,8 @@ describe('graphe d’injection réel', () => {
     const moduleRef = await Test.createTestingModule({ imports: [VoiceLikeConsumerModule] })
       .overrideProvider(PERSISTENCE)
       .useValue(persistence as unknown as Persistence)
+      .overrideProvider(DOCUMENT_STORAGE)
+      .useValue(new UnavailableDocumentStorage())
       .overrideProvider(AppLogger)
       .useValue({ audit: vi.fn(), warn: vi.fn(), log: vi.fn(), error: vi.fn() })
       .overrideProvider(AGENT_MISSION_FINGERPRINTS)
@@ -335,6 +344,9 @@ describe('graphe d’injection réel', () => {
       expect(moduleRef.get(JARVIS_WORK_ITEMS_DISPATCH)).toBe(dispatch);
       expect(moduleRef.get(JARVIS_DISPATCH_RUN_DIRECTORY)).toBe(directory);
       expect(moduleRef.get(JARVIS_CUSTOMER_EFFECT_AUTHORITY)).toBe(FAKE_CUSTOMERS);
+      expect(persistence.createJarvisCustomerEffectAuthority).toHaveBeenCalledWith(
+        moduleRef.get(CustomerUpdateAuthority),
+      );
       const registry = moduleRef.get(JARVIS_EFFECT_EXECUTORS) as ReadonlyMap<string, unknown>;
       expect([...registry.keys()].sort()).toEqual(['client-creer@1', 'client-modifier@1']);
     } finally {

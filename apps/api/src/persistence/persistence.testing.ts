@@ -5,6 +5,7 @@ import type {
   AgentMissionFingerprintKeyBinding,
   AgentMissionFingerprintKeyVersionAuthority,
 } from '../agent-missions/agent-mission-fingerprint-key-version';
+import type { CustomerUpdateAuthorityPort } from '../customers/customer-update.authority';
 import { seedCompany, seedCustomers } from '@bob/core/testing';
 import type { Persistence } from './persistence';
 import { InMemorySalesDocumentSearchRepository } from './sales-document-search.in-memory';
@@ -186,7 +187,7 @@ export class InMemoryPersistence implements Persistence {
     // son no-op audité `dependencies_absent` — jamais un balayage sur une liste simulée.
     return null;
   }
-  createJarvisCustomerEffectAuthority(): null {
+  createJarvisCustomerEffectAuthority(_customerUpdates: CustomerUpdateAuthorityPort): null {
     // L'effet passe par les use cases canoniques SOUS TENANT : une mémoire écrirait à côté du
     // domaine et de la RLS. Le registre d'exécuteurs reste VIDE, fail-closed.
     return null;

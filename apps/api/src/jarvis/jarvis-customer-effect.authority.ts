@@ -6,12 +6,10 @@
  * n'écrit JAMAIS sa fiche — le run reste en `committing`, où même `cancel_run` ne fait
  * qu'observer un reçu qui ne viendra pas. C'est le dernier maillon manquant du parcours.
  *
- * CE QU'IL EST, ET CE QU'IL N'EST PAS. Il appelle les use cases CANONIQUES du domaine
- * (`Customer.of` en création, `UpdateCustomer.executeAtRevision` en modification) et ne contourne
- * jamais leurs validations. Le CAS ferme le lost-update au commit. En revanche, cet adapter ne
- * partage pas encore le verrou société, le refus de compte clôturé et les barrières d'archives du
- * parcours manuel `BackendService.updateCustomer` : la publication reste fermée jusqu'à cette
- * extraction commune. Ne pas présenter ce lot comme une parité complète humain↔Bob.
+ * CE QU'IL EST, ET CE QU'IL N'EST PAS. La création appelle `Customer.of`. La modification
+ * délègue à l'autorité applicative CANONIQUE partagée avec `BackendService` : même verrou société,
+ * même refus de clôture, mêmes preuves d'archives, même `UpdateCustomer.executeAtRevision` et même
+ * CAS. Cet adapter ne porte aucune de ces règles et ne constitue pas un use case Jarvis parallèle.
  *
  * TENANT. Chaque geste s'exécute sous `withTenant(target.companyId)` : les GUC de RLS sont posés
  * par la persistance, jamais devinés ici. Le `companyId` vient du work item (donc de l'admission
@@ -22,15 +20,11 @@
  * d'infrastructure, elle, remonte telle quelle — le worker la traduit en `outcome_unknown` et la
  * met en quarantaine pour réconciliation purpose-specific, sans rejeu aveugle.
  */
-import { Inject, Injectable } from '@nestjs/common';
-import { Customer, UpdateCustomer } from '@bob/core';
+import { Customer } from '@bob/core';
 
+import type { CustomerUpdateAuthorityPort } from '../customers/customer-update.authority';
 import { PrismaService } from '../persistence/prisma/prisma.service';
-import {
-  PrismaCustomerRepository,
-  PrismaInvoiceRepository,
-  PrismaQuoteRepository,
-} from '../persistence/prisma/repositories';
+import { PrismaCustomerRepository } from '../persistence/prisma/repositories';
 import type {
   JarvisCustomerEffectAuthority,
   JarvisCustomerEffectTarget,
@@ -39,9 +33,11 @@ import type {
   JarvisCustomerWriteResult,
 } from '../jobs/jarvis-customer-effect.executor';
 
-@Injectable()
 export class PrismaJarvisCustomerEffectAuthority implements JarvisCustomerEffectAuthority {
-  constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly customerUpdates: CustomerUpdateAuthorityPort,
+  ) {}
 
   /**
    * Lecture de la fiche pour la RÉCONCILIATION d'une reprise indécidable : le worker compare
@@ -95,25 +91,34 @@ export class PrismaJarvisCustomerEffectAuthority implements JarvisCustomerEffect
     fields: JarvisCustomerFields,
     expectedRevision: number,
   ): Promise<JarvisCustomerWriteResult> {
-    // `UpdateCustomer` est le SEUL chemin de modification du dépôt : il porte les invariants
-    // métier (facturation, rattachements) et déclenche l'incrément de révision sur lequel la
-    // garde §9.1 s'appuie. Bob ne le contourne pas.
-    const result = await this.prisma.withTenant(target.companyId, () =>
-      new UpdateCustomer({
-        customers: new PrismaCustomerRepository(this.prisma),
-        quotes: new PrismaQuoteRepository(this.prisma),
-        invoices: new PrismaInvoiceRepository(this.prisma),
-      }).executeAtRevision(
-        { id: target.customerId, companyId: target.companyId, ...fields },
-        expectedRevision,
-      ),
+    const result = await this.customerUpdates.executeAtRevision(
+      { id: target.customerId, companyId: target.companyId, ...fields },
+      expectedRevision,
     );
     if (result.ok) return { status: 'written' };
     if (result.error.kind === 'conflict' && result.error.reason === 'stale_revision') {
       return { status: 'refused', reasonCode: 'target_revision_stale' };
     }
+    if (
+      result.error.kind === 'conflict'
+      && result.error.reason === 'signed_quote_archive_missing'
+    ) {
+      return { status: 'refused', reasonCode: 'signed_quote_archive_missing' };
+    }
+    if (
+      result.error.kind === 'conflict'
+      && result.error.reason === 'issued_invoice_archive_missing'
+    ) {
+      return { status: 'refused', reasonCode: 'issued_invoice_archive_missing' };
+    }
     if (result.error.kind === 'not_found') {
-      return { status: 'refused', reasonCode: 'customer_missing' };
+      return {
+        status: 'refused',
+        reasonCode: result.error.entity === 'company' ? 'company_missing' : 'customer_missing',
+      };
+    }
+    if (result.error.kind === 'forbidden' && result.error.reason === 'Compte clôturé.') {
+      return { status: 'refused', reasonCode: 'company_closed' };
     }
     if (result.error.kind === 'dependency' || result.error.kind === 'unavailable') {
       return { status: 'unavailable' };

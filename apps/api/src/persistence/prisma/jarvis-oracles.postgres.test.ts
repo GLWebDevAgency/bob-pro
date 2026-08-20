@@ -63,8 +63,6 @@ import { randomUUID } from 'node:crypto';
 import {
   CUSTOMER_CONTACT_CREATE_ACTION_ID,
   CUSTOMER_CONTACT_UPDATE_ACTION_ID,
-  Customer,
-  UpdateCustomer,
   computeCustomerContactFieldsDigest,
   computeCustomerContactProposalHash,
   computeCustomerContactSensitiveDigest,
@@ -91,11 +89,6 @@ import {
   JarvisCustomerEffectExecutor,
   deriveJarvisEffectCustomerId,
   jarvisCustomerEffectSuccessDigest,
-  type JarvisCustomerEffectAuthority,
-  type JarvisCustomerEffectTarget,
-  type JarvisCustomerFields,
-  type JarvisCustomerSnapshot,
-  type JarvisCustomerWriteResult,
 } from '../../jobs/jarvis-customer-effect.executor';
 import {
   JarvisWorkItemDispatchService,
@@ -104,6 +97,10 @@ import {
   type JarvisEffectExecutor,
 } from '../../jobs/jarvis-work-item-dispatch.service';
 import type { ScheduledTenantDirectory } from '../../jobs/tenant-directory';
+import {
+  CountingJarvisCustomerEffectAuthority,
+  createReducedSchemaCustomerEffectAuthorityForTesting,
+} from '../../jarvis/jarvis-customer-effect.authority.testing';
 import { TEST_ONLY_JARVIS_ACTION_RELEASE_POLICY } from '../../jarvis/jarvis-release-policy.testing';
 import { AppLogger } from '../../observability/logger';
 import type { Persistence } from '../persistence';
@@ -112,11 +109,6 @@ import type { JarvisAdmissionDeps } from './jarvis-admission.persistence';
 import { PrismaJarvisProposalPayloadStore } from './jarvis-proposal-payloads.persistence';
 import { PrismaJarvisWorkItemsRepository } from './jarvis-work-items.persistence';
 import { PrismaService } from './prisma.service';
-import {
-  PrismaCustomerRepository,
-  PrismaInvoiceRepository,
-  PrismaQuoteRepository,
-} from './repositories';
 
 const RUN_CERT = process.env.RUN_AGENT_MISSION_POSTGRES_CERT === 'true';
 const DISPOSABLE = process.env.AGENT_MISSION_CERT_DATABASE_IS_DISPOSABLE === 'true';
@@ -1293,7 +1285,9 @@ describe.skipIf(!RUN_CERT)(
       async () => {
         const owner = freshOwner('e2e-owner');
         const device = tapChannel('iphone-du-fondateur');
-        const authority = new CertificationCustomerAuthority(workerA);
+        const authority = new CountingJarvisCustomerEffectAuthority(
+          createReducedSchemaCustomerEffectAuthorityForTesting(workerA),
+        );
         const admissionPort: JarvisAdmissionUnitOfWorkPort = {
           runJarvisAdmission: (envelope: JarvisUserAdmissionEnvelope) =>
             uowA.runJarvisAdmission(envelope, TEST_ONLY_DEPS),
@@ -1695,7 +1689,9 @@ describe.skipIf(!RUN_CERT)(
         // LA MÊME cible pour les deux runs, créée par le use case CANONIQUE : deux fiches
         // jumelles auraient introduit une différence sans rapport avec le canal. Ce qui reste
         // différent entre les deux journaux est donc, ici encore, le canal et lui seul.
-        const authority = new CertificationCustomerAuthority(workerA);
+        const authority = new CountingJarvisCustomerEffectAuthority(
+          createReducedSchemaCustomerEffectAuthorityForTesting(workerA),
+        );
         const customerId = randomUUID();
         await expect(
           authority.createCustomer(
@@ -1836,7 +1832,9 @@ describe.skipIf(!RUN_CERT)(
       async () => {
         const ownerUserId = freshOwner('cas-failpoint-owner');
         const customerId = randomUUID();
-        const authority = new CertificationCustomerAuthority(workerA);
+        const authority = new CountingJarvisCustomerEffectAuthority(
+          createReducedSchemaCustomerEffectAuthorityForTesting(workerA),
+        );
 
         await expect(
           authority.createCustomer(
@@ -2082,74 +2080,5 @@ class FailBeforeStoreResultRepository extends PrismaJarvisWorkItemsRepository {
     return Promise.reject(
       new Error('TEST_FAILPOINT_AFTER_CUSTOMER_COMMIT_BEFORE_STORE_RESULT'),
     );
-  }
-}
-
-/**
- * Autorité métier de certification : elle ne SIMULE rien — elle appelle les use cases canoniques
- * de la fiche client (`Customer.of` + `PrismaCustomerRepository.save` à la création,
- * `UpdateCustomer.executeAtRevision` à l'édition), dans une portée tenant. Ce harnais prouve le
- * CAS mais pas encore les barrières société/archives du parcours manuel. Le compteur d'écritures
- * sert les preuves « la proposition invalidée n'a rien écrit ».
- */
-class CertificationCustomerAuthority implements JarvisCustomerEffectAuthority {
-  public writes = 0;
-
-  constructor(private readonly prisma: PrismaService) {}
-
-  async readCustomer(target: JarvisCustomerEffectTarget): Promise<JarvisCustomerSnapshot | null> {
-    const customer = await this.prisma.withTenant(target.companyId, () =>
-      new PrismaCustomerRepository(this.prisma).findById(target.customerId),
-    );
-    if (customer === null) return null;
-    const { id, companyId, ...fields } = customer.toProps();
-    void id;
-    void companyId;
-    return { customerId: target.customerId, fields };
-  }
-
-  /** Même surface que l'autorité runtime : sans elle, l'axe `targetDigest` serait muet. */
-  async readCustomerRevision(target: JarvisCustomerEffectTarget): Promise<number | null> {
-    const rows = await this.prisma.withTenant(target.companyId, () =>
-      this.prisma.client().customer.findFirst({
-        where: { id: target.customerId, companyId: target.companyId },
-        select: { revision: true },
-      }),
-    );
-    return rows === null ? null : rows.revision;
-  }
-
-  async createCustomer(
-    target: JarvisCustomerEffectTarget,
-    fields: JarvisCustomerFields,
-  ): Promise<JarvisCustomerWriteResult> {
-    const created = Customer.of({ id: target.customerId, companyId: target.companyId, ...fields });
-    if (!created.ok) {
-      return { status: 'refused', reasonCode: `domain_${created.error.code.toLowerCase()}` };
-    }
-    this.writes += 1;
-    await this.prisma.withTenant(target.companyId, () =>
-      new PrismaCustomerRepository(this.prisma).save(created.value),
-    );
-    return { status: 'written' };
-  }
-
-  async updateCustomerAtRevision(
-    target: JarvisCustomerEffectTarget,
-    fields: JarvisCustomerFields,
-    expectedRevision: number,
-  ): Promise<JarvisCustomerWriteResult> {
-    this.writes += 1;
-    const result = await this.prisma.withTenant(target.companyId, () =>
-      new UpdateCustomer({
-        customers: new PrismaCustomerRepository(this.prisma),
-        quotes: new PrismaQuoteRepository(this.prisma),
-        invoices: new PrismaInvoiceRepository(this.prisma),
-      }).executeAtRevision(
-        { id: target.customerId, companyId: target.companyId, ...fields },
-        expectedRevision,
-      ),
-    );
-    return result.ok ? { status: 'written' } : { status: 'refused', reasonCode: 'domain_refused' };
   }
 }

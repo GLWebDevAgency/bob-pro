@@ -50,7 +50,11 @@ function customer(): Customer {
 
 type ArchiveOutcome = 'ok' | 'quote_missing' | 'invoice_missing';
 
-function setup(input: { readonly closed?: boolean; readonly archives?: ArchiveOutcome } = {}) {
+function setup(input: {
+  readonly closed?: boolean;
+  readonly companyMissing?: boolean;
+  readonly archives?: ArchiveOutcome;
+} = {}) {
   const trace: string[] = [];
   const persistence = new InMemoryPersistence();
   persistence.companies.seed(company(input.closed ?? false));
@@ -66,7 +70,9 @@ function setup(input: { readonly closed?: boolean; readonly archives?: ArchiveOu
   });
   vi.spyOn(persistence.companies, 'lockById').mockImplementation(async (id) => {
     trace.push(`company.lock:${id}`);
-    return id === COMPANY_ID ? company(input.closed ?? false) : null;
+    return id === COMPANY_ID && input.companyMissing !== true
+      ? company(input.closed ?? false)
+      : null;
   });
 
   const originalSave = persistence.customers.save.bind(persistence.customers);
@@ -150,6 +156,22 @@ describe('CustomerUpdateAuthority', () => {
     await expect(authority.executeAtRevision(customerInput, 7)).resolves.toEqual({
       ok: false,
       error: { kind: 'forbidden', reason: 'Compte clôturé.' },
+    });
+    expect(trace).toEqual([
+      `tenant:${COMPANY_ID}`,
+      'transaction',
+      `company.lock:${COMPANY_ID}`,
+    ]);
+    expect(persistence.customers.save).not.toHaveBeenCalled();
+    expect(saveIfRevision).not.toHaveBeenCalled();
+  });
+
+  it('refuse une société absente avant toute archive et toute écriture', async () => {
+    const { authority, trace, persistence, saveIfRevision } = setup({ companyMissing: true });
+
+    await expect(authority.executeAtRevision(customerInput, 7)).resolves.toEqual({
+      ok: false,
+      error: { kind: 'not_found', entity: 'company', id: COMPANY_ID },
     });
     expect(trace).toEqual([
       `tenant:${COMPANY_ID}`,

@@ -1494,9 +1494,17 @@ export class BackendService {
     @Optional()
     @Inject(VOICE_TRACE_RECORDER)
     private readonly voiceTrace: VoiceTraceRecorderPort | null = null,
+    @Optional()
+    @Inject(DocumentArchiveIntegrityAuthority)
+    injectedDocumentArchiveIntegrity: DocumentArchiveIntegrityAuthority | null = null,
+    @Optional()
+    @Inject(CustomerUpdateAuthority)
+    injectedCustomerUpdates: CustomerUpdateAuthority | null = null,
   ) {
-    this.documentArchiveIntegrity = new DocumentArchiveIntegrityAuthority(p, documentStorage);
-    this.customerUpdates = new CustomerUpdateAuthority(p, this.documentArchiveIntegrity);
+    this.documentArchiveIntegrity = injectedDocumentArchiveIntegrity
+      ?? new DocumentArchiveIntegrityAuthority(p, documentStorage);
+    this.customerUpdates = injectedCustomerUpdates
+      ?? new CustomerUpdateAuthority(p, this.documentArchiveIntegrity);
   }
 
   private readonly documentArchiveIntegrity: DocumentArchiveIntegrityAuthority;
