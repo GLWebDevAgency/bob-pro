@@ -109,6 +109,7 @@ import { hasBlockingAuthoritativeDataError } from '../../src/data/authoritative-
 import {
   jarvisFrameTargetsCustomer,
   usePublishAgentContext,
+  useJarvisOpenRun,
   useJarvisRunFrame,
   type AgentContext,
   type AgentAccessLayout,
@@ -462,6 +463,14 @@ export default function ClientDetail() {
    * `commandId`) : monter la carte dans les deux hôtes est idempotent, jamais deux commandes.
    */
   const jarvis = useJarvisRunFrame();
+  /**
+   * U1-f §3 — LE GESTE D'OUVERTURE. La fiche est la surface cataloguée de `client-modifier@1` :
+   * c'est ici que l'artisan demande à Bob de modifier ce qu'il a sous les yeux. Le reçu déclenche
+   * `jarvis.refresh()`, et la carte apparaît EN PLACE — aucune navigation, aucune perte de
+   * contexte. [DÉCISION D1] Aucun gate d'entitlement : l'artisan modifie sa fiche à la main sans
+   * abonnement, Bob qui l'assiste sur la MÊME surface suit la même règle (parité humain↔Bob).
+   */
+  const jarvisOpen = useJarvisOpenRun({ client, onOpened: jarvis.refresh });
   const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: 150 });
 
   // Docs DU client = documents du coffre liés à SES pièces (factures, devis, chantiers).
@@ -1148,6 +1157,18 @@ export default function ClientDetail() {
                    relance ai (c'est Bob qui agit — l'indigo est SON canal), appel success,
                    email warning — pastilles distinctes, icônes teintées comme la Home. ── */}
               <View style={{ flexDirection: 'row', gap: 9 }}>
+                {jarvisOpen.supported ? (
+                  <QuickAction
+                    style={{ flex: 1 }}
+                    label={t('fiche.actionBobEdit', { personality })}
+                    tone="ai"
+                    icon={<PencilIcon color={semantic.ai} size={18} />}
+                    // Même gate d'écriture que les autres gestes : sur une fiche qu'on n'a pas
+                    // pu relire, on ne demande à personne de la modifier.
+                    disabled={!customerFresh || jarvisOpen.state.kind === 'opening'}
+                    onPress={() => jarvisOpen.open(id)}
+                  />
+                ) : null}
                 <QuickAction
                   style={{ flex: 1 }}
                   label={t('fiche.actionQuote', { personality })}
@@ -1185,6 +1206,21 @@ export default function ClientDetail() {
                   {...(email !== null ? { onPress: () => openLink(`mailto:${email}`) } : {})}
                 />
               </View>
+
+              {jarvisOpen.state.kind === 'busy' || jarvisOpen.state.kind === 'failed' ? (
+                <View accessibilityLiveRegion="polite" style={{ marginTop: 9 }}>
+                  <ErrorRetry
+                    message={
+                      jarvisOpen.state.kind === 'busy'
+                        ? t('fiche.bobEditBusy', { personality })
+                        : t('fiche.bobEditFailed', { personality })
+                    }
+                    onRetry={() =>
+                      jarvisOpen.state.kind === 'busy' ? jarvisOpen.dismiss() : jarvisOpen.open(id)
+                    }
+                  />
+                </View>
+              ) : null}
 
               {customerRefreshFailed ? (
                 <ErrorRetry

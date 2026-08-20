@@ -129,6 +129,8 @@ function harness(
     readonly seal?: JarvisProposalPayloadSealResult;
     readonly admission?: JarvisAdmissionUnitOfWorkPort | null;
     readonly payloads?: JarvisProposalPayloadStorePort | null;
+    /** Run courant de l'owner, TOUS SEMEURS CONFONDUS (U1-f §2) — `undefined` = vue sans annuaire. */
+    readonly currentRun?: JarvisRunEnvelope | null;
   } = {},
 ) {
   const run = options.run === undefined ? runEnvelope() : options.run;
@@ -146,6 +148,7 @@ function harness(
       _owner: { readonly companyId: string; readonly ownerUserId: string },
       read: (view: {
         readonly runById: (runId: string) => Promise<JarvisRunEnvelope | null>;
+        readonly currentRun?: () => Promise<JarvisRunEnvelope | null>;
       }) => Promise<unknown>,
     ) => ({
       status: 'executed' as const,
@@ -153,6 +156,9 @@ function harness(
         runById: async (runId) =>
           extraRuns.find((candidate) => candidate.runId === runId) ??
           (run !== null && run.runId === runId ? run : null),
+        ...(options.currentRun === undefined
+          ? {}
+          : { currentRun: async () => options.currentRun ?? null }),
       }),
       readAt: NOW.toISOString(),
     }),
@@ -211,6 +217,44 @@ describe('RealtimeJarvisMissionOrchestrator — prepare', () => {
       prepared: {
         expectedRevision: 0,
         semanticContext: { phase: 'inactive', runAlias: null, intentMode: null },
+      },
+    });
+  });
+
+  it('U1-f §2 : adopte le run COURANT de l’artisan, même semé par l’écran', async () => {
+    // CONTINUITÉ §14. Le foreground est UNIQUE par propriétaire : un run ouvert depuis la fiche
+    // client occupe la place. Si la voix ne balayait que ses propres graines, elle serait aveugle
+    // à ce run — elle refuserait tout en `foreground_busy` sans jamais pouvoir le faire avancer,
+    // et la modification ouverte à l'écran n'aurait AUCUN émetteur de proposition.
+    const runEcran = runEnvelope({
+      runId: '77777777-7777-4777-8777-777777777777',
+      revision: 9,
+      state: state({ phase: 'preparing_proposal' }),
+    });
+    const h = harness({ run: null, currentRun: runEcran });
+
+    await expect(h.orchestrator.prepare(request())).resolves.toMatchObject({
+      status: 'prepared',
+      prepared: {
+        runId: runEcran.runId,
+        expectedRevision: 9,
+        // La voix peut PROPOSER dessus : c'est exactement le maillon qui manquait.
+        availableCapabilities: ['customer_contact.proposal.stage', 'customer_contact.run.cancel'],
+      },
+    });
+  });
+
+  it('U1-f §2 : sans annuaire (vue sans currentRun), la voix retombe sur ses graines', async () => {
+    // `currentRun` est OPTIONNEL : un adaptateur qui ne sait pas énumérer n'en fournit pas une
+    // moitié. La voix ne devine alors rien — elle reprend son balayage déterministe.
+    const h = harness({ run: null });
+
+    await expect(h.orchestrator.prepare(request())).resolves.toMatchObject({
+      status: 'prepared',
+      prepared: {
+        runId: deriveRealtimeCustomerContactRunId(SESSION_ID, 0),
+        expectedRevision: 0,
+        semanticContext: { phase: 'inactive' },
       },
     });
   });

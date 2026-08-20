@@ -21,6 +21,17 @@ export class AgentMissionCommandIdRegistry {
     return commandId;
   }
 
+  /**
+   * Libère la mémoïsation d'un geste dont le REÇU est arrivé (U1-f §3). Tant qu'aucun reçu n'est
+   * revenu, la clé DOIT survivre : c'est elle qui fait qu'un retry après coupure réseau rejoue le
+   * MÊME `commandId`, donc le même run, au lieu d'en semer un second. Une fois le reçu obtenu, la
+   * garder serait l'erreur inverse : le geste suivant sur la même cible rejouerait un run déjà
+   * terminé, et l'artisan resterait devant une demande close sans pouvoir en rouvrir une.
+   */
+  release(key: string): void {
+    this.commandIds.delete(key);
+  }
+
   clear(): void {
     this.commandIds.clear();
   }
