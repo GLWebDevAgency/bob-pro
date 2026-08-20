@@ -102,6 +102,7 @@ import type {
   CustomerContactConfirmationStatus,
   CustomerContactPhase,
   CustomerContactSensitiveField,
+  JarvisDefinitionActionReference,
   JarvisAdmissionKind,
   JarvisRunStatus,
   RealtimeVoiceClientTerminationDiagnostic as CoreRealtimeVoiceClientTerminationDiagnostic,
@@ -1239,6 +1240,8 @@ export interface JarvisRunView {
   readonly runId: string;
   readonly kind: JarvisAdmissionKind;
   readonly definitionVersion: number;
+  /** Identité relue depuis la définition serveur ; `null` si illisible ou terminal. */
+  readonly actionReference: JarvisDefinitionActionReference | null;
   readonly status: JarvisRunStatus;
   readonly revision: number;
   readonly nextWakeAt: string | null;

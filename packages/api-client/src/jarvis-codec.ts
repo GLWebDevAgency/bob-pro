@@ -29,6 +29,7 @@ import {
   CUSTOMER_CONTACT_MAX_DUPLICATE_CANDIDATES,
   CUSTOMER_CONTACT_PHASES,
   CUSTOMER_CONTACT_SENSITIVE_FIELDS,
+  isCanonicalJarvisActionReference,
   JARVIS_RUN_KINDS,
   JARVIS_RUN_STATUSES,
   JARVIS_RUN_TERMINAL_STATUSES,
@@ -36,6 +37,7 @@ import {
   type CustomerContactPhase,
   type CustomerContactSensitiveField,
   type JarvisAdmissionKind,
+  type JarvisDefinitionActionReference,
   type JarvisRunStatus,
 } from '@bob/core';
 import type {
@@ -63,11 +65,13 @@ const RUN_KEYS = [
   'runId',
   'kind',
   'definitionVersion',
+  'actionReference',
   'status',
   'revision',
   'nextWakeAt',
   'terminalAt',
 ] as const;
+const ACTION_REFERENCE_KEYS = ['actionId', 'actionVersion'] as const;
 const PRESENTATION_KEYS = [
   'schema',
   'version',
@@ -168,6 +172,15 @@ function isRunStatus(value: unknown): value is JarvisRunStatus {
   return typeof value === 'string' && (JARVIS_RUN_STATUSES as readonly string[]).includes(value);
 }
 
+function decodeActionReference(value: unknown): JarvisDefinitionActionReference | null {
+  if (!isRecord(value) || !hasExactKeys(value, ACTION_REFERENCE_KEYS)) return null;
+  if (!isCanonicalJarvisActionReference(value.actionId, value.actionVersion)) return null;
+  return Object.freeze({
+    actionId: value.actionId as string,
+    actionVersion: value.actionVersion as number,
+  });
+}
+
 function isPhase(value: unknown): value is CustomerContactPhase {
   return (
     typeof value === 'string' && (CUSTOMER_CONTACT_PHASES as readonly string[]).includes(value)
@@ -189,6 +202,10 @@ function isSensitiveField(value: unknown): value is CustomerContactSensitiveFiel
 }
 
 export function decodeJarvisRun(value: unknown): JarvisRunView | null {
+  const actionReference =
+    isRecord(value) && value.actionReference !== null
+      ? decodeActionReference(value.actionReference)
+      : null;
   if (
     !isRecord(value) ||
     !hasExactKeys(value, RUN_KEYS) ||
@@ -197,8 +214,15 @@ export function decodeJarvisRun(value: unknown): JarvisRunView | null {
     !isRevision(value.definitionVersion) ||
     !isRunStatus(value.status) ||
     !isRevision(value.revision) ||
+    (value.actionReference !== null && actionReference === null) ||
     (value.nextWakeAt !== null && !isCanonicalInstant(value.nextWakeAt)) ||
     (value.terminalAt !== null && !isCanonicalInstant(value.terminalAt))
+  ) {
+    return null;
+  }
+  if (
+    actionReference !== null &&
+    (value.terminalAt !== null || JARVIS_RUN_TERMINAL_STATUSES.has(value.status))
   ) {
     return null;
   }
@@ -206,6 +230,7 @@ export function decodeJarvisRun(value: unknown): JarvisRunView | null {
     runId: value.runId,
     kind: value.kind,
     definitionVersion: value.definitionVersion as number,
+    actionReference,
     status: value.status,
     revision: value.revision as number,
     nextWakeAt: value.nextWakeAt as string | null,

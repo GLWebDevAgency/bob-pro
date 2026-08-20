@@ -77,6 +77,7 @@ import {
   JARVIS_RUN_TERMINAL_STATUSES,
   ok,
   parseCustomerContactState,
+  resolveJarvisDefinition,
   sanitizeSpokenLabel,
   sha256Hex,
   type AppError,
@@ -91,6 +92,7 @@ import {
   type JarvisAdmissionOwner,
   type JarvisAdmissionResult,
   type JarvisAdmissionUnitOfWorkPort,
+  type JarvisDefinitionActionReference,
   type JarvisProposalPayloadStorePort,
   type JarvisReduceError,
   type JarvisRunEnvelope,
@@ -560,6 +562,8 @@ export interface JarvisRunWireView {
   readonly runId: string;
   readonly kind: JarvisAdmissionKind;
   readonly definitionVersion: number;
+  /** Identité dérivée du state par la définition serveur ; jamais une décision du transport. */
+  readonly actionReference: JarvisDefinitionActionReference | null;
   readonly status: JarvisRunStatus;
   readonly revision: number;
   readonly nextWakeAt: string | null;
@@ -569,10 +573,24 @@ export interface JarvisRunWireView {
 export function projectJarvisRunView(envelope: JarvisRunEnvelope): JarvisRunWireView | null {
   // La branche devis garde ses routes legacy (§17.1) : elle ne sort jamais par ce canal.
   if (envelope.kind === AGENT_MISSION_KIND) return null;
+  const definition = resolveJarvisDefinition(envelope.kind, envelope.definitionVersion);
+  const resolvedActionReference =
+    envelope.terminalAt !== null || JARVIS_RUN_TERMINAL_STATUSES.has(envelope.status)
+      ? null
+      : (definition?.actionReference(envelope, null) ?? null);
+  const actionReference =
+    resolvedActionReference !== null &&
+    isCanonicalJarvisActionReference(
+      resolvedActionReference.actionId,
+      resolvedActionReference.actionVersion,
+    )
+      ? resolvedActionReference
+      : null;
   return Object.freeze({
     runId: envelope.runId,
     kind: envelope.kind,
     definitionVersion: envelope.definitionVersion,
+    actionReference,
     status: envelope.status,
     revision: envelope.revision,
     nextWakeAt: envelope.nextWakeAt,

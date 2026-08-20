@@ -24,6 +24,7 @@ function run(overrides: Record<string, unknown> = {}): Record<string, unknown> {
     runId: RUN_ID,
     kind: 'customer_contact',
     definitionVersion: 1,
+    actionReference: { actionId: 'client-creer', actionVersion: 1 },
     status: 'waiting_user',
     revision: 4,
     nextWakeAt: '2026-08-19T10:05:00.000Z',
@@ -74,9 +75,69 @@ function presentation(overrides: Record<string, unknown> = {}): Record<string, u
 
 describe('jarvis-codec — projection du run', () => {
   it('décode un run projeté et refuse toute clé inconnue', () => {
-    expect(decodeJarvisRun(run())).toMatchObject({ runId: RUN_ID, revision: 4 });
+    const decoded = decodeJarvisRun(run());
+    expect(decoded).toMatchObject({
+      runId: RUN_ID,
+      revision: 4,
+      actionReference: { actionId: 'client-creer', actionVersion: 1 },
+    });
+    expect(Object.isFrozen(decoded)).toBe(true);
+    expect(Object.isFrozen(decoded?.actionReference)).toBe(true);
     expect(decodeJarvisRun({ ...run(), extra: 1 })).toBeNull();
     expect(decodeJarvisRun({ ...run(), state: { secret: true } })).toBeNull();
+  });
+
+  it('exige actionReference en lockstep et accepte null ou toute référence canonique serveur', () => {
+    const withoutActionReference = run();
+    delete withoutActionReference.actionReference;
+    expect(decodeJarvisRun(withoutActionReference)).toBeNull();
+    expect(decodeJarvisRun(run({ actionReference: null }))?.actionReference).toBeNull();
+    expect(
+      decodeJarvisRun(
+        run({ actionReference: { actionId: 'facture-envoyer', actionVersion: 7 } }),
+      )?.actionReference,
+    ).toEqual({ actionId: 'facture-envoyer', actionVersion: 7 });
+  });
+
+  it('refuse toute référence partielle, étrangère ou non canonique', () => {
+    expect(decodeJarvisRun(run({ actionReference: { actionId: 'client-creer' } }))).toBeNull();
+    expect(
+      decodeJarvisRun(
+        run({ actionReference: { actionId: 'client-creer', actionVersion: 1, extra: true } }),
+      ),
+    ).toBeNull();
+    expect(
+      decodeJarvisRun(
+        run({ actionReference: { actionId: 'Client Creer', actionVersion: 1 } }),
+      ),
+    ).toBeNull();
+    expect(
+      decodeJarvisRun(
+        run({ actionReference: { actionId: 'client-creer', actionVersion: 0 } }),
+      ),
+    ).toBeNull();
+  });
+
+  it('refuse une autorité non nulle sur toute forme terminale', () => {
+    expect(
+      decodeJarvisRun(
+        run({ status: 'completed', terminalAt: '2026-08-19T10:06:00.000Z' }),
+      ),
+    ).toBeNull();
+    expect(
+      decodeJarvisRun(
+        run({ terminalAt: '2026-08-19T10:06:00.000Z' }),
+      ),
+    ).toBeNull();
+    expect(
+      decodeJarvisRun(
+        run({
+          status: 'completed',
+          terminalAt: '2026-08-19T10:06:00.000Z',
+          actionReference: null,
+        }),
+      )?.actionReference,
+    ).toBeNull();
   });
 
   it('refuse la branche quote_creation : le writer N-1 ne traverse jamais ce wire', () => {

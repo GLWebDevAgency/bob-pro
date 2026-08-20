@@ -4,6 +4,7 @@ import {
   computeCustomerContactFieldsDigest,
   computeCustomerContactSensitiveDigest,
   err,
+  initialSingleBusinessActionState,
   type CustomerContactProposedFieldsV1,
   type JarvisAdmissionOwner,
   type JarvisAdmissionResult,
@@ -31,6 +32,7 @@ import {
   jarvisTapAuthorityProvider,
   parseJarvisSubmitCommandBody,
   presentCustomerContactFields,
+  projectJarvisRunView,
   type JarvisTapAuthority,
 } from './jarvis-run.controller';
 
@@ -161,6 +163,80 @@ function terminalRunWith(state: unknown, revision = 4): JarvisRunEnvelope {
     terminalAt: READ_AT,
   };
 }
+
+function singleBusinessActionRun(): StatefulJarvisRunEnvelope {
+  const initial = initialSingleBusinessActionState({
+    actionId: 'relance-envoyer',
+    actionVersion: 3,
+  });
+  if (!initial.ok) throw new Error('state SBA de test invalide');
+  return {
+    kind: 'single_business_action',
+    runId: RUN_ID,
+    companyId: COMPANY_ID,
+    createdBy: OWNER_USER_ID,
+    definitionVersion: 1,
+    status: 'active',
+    revision: 2,
+    stateVersion: 1,
+    state: initial.value,
+    nextWakeAt: null,
+    terminalAt: null,
+  };
+}
+
+describe('projection wire U1-k — action autoritaire du run', () => {
+  it('dérive les actions create/update depuis le state customer-contact', () => {
+    const updateState = stateWith({
+      intent: { mode: 'update', target: { customerId: TARGET_CUSTOMER_ID, revision: 2 } },
+      proposal: {
+        proposalId: PROPOSAL_ID,
+        proposalCommandId: PROPOSAL_COMMAND_ID,
+        fieldsDigest: FIELDS_DIGEST,
+        sensitiveDigest: SENSITIVE_DIGEST,
+        targetRevision: 2,
+        targetSensitiveDigest: TARGET_SENSITIVE_DIGEST,
+        proposalHash: PROPOSAL_HASH,
+      },
+    });
+
+    expect(projectJarvisRunView(runWith(stateWith()))?.actionReference).toEqual({
+      actionId: 'client-creer',
+      actionVersion: 1,
+    });
+    expect(projectJarvisRunView(runWith(updateState))?.actionReference).toEqual({
+      actionId: 'client-modifier',
+      actionVersion: 1,
+    });
+  });
+
+  it('dérive une action SBA sans présentation customer-contact', () => {
+    expect(projectJarvisRunView(singleBusinessActionRun())?.actionReference).toEqual({
+      actionId: 'relance-envoyer',
+      actionVersion: 3,
+    });
+  });
+
+  it('rend null sur définition/state illisible et sur toute forme terminale', () => {
+    const run = runWith(stateWith());
+    expect(projectJarvisRunView({ ...run, definitionVersion: 999 })?.actionReference).toBeNull();
+    expect(projectJarvisRunView({ ...run, state: null })?.actionReference).toBeNull();
+    expect(projectJarvisRunView(terminalRunWith(stateWith()))?.actionReference).toBeNull();
+    expect(projectJarvisRunView({ ...run, terminalAt: READ_AT })?.actionReference).toBeNull();
+  });
+
+  it('rend null quand une définition lisible produit une référence wire non canonique', () => {
+    const initial = initialSingleBusinessActionState({
+      actionId: 'action avec espaces',
+      actionVersion: 1,
+    });
+    if (!initial.ok) throw new Error('state SBA de test invalide');
+
+    expect(
+      projectJarvisRunView({ ...singleBusinessActionRun(), state: initial.value })?.actionReference,
+    ).toBeNull();
+  });
+});
 
 function admitted(run: JarvisRunEnvelope): JarvisAdmissionResult {
   return { status: 'admitted', postimage: run, eventSequence: run.revision, workItemIds: [] };
@@ -717,6 +793,7 @@ describe('présentation écran (greffe G4) — jamais une proposition non scell�
       runId: RUN_ID,
       kind: 'customer_contact',
       definitionVersion: 1,
+      actionReference: { actionId: 'client-creer', actionVersion: 1 },
       status: 'waiting_user',
       revision: 5,
       nextWakeAt: null,
@@ -767,7 +844,9 @@ describe('présentation écran (greffe G4) — jamais une proposition non scell�
     const receipt = await asOwner(() => candidate.submitCommand(RUN_ID, submitBody()));
 
     expect(snapshot.presentation).toBeNull();
+    expect(snapshot.run.actionReference).toEqual({ actionId: 'client-creer', actionVersion: 1 });
     expect(receipt.presentation).toBeNull();
+    expect(receipt.run.actionReference).toEqual({ actionId: 'client-creer', actionVersion: 1 });
     expect(receipt.outcome).toBe('admitted');
   });
 
@@ -1147,6 +1226,7 @@ describe('découverte (U1-e §1) — GET /jarvis/runs/current', () => {
       runId: RUN_ID,
       kind: 'customer_contact',
       definitionVersion: 1,
+      actionReference: { actionId: 'client-creer', actionVersion: 1 },
       status: 'waiting_user',
       revision: 5,
       nextWakeAt: null,

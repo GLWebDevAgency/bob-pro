@@ -43,6 +43,7 @@ function run(overrides: Record<string, unknown> = {}) {
     runId: RUN_ID,
     kind: 'customer_contact',
     definitionVersion: 1,
+    actionReference: { actionId: 'client-creer', actionVersion: 1 },
     status: 'waiting_user',
     revision: 5,
     nextWakeAt: null,
@@ -124,7 +125,13 @@ describe('HttpBobClient — canal tactile Jarvis', () => {
 
     await expect(client().jarvisSubmitCommand(submitInput())).resolves.toMatchObject({
       ok: true,
-      value: { outcome: 'admitted', run: { revision: 5 } },
+      value: {
+        outcome: 'admitted',
+        run: {
+          revision: 5,
+          actionReference: { actionId: 'client-creer', actionVersion: 1 },
+        },
+      },
     });
   });
 
@@ -240,7 +247,32 @@ describe('HttpBobClient — canal tactile Jarvis', () => {
 
     await expect(client().jarvisGetRun(RUN_ID)).resolves.toMatchObject({
       ok: true,
-      value: { run: { runId: RUN_ID }, presentation: null },
+      value: {
+        run: {
+          runId: RUN_ID,
+          actionReference: { actionId: 'client-creer', actionVersion: 1 },
+        },
+        presentation: null,
+      },
+    });
+  });
+
+  it('refuse une projection N-1 sans actionReference requise', async () => {
+    const legacyRun: Record<string, unknown> = run();
+    delete legacyRun.actionReference;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ run: legacyRun, presentation: null }), {
+            headers: { 'content-type': 'application/json' },
+          }),
+      ),
+    );
+
+    await expect(client().jarvisGetRun(RUN_ID)).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'dependency', port: 'api-contract' },
     });
   });
 
@@ -296,7 +328,14 @@ describe('HttpBobClient — découverte et ouverture depuis l’écran (U1-e §1
 
     await expect(client().jarvisCurrentRun()).resolves.toMatchObject({
       ok: true,
-      value: { run: { runId: RUN_ID, revision: 5 }, presentation: { intent: 'create' } },
+      value: {
+        run: {
+          runId: RUN_ID,
+          revision: 5,
+          actionReference: { actionId: 'client-creer', actionVersion: 1 },
+        },
+        presentation: { intent: 'create' },
+      },
     });
   });
 
@@ -307,7 +346,12 @@ describe('HttpBobClient — découverte et ouverture depuis l’écran (U1-e §1
         async () =>
           new Response(
             JSON.stringify({
-              run: { ...run(), status: 'completed', terminalAt: '2026-08-19T10:05:00.000Z' },
+              run: {
+                ...run(),
+                status: 'completed',
+                terminalAt: '2026-08-19T10:05:00.000Z',
+                actionReference: null,
+              },
               presentation: null,
             }),
             { headers: { 'content-type': 'application/json' } },
@@ -334,7 +378,11 @@ describe('HttpBobClient — découverte et ouverture depuis l’écran (U1-e §1
       return new Response(
         JSON.stringify({
           outcome: 'admitted',
-          run: run({ revision: 1, status: 'active' }),
+          run: run({
+            revision: 1,
+            status: 'active',
+            actionReference: { actionId: 'client-modifier', actionVersion: 1 },
+          }),
           presentation: null,
           eventSequence: 1,
         }),
@@ -345,7 +393,13 @@ describe('HttpBobClient — découverte et ouverture depuis l’écran (U1-e §1
 
     await expect(client().jarvisOpenRun(openInput())).resolves.toMatchObject({
       ok: true,
-      value: { outcome: 'admitted', run: { revision: 1 } },
+      value: {
+        outcome: 'admitted',
+        run: {
+          revision: 1,
+          actionReference: { actionId: 'client-modifier', actionVersion: 1 },
+        },
+      },
     });
   });
 
