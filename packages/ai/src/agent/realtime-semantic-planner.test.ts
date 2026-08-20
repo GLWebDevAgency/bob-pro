@@ -1179,6 +1179,44 @@ describe('planRealtimeSemanticTurn — customer_contact@1 (U1-d)', () => {
     });
   });
 
+  it('le SCHÉMA suit la phase sur les trois champs — un champ inutile s’y déclare inutile', async () => {
+    // Un champ exposé partout mais admis nulle part est une invitation à le remplir : le schéma est
+    // la seule instruction que le modèle reçoive. Le parse refuse déjà `fields` et `choice_ordinal`
+    // hors de leur action ; encore faut-il ne pas les avoir suggérés d'abord.
+    async function schemaPour(mission: Partial<RealtimeCustomerContactSemanticContext>) {
+      const model = fakeLlm({ text: null, toolCalls: [], model: 'gpt-semantic-planner' });
+      await planRealtimeSemanticTurn(model.llm, contactInput(mission));
+      const outil = model.complete.mock.calls[0]?.[1]?.tools?.find(
+        (tool) => tool.name === CUSTOMER_CONTACT_TOOL,
+      );
+      return (
+        outil?.parameters as {
+          properties: Record<string, { description?: string; maximum?: number }>;
+        }
+      ).properties;
+    }
+
+    // En préparation de proposition : seuls les champs se dictent.
+    const preparation = await schemaPour({ phase: 'preparing_proposal' });
+    expect(preparation['fields']?.description).not.toContain('TOUJOURS null');
+    expect(preparation['customer_name']?.description).toContain('TOUJOURS null');
+    expect(preparation['choice_ordinal']?.description).toContain('TOUJOURS null');
+
+    // En revue de doublons : seul le rang se choisit — et la borne est la FENÊTRE RÉELLE,
+    // pas le plafond théorique : le modèle ne peut pas désigner une fiche jamais énoncée.
+    const revue = await schemaPour({ phase: 'awaiting_duplicate_review', presentedDuplicateCount: 2 });
+    expect(revue['choice_ordinal']?.maximum).toBe(2);
+    expect(revue['choice_ordinal']?.description).not.toContain('TOUJOURS null');
+    expect(revue['fields']?.description).toContain('TOUJOURS null');
+    expect(revue['customer_name']?.description).toContain('TOUJOURS null');
+
+    // En reprise de création : seul le nom sert, et il sert de REQUÊTE.
+    const reprise = await schemaPour({ phase: 'resolving_customer', intentMode: 'create' });
+    expect(reprise['customer_name']?.description).toContain('CHERCHE');
+    expect(reprise['fields']?.description).toContain('TOUJOURS null');
+    expect(reprise['choice_ordinal']?.description).toContain('TOUJOURS null');
+  });
+
   it('refuse une action hors phase, un ordinal hors fenêtre et un champ masqué', async () => {
     // LES QUATRE CLÉS SONT OBLIGATOIRES ICI, et ce n'est pas un détail de fixture : la porte
     // d'arité du parse mord AVANT la garde de phase et avant la fenêtre d'ordinal. Une fixture à

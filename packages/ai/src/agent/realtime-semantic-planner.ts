@@ -470,6 +470,10 @@ function customerContactUnderstandingTool(
 ): LlmToolSpec | null {
   const actions = customerContactActionsForPhase(mission);
   if (actions.length === 0) return null;
+  // Le SCHÉMA SUIT LA PHASE, champ par champ. Un champ exposé partout mais admis nulle part est une
+  // invitation à le remplir : le modèle n'a que ce schéma pour savoir ce qu'on attend de lui.
+  const choisitUnDoublon = (actions as readonly string[]).includes('choose_duplicate');
+  const dicteDesChamps = (actions as readonly string[]).includes('propose_fields');
   return Object.freeze({
     name: CUSTOMER_CONTACT_TOOL_NAME,
     description:
@@ -492,12 +496,25 @@ function customerContactUnderstandingTool(
         choice_ordinal: {
           type: ['integer', 'null'],
           minimum: 1,
-          maximum: CUSTOMER_CONTACT_MAX_DUPLICATE_CANDIDATES,
+          // La FENÊTRE RÉELLE, pas la borne théorique : le modèle ne doit pas pouvoir exprimer un
+          // rang que Bob n'a jamais énoncé. Quand `choose_duplicate` est offerte, le contexte
+          // serveur garantit `presentedDuplicateCount > 0` (`validCustomerContactContext`).
+          maximum: choisitUnDoublon
+            ? mission.presentedDuplicateCount
+            : CUSTOMER_CONTACT_MAX_DUPLICATE_CANDIDATES,
+          description: choisitUnDoublon
+            ? 'Rang de la fiche choisie parmi celles que Bob vient d’énoncer, en commençant à un. null si l’artisan n’en désigne aucune.'
+            : 'TOUJOURS null à cette étape : aucune liste de fiches n’est en attente de choix.',
         },
         fields: {
           type: ['object', 'null'],
-          description:
-            'Champs dictés dans CE tour, tels qu’ils sont dits. null pour tout champ non dicté.',
+          // MÊME DISCIPLINE que `customer_name`, mais SANS la même indulgence au parse : un champ
+          // dicté qu'on ignorerait serait une perte silencieuse pour l'artisan, donc le parse
+          // refuse. Raison de plus pour que la description dise le vrai à chaque étape, au lieu de
+          // laisser croire qu'un champ entendu se dicte n'importe quand.
+          description: dicteDesChamps
+            ? 'Champs dictés dans CE tour, tels qu’ils sont dits. null pour tout champ non dicté.'
+            : 'TOUJOURS null à cette étape : aucun champ ne se dicte ici. Si l’artisan en dicte un, choisis d’abord l’action de l’étape — il le redira.',
           properties: Object.fromEntries(
             CUSTOMER_CONTACT_VOICE_FIELD_KEYS.map((key) => [
               key,
