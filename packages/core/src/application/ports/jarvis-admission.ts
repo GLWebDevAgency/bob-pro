@@ -7,6 +7,10 @@
  * aucun verrou et n'écrit rien.
  */
 
+import type {
+  CustomerCandidate,
+  CustomerCandidateReference,
+} from './customer-candidate-search';
 import type { JarvisRunEnvelope, JarvisRunKind } from '../../domain/agent/jarvis-run';
 import type { JarvisReduceError } from '../../domain/agent/jarvis-run-reducer';
 import type { Instant } from '../../shared-kernel/time';
@@ -163,6 +167,26 @@ export interface JarvisStatelessReadView {
    * jamais une présentation qui invente l'un ou l'autre.
    */
   readonly targetSnapshot?: (customerId: string) => Promise<JarvisTargetSnapshot | null>;
+  /**
+   * FD-2026-0817-06 — CANDIDATS DE DOUBLON, PAR NOM, EN LECTURE SEULE (U1-g §2).
+   *
+   * La borne est PINCÉE PAR L'ADAPTATEUR : un `limit` choisi par l'appelant serait une
+   * mini-autorité, et deux appelants finiraient par « chercher » différemment. Aucun verrou n'est
+   * pris — la lecture stateless est READ ONLY, et PostgreSQL y REFUSE `FOR SHARE`.
+   *
+   * OPTIONNEL, même doctrine que ses sœurs : un adaptateur qui ne sait pas chercher n'en fournit
+   * pas une moitié. L'appelant échoue alors FERMÉ — il ne dira JAMAIS « aucun doublon » sans
+   * avoir cherché, ce qui écrirait un fait faux dans un journal immuable.
+   */
+  readonly customerCandidates?: (query: string) => Promise<readonly CustomerCandidate[]>;
+  /**
+   * Libellés PAR IDENTITÉ — id et nom, RIEN d'autre. Délibérément distinct de `targetSnapshot`,
+   * qui rend aussi e-mail, téléphone, adresse et TVA : lire tout cela d'un TIERS pour n'afficher
+   * qu'un nom serait de la sur-collecte. Minimisation, pas confort.
+   */
+  readonly customerLabels?: (
+    customerIds: readonly string[],
+  ) => Promise<readonly CustomerCandidateReference[]>;
 }
 
 export interface JarvisAdmissionUnitOfWorkPort {

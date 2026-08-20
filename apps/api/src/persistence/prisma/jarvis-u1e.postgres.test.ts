@@ -1463,6 +1463,62 @@ describe.skipIf(!RUN_CERT)(
       TEST_TIMEOUT_MS,
     );
 
+    it(
+      "preuve 7 — U1-g : la recherche de doublons s'exécute EN LECTURE SEULE, sans verrou, cloisonnée",
+      async () => {
+        // LA CONTRAINTE QUI COMMANDE L'ARCHITECTURE. La lecture stateless ouvre sa transaction en
+        // READ ONLY, et PostgreSQL y REFUSE `FOR SHARE` :
+        //     ERROR: cannot execute SELECT FOR SHARE in a read-only transaction
+        // Le moteur de rapprochement du devis, lui, verrouille. Cette preuve est la SEULE qui
+        // puisse attester que la variante sans verrou est bien celle qui est branchée ici : aucun
+        // test en mémoire ne peut l'attraper, et l'échec ne surviendrait qu'en production.
+        const owner: JarvisAdmissionOwner = { companyId, ownerUserId: freshOwner('doublons') };
+        const homonymeIci = await seedTargetCustomer(owner, { name: 'Zorglub Ferronnerie' });
+
+        // Un HOMONYME PARFAIT chez le voisin : il ne doit JAMAIS remonter.
+        const voisin: JarvisAdmissionOwner = {
+          companyId: neighborCompanyId,
+          ownerUserId: freshOwner('doublons-voisin'),
+        };
+        await seedTargetCustomer(voisin, { name: 'Zorglub Ferronnerie' });
+
+        const read = await uowA.readJarvisStateless(owner, async (view) => {
+          const chercher = view.customerCandidates;
+          if (typeof chercher !== 'function') throw new Error('U1-g : recherche absente de la vue');
+          return chercher('Zorglub Ferronnerie');
+        });
+        const candidats = read.value;
+        // La fiche du tenant est trouvée — et elle seule.
+        expect(candidats.map((candidat) => candidat.customerId)).toEqual([homonymeIci]);
+        expect(candidats[0]?.matchKind).toBe('exact');
+
+        // CE QUE CETTE LECTURE VIENT DE PROUVER, et qu'elle seule peut prouver : la variante SANS
+        // VERROU est bien celle qui est branchée ici. Si le SQL verrouillé du devis avait été
+        // réutilisé tel quel, l'appel ci-dessus aurait levé — la transaction est READ ONLY, et
+        // PostgreSQL y refuse `FOR SHARE`. Aucun test en mémoire ne peut attraper cela.
+
+        // Le voisin cherche le MÊME nom : il ne voit que le sien.
+        const chezLeVoisin = await uowB.readJarvisStateless(voisin, async (view) => {
+          const chercher = view.customerCandidates;
+          if (typeof chercher !== 'function') throw new Error('U1-g : recherche absente de la vue');
+          return chercher('Zorglub Ferronnerie');
+        });
+        expect(chezLeVoisin.value.some((candidat) => candidat.customerId === homonymeIci)).toBe(
+          false,
+        );
+
+        // Un nom qui ne ressemble à rien ne rend RIEN — et c'est le seul chemin vers
+        // « aucun doublon ».
+        const rien = await uowA.readJarvisStateless(owner, async (view) => {
+          const chercher = view.customerCandidates;
+          if (typeof chercher !== 'function') throw new Error('U1-g : recherche absente de la vue');
+          return chercher('Wxyzptlk Aeronautique');
+        });
+        expect(rien.value).toEqual([]);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
     /**
      * Worker de dispatch RÉEL, câblé sur les autorités réelles. Deux collaborateurs viennent du
      * harnais parce que leur implémentation de production arrive avec le module (vague B) :

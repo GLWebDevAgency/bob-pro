@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  type CustomerCandidate,
   CUSTOMER_CONTACT_STATE_SCHEMA,
   computeCustomerContactFieldsDigest,
   computeCustomerContactProposalHash,
@@ -131,6 +132,11 @@ function harness(
     readonly payloads?: JarvisProposalPayloadStorePort | null;
     /** Run courant de l'owner, TOUS SEMEURS CONFONDUS (U1-f §2) — `undefined` = vue sans annuaire. */
     readonly currentRun?: JarvisRunEnvelope | null;
+    /**
+     * Candidats de doublon (U1-g). `undefined` = vue SANS recherche (l'appelant doit échouer
+     * fermé) ; `'throws'` = base indisponible ; un tableau = ce que la base rend.
+     */
+    readonly candidates?: readonly CustomerCandidate[] | 'throws';
   } = {},
 ) {
   const run = options.run === undefined ? runEnvelope() : options.run;
@@ -141,7 +147,25 @@ function harness(
     eventSequence: 5,
     workItemIds: [],
   };
-  const runJarvisAdmission = vi.fn(async (_envelope: JarvisUserAdmissionEnvelope) => admitted);
+  const runJarvisAdmission = vi.fn(async (envelope: JarvisUserAdmissionEnvelope) => {
+    // Le double imite l'admission RÉELLE sur le point qui compte pour le chaînage : un semis rend
+    // un postimage à la révision 1, en `resolving_customer`. La garde anti-conflit du second
+    // maillon s'y adosse — un double qui rendrait n'importe quelle révision la ferait mordre à
+    // tort et masquerait ce qu'on veut prouver.
+    const command = envelope.command as { readonly type?: string } | null;
+    if (command?.type === 'start_run' && options.admissionResult === undefined) {
+      return {
+        status: 'admitted' as const,
+        postimage: runEnvelope({
+          revision: 1,
+          state: state({ phase: 'resolving_customer', steps: 1 }),
+        }),
+        eventSequence: 1,
+        workItemIds: [],
+      };
+    }
+    return admitted;
+  });
   const runJarvisSystemAdmission = vi.fn(async () => admitted);
   const readJarvisStateless = vi.fn(
     async (
@@ -149,6 +173,7 @@ function harness(
       read: (view: {
         readonly runById: (runId: string) => Promise<JarvisRunEnvelope | null>;
         readonly currentRun?: () => Promise<JarvisRunEnvelope | null>;
+        readonly customerCandidates?: (query: string) => Promise<readonly CustomerCandidate[]>;
       }) => Promise<unknown>,
     ) => ({
       status: 'executed' as const,
@@ -159,6 +184,14 @@ function harness(
         ...(options.currentRun === undefined
           ? {}
           : { currentRun: async () => options.currentRun ?? null }),
+        ...(options.candidates === undefined
+          ? {}
+          : {
+              customerCandidates: async () => {
+                if (options.candidates === 'throws') throw new Error('base indisponible');
+                return options.candidates ?? [];
+              },
+            }),
       }),
       readAt: NOW.toISOString(),
     }),
@@ -452,6 +485,117 @@ describe('RealtimeJarvisMissionOrchestrator — runPlanned', () => {
       expect(outcome.status).toBe('failed');
       expect(outcome.canonicalSpeech).toMatch(/Rien n’a été exécuté|actualisé|repars/u);
     }
+  });
+
+  it('U1-g : sans doublon, le tour produit DEUX admissions chaînées et le run n’est pas parqué', async () => {
+    // LE BLOCAGE QUE CE LOT LÈVE. Avant lui, `start_run{create}` laissait le run en
+    // `resolving_customer` sans aucun émetteur de résolution : parqué à vie, hors `cancel_run`.
+    const h = harness({ run: null, candidates: [] });
+    const prepared = await h.orchestrator.prepare(request());
+    if (prepared.status !== 'prepared') throw new Error('préparation attendue');
+
+    const outcome = await h.orchestrator.runPlanned({
+      request: request(),
+      prepared: prepared.prepared,
+      frame: frame({ kind: 'open_customer_creation', customerName: 'Dupont Plomberie' }),
+    });
+
+    expect(outcome.status).toBe('handled');
+    expect(h.runJarvisAdmission).toHaveBeenCalledTimes(2);
+    const [semis, resolution] = h.runJarvisAdmission.mock.calls.map((call) => call[0]);
+    expect(semis?.command).toEqual({ type: 'start_run', intent: { mode: 'create' } });
+    expect(semis?.commandId).toBe(TURN_ID);
+    expect(semis?.expectedRevision).toBe(0);
+    // Le SECOND maillon : résolution serveur, commandId DÉRIVÉ, révision de semis FIGÉE.
+    expect(resolution?.command).toEqual({
+      type: 'record_customer_resolution',
+      resolution: { kind: 'no_duplicates' },
+    });
+    expect(resolution?.commandId).not.toBe(TURN_ID);
+    expect(resolution?.expectedRevision).toBe(1);
+    // Et Bob dit VRAI : il a cherché.
+    expect(outcome.canonicalSpeech).toContain('J’ai vérifié');
+  });
+
+  it('U1-g : une vue SANS recherche n’écrit RIEN — on ne certifie jamais ce qu’on n’a pas vérifié', async () => {
+    // LA GARDE CENTRALE. Un adaptateur qui ne sait pas chercher ne doit pas produire
+    // `no_duplicates` : ce serait un fait CERTIFIÉ FAUX dans un journal immuable, et l'unique
+    // fenêtre de résolution du run serait brûlée.
+    const h = harness({ run: null });
+    const prepared = await h.orchestrator.prepare(request());
+    if (prepared.status !== 'prepared') throw new Error('préparation attendue');
+
+    const outcome = await h.orchestrator.runPlanned({
+      request: request(),
+      prepared: prepared.prepared,
+      frame: frame({ kind: 'open_customer_creation', customerName: 'Dupont Plomberie' }),
+    });
+
+    expect(outcome.status).toBe('failed');
+    expect(h.runJarvisAdmission).not.toHaveBeenCalled();
+    expect(outcome.canonicalSpeech).toContain('Je n’ai rien ouvert');
+  });
+
+  it('U1-g : une base indisponible n’ouvre RIEN non plus — l’échec est gratuit', async () => {
+    // La recherche précède le semis : si elle tombe, ne rien ouvrir ne retire aucune
+    // disponibilité, alors qu'ouvrir d'abord laisserait un run parqué qui confisque Jarvis.
+    const h = harness({ run: null, candidates: 'throws' });
+    const prepared = await h.orchestrator.prepare(request());
+    if (prepared.status !== 'prepared') throw new Error('préparation attendue');
+
+    const outcome = await h.orchestrator.runPlanned({
+      request: request(),
+      prepared: prepared.prepared,
+      frame: frame({ kind: 'open_customer_creation', customerName: 'Dupont Plomberie' }),
+    });
+
+    expect(outcome.status).toBe('failed');
+    expect(h.runJarvisAdmission).not.toHaveBeenCalled();
+  });
+
+  it('U1-g : sans nom, Bob DEMANDE — il n’ouvre pas un run à l’aveugle', async () => {
+    const h = harness({ run: null, candidates: [] });
+    const prepared = await h.orchestrator.prepare(request());
+    if (prepared.status !== 'prepared') throw new Error('préparation attendue');
+
+    const outcome = await h.orchestrator.runPlanned({
+      request: request(),
+      prepared: prepared.prepared,
+      frame: frame({ kind: 'open_customer_creation', customerName: null }),
+    });
+
+    expect(outcome.status).toBe('handled');
+    expect(h.runJarvisAdmission).not.toHaveBeenCalled();
+    expect(outcome.canonicalSpeech).toContain('Pour quel client');
+  });
+
+  it('U1-g : des doublons sont ANNONCÉS par leur nom, dans l’ordre, et rien n’est créé', async () => {
+    const h = harness({
+      run: null,
+      candidates: [
+        { customerId: 'c-1', canonicalName: 'Dupont Plomberie', matchKind: 'exact', score: 1 },
+        { customerId: 'c-2', canonicalName: 'Dupont Plomberie SARL', matchKind: 'fuzzy', score: 0.7 },
+      ],
+    });
+    const prepared = await h.orchestrator.prepare(request());
+    if (prepared.status !== 'prepared') throw new Error('préparation attendue');
+
+    const outcome = await h.orchestrator.runPlanned({
+      request: request(),
+      prepared: prepared.prepared,
+      frame: frame({ kind: 'open_customer_creation', customerName: 'Dupont Plomberie' }),
+    });
+
+    expect(outcome.status).toBe('handled');
+    expect(outcome.canonicalSpeech).toContain('Dupont Plomberie SARL');
+    expect(outcome.canonicalSpeech).toContain('Rien n’a été créé');
+    const resolution = h.runJarvisAdmission.mock.calls[1]?.[0]?.command as {
+      resolution?: { kind?: string; candidates?: readonly { customerId: string }[] };
+    };
+    expect(resolution?.resolution?.kind).toBe('duplicate_candidates');
+    expect(resolution?.resolution?.candidates?.map((one) => one.customerId)).toEqual(['c-1', 'c-2']);
+    // ZÉRO NOM dans ce qui est scellé : le durable ne porte que des identités et des digests.
+    expect(JSON.stringify(h.runJarvisAdmission.mock.calls[1]?.[0]?.command)).not.toContain('Dupont');
   });
 
   it('CORRÉLATION REALTIME : l’enveloppe la porte, sinon l’admission refuse TOUTE commande vocale', async () => {

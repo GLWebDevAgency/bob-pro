@@ -409,6 +409,7 @@ const REDACTION_PLACEHOLDER = /\[(?:email|tel|siren|iban)\]/iu;
 
 type CustomerContactToolAction =
   | 'open_customer_creation'
+  | 'probe_duplicates'
   | 'propose_fields'
   | 'choose_duplicate'
   | 'continue_creation'
@@ -425,7 +426,11 @@ function customerContactActionsForPhase(
     case 'inactive':
       return Object.freeze(['open_customer_creation'] as const);
     case 'resolving_customer':
-      return Object.freeze(['cancel_run'] as const);
+      // U1-g — en CRÉATION, la reprise est offerte : un run dont la résolution de doublons a été
+      // refusée doit pouvoir repartir sur un nouveau nom, sans quoi il ne resterait qu'à annuler.
+      return mission.intentMode === 'create'
+        ? Object.freeze(['probe_duplicates', 'cancel_run'] as const)
+        : Object.freeze(['cancel_run'] as const);
     case 'awaiting_duplicate_review':
       return Object.freeze(['choose_duplicate', 'continue_creation', 'cancel_run'] as const);
     case 'preparing_proposal':
@@ -452,6 +457,11 @@ function customerContactUnderstandingTool(
       type: 'object',
       properties: {
         action: { type: 'string', enum: [...actions] },
+        customer_name: {
+          type: ['string', 'null'],
+          description:
+            'Nom du client tel que l’artisan vient de le dire, pour que le serveur CHERCHE s’il existe déjà. null si aucun nom n’a été prononcé. Ne jamais inventer un client existant : c’est le serveur qui cherche.',
+        },
         choice_ordinal: {
           type: ['integer', 'null'],
           minimum: 1,
@@ -473,7 +483,7 @@ function customerContactUnderstandingTool(
           additionalProperties: false,
         },
       },
-      required: ['action', 'choice_ordinal', 'fields'],
+      required: ['action', 'customer_name', 'choice_ordinal', 'fields'],
       additionalProperties: false,
     },
   });
@@ -519,13 +529,30 @@ function parseCustomerContactSemanticToolCall(input: {
   const candidate = args as Record<string, unknown>;
   const keys = Object.keys(candidate);
   if (
-    keys.length !== 3 ||
-    !['action', 'choice_ordinal', 'fields'].every((key) => Object.hasOwn(candidate, key))
+    keys.length !== 4 ||
+    !['action', 'customer_name', 'choice_ordinal', 'fields'].every((key) =>
+      Object.hasOwn(candidate, key),
+    )
   )
     return null;
   const action = candidate['action'];
   const actions = customerContactActionsForPhase(input.mission);
   if (typeof action !== 'string' || !(actions as readonly string[]).includes(action)) return null;
+
+  // Le nom n'est admis QUE là où il sert de requête de recherche : partout ailleurs, il doit être
+  // `null`. Même discipline que `choice_ordinal` — un champ qui traîne est un champ qu'on finira
+  // par lire au mauvais endroit.
+  const nomBrut = candidate['customer_name'];
+  const cherche = action === 'open_customer_creation' || action === 'probe_duplicates';
+  if (!cherche && nomBrut !== null) return null;
+  let customerName: string | null = null;
+  if (cherche && nomBrut !== null) {
+    if (typeof nomBrut !== 'string') return null;
+    const nom = nomBrut.trim();
+    // Un placeholder de minimisation recopié en guise de nom signale une fuite de rédaction.
+    if (nom.length < 1 || nom.length > 200 || REDACTION_PLACEHOLDER.test(nom)) return null;
+    customerName = nom;
+  }
 
   let operation: Record<string, unknown>;
   if (action === 'propose_fields') {
@@ -543,6 +570,11 @@ function parseCustomerContactSemanticToolCall(input: {
     )
       return null;
     operation = { kind: 'choose_duplicate', ordinal };
+  } else if (cherche) {
+    if (candidate['choice_ordinal'] !== null || candidate['fields'] !== null) return null;
+    // La REPRISE exige un nom : sans terme de recherche, il n'y a rien à reprendre.
+    if (action === 'probe_duplicates' && customerName === null) return null;
+    operation = { kind: action, customerName };
   } else {
     if (candidate['choice_ordinal'] !== null || candidate['fields'] !== null) return null;
     operation = { kind: action };

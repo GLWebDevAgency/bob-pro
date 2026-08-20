@@ -25,6 +25,8 @@ import {
   JARVIS_RUN_TERMINAL_STATUSES,
   SINGLE_BUSINESS_ACTION_V1,
   computeCustomerContactTargetSensitiveDigest,
+  type CustomerCandidate,
+  type CustomerCandidateReference,
   type JarvisTargetSnapshot,
   parseCustomerContactState,
   projectQuoteMissionJarvisStatus,
@@ -42,6 +44,11 @@ import {
   type JarvisUserAdmissionEnvelope,
 } from '@bob/core';
 import { Prisma } from '@prisma/client';
+import {
+  CUSTOMER_CANDIDATE_SEARCH_LIMIT,
+  customerCandidateSearchSql,
+  customerReferenceByIdsSql,
+} from './customer-candidate-sql';
 
 import {
   acquireJarvisKindOwnerLock,
@@ -868,6 +875,65 @@ export async function readJarvisTargetSnapshot(
       billingChannel: row.billingChannelType,
     }),
   });
+}
+
+/**
+ * U1-g §2 — CANDIDATS DE DOUBLON, sur le MÊME snapshot que le run et SANS AUCUN VERROU.
+ *
+ * `FOR SHARE` est IMPOSSIBLE ici : la lecture stateless ouvre sa transaction en READ ONLY, et
+ * PostgreSQL refuse (`cannot execute SELECT FOR SHARE in a read-only transaction`). Ce n'est pas
+ * une préférence de conception, c'est une condition d'exécution — et c'est cohérent : rien n'est
+ * DÉCIDÉ sur cette lecture. Le jeu rendu sera scellé par digests dans le run, et c'est ce sceau,
+ * pas la ligne, qui fait foi ensuite.
+ *
+ * Le filtre `companyId` est explicite EN PLUS de la RLS : ceinture et bretelles, comme partout.
+ */
+export async function readJarvisCustomerCandidates(
+  tx: Prisma.TransactionClient,
+  owner: JarvisAdmissionOwner,
+  query: string,
+): Promise<readonly CustomerCandidate[]> {
+  const rows = await tx.$queryRaw<
+    Array<{
+      customerId: string;
+      canonicalName: string;
+      matchKind: 'exact' | 'fuzzy';
+      score: number;
+    }>
+  >(
+    customerCandidateSearchSql({
+      companyId: owner.companyId,
+      query,
+      limit: CUSTOMER_CANDIDATE_SEARCH_LIMIT,
+      lock: 'none',
+    }),
+  );
+  return rows.map((row) =>
+    Object.freeze({
+      customerId: row.customerId,
+      canonicalName: row.canonicalName,
+      matchKind: row.matchKind,
+      score: row.score,
+    }),
+  );
+}
+
+/**
+ * Libellés par identité — id et nom, RIEN d'autre. On ne relit pas la fiche complète d'un TIERS
+ * pour n'en prononcer que le nom : ce serait de la sur-collecte.
+ */
+export async function readJarvisCustomerLabels(
+  tx: Prisma.TransactionClient,
+  owner: JarvisAdmissionOwner,
+  customerIds: readonly string[],
+): Promise<readonly CustomerCandidateReference[]> {
+  if (customerIds.length === 0) return [];
+  const rows = await tx.$queryRaw<Array<{ customerId: string; canonicalName: string }>>(
+    customerReferenceByIdsSql({ companyId: owner.companyId, customerIds, lock: 'none' }),
+  );
+  return rows.map((row) =>
+    Object.freeze({ customerId: row.customerId, canonicalName: row.canonicalName }),
+  );
 }
 
 export async function readJarvisCurrentRun(

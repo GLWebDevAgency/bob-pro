@@ -945,6 +945,7 @@ describe('planRealtimeSemanticTurn — customer_contact@1 (U1-d)', () => {
           name: CUSTOMER_CONTACT_TOOL,
           arguments: {
             action: 'propose_fields',
+            customer_name: null,
             choice_ordinal: null,
             fields: voiceFields({ city: '  Paris  ' }),
           },
@@ -1023,6 +1024,7 @@ describe('planRealtimeSemanticTurn — customer_contact@1 (U1-d)', () => {
           name: CUSTOMER_CONTACT_TOOL,
           arguments: {
             action: 'propose_fields',
+            customer_name: null,
             choice_ordinal: null,
             fields: voiceFields({ recipientName: '[email]' }),
           },
