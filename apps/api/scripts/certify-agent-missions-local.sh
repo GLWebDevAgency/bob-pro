@@ -229,6 +229,12 @@ CREATE ROLE bob_schema_owner
 -- (supabase-owner-membership-release-safety) — Supabase tue la connexion sur un tel GRANT.
 CREATE ROLE bob_jarvis_payload_retention_directory
   NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+-- Jarvis U1-f (SPEC_U1F §1) : autorite de l'annuaire de dispatch. Meme forme, meme raison — les
+-- policies de `jarvis_work_items` sont OWNER-scopees, or le worker cherche justement QUELS
+-- proprietaires ont du travail du. Sans elle, `dependencies_absent` a chaque tick et aucun
+-- `confirm` d'artisan n'ecrit jamais sa fiche.
+CREATE ROLE bob_jarvis_dispatch_directory
+  NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
 SQL
 "$PSQL_BIN" "$DEPLOYER_BOOTSTRAP_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
   -f "$ROOT_DIR/apps/api/prisma/agent-mission-release-flag-authority-role.sql"
@@ -5264,6 +5270,85 @@ REVOKE ALL PRIVILEGES ON TABLE public.jarvis_proposal_payloads
 GRANT SELECT ("companyId", "ownerUserId", "retentionExpiresAt")
   ON TABLE public.jarvis_proposal_payloads
   TO bob_jarvis_payload_retention_directory;
+RESET ROLE;
+SQL
+
+# Jarvis U1-f (SPEC_U1F §1) : annuaire d'autorite des coordonnees a dispatcher. Applique comme en
+# release — migration d'abord (fonction SECURITY INVOKER, donc FERMEE), provisionnement ensuite.
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260820100000_jarvis_dispatch_directory/migration.sql"
+
+# Fail-closed NATIF : tant que le provisionnement n'a pas eu lieu, meme le deployeur est refuse.
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+DO $bob_u1f_directory_closed$
+DECLARE
+  refused BOOLEAN := FALSE;
+BEGIN
+  BEGIN
+    PERFORM * FROM public.list_jarvis_dispatch_coordinates_v1('cert-company', 10);
+  EXCEPTION
+    WHEN insufficient_privilege THEN refused := TRUE;
+  END;
+  IF NOT refused THEN
+    RAISE EXCEPTION 'JARVIS_U1F_DIRECTORY_NOT_FAIL_CLOSED_BEFORE_PROVISIONING';
+  END IF;
+END;
+$bob_u1f_directory_closed$;
+SQL
+
+# Provisionnement : COPIE FIDELE de `provision_jarvis_dispatch_directory` (release.sh), reduite au
+# cluster de certification (role applicatif fige a `bob_app`). Meme ordre de gestes, geste pour
+# geste — une divergence ferait certifier autre chose que ce que le deploiement fait.
+"$PSQL_BIN" "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 <<'SQL'
+SET LOCAL ROLE bob_schema_owner;
+GRANT USAGE, CREATE ON SCHEMA public TO bob_jarvis_dispatch_directory;
+RESET ROLE;
+
+ALTER FUNCTION public.list_jarvis_dispatch_coordinates_v1(TEXT, INTEGER)
+  OWNER TO bob_jarvis_dispatch_directory;
+
+SET LOCAL ROLE bob_jarvis_dispatch_directory;
+REVOKE ALL ON FUNCTION public.list_jarvis_dispatch_coordinates_v1(TEXT, INTEGER) FROM PUBLIC;
+ALTER FUNCTION public.list_jarvis_dispatch_coordinates_v1(TEXT, INTEGER) SECURITY DEFINER;
+ALTER FUNCTION public.list_jarvis_dispatch_coordinates_v1(TEXT, INTEGER)
+  SET search_path = pg_catalog;
+ALTER FUNCTION public.list_jarvis_dispatch_coordinates_v1(TEXT, INTEGER)
+  SET row_security = on;
+ALTER FUNCTION public.list_jarvis_dispatch_coordinates_v1(TEXT, INTEGER)
+  SET statement_timeout = '4s';
+ALTER FUNCTION public.list_jarvis_dispatch_coordinates_v1(TEXT, INTEGER)
+  SET lock_timeout = '1s';
+
+SELECT format('REVOKE ALL ON FUNCTION %s FROM %s CASCADE',
+              function.oid::regprocedure,
+              CASE WHEN privilege.grantee = 0 THEN 'PUBLIC'
+                   ELSE quote_ident(grantee.rolname) END)
+  FROM pg_catalog.pg_proc AS function
+ CROSS JOIN LATERAL pg_catalog.aclexplode(
+   COALESCE(function.proacl, pg_catalog.acldefault('f', function.proowner))
+ ) AS privilege
+  LEFT JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = privilege.grantee
+ WHERE function.oid =
+   'public.list_jarvis_dispatch_coordinates_v1(text,integer)'::regprocedure
+   AND privilege.privilege_type = 'EXECUTE'
+   AND privilege.grantee <> function.proowner
+\gexec
+REVOKE ALL PRIVILEGES ON FUNCTION public.list_jarvis_dispatch_coordinates_v1(TEXT, INTEGER)
+  FROM anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.list_jarvis_dispatch_coordinates_v1(TEXT, INTEGER) TO bob_app;
+RESET ROLE;
+
+SET LOCAL ROLE bob_schema_owner;
+REVOKE CREATE ON SCHEMA public FROM bob_jarvis_dispatch_directory;
+GRANT USAGE ON SCHEMA public TO bob_jarvis_dispatch_directory;
+
+REVOKE ALL PRIVILEGES ON TABLE public.jarvis_work_items
+  FROM bob_jarvis_dispatch_directory CASCADE;
+-- Coordonnees et colonnes de la BORNE uniquement : ni payloadRef, ni authorizationSource, ni
+-- submittedJobRef, ni les digests — l'autorite oriente le worker, elle ne lit aucune charge.
+GRANT SELECT ("companyId", "ownerUserId", "runId", "status", "nextAttemptAt", "leaseExpiresAt", "resultDigest", "signalAppliedAt")
+  ON TABLE public.jarvis_work_items
+  TO bob_jarvis_dispatch_directory;
 RESET ROLE;
 SQL
 

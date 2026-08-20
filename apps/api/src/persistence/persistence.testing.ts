@@ -175,6 +175,22 @@ export class InMemoryPersistence implements Persistence {
     // rétention décidée par la base : la charge PII reste indisponible, jamais approximée.
     return null;
   }
+  createJarvisWorkItemsDispatch(): null {
+    // Le claim est un CAS FENCÉ sous RLS : une mémoire ne peut prouver ni le fence, ni la lease,
+    // ni l'unicité d'effet. Fail-closed.
+    return null;
+  }
+  createJarvisDispatchRunDirectory(): null {
+    // L'annuaire de dispatch REPOSE sur une autorité SECURITY DEFINER et une policy bornée aux
+    // lignes réellement dues : une mémoire ne peut prouver ni l'une ni l'autre. Le worker garde
+    // son no-op audité `dependencies_absent` — jamais un balayage sur une liste simulée.
+    return null;
+  }
+  createJarvisCustomerEffectAuthority(): null {
+    // L'effet passe par les use cases canoniques SOUS TENANT : une mémoire écrirait à côté du
+    // domaine et de la RLS. Le registre d'exécuteurs reste VIDE, fail-closed.
+    return null;
+  }
   createAgentMissionResumeUnitOfWork(): null {
     // Un double mémoire ne peut pas attester RLS owner + snapshot RR strictement read-only.
     return null;

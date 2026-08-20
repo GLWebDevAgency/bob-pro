@@ -27,6 +27,14 @@ import {
   PrismaAgentMissionResumeUnitOfWork,
   PrismaAgentMissionUnitOfWork,
 } from './agent-mission.persistence';
+import type { JarvisCustomerEffectAuthority } from '../../jobs/jarvis-customer-effect.executor';
+import type { JarvisDispatchRunDirectoryPort } from '../../jobs/jarvis-work-item-dispatch.service';
+import { PrismaJarvisCustomerEffectAuthority } from '../../jarvis/jarvis-customer-effect.authority';
+import { PrismaJarvisDispatchRunDirectory } from './jarvis-dispatch-directory.persistence';
+import {
+  PrismaJarvisWorkItemsRepository,
+  type JarvisWorkItemsDispatchRepository,
+} from './jarvis-work-items.persistence';
 import { PrismaJarvisProposalPayloadStore } from './jarvis-proposal-payloads.persistence';
 import type {
   AgentMissionResumeUnitOfWorkPort,
@@ -185,6 +193,30 @@ export class PrismaPersistence implements Persistence {
    */
   createJarvisProposalPayloadStore(): JarvisProposalPayloadStorePort {
     return new PrismaJarvisProposalPayloadStore(this.prisma);
+  }
+
+  /**
+   * Annuaire de dispatch (U1-f §1) — MÊME client Prisma : l'autorité SECURITY DEFINER est un
+   * chemin de PLUS sur la même connexion, jamais une seconde persistance ni une seconde identité.
+   */
+  /**
+   * Repository de dispatch (U1-f §1) : chaque méthode ouvre SA transaction courte sous les GUC de
+   * la ligne cible — les policies owner-scopées de U1-a s'appliquent telles quelles.
+   */
+  createJarvisWorkItemsDispatch(): JarvisWorkItemsDispatchRepository {
+    return new PrismaJarvisWorkItemsRepository(this.prisma);
+  }
+
+  createJarvisDispatchRunDirectory(): JarvisDispatchRunDirectoryPort {
+    return new PrismaJarvisDispatchRunDirectory(this.prisma);
+  }
+
+  /**
+   * Autorité métier de l'effet fiche client (U1-f §1) : elle appelle les use cases canoniques
+   * sous `withTenant`, exactement comme l'artisan qui édite sa fiche à la main.
+   */
+  createJarvisCustomerEffectAuthority(): JarvisCustomerEffectAuthority {
+    return new PrismaJarvisCustomerEffectAuthority(this.prisma);
   }
 
   createAgentMissionResumeUnitOfWork(): AgentMissionResumeUnitOfWorkPort {
