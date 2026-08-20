@@ -199,7 +199,9 @@ aucun statut. Mobile : le bouton
 (mémoïsation du commandId au remontage, 409 présenté), la carte avec libellé et avant. É1
 locale (`expo run:ios` simulateur) si le temps le permet — jamais de build EAS sans GO.
 
-Cette intégration ne prouve pas encore la sûreté de publication : l'update client reste dépourvu
-de CAS `expectedRevision` au point d'écriture, et l'autorité Jarvis n'absorbe pas encore toutes les
-barrières société fermée/archives du chemin manuel. Ces deux points sont des bloqueurs explicites
-avant tout manifest positif.
+Cette intégration ne prouve pas encore la sûreté de publication : le CAS `expectedRevision` U1-i
+est codé et prouvé sur PostgreSQL local, sans promouvoir son statut normatif au-delà de
+`specified` tant que la gate moteur unique du parent Jarvis §17/§21.2 reste fermée. Il n'est ni
+`certified` ni `released`, et l'autorité Jarvis n'absorbe toujours pas toutes les barrières société
+fermée/archives du chemin manuel. Ces barrières et les gates de publication restent des bloqueurs
+explicites avant tout manifest positif.

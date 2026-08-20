@@ -2,23 +2,37 @@
 
 - **Date** : 2026-08-20 · **Auteur** : Claude (bâton fondateur) · **Méthode** : panel 3 architectes
   + juge (wf_00b3e76f), **faits porteurs re-vérifiés de ma main** avant rédaction.
+- **Amendement** : Codex, 2026-08-20 — état réel après Safety, intégration et contre-revue U1-h.
+- **Statut normatif** : `specified` — la gate moteur unique du parent Jarvis §17/§21.2 reste
+  fermée. L0/L1/L9 (`3a51593f6`) et L2/L3 (`ab7b4439d` + durcissement `5a86f94d6`) sont réalisés
+  et prouvés localement ; L4–L8 et L10–L11 restent à réaliser. Aucun livrable U1-h n'est
+  `certified` ni `released`.
+- **Deltas mesurés** : `3a51593f6` = 7 fichiers, +453/-15 ; `ab7b4439d` = 6 fichiers,
+  +503/-13 ; `5a86f94d6` = 4 fichiers, +359/-16. Safety et U1-i ne sont pas attribués à U1-h.
 - **Parents** : SPEC_U1G §6 (hors-lot tracé) · spec Jarvis §7.0/§8/§9.1/§14/§17.1 · FD-2026-0817-06.
 - **Objet** : donner un **émetteur humain** et une **voix honnête** au chemin de doublons déjà
   livré, et fermer trois dettes que le vertical traîne — sans ajouter une capacité au domaine.
 
 ## 0. L'axe, et ce qu'il exclut
 
-`packages/core/src/domain/agent/definitions/customer-contact-v1.ts` et
-`customer-contact-semantic-frame.ts` sortent de ce lot **byte-identiques**. Aucune migration.
-Aucun flag activé. `U1_OPEN_ACTIONS` intact. Un oracle le prouve (L0) — c'est la garantie
-centrale, pas un détail de forme.
+Le delta U1-h (`3a51593f6`, `ab7b4439d`, `5a86f94d6`) ne modifie ni
+`packages/core/src/domain/agent/definitions/customer-contact-v1.ts`, ni
+`customer-contact-semantic-frame.ts` : l'oracle L0 fige l'union des commandes, les phases et les
+décisions de doublon. Le lot Safety intégré séparément modifie le contrat d'autorité de l'action
+via `actionReference` et le binding d'admission, sans modifier l'union des commandes, les phases
+ni les décisions de doublon figées par L0. Cette modification ne doit pas être attribuée à U1-h.
+
+U1-h n'ajoute aucune migration et n'active aucun flag. Après Safety, `U1_OPEN_ACTIONS` n'existe
+plus : `U1_CANDIDATE_ACTIONS` est uniquement un inventaire technique et ne vaut jamais
+publication. Le manifest runtime reste vide.
 
 La commande `choose_duplicate_resolution` **existe déjà** (union, parse, `reduceDuplicateDecision`,
 garde de phase). Il ne lui manquait qu'un émetteur tactile.
 
-## 1. Les cinq faits qui commandent ce lot, mesurés
+## 1. Les cinq faits de la baseline qui commandent ce lot, mesurés
 
-Chacun a été vérifié dans le worktree avant d'entrer ici. Aucun n'est une déduction.
+Chacun décrit la baseline `dd953e435` et a été vérifié avant rédaction. Leur état après
+implémentation est donné par le ledger ci-dessus ; aucun n'est une déduction.
 
 1. **L'effet de convergence est MORT.** `use-jarvis-run-frame.ts` déclenche sa relecture sur
    `phase === 'completed'`. Or la phase de domaine `completed` projette vers le **statut**
@@ -29,9 +43,10 @@ Chacun a été vérifié dans le worktree avant d'entrer ici. Aucun n'est une d�
    **sa fiche reste visuellement inchangée** — le préjudice que le commentaire du fichier prétend
    empêcher.
 2. **Le libellé de fiche a DEUX règles de frontière.** Le devis passe par
-   `canonicalCustomerName()` (5 sites, `agent-mission.persistence.ts:250`) ; le jumeau Jarvis
+   `canonicalCustomerName()` (quatre lectures) ; le jumeau Jarvis
    `readJarvisCustomerLabels` rend `row.canonicalName` **brut**. Divergence réelle, dans du code
-   livré sans appelant — donc jamais exercée.
+   livré sans appelant — donc jamais exercée. Avec la lecture Jarvis, cela fait cinq sites au
+   total, pas « cinq plus un ».
 3. **`idleExpiresAt` MENT.** La branche non-semis de `persistTransition` avance `updatedAt` mais
    n'écrit jamais `idleExpiresAt` : la colonne mesure l'**âge** du run, pas son inactivité. Pire,
    les lignes Jarvis violent ainsi l'invariant legacy `agent-mission.ts:1597`
@@ -58,9 +73,10 @@ téléphone et destinataire sur la fiche existante. Un `use_existing` erroné **
 l'effet que §9.1 réserve à « une action distincte, destructive et renforcée » — sur un choix fait
 à l'oreille, parmi des libellés bornés à 160 avec élision médiane.
 
-S'y ajoutent : l'`actionId` est dérivé de `state.intent.mode` en **cinq sites** (dont celui qui
-pince le rollout et l'enveloppe bornée par `isU1OpenAction`) — le faire muter les fait muter tous,
-et le work item émettrait `client-modifier@1` pour un run admis `client-creer@1` ; et
+À la baseline, l'`actionId` était recalculé à plusieurs frontières. Safety le dérive désormais une
+seule fois depuis le seed ou le state persistant via `definition.actionReference` ; toute
+divergence du wire rend `action_binding_mismatch`. Un pivot création→modification au milieu du
+même run violerait donc cette identité autoritaire et reste interdit. Par ailleurs,
 `capabilitiesFor` n'offre pas `confirm` vocal en mode `update`, si bien que le run deviendrait
 **inconfirmable à la voix** juste après que Bob a dit « d'accord ».
 
@@ -72,7 +88,7 @@ fiche — deux gestes, deux runs, deux autorités, aucune identité écrasée.
 - **L0 — Oracle « domaine intact »** : union de commandes, phases et table de transitions figées en
   liste explicite. Le reducer et la frame sortent byte-identiques.
 - **L1 — Une seule règle de frontière pour le libellé** : `canonicalCustomerName` devient une source
-  unique ; les 5 sites du devis et `readJarvisCustomerLabels` s'y branchent, ce dernier **pinçant**
+  unique ; les quatre lectures devis et `readJarvisCustomerLabels` s'y branchent, ce dernier **pinçant**
   aussi sa borne. Fixture d'égalité obligatoire (patron U1-g L3).
 - **L2 — La présentation serveur nomme la revue et l'issue** : le wire gagne `duplicateReview`
   (reviewId + rangs {ordinal, choiceId, label}) et `completion`. Identités **et ordre** viennent du
@@ -89,8 +105,10 @@ fiche — deux gestes, deux runs, deux autorités, aucune identité écrasée.
 - **L5 — La carte** : `awaiting_duplicate_review` sort du `default:` ; liste numérotée dans l'ordre
   du wire, un rang irrésolu affiche « Fiche introuvable », **garde son ordinal**, bouton désactivé.
   `NOTICES.preparing` scindé en deux vérités. Kit 1.x uniquement ; accessibilité = livrable.
-- **L6 — L'hôte rend le vrai client** *(conditionné à M2)* : `onResolvedExistingCustomer` →
-  navigation vers la fiche, l'id venant du **postimage** du reçu.
+- **L6 — L'hôte rend le vrai client** *(reste `specified`, conditionné à M2)* : à
+  `5a86f94d6`, `JarvisRunWireView` ne transporte pas `resolvedExistingCustomerId`.
+  L'implémentation devra nommer le champ terminal exact, le codec et sa provenance depuis le
+  postimage ; aucun `customerId` de candidat ne doit apparaître dans la revue.
 - **L7 — La fin d'un run cesse d'être un silence** : l'effet de convergence guette la transition
   d'une phase d'écriture vers **`absent`**, seul signal observable. Il n'affirme rien : il relit.
 - **L8 — Les paroles nomment toutes les issues** : « ou dis “annule” » à la revue ; le client retenu
@@ -105,7 +123,7 @@ fiche — deux gestes, deux runs, deux autorités, aucune identité écrasée.
   hors LLM, hors historique) ; **M1** (foreground vs `waiting_user`) et **M2** (survie de la session
   realtime au changement d'onglet) consignées **avant** toute ligne qui en dépend.
 
-## 4. Gardes — ce qui devient impossible
+## 4. Gardes à rendre vraies avant certification
 
 - **G1** — une revue ne peut plus se résoudre à la seule voix.
 - **G2** — l'écran ne peut ni **renuméroter**, ni **re-chercher** : l'ordinal est ce que Bob a
@@ -119,13 +137,21 @@ fiche — deux gestes, deux runs, deux autorités, aucune identité écrasée.
 
 ## 5. Preuves exigées
 
-En mémoire : l'oracle L0 ; la totalité phase × confirmation de la carte, **par mutation** ; les
-refus sans réseau du coordinateur ; le lockstep des trois parseurs sur une présentation issue du
-**vrai** serveur ; la frontière de parole avec nom astral.
-Sur **PostgreSQL réel** : l'égalité de normalisation sur les cinq sites ; `idleExpiresAt` mesuré
-après une transition non-semis, clamp `hardExpiresAt` exercé, zéro ligne `quote_creation` touchée ;
-le parcours tactile de bout en bout — `use_existing` **n'écrit aucune fiche** et le compte de fiches
-du tenant ne bouge pas.
+- [x] Oracle L0 et absence de changement sémantique propre au delta U1-h.
+- [x] Les quatre lectures devis et la lecture Jarvis sont câblées sur `canonicalCustomerName`.
+- [ ] Une fixture discriminante traverse les quatre projections devis et
+      `readJarvisCustomerLabels`, avec une valeur historique à espaces anormaux.
+- [x] Projection serveur et codec prouvent ordre, absence de `customerId`, panne globale et issue.
+- [x] Le parseur tactile serveur et le codec refusent clés étrangères et `adopt_existing`.
+- [ ] Coordinateur : deux gestes gardés, refus sans réseau hors phase/jeu rendu.
+- [ ] Carte : matrice phase × confirmation, ordre, rang irrésolu et accessibilité.
+- [ ] Convergence : transition écriture → absent déclenche une relecture autoritaire.
+- [x] PostgreSQL réel : `idleExpiresAt` avance avec la transition, `hardExpiresAt` reste immuable
+      et `idle <= hard` (`121/121`, certificat local du 2026-08-20).
+- [ ] Preuve discriminante du clamp exact sur `hardExpiresAt` sans fabriquer une ligne, et zéro
+      ligne `quote_creation` touchée par ce scénario U1-h.
+- [ ] PostgreSQL réel : `use_existing` tactile zéro écriture client et compte tenant inchangé.
+- [ ] Catalogue, AIPD, M1 et M2 sont consignés avec preuves reproductibles.
 
 ## 6. Hors lot, tracé
 
@@ -141,7 +167,13 @@ du tenant ne bouge pas.
 ## 7. Le piège de publication, à consigner
 
 Le codec refuse **à la forme** sur clé inconnue : un serveur qui enverrait `duplicateReview` à un
-client qui l'ignore rendrait `null` ⇒ `unpresentable` ⇒ **plus aucune carte**, y compris le
-parcours de modification. Le risque est **nul aujourd'hui** (pré-V1, aucune APK publique) et
-**mortel après publication**. À inscrire au plan de cutover : passé V1, une clé de présentation
-s'ajoute **optionnelle** ou derrière une version de schéma.
+client N-1 rendrait la présentation `null` et pourrait masquer toute carte, y compris le parcours
+de modification. La fermeture Safety empêche une publication accidentelle mais ne prouve ni
+l'absence d'une APK N-1, ni sa compatibilité.
+
+Ce risque U1-h n'est levé qu'avec un schéma réellement compatible N/N-1, ou avec la gate client
+exacte du parent §17.1 : force-update global déployé et prouvé, ou anciennes routes en lecture
+seule avec bandeau pendant une fenêtre chiffrée. Une attestation opérateur exact-SHA seule est
+insuffisante. Ces preuves sont nécessaires mais ne remplacent aucune autre gate de publication.
+
+Aucun flag positif, aucune publication et aucune certification ne sont revendiqués ici.
