@@ -66,6 +66,7 @@ function run(overrides: Partial<JarvisRunView> = {}): JarvisRunView {
     runId: RUN_ID,
     kind: 'customer_contact',
     definitionVersion: 1,
+    actionReference: { actionId: 'client-modifier', actionVersion: 1 },
     status: 'waiting_user',
     revision: 4,
     nextWakeAt: null,
@@ -84,6 +85,7 @@ function presentation(
     intent: 'update',
     targetCustomerId: CUSTOMER_ID,
     targetLabel: 'SARL Martin',
+    duplicateReview: null,
     proposal: {
       proposalId: PROPOSAL_ID,
       proposalHash: HASH,
@@ -105,6 +107,7 @@ function presentation(
       expiresAt: '2026-08-19T10:05:00.000Z',
       presentedAt: null,
     },
+    completion: null,
     ...overrides,
   };
 }
@@ -240,7 +243,7 @@ describe('deriveJarvisRunFrameState — projection PURE, aucune branche implicit
     });
   });
 
-  it('lecture RATÉE ⇒ error MÊME avec une donnée précédente : le périmé ne survit pas à un échec', () => {
+  it('lecture RATÉE ⇒ une présentation métier précédente ne survit jamais', () => {
     expect(
       deriveJarvisRunFrameState({
         ...base,
@@ -261,9 +264,21 @@ describe('deriveJarvisRunFrameState — projection PURE, aucune branche implicit
   });
 
   it('run vivant SANS projection (fail-closed G4) ⇒ unpresentable, jamais confondu avec absent', () => {
+    const runView = run();
     expect(
-      deriveJarvisRunFrameState({ ...base, data: { run: run(), presentation: null } }),
-    ).toEqual({ phase: 'unpresentable' });
+      deriveJarvisRunFrameState({ ...base, data: { run: runView, presentation: null } }),
+    ).toEqual({ phase: 'unpresentable', run: runView, ports: PORTS, refreshFailed: false });
+  });
+
+  it('échec de relecture ⇒ conserve seulement la frame de contrôle déjà imprésentable', () => {
+    const runView = run();
+    expect(
+      deriveJarvisRunFrameState({
+        ...base,
+        failed: true,
+        data: { run: runView, presentation: null },
+      }),
+    ).toEqual({ phase: 'unpresentable', run: runView, ports: PORTS, refreshFailed: true });
   });
 
   it('run + projection ⇒ ready, ports transportés avec la frame', () => {

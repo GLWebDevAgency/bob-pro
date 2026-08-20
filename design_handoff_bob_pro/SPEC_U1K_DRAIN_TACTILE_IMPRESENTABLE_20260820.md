@@ -78,7 +78,7 @@ Le mobile sépare deux contrats :
 Le coordinateur reçoit `cancel(run, ports)` et construit la commande depuis
 `run.actionReference`. Il supprime `actionForIntent` et les constantes d'action locales.
 
-- action absente, run terminal ou ports absents : refus local, zéro appel réseau ;
+- action absente, run terminal, déjà `cancelling` ou ports absents : refus local, zéro appel réseau ;
 - un retry de transport réutilise le même `commandId` ;
 - conflit/revision stale : le coordinateur rend l'échec ; l'hôte déclenche une relecture, jamais
   une seconde intention aveugle ;
@@ -91,9 +91,10 @@ L'état `unpresentable` conserve la frame de contrôle. Une carte dédiée affic
 
 - un message borné indiquant que les détails ne sont pas disponibles ;
 - **Réessayer**, strictement read-only ;
-- si `actionReference` est non nul, **Annuler la demande**, qui émet uniquement `cancel_run` ;
-- sinon, une annulation désactivée et un message honnête indiquant que la demande doit être relue ou
-  réparée, avec zéro appel réseau.
+- si `actionReference` est non nul et que le run n'est ni terminal ni déjà `cancelling`, **Annuler
+  la demande**, qui émet uniquement `cancel_run` ;
+- sinon, une annulation désactivée et un message honnête distinguant identité non vérifiée,
+  terminalité ou annulation déjà en cours, avec zéro appel réseau.
 
 La carte n'offre jamais Confirmer, Modifier, Rejeter ou `record_presentation_ack`. Elle ne promet
 jamais « rien ne sera enregistré » : si l'autorisation a déjà gagné la course, l'annulation peut
@@ -116,32 +117,41 @@ suppression de l'ancien moteur et release.
 
 ## 7. Critères d'acceptation binaires
 
-- [ ] Customer-contact création/modification et `single_business_action` projettent leur action
+- [x] Customer-contact création/modification et `single_business_action` projettent leur action
       exacte depuis la définition serveur ; état/définition illisible projette `null`.
-- [ ] Le codec exige la nouvelle clé et refuse toute forme ou référence non canonique.
-- [ ] Un run vivant avec `presentation: null` conserve `{ run, ports }` et rend la carte de drain.
-- [ ] « Réessayer » relit seulement ; « Annuler » envoie `cancel_run` avec kind/version/révision et
+- [x] Le codec exige la nouvelle clé et refuse toute forme ou référence non canonique.
+- [x] Un run vivant avec `presentation: null` conserve `{ run, ports }` et rend la carte de drain.
+- [x] « Réessayer » relit seulement ; « Annuler » envoie `cancel_run` avec kind/version/révision et
       l'action renvoyée par le serveur.
-- [ ] Un retry réseau réutilise le même `commandId` ; stale/conflit relit sans resoumettre une
+- [x] Un retry réseau réutilise le même `commandId` ; stale/conflit relit sans resoumettre une
       nouvelle intention.
-- [ ] Action absente ou run terminal : zéro appel réseau.
-- [ ] Aucun chemin imprésentable n'émet ACK, confirmation, rejet ou succès optimiste.
-- [ ] Loading, entitlement non vérifié et paywall ne masquent pas le drain d'un run existant.
-- [ ] Le parcours customer-contact présentable reste inchangé.
-- [ ] Aucun mapping `presentation.intent -> action` ni aucune autorité locale d'action ne subsiste
+- [x] Action absente, run terminal ou déjà `cancelling` : zéro appel réseau.
+- [x] Aucun chemin imprésentable n'émet ACK, confirmation, rejet ou succès optimiste.
+- [x] Loading, entitlement non vérifié et paywall ne masquent pas le drain d'un run existant.
+- [x] Le parcours customer-contact présentable reste inchangé.
+- [x] Aucun mapping `presentation.intent -> action` ni aucune autorité locale d'action ne subsiste
       dans le chemin de reprise/annulation mobile ; la borne de capacité d'ouverture reste hors lot.
 
 ## 8. Definition of Done
 
-- [ ] Spec U1-k commitée avant le premier changement de code, statut conservé à `specified`.
-- [ ] Tests serveur : projection customer create/update, SBA, définition/état illisible et run
+- [x] Spec U1-k commitée avant le premier changement de code, statut conservé à `specified`.
+- [x] Tests serveur : projection customer create/update, SBA, définition/état illisible et run
       terminal.
-- [ ] Tests codec/HTTP : objet exact, `null`, clés manquantes/étrangères et valeurs invalides.
-- [ ] Tests coordinateur/hook : cancel, retry même commandId, stale/read, action absente, terminal,
+- [x] Tests codec/HTTP : objet exact, `null`, clés manquantes/étrangères et valeurs invalides.
+- [x] Tests coordinateur/hook : cancel, retry même commandId, stale/read, action absente, terminal,
       conservation de la frame imprésentable.
-- [ ] Tests UI : Retry + Annuler, aucun bouton d'autorisation ou d'effet métier
+- [x] Tests UI : Retry + Annuler, aucun bouton d'autorisation ou d'effet métier
       (Confirmer/Modifier/Rejeter/ACK), état occupé/erreur, drain visible sous les branches
       d'entitlement.
-- [ ] Typechecks API, API-client et mobile, lint ciblé et `git diff --check` verts.
-- [ ] Contre-revue indépendante sans P0/P1 ; aucune modification Claude recouverte ; limites de
+- [x] Typechecks API, API-client et mobile, lint ciblé et `git diff --check` verts.
+- [x] Contre-revue indépendante sans P0/P1 ; aucune modification Claude recouverte ; limites de
       compatibilité et publication consignées.
+
+### Preuves locales du 20/08/2026
+
+- API : `jarvis-run.controller.test.ts` — 85/85.
+- API-client : codec + HTTP Jarvis — 49/49.
+- Mobile : coordinateur, hook, cartes et deux hôtes réels — 78/78.
+- TypeScript : API, API-client et mobile — verts ; ESLint ciblé et `git diff --check` — verts.
+- Contre-revue : P0=0/P1=0 ; Claude inchangé à `ab7b4439d`, déjà ancêtre du lot intégré.
+- Publication : manifest runtime fermé, aucun flag/action/catalogue élargi, aucun déploiement.

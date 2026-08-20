@@ -22,9 +22,6 @@
  */
 
 import {
-  CUSTOMER_CONTACT_ACTION_VERSION,
-  CUSTOMER_CONTACT_CREATE_ACTION_ID,
-  CUSTOMER_CONTACT_UPDATE_ACTION_ID,
   JARVIS_RUN_TERMINAL_STATUSES,
   type AppError,
   type Result,
@@ -76,17 +73,20 @@ function invalid(): Promise<JarvisRunCall> {
   return Promise.resolve({ status: 'invalid_response' });
 }
 
-/**
- * Référence d'action pincée par les constantes de la définition. La disponibilité produit reste
- * une décision serveur ; ce coordinateur doit toujours pouvoir rejouer ou annuler un run existant.
- */
-function actionForIntent(
-  intent: CustomerContactPresentationV1['intent'],
-): { readonly actionId: string; readonly actionVersion: number } {
-  const actionId =
-    intent === 'create' ? CUSTOMER_CONTACT_CREATE_ACTION_ID : CUSTOMER_CONTACT_UPDATE_ACTION_ID;
-  const actionVersion: number = CUSTOMER_CONTACT_ACTION_VERSION;
-  return { actionId, actionVersion };
+export type JarvisRunCancellationAvailability =
+  | { readonly status: 'available' }
+  | { readonly status: 'unavailable'; readonly reason: 'terminal' | 'cancelling' | 'action_missing' };
+
+/** Borne tactile unique : aucun hôte ne redécide localement pourquoi un run est annulable. */
+export function evaluateJarvisRunCancellation(
+  run: JarvisRunView,
+): JarvisRunCancellationAvailability {
+  if (run.terminalAt !== null || JARVIS_RUN_TERMINAL_STATUSES.has(run.status)) {
+    return { status: 'unavailable', reason: 'terminal' };
+  }
+  if (run.status === 'cancelling') return { status: 'unavailable', reason: 'cancelling' };
+  if (run.actionReference === null) return { status: 'unavailable', reason: 'action_missing' };
+  return { status: 'available' };
 }
 
 export class JarvisRunCoordinator {
@@ -103,7 +103,7 @@ export class JarvisRunCoordinator {
    * refuserait (`confirmation_already_presented`) et le rejeu doit rester silencieux.
    */
   acknowledgePresentation(frame: JarvisRunFrame, ports: JarvisRunPorts): Promise<JarvisRunCall> {
-    const common = this.common(frame);
+    const common = this.customerContactCommon(frame);
     const confirmation = frame.presentation.confirmation;
     if (
       common === null ||
@@ -127,7 +127,7 @@ export class JarvisRunCoordinator {
 
   /** One-shot §7.1 : la proposition doit avoir été PRÉSENTÉE avant d'être consommée. */
   confirm(frame: JarvisRunFrame, ports: JarvisRunPorts): Promise<JarvisRunCall> {
-    const common = this.common(frame);
+    const common = this.customerContactCommon(frame);
     const confirmation = frame.presentation.confirmation;
     const proposal = frame.presentation.proposal;
     if (
@@ -152,7 +152,7 @@ export class JarvisRunCoordinator {
 
   /** « Modifier » : la proposition est REJETÉE, le run reste vivant et Bob en reprépare une. */
   reject(frame: JarvisRunFrame, ports: JarvisRunPorts): Promise<JarvisRunCall> {
-    const common = this.common(frame);
+    const common = this.customerContactCommon(frame);
     const confirmation = frame.presentation.confirmation;
     if (
       common === null ||
@@ -174,8 +174,9 @@ export class JarvisRunCoordinator {
   }
 
   /** « Annuler » : l'utilisateur ferme le run. Un run terminal n'est jamais re-annulé. */
-  cancel(frame: JarvisRunFrame, ports: JarvisRunPorts): Promise<JarvisRunCall> {
-    const common = this.common(frame);
+  cancel(run: JarvisRunView, ports: JarvisRunPorts): Promise<JarvisRunCall> {
+    if (evaluateJarvisRunCancellation(run).status !== 'available') return invalid();
+    const common = this.common(run);
     if (common === null) return invalid();
     return this.submit(common, { type: 'cancel_run', reason: 'user_cancelled' }, ports);
   }
@@ -210,16 +211,12 @@ export class JarvisRunCoordinator {
     return flight;
   }
 
-  private common(frame: JarvisRunFrame): JarvisRunCommon | null {
-    const run = frame.run;
-    const presentation = frame.presentation;
-    const action = actionForIntent(presentation.intent);
+  private common(run: JarvisRunView): JarvisRunCommon | null {
+    const action = run.actionReference;
     if (
-      run.kind !== CUSTOMER_CONTACT_RUN_KIND ||
+      action === null ||
       run.terminalAt !== null ||
-      JARVIS_RUN_TERMINAL_STATUSES.has(run.status) ||
-      presentation.schema !== PRESENTATION_SCHEMA ||
-      presentation.version !== 1
+      JARVIS_RUN_TERMINAL_STATUSES.has(run.status)
     ) {
       return null;
     }
@@ -231,5 +228,17 @@ export class JarvisRunCoordinator {
       actionId: action.actionId,
       actionVersion: action.actionVersion,
     };
+  }
+
+  private customerContactCommon(frame: JarvisRunFrame): JarvisRunCommon | null {
+    const presentation = frame.presentation;
+    if (
+      frame.run.kind !== CUSTOMER_CONTACT_RUN_KIND ||
+      presentation.schema !== PRESENTATION_SCHEMA ||
+      presentation.version !== 1
+    ) {
+      return null;
+    }
+    return this.common(frame.run);
   }
 }

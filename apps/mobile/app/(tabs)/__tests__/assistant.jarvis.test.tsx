@@ -6,10 +6,8 @@
  * VRAIE route, le VRAI hook de découverte, le VRAI coordinateur et la VRAIE carte ; seuls le
  * transport HTTP, l'abonnement et l'agent conversationnel sont doublés.
  *
- * Il prouve aussi la RAISON du second hôte : cet onglet ferme TOUT son contenu derrière
- * `useEntitlement('ai_assistant')`. Une carte hébergée ici SEULE serait invisible dans les trois
- * états fermés — c'est pourquoi la fiche client, qui n'a aucune garde d'entitlement, l'héberge
- * aussi (test structurel en fin de fichier).
+ * Il prouve aussi la garde d'abonnement : une proposition métier reste fermée, tandis qu'un run
+ * déjà connu mais imprésentable conserve son drain borné (relire/annuler) dans les trois états.
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -154,6 +152,8 @@ const server = vi.hoisted(() => ({
   currentRunCalls: 0,
   submitted: [] as JarvisSubmitCommandClientInput[],
   runAbsent: false,
+  presentationMissing: false,
+  kind: 'customer_contact' as 'customer_contact' | 'single_business_action',
 }));
 const entitlement = vi.hoisted(() => ({
   assistant: { allowed: true, loading: false, verified: true, decision: null as unknown },
@@ -188,9 +188,13 @@ const { default: Assistant } = await import('../assistant');
 function run(): JarvisRunView {
   return {
     runId: RUN_ID,
-    kind: 'customer_contact',
+    kind: server.kind,
     definitionVersion: 1,
-    status: 'waiting_user',
+    actionReference:
+      server.kind === 'customer_contact'
+        ? { actionId: 'client-modifier', actionVersion: 1 }
+        : { actionId: 'relance-envoyer', actionVersion: 3 },
+    status: server.kind === 'customer_contact' ? 'waiting_user' : 'active',
     revision: server.revision,
     nextWakeAt: null,
     terminalAt: null,
@@ -205,6 +209,7 @@ function presentation(): CustomerContactPresentationV1 {
     intent: 'update',
     targetCustomerId: CUSTOMER_ID,
     targetLabel: 'SARL Martin',
+    duplicateReview: null,
     proposal: {
       proposalId: PROPOSAL_ID,
       proposalHash: HASH,
@@ -226,6 +231,7 @@ function presentation(): CustomerContactPresentationV1 {
       expiresAt: '2026-08-19T10:05:00.000Z',
       presentedAt: server.confirmationStatus === 'presented' ? '2026-08-19T10:00:10.000Z' : null,
     },
+    completion: null,
   };
 }
 
@@ -238,7 +244,7 @@ const jarvisClient = {
       ok: true,
       value: server.runAbsent
         ? { run: null, presentation: null }
-        : { run: run(), presentation: presentation() },
+        : { run: run(), presentation: server.presentationMissing ? null : presentation() },
     });
   },
   jarvisSubmitCommand: (
@@ -254,7 +260,7 @@ const jarvisClient = {
       value: {
         outcome: 'admitted',
         run: run(),
-        presentation: presentation(),
+        presentation: server.presentationMissing ? null : presentation(),
         eventSequence: server.submitted.length,
       },
     });
@@ -306,6 +312,8 @@ beforeEach(() => {
   server.currentRunCalls = 0;
   server.submitted = [];
   server.runAbsent = false;
+  server.presentationMissing = false;
+  server.kind = 'customer_contact';
   entitlement.assistant = { allowed: true, loading: false, verified: true, decision: null };
   focusedHost = true;
 });
@@ -382,5 +390,47 @@ describe('La garde d’abonnement de l’onglet — et pourquoi la fiche client 
     );
     expect(fiche).toContain('JarvisConfirmationCard');
     expect(fiche).not.toContain('useEntitlement');
+  });
+});
+
+describe('Drain U1-k — le foreground reste refermable sans présentation', () => {
+  it.each([
+    ['chargement', { allowed: false, loading: true, verified: false, decision: null }],
+    ['non vérifié', { allowed: false, loading: false, verified: false, decision: null }],
+    ['sans droit', { allowed: false, loading: false, verified: true, decision: null }],
+  ] as const)('reste visible sous entitlement %s', async (_label, state) => {
+    server.presentationMissing = true;
+    entitlement.assistant = { ...state };
+
+    const rendered = treeOf(await render());
+    expect(rendered).toContain('État de la demande Bob');
+    expect(rendered).toContain('Réessayer');
+    expect(rendered).toContain('Annuler la demande');
+    expect(server.submitted).toEqual([]);
+  });
+
+  it('annule un run SBA avec sa seule action serveur, sans ACK/confirm/reject', async () => {
+    server.presentationMissing = true;
+    server.kind = 'single_business_action';
+    entitlement.assistant = { allowed: false, loading: false, verified: true, decision: null };
+    const renderer = await render();
+    const cancel = pressableLabelled(
+      renderer,
+      'Annuler la demande. Bob annule ce qui peut encore l’être, puis relit son état',
+    );
+    expect(cancel).toBeDefined();
+
+    await act(async () => {
+      (cancel!.props as { onPress: () => void }).onPress();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(server.submitted).toHaveLength(1);
+    expect(server.submitted[0]).toMatchObject({
+      kind: 'single_business_action',
+      actionId: 'relance-envoyer',
+      actionVersion: 3,
+      command: { type: 'cancel_run' },
+    });
   });
 });

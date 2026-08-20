@@ -71,6 +71,7 @@ function run(overrides: Partial<JarvisRunView> = {}): JarvisRunView {
     runId: RUN_ID,
     kind: 'customer_contact',
     definitionVersion: 1,
+    actionReference: { actionId: 'client-creer', actionVersion: 1 },
     status: 'waiting_user',
     revision: 4,
     nextWakeAt: null,
@@ -89,6 +90,7 @@ function presentation(
     intent: 'create',
     targetCustomerId: null,
     targetLabel: null,
+    duplicateReview: null,
     proposal: {
       proposalId: PROPOSAL_ID,
       proposalHash: HASH,
@@ -109,6 +111,7 @@ function presentation(
       expiresAt: '2026-08-19T10:05:00.000Z',
       presentedAt: null,
     },
+    completion: null,
     ...overrides,
   };
 }
@@ -151,7 +154,7 @@ type CardCoordinator = {
   ) => Promise<JarvisRunCall>;
   readonly confirm: (frame: JarvisRunFrame, ports: JarvisRunPorts) => Promise<JarvisRunCall>;
   readonly reject: (frame: JarvisRunFrame, ports: JarvisRunPorts) => Promise<JarvisRunCall>;
-  readonly cancel: (frame: JarvisRunFrame, ports: JarvisRunPorts) => Promise<JarvisRunCall>;
+  readonly cancel: (run: JarvisRunView, ports: JarvisRunPorts) => Promise<JarvisRunCall>;
 };
 
 function stubCoordinator(result: JarvisRunCall = { status: 'completed', value: receipt() }) {
@@ -437,6 +440,7 @@ describe('JarvisConfirmationCard', () => {
       (buttons(renderer).Annuler?.onPress as () => void)();
     });
     expect(coordinator.cancel).toHaveBeenCalledTimes(1);
+    expect(coordinator.cancel).toHaveBeenCalledWith(run(), PORTS);
     expect(onAuthoritativeRefresh).not.toHaveBeenCalled();
     expect(texts(renderer)).toContain('Bob n’a pas pu enregistrer votre geste.');
     expect(buttons(renderer)['Réessayer']).toBeDefined();

@@ -217,6 +217,7 @@ function run(): JarvisRunView {
     runId: RUN_ID,
     kind: 'customer_contact',
     definitionVersion: 1,
+    actionReference: { actionId: 'client-modifier', actionVersion: 1 },
     status: 'waiting_user',
     revision: server.revision,
     nextWakeAt: null,
@@ -232,6 +233,7 @@ function presentation(): CustomerContactPresentationV1 {
     intent: server.intent,
     targetCustomerId: server.targetCustomerId,
     targetLabel: 'SARL Martin',
+    duplicateReview: null,
     proposal: {
       proposalId: PROPOSAL_ID,
       proposalHash: HASH,
@@ -253,6 +255,7 @@ function presentation(): CustomerContactPresentationV1 {
       expiresAt: '2026-08-19T10:05:00.000Z',
       presentedAt: server.confirmationStatus === 'presented' ? '2026-08-19T10:00:10.000Z' : null,
     },
+    completion: null,
   };
 }
 
@@ -540,65 +543,14 @@ describe('La gate d’hôte de la fiche — elle n’héberge que ce qui parle d
     expect(commandTypes()).toEqual([]);
   });
 
-  it('U1-f §3 : « Modifier avec Bob » sème un run sur CETTE fiche et la carte apparaît EN PLACE', async () => {
-    // Le geste que le lot U1-e avait laissé sans appelant : la route, le client typé et les
-    // preuves existaient, aucun écran ne les appelait. Ici l'artisan tape sur SA fiche.
+  it('publication fermée : la fiche n’offre aucun semis Jarvis', async () => {
     server.runAbsent = true;
     const renderer = await render();
-    expect(treeOf(renderer)).not.toContain('Modifier la fiche client');
-
-    const bouton = pressableLabelled(renderer, 'Modifier avec Bob');
-    expect(bouton).toBeDefined();
-    await act(async () => {
-      (bouton?.props as { onPress?: () => void }).onPress?.();
-    });
-
-    // La route a reçu l'ouverture, sur la fiche affichée — jamais une autre.
-    expect(server.opened).toHaveLength(1);
-    expect(server.opened[0]?.customerId).toBe(CUSTOMER_ID);
-    expect(server.opened[0]?.commandId).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
-    );
-    // Et la carte est LÀ, sans navigation : le refresh autoritatif a fait son office. On laisse
-    // la relecture se propager — c'est un aller-retour serveur, pas un état local optimiste.
-    await act(async () => {
-      await Promise.resolve();
-    });
-    expect(treeOf(renderer)).toContain('Modifier la fiche client');
-  });
-
-  it('U1-f §3 : réseau coupé — le retry rejoue le MÊME commandId, jamais un second run', async () => {
-    // Le `runId` serveur est DÉRIVÉ du `commandId` : un identifiant régénéré sèmerait un SECOND
-    // run, que le premier plan unique rendrait ensuite inatteignable. La mémoïsation SURVIT tant
-    // qu'aucun reçu n'est revenu — c'est toute la raison du registre injecté.
-    server.runAbsent = true;
     server.openUnreachable = true;
-    const renderer = await render();
-    const tape = async (): Promise<void> => {
-      const bouton = pressableLabelled(renderer, 'Modifier avec Bob');
-      await act(async () => {
-        (bouton?.props as { onPress?: () => void }).onPress?.();
-      });
-    };
-    await tape();
-    await tape();
-
-    expect(server.opened).toHaveLength(2);
-    expect(server.opened[1]?.commandId).toBe(server.opened[0]?.commandId);
-  });
-
-  it('U1-f §3 : une demande déjà en cours est DITE, jamais tue (409 foreground_busy)', async () => {
-    // Le premier plan est unique par propriétaire. Un bouton qui « ne ferait rien » serait pire
-    // qu'une absence de bouton : l'artisan doit savoir qu'une demande l'attend ailleurs.
-    server.runAbsent = true;
     server.foregroundBusy = true;
-    const renderer = await render();
-    const bouton = pressableLabelled(renderer, 'Modifier avec Bob');
-    await act(async () => {
-      (bouton?.props as { onPress?: () => void }).onPress?.();
-    });
-
-    expect(treeOf(renderer)).toContain('déjà une demande en cours');
+    expect(pressableLabelled(renderer, 'Modifier avec Bob')).toBeUndefined();
+    expect(server.opened).toEqual([]);
+    expect(treeOf(renderer)).not.toContain('Modifier la fiche client');
   });
 
   it('aucun run courant ⇒ la fiche rend exactement comme avant, sans carte', async () => {
@@ -632,7 +584,10 @@ describe('Accessibilité et cible tactile de la carte hébergée', () => {
       ),
     ).toBeDefined();
     expect(
-      pressableLabelled(renderer, 'Annuler. Bob abandonne cette demande, rien ne sera enregistré.'),
+      pressableLabelled(
+        renderer,
+        'Annuler. Bob annule ce qui peut encore l’être puis relit la demande.',
+      ),
     ).toBeDefined();
   });
 

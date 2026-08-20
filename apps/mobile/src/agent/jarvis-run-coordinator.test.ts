@@ -23,6 +23,7 @@ function run(overrides: Partial<JarvisRunView> = {}): JarvisRunView {
     runId: RUN_ID,
     kind: 'customer_contact',
     definitionVersion: 1,
+    actionReference: { actionId: 'client-creer', actionVersion: 1 },
     status: 'waiting_user',
     revision: 4,
     nextWakeAt: null,
@@ -41,6 +42,7 @@ function presentation(
     intent: 'create',
     targetCustomerId: null,
     targetLabel: null,
+    duplicateReview: null,
     proposal: {
       proposalId: PROPOSAL_ID,
       proposalHash: HASH,
@@ -61,6 +63,7 @@ function presentation(
       expiresAt: '2026-08-19T10:05:00.000Z',
       presentedAt: null,
     },
+    completion: null,
     ...overrides,
   };
 }
@@ -100,7 +103,7 @@ function acceptingPort(value: JarvisCommandReceiptView = receipt()) {
 }
 
 describe('JarvisRunCoordinator — enveloppe du canal tactile', () => {
-  it('scelle l’accusé d’affichage avec l’action ouverte dérivée de l’intention', async () => {
+  it('scelle l’accusé d’affichage avec l’action autoritaire renvoyée par le serveur', async () => {
     const ports = acceptingPort();
     const coordinator = new JarvisRunCoordinator(() => COMMAND_ID);
 
@@ -123,7 +126,24 @@ describe('JarvisRunCoordinator — enveloppe du canal tactile', () => {
     });
   });
 
-  it('bascule sur client-modifier@1 quand la proposition vise une fiche existante', async () => {
+  it('utilise client-modifier@1 quand le run serveur porte cette action', async () => {
+    const ports = acceptingPort();
+    const coordinator = new JarvisRunCoordinator(() => COMMAND_ID);
+
+    await coordinator.acknowledgePresentation(
+      frame(
+        { actionReference: { actionId: 'client-modifier', actionVersion: 1 } },
+        { intent: 'update', targetCustomerId: CUSTOMER_ID },
+      ),
+      ports,
+    );
+    expect(ports.submitCommand.mock.calls[0]?.[0]).toMatchObject({
+      actionId: 'client-modifier',
+      actionVersion: 1,
+    });
+  });
+
+  it('ne redérive jamais l’action depuis l’intention de présentation', async () => {
     const ports = acceptingPort();
     const coordinator = new JarvisRunCoordinator(() => COMMAND_ID);
 
@@ -132,7 +152,7 @@ describe('JarvisRunCoordinator — enveloppe du canal tactile', () => {
       ports,
     );
     expect(ports.submitCommand.mock.calls[0]?.[0]).toMatchObject({
-      actionId: 'client-modifier',
+      actionId: 'client-creer',
       actionVersion: 1,
     });
   });
@@ -193,6 +213,53 @@ describe('JarvisRunCoordinator — idempotence §5.4', () => {
     });
 
     expect(createCommandId).toHaveBeenCalledTimes(1);
+    expect(ports.submitCommand.mock.calls[0]?.[0].commandId).toBe(
+      ports.submitCommand.mock.calls[1]?.[0].commandId,
+    );
+  });
+
+  it('rejoue une annulation SBA avec le même commandId et l’action serveur', async () => {
+    const createCommandId = vi.fn(() => COMMAND_ID);
+    const sba = run({
+      kind: 'single_business_action',
+      status: 'active',
+      actionReference: { actionId: 'relance-envoyer', actionVersion: 3 },
+    });
+    const ports = {
+      submitCommand: vi
+        .fn<
+          (
+            input: JarvisSubmitCommandClientInput,
+          ) => Promise<
+            | { ok: true; value: JarvisCommandReceiptView }
+            | { ok: false; error: { kind: 'dependency'; port: string; cause: string } }
+          >
+        >()
+        .mockResolvedValueOnce({
+          ok: false,
+          error: { kind: 'dependency', port: 'api', cause: 'Délai réseau dépassé.' },
+        })
+        .mockResolvedValue({
+          ok: true,
+          value: receipt({
+            outcome: 'replayed',
+            run: { ...sba, revision: 5 },
+            presentation: null,
+          }),
+        }),
+    };
+    const coordinator = new JarvisRunCoordinator(createCommandId);
+
+    await coordinator.cancel(sba, ports);
+    await coordinator.cancel(sba, ports);
+
+    expect(createCommandId).toHaveBeenCalledTimes(1);
+    expect(ports.submitCommand).toHaveBeenCalledTimes(2);
+    expect(ports.submitCommand.mock.calls[0]?.[0]).toMatchObject({
+      actionId: 'relance-envoyer',
+      actionVersion: 3,
+      command: { type: 'cancel_run' },
+    });
     expect(ports.submitCommand.mock.calls[0]?.[0].commandId).toBe(
       ports.submitCommand.mock.calls[1]?.[0].commandId,
     );
@@ -307,17 +374,29 @@ describe('JarvisRunCoordinator — gardes §7.1 et écho de reçu', () => {
     expect(ports.submitCommand).not.toHaveBeenCalled();
   });
 
-  it('ne touche jamais un run terminal', async () => {
+  it('ne touche ni un run terminal ni un run sans action serveur', async () => {
     const ports = acceptingPort();
-    const coordinator = new JarvisRunCoordinator(() => COMMAND_ID);
+    const createCommandId = vi.fn(() => COMMAND_ID);
+    const coordinator = new JarvisRunCoordinator(createCommandId);
+
+    await expect(coordinator.cancel(run({ actionReference: null }), ports)).resolves.toEqual({
+      status: 'invalid_response',
+    });
+    await expect(coordinator.cancel(run({ status: 'cancelling' }), ports)).resolves.toEqual({
+      status: 'invalid_response',
+    });
 
     await expect(
       coordinator.cancel(
-        frame({ status: 'completed', terminalAt: '2026-08-19T10:02:00.000Z' }),
+        run({
+          status: 'completed',
+          terminalAt: '2026-08-19T10:02:00.000Z',
+        }),
         ports,
       ),
     ).resolves.toEqual({ status: 'invalid_response' });
     expect(ports.submitCommand).not.toHaveBeenCalled();
+    expect(createCommandId).not.toHaveBeenCalled();
   });
 
   it('refuse un reçu qui parle d’un autre run ou dont la postimage recule', async () => {

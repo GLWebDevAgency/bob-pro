@@ -28,7 +28,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { randomUUID } from 'expo-crypto';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import type { JarvisCurrentRunView } from '@bob/api-client';
+import type { JarvisCurrentRunView, JarvisRunView } from '@bob/api-client';
 import { useAuth } from '../data/auth';
 import { useBobClient } from '../data/client';
 import { AGENT_REFRESH_QUERY_KEY_PREFIXES } from '../assistant/refresh-after-action';
@@ -62,7 +62,12 @@ export type JarvisRunFrameState =
   | { readonly phase: 'unavailable' }
   | { readonly phase: 'loading' }
   | { readonly phase: 'absent' }
-  | { readonly phase: 'unpresentable' }
+  | {
+      readonly phase: 'unpresentable';
+      readonly run: JarvisRunView;
+      readonly ports: JarvisRunPorts;
+      readonly refreshFailed: boolean;
+    }
   | { readonly phase: 'error' }
   | {
       readonly phase: 'ready';
@@ -97,7 +102,9 @@ export interface JarvisRunFrameBinding {
  *   serveur, pas dans cette projection ;
  * - démonter la carte à chaque relecture réinitialiserait son accusé de présentation (§7.1) et
  *   rejouerait un `record_presentation_ack` déjà abouti.
- * Un échec, lui, ferme : une donnée périmée ne survit jamais à une lecture RATÉE.
+ * Une présentation MÉTIER périmée ne survit jamais à une lecture ratée. Seule une frame de
+ * contrôle déjà imprésentable conserve `run + ports`, afin qu'un échec de relecture ne retire
+ * pas l'unique pouvoir d'annulation ; elle est marquée `refreshFailed` pour rester honnête.
  */
 export function deriveJarvisRunFrameState(
   observation: JarvisRunFrameObservation,
@@ -105,10 +112,31 @@ export function deriveJarvisRunFrameState(
   if (!observation.authenticated || !observation.supported || observation.ports === null) {
     return { phase: 'unavailable' };
   }
-  if (observation.failed) return { phase: 'error' };
+  if (observation.failed) {
+    // Une erreur de RELECTURE ne retire pas l'unique pouvoir de drain déjà prouvé par une vue
+    // autoritaire. On ne conserve jamais une présentation métier périmée : seulement le run et
+    // sa référence d'action serveur quand la présentation était déjà imprésentable.
+    const stale = observation.data;
+    if (stale?.run !== null && stale?.run !== undefined && stale.presentation === null) {
+      return {
+        phase: 'unpresentable',
+        run: stale.run,
+        ports: observation.ports,
+        refreshFailed: true,
+      };
+    }
+    return { phase: 'error' };
+  }
   if (observation.pending || observation.data === undefined) return { phase: 'loading' };
   if (observation.data.run === null) return { phase: 'absent' };
-  if (observation.data.presentation === null) return { phase: 'unpresentable' };
+  if (observation.data.presentation === null) {
+    return {
+      phase: 'unpresentable',
+      run: observation.data.run,
+      ports: observation.ports,
+      refreshFailed: false,
+    };
+  }
   return {
     phase: 'ready',
     frame: { run: observation.data.run, presentation: observation.data.presentation },

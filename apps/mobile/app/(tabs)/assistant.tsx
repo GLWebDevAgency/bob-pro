@@ -75,6 +75,7 @@ import { ActionDiffView } from '../../src/components/ActionDiffView';
 import { SendIcon, SparkIcon } from '../../src/components/icons';
 import { useAgentSession, useJarvisRunFrame } from '../../src/agent';
 import { JarvisConfirmationCard } from '../../src/components/jarvis-confirmation-card';
+import { JarvisRunDrainCard } from '../../src/components/jarvis-run-drain-card';
 import {
   canRunAssistantManualTurn,
   planAssistantRealtimeControl,
@@ -769,6 +770,30 @@ export default function Assistant() {
     if (displayedLive) setActiveAsk(null);
   }, [displayedLive]);
 
+  // Un run déjà prouvé ne devient pas impossible à refermer parce que l'abonnement charge,
+  // échoue ou n'ouvre plus l'assistant. Cette surface n'autorise aucun effet métier : elle relit
+  // ou soumet seulement `cancel_run` avec l'action dérivée par le serveur.
+  if (jarvis.state.phase === 'unpresentable') {
+    return (
+      <ScrollView
+        style={{ flex: 1, backgroundColor: colors.bg }}
+        contentContainerStyle={{
+          paddingHorizontal: 20,
+          paddingTop: insets.top + 40,
+          paddingBottom: Math.max(insets.bottom, 24),
+        }}
+      >
+        <JarvisRunDrainCard
+          run={jarvis.state.run}
+          coordinator={jarvis.coordinator}
+          ports={jarvis.state.ports}
+          refreshFailed={jarvis.state.refreshFailed}
+          onAuthoritativeRefresh={jarvis.refresh}
+        />
+      </ScrollView>
+    );
+  }
+
   // ── Garde d'abonnement autoritative : aucun prompt, live ou outil tant que GET /subscription
   // n'a pas répondu avec succès. Une erreur avec cache reste fermée jusqu'au prochain succès. ──
   if (assistantEntitlement.loading) {
@@ -1092,11 +1117,10 @@ export default function Assistant() {
               onAuthoritativeRefresh={jarvis.refresh}
             />
           ) : null}
-          {/* Une demande de Bob que l'écran ne sait PAS rendre (lecture en panne, présentation
-              absente) ne disparaît pas en silence : le run tient le premier plan de l'artisan,
-              donc il doit le voir et pouvoir réessayer. Se taire ici, c'est laisser quelqu'un
-              devant un assistant muet qui refuse par ailleurs toute nouvelle demande. */}
-          {jarvis.state.phase === 'error' || jarvis.state.phase === 'unpresentable' ? (
+          {/* Une lecture du run en panne ne disparaît pas en silence : le run peut encore tenir
+              le premier plan de l'artisan, donc il doit pouvoir relancer la lecture. La branche
+              `presentation:null` est traitée plus haut par la carte de drain dédiée. */}
+          {jarvis.state.phase === 'error' ? (
             <View style={{ marginHorizontal: 16, marginTop: 8 }}>
               <ErrorRetry
                 message="Bob a une demande en cours mais n’arrive pas à l’afficher."

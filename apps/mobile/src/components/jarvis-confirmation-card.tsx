@@ -294,9 +294,9 @@ export function JarvisConfirmationCard({
               variant="secondary"
               loading={busy === 'cancel'}
               disabled={busy !== null}
-              accessibilityLabel="Annuler. Bob abandonne cette demande, rien ne sera enregistré."
+              accessibilityLabel="Annuler. Bob annule ce qui peut encore l’être puis relit la demande."
               onPress={() => {
-                void run('cancel', () => coordinator.cancel(frame, ports));
+                void run('cancel', () => coordinator.cancel(frame.run, ports));
               }}
             />
           </View>
@@ -442,9 +442,9 @@ export function JarvisConfirmationCard({
             variant="danger"
             loading={busy === 'cancel'}
             disabled={locked}
-            accessibilityLabel="Annuler. Bob abandonne cette demande, rien ne sera enregistré."
+            accessibilityLabel="Annuler. Bob annule ce qui peut encore l’être puis relit la demande."
             onPress={() => {
-              void run('cancel', () => coordinator.cancel(frame, ports));
+              void run('cancel', () => coordinator.cancel(frame.run, ports));
             }}
           />
         </View>
