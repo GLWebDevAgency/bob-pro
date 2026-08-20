@@ -76,6 +76,31 @@ export const JARVIS_RUN_LEASE_RELEASING_STATUSES: ReadonlySet<JarvisRunStatus> =
 ]);
 
 /**
+ * Un effet déjà autorisé peut-il encore modifier une projection métier ?
+ *
+ * La matrice est volontairement exhaustive : tout nouveau `JarvisRunStatus` impose une décision
+ * de compilation à cette frontière. Les écrans ne peuvent donc jamais traiter implicitement un
+ * statut inconnu comme « réglé » et arrêter trop tôt leur relecture exacte.
+ */
+export const JARVIS_RUN_EFFECT_OUTCOME_PENDING_BY_STATUS = Object.freeze({
+  active: false,
+  waiting_user: false,
+  waiting_screen: false,
+  waiting_external: true,
+  retry_due: true,
+  parked: false,
+  cancelling: true,
+  completed: false,
+  cancelled: false,
+  failed_terminal: false,
+  quarantined: false,
+} satisfies Readonly<Record<JarvisRunStatus, boolean>>);
+
+export function isJarvisRunEffectOutcomePending(status: JarvisRunStatus): boolean {
+  return JARVIS_RUN_EFFECT_OUTCOME_PENDING_BY_STATUS[status];
+}
+
+/**
  * Statuts qui TIENNENT le premier plan owner-scopé. Cette liste est l'autorité
  * commune du backstop SQL, de l'admission Jarvis et des lecteurs legacy : un
  * writer ne peut donc pas croire le premier plan libre alors que l'index le

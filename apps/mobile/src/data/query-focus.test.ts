@@ -8,9 +8,10 @@ import {
 } from './query-focus';
 
 /** Fake AppState : mémorise les listeners et permet d'émettre des transitions. */
-function makeFakeAppState() {
+function makeFakeAppState(currentState: AppStateStatus = 'active') {
   const listeners = new Set<(status: AppStateStatus) => void>();
   const appState: AppStateLike = {
+    currentState,
     addEventListener: (_type, listener) => {
       listeners.add(listener);
       return { remove: () => listeners.delete(listener) };
@@ -47,11 +48,11 @@ describe('connectFocusManagerToAppState', () => {
     emit('active');
     emit('inactive');
 
-    expect(setFocused.mock.calls).toEqual([[false], [true], [false]]);
+    expect(setFocused.mock.calls).toEqual([[true], [false], [true], [false]]);
   });
 
   it('le débranchement retire la souscription — plus aucun setFocused ensuite', () => {
-    const { appState, emit, listenerCount } = makeFakeAppState();
+    const { appState, emit, listenerCount } = makeFakeAppState('background');
     const setFocused = vi.fn();
     const disconnect = connectFocusManagerToAppState(appState, { setFocused });
 
@@ -60,14 +61,13 @@ describe('connectFocusManagerToAppState', () => {
     emit('background');
 
     expect(listenerCount()).toBe(0);
-    expect(setFocused.mock.calls).toEqual([[true]]);
+    expect(setFocused.mock.calls).toEqual([[false], [true]]);
   });
 
-  it('pilote par défaut le focusManager RÉEL de React Query (celui du QueryClient)', () => {
-    const { appState, emit } = makeFakeAppState();
+  it('ferme immédiatement un cold start background puis pilote le manager RÉEL', () => {
+    const { appState, emit } = makeFakeAppState('background');
     const disconnect = connectFocusManagerToAppState(appState);
 
-    emit('background');
     expect(focusManager.isFocused()).toBe(false);
     emit('active');
     expect(focusManager.isFocused()).toBe(true);

@@ -30,6 +30,7 @@ import {
   AgentMissionProvider,
   AgentMissionRecoveryProvider,
   AgentSessionProvider,
+  JarvisRunConvergenceProvider,
 } from '../src/agent';
 import { QuoteDraftProvider } from '../src/quote-draft';
 import { LoginScreen } from '../src/screens/LoginScreen';
@@ -236,45 +237,56 @@ function RootLayout() {
                       <QuoteDraftProvider>
                         <AgentContextProvider>
                           <AgentMissionProvider>
-                            <AgentMissionRecoveryProvider>
-                              <AgentSessionProvider>
-                                <ConfirmProvider>
-                                <Stack screenOptions={{ headerShown: false }}>
-                                <Stack.Screen name="(tabs)" />
-                                <Stack.Screen name="auth/recovery" />
-                                <Stack.Screen name="auth/callback" />
-                                <Stack.Screen name="devis/new" options={{ presentation: 'modal' }} />
-                                <Stack.Screen name="devis/[id]" />
-                                <Stack.Screen name="facture/new" options={{ presentation: 'modal' }} />
-                                <Stack.Screen name="facture/[id]" />
-                                <Stack.Screen name="facture/transmission/[id]" />
-                                <Stack.Screen name="client/[id]" />
-                                <Stack.Screen name="compte" />
-                                <Stack.Screen name="profil-fiscal" />
-                                <Stack.Screen name="catalogue" />
-                                <Stack.Screen name="reglages-facturation" />
-                                <Stack.Screen name="diagnostic" />
-                                <Stack.Screen name="diagnostic-technique" />
-                                <Stack.Screen name="notifications" />
-                                <Stack.Screen name="onboarding" />
-                                <Stack.Screen
-                                  name="scan-document"
-                                  options={{ presentation: 'modal' }}
-                                />
-                                <Stack.Screen name="documents/[id]" />
-                                <Stack.Screen name="documents/folder/[id]" />
-                                <Stack.Screen name="voix" options={{ presentation: 'modal' }} />
-                                <Stack.Screen name="chantiers" />
-                                <Stack.Screen name="chantier/[id]" />
-                                <Stack.Screen name="ventes" />
-                                <Stack.Screen name="comptabilite" />
-                                <Stack.Screen name="cloture" />
-                                <Stack.Screen name="pilotage" />
-                                </Stack>
-                                <GlobalBobAccess />
-                                </ConfirmProvider>
-                              </AgentSessionProvider>
-                            </AgentMissionRecoveryProvider>
+                            <JarvisRunConvergenceProvider>
+                              <AgentMissionRecoveryProvider>
+                                <AgentSessionProvider>
+                                  <ConfirmProvider>
+                                    <Stack screenOptions={{ headerShown: false }}>
+                                      <Stack.Screen name="(tabs)" />
+                                      <Stack.Screen name="auth/recovery" />
+                                      <Stack.Screen name="auth/callback" />
+                                      <Stack.Screen
+                                        name="devis/new"
+                                        options={{ presentation: 'modal' }}
+                                      />
+                                      <Stack.Screen name="devis/[id]" />
+                                      <Stack.Screen
+                                        name="facture/new"
+                                        options={{ presentation: 'modal' }}
+                                      />
+                                      <Stack.Screen name="facture/[id]" />
+                                      <Stack.Screen name="facture/transmission/[id]" />
+                                      <Stack.Screen name="client/[id]" />
+                                      <Stack.Screen name="compte" />
+                                      <Stack.Screen name="profil-fiscal" />
+                                      <Stack.Screen name="catalogue" />
+                                      <Stack.Screen name="reglages-facturation" />
+                                      <Stack.Screen name="diagnostic" />
+                                      <Stack.Screen name="diagnostic-technique" />
+                                      <Stack.Screen name="notifications" />
+                                      <Stack.Screen name="onboarding" />
+                                      <Stack.Screen
+                                        name="scan-document"
+                                        options={{ presentation: 'modal' }}
+                                      />
+                                      <Stack.Screen name="documents/[id]" />
+                                      <Stack.Screen name="documents/folder/[id]" />
+                                      <Stack.Screen
+                                        name="voix"
+                                        options={{ presentation: 'modal' }}
+                                      />
+                                      <Stack.Screen name="chantiers" />
+                                      <Stack.Screen name="chantier/[id]" />
+                                      <Stack.Screen name="ventes" />
+                                      <Stack.Screen name="comptabilite" />
+                                      <Stack.Screen name="cloture" />
+                                      <Stack.Screen name="pilotage" />
+                                    </Stack>
+                                    <GlobalBobAccess />
+                                  </ConfirmProvider>
+                                </AgentSessionProvider>
+                              </AgentMissionRecoveryProvider>
+                            </JarvisRunConvergenceProvider>
                           </AgentMissionProvider>
                         </AgentContextProvider>
                       </QuoteDraftProvider>

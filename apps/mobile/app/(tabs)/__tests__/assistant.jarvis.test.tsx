@@ -20,6 +20,7 @@ import type {
   CustomerContactPresentationV1,
   JarvisCommandReceiptView,
   JarvisCurrentRunView,
+  JarvisRunSnapshotView,
   JarvisRunView,
   JarvisSubmitCommandClientInput,
 } from '@bob/api-client';
@@ -150,8 +151,10 @@ const server = vi.hoisted(() => ({
   confirmationStatus: 'issued' as 'issued' | 'presented',
   revision: 4,
   currentRunCalls: 0,
+  getRunCalls: [] as string[],
   submitted: [] as JarvisSubmitCommandClientInput[],
   runAbsent: false,
+  currentRunFails: false,
   presentationMissing: false,
   kind: 'customer_contact' as 'customer_contact' | 'single_business_action',
 }));
@@ -183,6 +186,8 @@ vi.mock('../../../src/monetization/paywall', () => ({
 
 const { AgentMissionCommandIdRegistry } =
   await import('../../../src/agent/agent-mission-command-id-registry');
+const { JarvisRunConvergenceProvider } =
+  await import('../../../src/agent/jarvis-run-convergence-provider');
 const { default: Assistant } = await import('../assistant');
 
 function run(): JarvisRunView {
@@ -240,11 +245,30 @@ const jarvisClient = {
   companyId: 'company-1',
   jarvisCurrentRun: (): Promise<Result<JarvisCurrentRunView, AppError>> => {
     server.currentRunCalls += 1;
+    if (server.currentRunFails) {
+      return Promise.resolve({
+        ok: false,
+        error: { kind: 'unavailable', service: 'jarvis-current-run' },
+      });
+    }
     return Promise.resolve({
       ok: true,
       value: server.runAbsent
         ? { run: null, presentation: null }
         : { run: run(), presentation: server.presentationMissing ? null : presentation() },
+    });
+  },
+  jarvisGetRun: (runId: string): Promise<Result<JarvisRunSnapshotView, AppError>> => {
+    server.getRunCalls.push(runId);
+    if (runId !== RUN_ID || server.runAbsent) {
+      return Promise.resolve({
+        ok: false,
+        error: { kind: 'not_found', entity: 'jarvis_run', id: runId },
+      });
+    }
+    return Promise.resolve({
+      ok: true,
+      value: { run: run(), presentation: server.presentationMissing ? null : presentation() },
     });
   },
   jarvisSubmitCommand: (
@@ -277,7 +301,11 @@ async function render(): Promise<ReactTestRenderer> {
       createElement(
         QueryClientProvider,
         { client: queryClient },
-        createElement(ThemeProvider, null, createElement(Assistant)),
+        createElement(
+          JarvisRunConvergenceProvider,
+          null,
+          createElement(ThemeProvider, null, createElement(Assistant)),
+        ),
       ),
     );
   });
@@ -310,8 +338,10 @@ beforeEach(() => {
   server.confirmationStatus = 'issued';
   server.revision = 4;
   server.currentRunCalls = 0;
+  server.getRunCalls = [];
   server.submitted = [];
   server.runAbsent = false;
+  server.currentRunFails = false;
   server.presentationMissing = false;
   server.kind = 'customer_contact';
   entitlement.assistant = { allowed: true, loading: false, verified: true, decision: null };
@@ -364,6 +394,23 @@ describe('L’onglet assistant, hôte primaire du run Jarvis', () => {
     server.runAbsent = true;
     const rendered = treeOf(await render());
     expect(rendered).not.toContain('Modifier la fiche client');
+    expect(server.submitted).toEqual([]);
+  });
+
+  it('Réessayer ignore l’événement tactile et appelle refresh() sans faux reçu', async () => {
+    server.currentRunFails = true;
+    const renderer = await render();
+    const retry = pressableLabelled(renderer, 'Réessayer');
+    expect(retry).toBeDefined();
+    expect(server.currentRunCalls).toBe(1);
+
+    await act(async () => {
+      const responderEvent = { nativeEvent: { timestamp: 42 } };
+      (retry!.props as { onPress: (event: unknown) => void }).onPress(responderEvent);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(server.currentRunCalls).toBe(2);
     expect(server.submitted).toEqual([]);
   });
 });

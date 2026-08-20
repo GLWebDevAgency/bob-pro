@@ -22,6 +22,7 @@ import type {
   CustomerContactPresentationV1,
   JarvisCommandReceiptView,
   JarvisCurrentRunView,
+  JarvisRunSnapshotView,
   JarvisRunView,
   JarvisSubmitCommandClientInput,
 } from '@bob/api-client';
@@ -146,6 +147,7 @@ const server = vi.hoisted(() => ({
   phase: 'awaiting_confirmation' as CustomerContactPresentationV1['phase'],
   revision: 4,
   currentRunCalls: 0,
+  getRunCalls: [] as string[],
   submitted: [] as JarvisSubmitCommandClientInput[],
   portDown: false,
   runAbsent: false,
@@ -210,6 +212,8 @@ vi.mock('../../../src/data/authoritative-query-state', () => ({
 
 const { AgentMissionCommandIdRegistry } =
   await import('../../../src/agent/agent-mission-command-id-registry');
+const { JarvisRunConvergenceProvider } =
+  await import('../../../src/agent/jarvis-run-convergence-provider');
 const { default: ClientDetail } = await import('../[id]');
 
 function run(): JarvisRunView {
@@ -274,6 +278,16 @@ const jarvisClient = {
         ? { run: null, presentation: null }
         : { run: run(), presentation: presentation() },
     });
+  },
+  jarvisGetRun: (runId: string): Promise<Result<JarvisRunSnapshotView, AppError>> => {
+    server.getRunCalls.push(runId);
+    if (runId !== RUN_ID || server.runAbsent) {
+      return Promise.resolve({
+        ok: false,
+        error: { kind: 'not_found', entity: 'jarvis_run', id: runId },
+      });
+    }
+    return Promise.resolve({ ok: true, value: { run: run(), presentation: presentation() } });
   },
   jarvisOpenRun: (input: {
     commandId: string;
@@ -379,7 +393,11 @@ async function render(): Promise<ReactTestRenderer> {
       createElement(
         QueryClientProvider,
         { client: queryClient },
-        createElement(ThemeProvider, null, createElement(ClientDetail)),
+        createElement(
+          JarvisRunConvergenceProvider,
+          null,
+          createElement(ThemeProvider, null, createElement(ClientDetail)),
+        ),
       ),
     );
   });
@@ -424,6 +442,7 @@ beforeEach(() => {
   server.phase = 'awaiting_confirmation';
   server.revision = 4;
   server.currentRunCalls = 0;
+  server.getRunCalls = [];
   server.submitted = [];
   server.portDown = false;
   server.opened = [];

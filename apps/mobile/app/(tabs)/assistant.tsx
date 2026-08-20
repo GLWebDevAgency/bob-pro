@@ -1124,7 +1124,7 @@ export default function Assistant() {
             <View style={{ marginHorizontal: 16, marginTop: 8 }}>
               <ErrorRetry
                 message="Bob a une demande en cours mais n’arrive pas à l’afficher."
-                onRetry={jarvis.refresh}
+                onRetry={() => jarvis.refresh()}
               />
             </View>
           ) : null}

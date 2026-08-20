@@ -4,9 +4,10 @@ export * from './agent-mission-recovery';
 export * from './agent-mission-recovery-state';
 export * from './agent-mission-runtime';
 export * from './agent-session';
-// Jarvis (lot U1-e §3) : le coordinateur tactile et la découverte du run courant. Sans ces deux
-// lignes, les écrans hôtes devraient importer par chemin — la carte n'avait aucun appelant.
+// Jarvis (lot U1-e §3 / U1-h L7) : coordinateur tactile, découverte du run et autorité unique de
+// convergence. Les écrans hôtes n'hébergent ni file ni timer.
 export * from './jarvis-run-coordinator';
+export * from './jarvis-run-convergence-provider';
 export * from './use-jarvis-run-frame';
 export * from './QuoteAgentMissionSurface';
 export * from './QuoteMissionResumeGate';

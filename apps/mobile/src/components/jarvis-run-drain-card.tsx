@@ -2,7 +2,7 @@ import { useRef, useState } from 'react';
 import { Text, View } from 'react-native';
 import { space } from '@bob/tokens';
 import { Button, Card, font, useTheme } from '@bob/ui';
-import type { JarvisRunView } from '@bob/api-client';
+import type { JarvisCommandReceiptView, JarvisRunView } from '@bob/api-client';
 
 import {
   JarvisRunCoordinator,
@@ -15,7 +15,7 @@ export interface JarvisRunDrainCardProps {
   readonly coordinator: JarvisRunCoordinator;
   readonly ports: JarvisRunPorts;
   readonly refreshFailed: boolean;
-  readonly onAuthoritativeRefresh: () => void;
+  readonly onAuthoritativeRefresh: (receipt?: JarvisCommandReceiptView) => void;
 }
 
 /**
@@ -52,10 +52,11 @@ export function JarvisRunDrainCard({
     setFailed(false);
     try {
       const result = await coordinator.cancel(run, ports);
-      if (
-        result.status === 'completed' ||
-        (result.status === 'failed' && result.error.kind === 'conflict')
-      ) {
+      if (result.status === 'completed') {
+        onAuthoritativeRefresh(result.value);
+        return;
+      }
+      if (result.status === 'failed' && result.error.kind === 'conflict') {
         onAuthoritativeRefresh();
         return;
       }
@@ -123,7 +124,7 @@ export function JarvisRunDrainCard({
           variant="secondary"
           disabled={busy}
           accessibilityLabel="Réessayer d’afficher les détails de la demande"
-          onPress={onAuthoritativeRefresh}
+          onPress={() => onAuthoritativeRefresh()}
         />
         <Button
           title="Annuler la demande"

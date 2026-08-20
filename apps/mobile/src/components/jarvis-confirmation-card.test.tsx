@@ -345,6 +345,7 @@ describe('JarvisConfirmationCard', () => {
 
     expect(coordinator.acknowledgePresentation).toHaveBeenCalledTimes(1);
     expect(onAuthoritativeRefresh).toHaveBeenCalledTimes(1);
+    expect(onAuthoritativeRefresh).toHaveBeenCalledWith(receipt());
     expect(announceForAccessibility).toHaveBeenCalledWith('Bob attend votre confirmation.');
     expect(buttons(renderer).Confirmer?.disabled).toBe(true);
 
@@ -395,6 +396,7 @@ describe('JarvisConfirmationCard', () => {
     });
     expect(coordinator.confirm).toHaveBeenCalledTimes(1);
     expect(onAuthoritativeRefresh).toHaveBeenCalledTimes(1);
+    expect(onAuthoritativeRefresh).toHaveBeenCalledWith(receipt());
   });
 
   it('explique la garde des champs sensibles au point de décision', async () => {
@@ -461,6 +463,7 @@ describe('JarvisConfirmationCard', () => {
     });
     expect(coordinator.reject).toHaveBeenCalledTimes(1);
     expect(onAuthoritativeRefresh).toHaveBeenCalledTimes(1);
+    expect(onAuthoritativeRefresh).toHaveBeenCalledWith();
     expect(texts(renderer)).not.toContain('Bob n’a pas pu enregistrer votre geste.');
   });
 
@@ -500,6 +503,7 @@ describe('JarvisConfirmationCard', () => {
     ).toBe(CONFIRMATION_ID);
     // Le succès seul déclenche la relecture autoritative — et rouvre « Confirmer ».
     expect(onAuthoritativeRefresh).toHaveBeenCalledTimes(1);
+    expect(onAuthoritativeRefresh).toHaveBeenCalledWith(receipt());
     expect(texts(renderer)).not.toContain(
       'Bob n’a pas pu enregistrer l’affichage de cette proposition.',
     );

@@ -23,7 +23,7 @@ import { AccessibilityInfo, ActivityIndicator, Text, View } from 'react-native';
 import type { ActionDiff } from '@bob/ai';
 import { space } from '@bob/tokens';
 import { Button, Card, font, useTheme } from '@bob/ui';
-import type { CustomerContactPresentationV1 } from '@bob/api-client';
+import type { CustomerContactPresentationV1, JarvisCommandReceiptView } from '@bob/api-client';
 import {
   JarvisRunCoordinator,
   type JarvisRunCall,
@@ -148,7 +148,7 @@ export interface JarvisConfirmationCardProps {
   readonly coordinator: JarvisRunCoordinator;
   readonly ports: JarvisRunPorts;
   /** Relecture autoritative (GET run) après tout geste abouti — l'écran ne devine jamais. */
-  readonly onAuthoritativeRefresh: () => void;
+  readonly onAuthoritativeRefresh: (receipt?: JarvisCommandReceiptView) => void;
   /**
    * L'hôte est-il RÉELLEMENT devant les yeux de l'artisan ? §7.1 — `record_presentation_ack`
    * atteste que la proposition A ÉTÉ AFFICHÉE, et c'est lui qui ouvre le droit de confirmer.
@@ -210,7 +210,9 @@ export function JarvisConfirmationCard({
       const result = await task();
       if (result.status === 'completed') {
         if (ackKeyOfCall !== null) acknowledged.current = ackKeyOfCall;
-        onAuthoritativeRefresh();
+        // Le reçu est la première postimage autoritaire : L7 l'arme avant qu'un worker rapide ou
+        // un nouveau foreground puisse masquer ce run au prochain GET current.
+        onAuthoritativeRefresh(result.value);
         return;
       }
       // Un conflit signifie qu'une autre autorité (la voix, un second appareil) a déjà avancé

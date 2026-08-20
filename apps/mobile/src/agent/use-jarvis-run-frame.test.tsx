@@ -9,17 +9,18 @@
  *   transformerait chaque remontage de route en seconde commande ;
  * - le narrowing des méthodes OPTIONNELLES du `BobClient` : un transport sans Jarvis ne « montre
  *   rien », il ne plante pas et ne parle à personne ;
- * - `refresh()` : invalidation des préfixes métier PUIS relecture causale du run.
+ * - `refresh(receipt)` : suivi exact avant relecture ; sans reçu, invalidation métier immédiate.
  */
-import { createElement, type ReactNode } from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, create } from 'react-test-renderer';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { createElement, StrictMode, type ReactElement, type ReactNode } from 'react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, create, type ReactTestRenderer } from 'react-test-renderer';
+import { focusManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type {
   BobClient,
   CustomerContactPresentationV1,
   JarvisCommandReceiptView,
   JarvisCurrentRunView,
+  JarvisRunSnapshotView,
   JarvisRunView,
   JarvisSubmitCommandClientInput,
 } from '@bob/api-client';
@@ -51,6 +52,7 @@ vi.mock('./agent-mission-provider', () => ({
 
 const { deriveJarvisRunFrameState, jarvisFrameTargetsCustomer, useJarvisRunFrame } =
   await import('./use-jarvis-run-frame');
+const { JarvisRunConvergenceProvider } = await import('./jarvis-run-convergence-provider');
 type JarvisRunFrameBinding = ReturnType<typeof useJarvisRunFrame>;
 
 const RUN_ID = '11111111-1111-4111-8111-111111111111';
@@ -118,7 +120,9 @@ function frame(): JarvisRunFrame {
 
 const PORTS: JarvisRunPorts = { submitCommand: vi.fn() };
 
-function receipt(): JarvisCommandReceiptView {
+function receipt(
+  overrides: Partial<JarvisCommandReceiptView> = {},
+): JarvisCommandReceiptView {
   return {
     outcome: 'admitted',
     run: run({ revision: 5 }),
@@ -131,20 +135,29 @@ function receipt(): JarvisCommandReceiptView {
       },
     }),
     eventSequence: 9,
+    ...overrides,
   };
 }
 
 interface Transport {
   readonly currentRunCalls: number[];
+  readonly getRunCalls: string[];
   readonly submitted: JarvisSubmitCommandClientInput[];
   readonly client: BobClient;
 }
 
 function transport(
   view: JarvisCurrentRunView = { run: run(), presentation: presentation() },
-  overrides: { readonly withCurrentRun?: boolean; readonly withSubmit?: boolean } = {},
+  overrides: {
+    readonly withCurrentRun?: boolean;
+    readonly withGetRun?: boolean;
+    readonly withSubmit?: boolean;
+    readonly readCurrentRun?: () => Promise<Result<JarvisCurrentRunView, AppError>>;
+    readonly readRun?: (runId: string) => Promise<Result<JarvisRunSnapshotView, AppError>>;
+  } = {},
 ): Transport {
   const currentRunCalls: number[] = [];
+  const getRunCalls: string[] = [];
   const submitted: JarvisSubmitCommandClientInput[] = [];
   const client = {
     companyId: 'company-1',
@@ -153,7 +166,23 @@ function transport(
       : {
           jarvisCurrentRun: (): Promise<Result<JarvisCurrentRunView, AppError>> => {
             currentRunCalls.push(currentRunCalls.length + 1);
+            if (overrides.readCurrentRun !== undefined) return overrides.readCurrentRun();
             return Promise.resolve({ ok: true, value: view });
+          },
+        }),
+    ...(overrides.withGetRun === false
+      ? {}
+      : {
+          jarvisGetRun: (runId: string): Promise<Result<JarvisRunSnapshotView, AppError>> => {
+            getRunCalls.push(runId);
+            if (overrides.readRun !== undefined) return overrides.readRun(runId);
+            return Promise.resolve({
+              ok: true,
+              value: {
+                run: view.run ?? run({ runId }),
+                presentation: view.presentation,
+              },
+            });
           },
         }),
     ...(overrides.withSubmit === false
@@ -167,7 +196,7 @@ function transport(
           },
         }),
   } as unknown as BobClient;
-  return { currentRunCalls, submitted, client };
+  return { currentRunCalls, getRunCalls, submitted, client };
 }
 
 function queryClient(): QueryClient {
@@ -175,6 +204,11 @@ function queryClient(): QueryClient {
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
 }
+
+const mountedResources: Array<{
+  readonly renderer: ReactTestRenderer;
+  readonly queryClient: QueryClient;
+}> = [];
 
 /** Sonde sans UI : le hook n'a besoin d'aucun composant natif pour être exercé. */
 function Probe({ onBinding }: { readonly onBinding: (binding: JarvisRunFrameBinding) => void }) {
@@ -185,19 +219,33 @@ function Probe({ onBinding }: { readonly onBinding: (binding: JarvisRunFrameBind
 async function mount(
   qc: QueryClient,
   hosts: number,
-): Promise<{ readonly bindings: JarvisRunFrameBinding[][] }> {
+  strict = false,
+): Promise<{
+  readonly bindings: JarvisRunFrameBinding[][];
+  readonly rerender: () => Promise<void>;
+}> {
   const bindings: JarvisRunFrameBinding[][] = Array.from({ length: hosts }, () => []);
-  const children: ReactNode[] = Array.from({ length: hosts }, (_unused, host) =>
-    createElement(Probe, {
-      key: `host-${host}`,
-      onBinding: (binding: JarvisRunFrameBinding) => {
-        bindings[host]?.push(binding);
-      },
-    }),
-  );
+  const tree = (): ReactElement => {
+    const children: ReactNode[] = Array.from({ length: hosts }, (_unused, host) =>
+      createElement(Probe, {
+        key: `host-${host}`,
+        onBinding: (binding: JarvisRunFrameBinding) => {
+          bindings[host]?.push(binding);
+        },
+      }),
+    );
+    const provider = createElement(
+      QueryClientProvider,
+      { client: qc },
+      createElement(JarvisRunConvergenceProvider, null, ...children),
+    );
+    return strict ? createElement(StrictMode, null, provider) : provider;
+  };
+  let renderer!: ReactTestRenderer;
   await act(async () => {
-    create(createElement(QueryClientProvider, { client: qc }, ...children));
+    renderer = create(tree());
   });
+  mountedResources.push({ renderer, queryClient: qc });
   // La query owner-scopée résout hors du rendu : on laisse converger, avec une borne stricte
   // (une découverte qui ne converge pas doit rougir, jamais boucler).
   for (let turn = 0; turn < 20; turn += 1) {
@@ -206,7 +254,14 @@ async function mount(
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
   }
-  return { bindings };
+  return {
+    bindings,
+    rerender: async (): Promise<void> => {
+      await act(async () => {
+        renderer.update(tree());
+      });
+    },
+  };
 }
 
 function last(bindings: JarvisRunFrameBinding[]): JarvisRunFrameBinding {
@@ -216,9 +271,20 @@ function last(bindings: JarvisRunFrameBinding[]): JarvisRunFrameBinding {
 }
 
 beforeEach(() => {
+  focusManager.setFocused(true);
   uuid.next = 0;
   doubles.auth = { enabled: true, session: { user: { id: 'owner-1' } } };
   doubles.registry = new AgentMissionCommandIdRegistry();
+});
+
+afterEach(async () => {
+  while (mountedResources.length > 0) {
+    const resource = mountedResources.pop();
+    if (resource === undefined) continue;
+    await act(async () => resource.renderer.unmount());
+    resource.queryClient.clear();
+  }
+  focusManager.setFocused(undefined);
 });
 
 describe('deriveJarvisRunFrameState — projection PURE, aucune branche implicite', () => {
@@ -347,6 +413,14 @@ describe('useJarvisRunFrame — la découverte', () => {
     expect(last(bindings[0] ?? []).state).toEqual({ phase: 'unavailable' });
   });
 
+  it('transport SANS lecture exacte ⇒ unavailable : une écriture masquée ne serait pas réconciliable', async () => {
+    const wire = transport(undefined, { withGetRun: false });
+    doubles.client = wire.client;
+    const { bindings } = await mount(queryClient(), 1);
+    expect(last(bindings[0] ?? []).state).toEqual({ phase: 'unavailable' });
+    expect(wire.currentRunCalls).toHaveLength(0);
+  });
+
   it('non authentifié ⇒ unavailable, la lecture owner-scopée ne part pas', async () => {
     const wire = transport();
     doubles.client = wire.client;
@@ -437,5 +511,206 @@ describe('useJarvisRunFrame — refresh() : invalidation métier PUIS relecture 
     // La relecture est bien repartie : l'écran ne déduit jamais le post-état d'un reçu.
     expect(wire.currentRunCalls).toHaveLength(2);
     spy.mockRestore();
+  });
+});
+
+describe('useJarvisRunFrame — L7 : reçu tactile + autorité exacte partagée', () => {
+  const absentView: JarvisCurrentRunView = { run: null, presentation: null };
+  const terminalSnapshot: JarvisRunSnapshotView = {
+    run: run({
+      actionReference: null,
+      status: 'completed',
+      revision: 6,
+      terminalAt: '2026-08-20T20:00:00.000Z',
+    }),
+    presentation: null,
+  };
+
+  function pendingReceipt(): JarvisCommandReceiptView {
+    return receipt({
+      run: run({ status: 'waiting_external', revision: 5 }),
+      presentation: presentation({ phase: 'awaiting_receipt' }),
+    });
+  }
+
+  async function settleEffects(): Promise<void> {
+    for (let turn = 0; turn < 12; turn += 1) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
+  }
+
+  it('awaiting_confirmation → reçu A pendant → premier current déjà B : A converge quand même', async () => {
+    const secondRunId = '77777777-7777-4777-8777-777777777777';
+    let current: JarvisCurrentRunView = { run: run(), presentation: presentation() };
+    const wire = transport(current, {
+      readCurrentRun: () => Promise.resolve({ ok: true, value: current }),
+      readRun: () => Promise.resolve({ ok: true, value: terminalSnapshot }),
+    });
+    doubles.client = wire.client;
+    const qc = queryClient();
+    const invalidated: unknown[] = [];
+    vi.spyOn(qc, 'invalidateQueries').mockImplementation((filters) => {
+      invalidated.push(filters?.queryKey);
+      return Promise.resolve();
+    });
+    const { bindings } = await mount(qc, 1);
+
+    current = {
+      run: run({ runId: secondRunId }),
+      presentation: presentation(),
+    };
+    await act(async () => {
+      last(bindings[0] ?? []).refresh(pendingReceipt());
+    });
+    // Le reçu pendant arme L7 mais ne relit pas prématurément une fiche encore inchangée.
+    expect(invalidated.filter((key) => JSON.stringify(key) === '["customers"]')).toHaveLength(0);
+
+    await settleEffects();
+    expect(wire.getRunCalls).toEqual([RUN_ID]);
+    expect(invalidated.filter((key) => JSON.stringify(key) === '["customers"]')).toHaveLength(1);
+    expect(invalidated.filter((key) => JSON.stringify(key) === '["quotes"]')).toHaveLength(1);
+  });
+
+  it('deux hôtes + reçu/current dupliqués partagent un seul GET exact et une seule convergence', async () => {
+    const pendingView: JarvisCurrentRunView = {
+      run: run({ status: 'waiting_external' }),
+      presentation: presentation({ phase: 'awaiting_receipt' }),
+    };
+    const wire = transport(pendingView, {
+      readRun: () => Promise.resolve({ ok: true, value: terminalSnapshot }),
+    });
+    doubles.client = wire.client;
+    const qc = queryClient();
+    const invalidated: unknown[] = [];
+    vi.spyOn(qc, 'invalidateQueries').mockImplementation((filters) => {
+      invalidated.push(filters?.queryKey);
+      return Promise.resolve();
+    });
+
+    await mount(qc, 2);
+    await settleEffects();
+    expect(wire.getRunCalls).toEqual([RUN_ID]);
+    expect(invalidated.filter((key) => JSON.stringify(key) === '["customers"]')).toHaveLength(1);
+  });
+
+  it('React StrictMode ne purge pas A entre le cleanup et le second setup des effets', async () => {
+    const pendingView: JarvisCurrentRunView = {
+      run: run({ status: 'waiting_external' }),
+      presentation: presentation({ phase: 'awaiting_receipt' }),
+    };
+    const wire = transport(pendingView, {
+      readRun: () => Promise.resolve({ ok: true, value: terminalSnapshot }),
+    });
+    doubles.client = wire.client;
+
+    await mount(queryClient(), 1, true);
+    await settleEffects();
+    expect(wire.getRunCalls).toEqual([RUN_ID]);
+  });
+
+  it('un run pendant sans présentation arme tout de même la convergence exacte', async () => {
+    const pendingWithoutPresentation: JarvisCurrentRunView = {
+      run: run({ status: 'cancelling' }),
+      presentation: null,
+    };
+    const wire = transport(pendingWithoutPresentation, {
+      readRun: () => Promise.resolve({ ok: true, value: terminalSnapshot }),
+    });
+    doubles.client = wire.client;
+    const qc = queryClient();
+    const invalidated: unknown[] = [];
+    vi.spyOn(qc, 'invalidateQueries').mockImplementation((filters) => {
+      invalidated.push(filters?.queryKey);
+      return Promise.resolve();
+    });
+
+    const { bindings } = await mount(qc, 1);
+    expect(last(bindings[0] ?? []).state.phase).toBe('unpresentable');
+    await settleEffects();
+    expect(wire.getRunCalls).toEqual([RUN_ID]);
+    expect(invalidated).toContainEqual(['customers']);
+  });
+
+  it('le provider suspend tout GET exact en arrière-plan puis reprend au focus', async () => {
+    focusManager.setFocused(false);
+    const pendingView: JarvisCurrentRunView = {
+      run: run({ status: 'waiting_external' }),
+      presentation: presentation({ phase: 'awaiting_receipt' }),
+    };
+    const wire = transport(pendingView, {
+      readRun: () => Promise.resolve({ ok: true, value: terminalSnapshot }),
+    });
+    doubles.client = wire.client;
+
+    await mount(queryClient(), 1);
+    await settleEffects();
+    expect(wire.getRunCalls).toEqual([]);
+
+    focusManager.setFocused(true);
+    await settleEffects();
+    expect(wire.getRunCalls).toEqual([RUN_ID]);
+  });
+
+  it('absence ou statut sans effet pendant n’arment aucun GET exact', async () => {
+    for (const initial of [absentView, { run: run(), presentation: presentation() }] as const) {
+      const wire = transport(initial, {
+        readRun: () => Promise.resolve({ ok: true, value: terminalSnapshot }),
+      });
+      doubles.client = wire.client;
+      await mount(queryClient(), 1);
+      await settleEffects();
+      expect(wire.getRunCalls).toEqual([]);
+    }
+  });
+
+  it('un changement de principal abort le GET exact : sa réponse tardive n’invalide rien', async () => {
+    let current: JarvisCurrentRunView = {
+      run: run({ status: 'waiting_external' }),
+      presentation: presentation({ phase: 'awaiting_receipt' }),
+    };
+    let settleRead!: (value: Result<JarvisRunSnapshotView, AppError>) => void;
+    const readSignals: AbortSignal[] = [];
+    const pendingRead = new Promise<Result<JarvisRunSnapshotView, AppError>>((resolve) => {
+      settleRead = resolve;
+    });
+    const currentRunCalls: number[] = [];
+    const getRunCalls: string[] = [];
+    doubles.client = {
+      companyId: 'company-1',
+      jarvisCurrentRun: () => {
+        currentRunCalls.push(currentRunCalls.length + 1);
+        return Promise.resolve({ ok: true, value: current });
+      },
+      jarvisGetRun: (runId: string, readSignal?: AbortSignal) => {
+        getRunCalls.push(runId);
+        if (readSignal !== undefined) readSignals.push(readSignal);
+        return pendingRead;
+      },
+      jarvisSubmitCommand: vi.fn(),
+    } as unknown as BobClient;
+    const qc = queryClient();
+    const invalidated: unknown[] = [];
+    vi.spyOn(qc, 'invalidateQueries').mockImplementation((filters) => {
+      invalidated.push(filters?.queryKey);
+      return Promise.resolve();
+    });
+    const mounted = await mount(qc, 1);
+    await settleEffects();
+    expect(getRunCalls).toEqual([RUN_ID]);
+
+    invalidated.length = 0;
+    current = absentView;
+    doubles.auth = { enabled: true, session: { user: { id: 'owner-2' } } };
+    await mounted.rerender();
+    await settleEffects();
+    expect(readSignals).toHaveLength(1);
+    expect(readSignals[0]?.aborted).toBe(true);
+
+    settleRead({ ok: true, value: terminalSnapshot });
+    await settleEffects();
+    expect(invalidated).toEqual([]);
+    expect(getRunCalls).toEqual([RUN_ID]);
   });
 });

@@ -16,6 +16,7 @@ export interface AppStateSubscriptionLike {
 
 /** Surface minimale d'AppState consommée ici — react-native s'y conforme structurellement. */
 export interface AppStateLike {
+  readonly currentState: AppStateStatus;
   addEventListener(
     type: 'change',
     listener: (status: AppStateStatus) => void,
@@ -38,6 +39,10 @@ export function connectFocusManagerToAppState(
   appState: AppStateLike,
   manager: FocusManagerLike = focusManager,
 ): () => void {
+  // `focusManager` vaut true par défaut hors navigateur. Un démarrage push/headless déjà en
+  // arrière-plan ne produit pas forcément de transition : l'état initial doit donc fermer le
+  // réseau AVANT l'abonnement, pas attendre un événement qui pourrait ne jamais venir.
+  manager.setFocused(isForegroundStatus(appState.currentState));
   const subscription = appState.addEventListener('change', (status) => {
     manager.setFocused(isForegroundStatus(status));
   });

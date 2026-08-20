@@ -17,33 +17,24 @@
  *   privé du coordinateur : deux hôtes montés en même temps (onglet assistant + fiche client) et un
  *   remontage de route rejouent alors le MÊME id, donc le serveur rend le reçu original au lieu
  *   d'exécuter deux fois. Un registre privé transformerait chaque remontage en seconde commande.
- * - Les méthodes Jarvis du `BobClient` sont OPTIONNELLES : elles sont narrowées ici, une seule fois.
- *   Un transport qui n'ouvre pas Jarvis rend `unavailable` — l'hôte ne montre rien, il n'invente
- *   pas un canal.
- * - `refresh()` (le `onAuthoritativeRefresh` de la carte) invalide les projections métier PUIS
- *   relit le run de façon CAUSALE. L'appareil ne sait pas ce que le serveur a écrit ; il ne parie
- *   donc jamais dessus — c'est la même loi que `refreshAfterAction` de l'onglet assistant.
+ * - Les méthodes Jarvis du `BobClient` sont OPTIONNELLES : le hook borne current/submit et le
+ *   provider L7 borne la lecture exacte. Un transport incomplet rend `unavailable` — l'hôte ne
+ *   montre rien, il n'invente pas un canal.
+ * - `refresh(receipt)` arme d'abord la convergence exacte depuis la postimage serveur, puis relit
+ *   le run courant. Les projections métier ne sont invalidées qu'au règlement exact. Sans reçu
+ *   (conflit ou retry manuel), `refresh()` les invalide immédiatement avant la relecture causale.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { randomUUID } from 'expo-crypto';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import type { JarvisCurrentRunView, JarvisRunView } from '@bob/api-client';
+import { isJarvisRunEffectOutcomePending } from '@bob/core';
+import type { JarvisCommandReceiptView, JarvisCurrentRunView, JarvisRunView } from '@bob/api-client';
 import { useAuth } from '../data/auth';
 import { useBobClient } from '../data/client';
 import { AGENT_REFRESH_QUERY_KEY_PREFIXES } from '../assistant/refresh-after-action';
 import { useAgentMissionCommandIdRegistry } from './agent-mission-provider';
-
-/**
- * Phases où Bob ÉCRIT : la décision est admise, l'effet est en vol (work item pris par le worker),
- * mais rien n'est encore visible dans les projections métier. Ce sont les seules que l'écran
- * poursuit — et c'est en les QUITTANT vers `completed` qu'il relit les fiches.
- */
-const JARVIS_WRITING_PHASES: ReadonlySet<string> = new Set([
-  'committing',
-  'awaiting_receipt',
-  'cancelling',
-]);
+import { useJarvisRunConvergence } from './jarvis-run-convergence-provider';
 import {
   JarvisRunCoordinator,
   type JarvisRunFrame,
@@ -89,7 +80,7 @@ export interface JarvisRunFrameBinding {
   readonly state: JarvisRunFrameState;
   readonly coordinator: JarvisRunCoordinator;
   /** Relecture autoritative après tout geste abouti — l'écran ne devine jamais un post-état. */
-  readonly refresh: () => void;
+  readonly refresh: (receipt?: JarvisCommandReceiptView) => void;
 }
 
 /**
@@ -162,6 +153,7 @@ export function useJarvisRunFrame(): JarvisRunFrameBinding {
   const client = useBobClient();
   const queryClient = useQueryClient();
   const commandIds = useAgentMissionCommandIdRegistry();
+  const convergence = useJarvisRunConvergence();
   // Le registre vient du provider global (vidé à la déconnexion et au dispose de la capability) :
   // c'est lui, et non l'instance de coordinateur, qui porte l'idempotence §5.4.
   const [coordinator] = useState(() => new JarvisRunCoordinator(randomUUID, commandIds));
@@ -185,7 +177,9 @@ export function useJarvisRunFrame(): JarvisRunFrameBinding {
         : null,
     [client],
   );
-  const supported = readCurrentRun !== null && ports !== null;
+  // Le canal exact appartient à l'autorité globale L7 : sans elle, un second foreground pourrait
+  // masquer un effet en vol et l'écran perdrait définitivement sa convergence.
+  const supported = readCurrentRun !== null && convergence.supported && ports !== null;
 
   const queryKey = useMemo(() => ['jarvis-run', 'current', identity] as const, [identity]);
   const query = useQuery({
@@ -196,12 +190,14 @@ export function useJarvisRunFrame(): JarvisRunFrameBinding {
     refetchOnMount: 'always',
     refetchOnWindowFocus: 'always',
     refetchOnReconnect: 'always',
-    // SUIVI DES PHASES OÙ BOB ÉCRIT. La confirmation ne fait qu'ADMETTRE la décision : l'écriture
-    // métier part ensuite par un work item, exécutée par le worker. Sans ce suivi, l'écran resterait
-    // sur « Bob enregistre… » jusqu'à un remontage — l'artisan ne verrait jamais son changement
-    // arriver. On ne poursuit QUE ces phases, jamais en continu : un run au repos ne coûte rien.
+    // Le current reste utile à l'UI pendant l'effet. La décision de cycle de vie vient du core,
+    // exactement comme celle du scheduler global — aucune liste de phases n'est reconstruite ici.
     refetchInterval: (current: { state: { data?: JarvisCurrentRunView } }) =>
-      JARVIS_WRITING_PHASES.has(current.state.data?.presentation?.phase ?? '') ? 1_500 : false,
+      current.state.data?.run !== null
+      && current.state.data?.run !== undefined
+      && isJarvisRunEffectOutcomePending(current.state.data.run.status)
+        ? 1_500
+        : false,
     queryFn: async ({ signal }): Promise<JarvisCurrentRunView> => {
       // Refus NOMMÉ : `enabled` interdit déjà ce chemin, mais un transport sans Jarvis ne doit
       // jamais échouer en « undefined n'est pas une fonction ».
@@ -211,6 +207,22 @@ export function useJarvisRunFrame(): JarvisRunFrameBinding {
       return result.value;
     },
   });
+
+  // Deuxième émetteur L7 : si la lecture courante voit elle-même un effet pendant (même sans
+  // présentation), elle publie son run à l'autorité unique. Le premier émetteur — plus tôt et sans
+  // course — est le reçu tactile transmis à `refresh(receipt)` ci-dessous.
+  useEffect(() => {
+    if (
+      !authenticated
+      || !supported
+      || query.isPending
+      || query.isError
+      || query.data === undefined
+    ) {
+      return;
+    }
+    if (query.data.run !== null) convergence.observe(query.data.run);
+  }, [authenticated, convergence, query.data, query.isError, query.isPending, supported]);
 
   const state = useMemo(
     () =>
@@ -225,35 +237,29 @@ export function useJarvisRunFrame(): JarvisRunFrameBinding {
     [authenticated, ports, query.data, query.isError, query.isPending, supported],
   );
 
-  const refresh = useCallback((): void => {
-    // 1) Les projections métier ont pu bouger (une fiche client vient peut-être d'être écrite).
-    //    L'appareil ne sait pas ce que le serveur a écrit et ne le déduit pas d'un reçu : il
-    //    invalide les MÊMES préfixes que toute action aboutie de Bob — `customers` y figure.
+  const invalidateBusinessProjections = useCallback((): void => {
     for (const prefix of AGENT_REFRESH_QUERY_KEY_PREFIXES) {
       void queryClient.invalidateQueries({ queryKey: prefix });
     }
-    // 2) Relecture CAUSALE du run : toute lecture partie AVANT le geste est annulée, puis un GET
+  }, [queryClient]);
+
+  const refresh = useCallback((receipt?: JarvisCommandReceiptView): void => {
+    // Le reçu est la première postimage autoritaire du geste. Il arme le suivi exact AVANT toute
+    // relecture : un worker très rapide ou un nouveau foreground ne peuvent donc plus masquer A.
+    if (receipt !== undefined) {
+      convergence.observe(receipt.run);
+    } else {
+      // Sans reçu (conflit, retry manuel), une autre autorité peut déjà avoir écrit : relire les
+      // projections est la seule réponse honnête. Avec reçu pendant, L7 attend le règlement exact
+      // et évite cette invalidation prématurée.
+      invalidateBusinessProjections();
+    }
+    // Relecture CAUSALE du run : toute lecture partie AVANT le geste est annulée, puis un GET
     //    neuf prouve l'état post-commit (patron `refreshAfterMutation` de la reprise froide).
     void queryClient
       .cancelQueries({ queryKey, exact: true })
       .then(() => queryClient.refetchQueries({ queryKey, exact: true }));
-  }, [queryClient, queryKey]);
-
-  // CONVERGENCE. L'invalidation du geste (ci-dessus) part AVANT que l'écriture métier existe :
-  // à cet instant le work item n'est pas encore exécuté, et relire ne rendrait que l'ancienne
-  // fiche. La relecture qui COMPTE est celle-ci — déclenchée quand le run ARRIVE en `completed`,
-  // c'est-à-dire quand le reçu d'effet est acté. Sans elle, l'artisan confirmerait, verrait
-  // « enregistré », et sa fiche resterait visuellement inchangée jusqu'au prochain remontage.
-  const phase = query.data?.presentation?.phase ?? null;
-  const previousPhase = useRef<string | null>(null);
-  useEffect(() => {
-    const before = previousPhase.current;
-    previousPhase.current = phase;
-    if (phase !== 'completed' || before === 'completed' || before === null) return;
-    for (const prefix of AGENT_REFRESH_QUERY_KEY_PREFIXES) {
-      void queryClient.invalidateQueries({ queryKey: prefix });
-    }
-  }, [phase, queryClient]);
+  }, [convergence, invalidateBusinessProjections, queryClient, queryKey]);
 
   return useMemo(() => ({ state, coordinator, refresh }), [coordinator, refresh, state]);
 }

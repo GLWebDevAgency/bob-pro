@@ -102,9 +102,11 @@ describe('JarvisRunDrainCard — pouvoirs bornés du drain tactile U1-k', () => 
     expect(refresh).not.toHaveBeenCalled();
 
     await act(async () => {
-      (buttons(renderer).Réessayer?.onPress as () => void)();
+      const responderEvent = { nativeEvent: { timestamp: 42 } };
+      (buttons(renderer).Réessayer?.onPress as (event: unknown) => void)(responderEvent);
     });
     expect(refresh).toHaveBeenCalledTimes(1);
+    expect(refresh).toHaveBeenCalledWith();
     expect(cancelCoordinator.cancel).not.toHaveBeenCalled();
   });
 
@@ -125,6 +127,12 @@ describe('JarvisRunDrainCard — pouvoirs bornés du drain tactile U1-k', () => 
     });
     expect(cancelCoordinator.cancel).toHaveBeenCalledWith(runView, PORTS);
     expect(refresh).toHaveBeenCalledTimes(1);
+    expect(refresh).toHaveBeenCalledWith({
+      outcome: 'admitted',
+      run: { ...runView, revision: 5 },
+      presentation: null,
+      eventSequence: 8,
+    });
   });
 
   it('partage le vol UI : un double tap ne soumet qu’une annulation', async () => {

@@ -16,6 +16,7 @@ import {
 } from './agent-mission';
 import {
   JARVIS_FOREGROUND_HOLDING_STATUSES,
+  JARVIS_RUN_EFFECT_OUTCOME_PENDING_BY_STATUS,
   JARVIS_RUN_KINDS,
   JARVIS_RUN_LEASE_RELEASING_STATUSES,
   JARVIS_RUN_PERSISTED_STATUSES,
@@ -23,6 +24,7 @@ import {
   JARVIS_RUN_TERMINAL_STATUSES,
   deriveJarvisDefinitionVersion,
   deriveNextWakeAt,
+  isJarvisRunEffectOutcomePending,
   projectQuoteMissionEnvelope,
   projectQuoteMissionJarvisStatus,
   type JarvisRunStatus,
@@ -142,6 +144,29 @@ describe('JarvisRun — unions fermées §5.1', () => {
       expect(JARVIS_RUN_LEASE_RELEASING_STATUSES.has(status)).toBe(false);
       expect(status).not.toBe('quarantined');
     }
+  });
+
+  it('décide exhaustivement quels statuts peuvent encore livrer un effet métier', () => {
+    expect(JARVIS_RUN_EFFECT_OUTCOME_PENDING_BY_STATUS).toEqual({
+      active: false,
+      waiting_user: false,
+      waiting_screen: false,
+      waiting_external: true,
+      retry_due: true,
+      parked: false,
+      cancelling: true,
+      completed: false,
+      cancelled: false,
+      failed_terminal: false,
+      quarantined: false,
+    });
+    expect(Object.isFrozen(JARVIS_RUN_EFFECT_OUTCOME_PENDING_BY_STATUS)).toBe(true);
+    expect(
+      JARVIS_RUN_STATUSES.filter((status) => isJarvisRunEffectOutcomePending(status)),
+    ).toEqual(['waiting_external', 'retry_due', 'cancelling']);
+    expect(Object.keys(JARVIS_RUN_EFFECT_OUTCOME_PENDING_BY_STATUS).sort()).toEqual(
+      [...JARVIS_RUN_STATUSES].sort(),
+    );
   });
 });
 
