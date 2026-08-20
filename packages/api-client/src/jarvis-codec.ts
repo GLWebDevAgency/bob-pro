@@ -372,6 +372,17 @@ export function decodeCustomerContactPresentation(
   }
   // Une confirmation sans proposition scellée n'a rien à confirmer : refus fermé.
   if (confirmation !== null && proposal === null) return null;
+  // Une fin n'existe que sur la phase terminale du domaine, et toute phase `completed` porte
+  // nécessairement soit le reçu d'écriture, soit la fiche existante retenue. Accepter une moitié
+  // ferait afficher un succès avant le reçu ou, inversement, masquerait l'issue d'un run fini.
+  if ((value.phase === 'completed') !== (completion !== null)) return null;
+  // Une revue de doublons n'existe que pour la création. Refuser cette contradiction dès le wire
+  // empêche un client de rendre des choix de rattachement sur une modification.
+  if (duplicateReview !== null && value.intent !== 'create') return null;
+  // `existing_selected` est exclusivement l'issue sans écriture d'une recherche de doublons en
+  // création. Une modification n'effectue jamais cette recherche : ce membre y serait un wire
+  // contradictoire et potentiellement une navigation vers une autre fiche.
+  if (completion?.kind === 'existing_selected' && value.intent !== 'create') return null;
   return Object.freeze({
     schema: JARVIS_PRESENTATION_SCHEMA,
     version: JARVIS_PRESENTATION_VERSION,

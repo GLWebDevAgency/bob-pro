@@ -803,9 +803,11 @@ export function projectCustomerContactPresentation(
   /**
    * Libellés des fiches CITÉES par le run — ceux de la revue scellée, et celui de la fiche retenue.
    * Résolus par l'appelant dans sa propre lecture stateless, jamais par cette fonction pure.
-   * Une entrée absente vaut « nom irrésolu » : le rang garde sa place, sans son nom.
+   * Une entrée absente dans une table disponible vaut « nom irrésolu » : le rang garde sa place,
+   * sans son nom. `null` signifie que l'annuaire entier est indisponible : la revue disparaît
+   * fail-closed plutôt que d'afficher une liste dont aucun choix ne peut être identifié.
    */
-  labels: ReadonlyMap<string, string> = new Map(),
+  labels: ReadonlyMap<string, string> | null = new Map(),
 ): CustomerContactPresentationWire | null {
   const targetCustomerId = state.intent.mode === 'update' ? state.intent.target.customerId : null;
   // Le libellé passe par les MÊMES bornes de présentation que les valeurs (§G4 allégé) : un nom
@@ -813,10 +815,22 @@ export function projectCustomerContactPresentation(
   // rien — contrairement à l'`after` d'un champ, que l'artisan confirme.
   const targetLabel =
     target === null || target.displayName === null ? null : presentedText(target.displayName);
+  const hasReceipt = state.receipt !== null;
+  const hasExistingSelection = state.resolvedExistingCustomerId !== null;
+  // La projection serveur applique la même cohérence que le codec : elle ne doit jamais émettre
+  // elle-même un contrat que le client rejettera. Une phase terminale porte exactement UNE issue,
+  // et `existing_selected` n'appartient qu'au parcours de création sans écriture.
+  if ((state.phase === 'completed') !== (hasReceipt || hasExistingSelection)) return null;
+  if (hasReceipt && hasExistingSelection) return null;
+  if (hasExistingSelection && state.intent.mode !== 'create') return null;
+  // La revue de doublons est elle aussi propre à la création. Un state corrompu qui grefferait
+  // ses choix sur une modification ne doit jamais traverser le projecteur, même avant la phase
+  // terminale : l'écran proposerait alors un rattachement que ce run n'a pas le droit d'effectuer.
+  if (state.duplicateReview !== null && state.intent.mode !== 'create') return null;
   // Le rang que Bob a prononcé est la POSITION dans le jeu scellé : `index + 1`, jamais un compte
   // recalculé et jamais un tri neuf. `labels` ne fait que NOMMER ce que le sceau a déjà ordonné.
   const duplicateReview =
-    state.duplicateReview === null
+    state.duplicateReview === null || labels === null
       ? null
       : Object.freeze({
           reviewId: state.duplicateReview.reviewId,
@@ -838,7 +852,10 @@ export function projectCustomerContactPresentation(
       : state.resolvedExistingCustomerId !== null
         ? Object.freeze({
             kind: 'existing_selected' as const,
-            label: presentedLabelOf(labels, state.resolvedExistingCustomerId),
+            label:
+              labels === null
+                ? null
+                : presentedLabelOf(labels, state.resolvedExistingCustomerId),
           })
         : null;
   const proposal = state.proposal;
@@ -1378,14 +1395,15 @@ export class JarvisRunController {
    * chaque battement, pour rien.
    *
    * `customerLabels` est OPTIONNEL sur la vue, comme `currentRun` et `targetSnapshot` : on le
-   * narrowe par `typeof === 'function'`. Son absence, comme une panne, rend une table VIDE — la
-   * revue sort alors sans noms plutôt qu'à moitié nommée, et la ligne d'audit dit pourquoi. Une
-   * garde `?.` silencieuse ferait disparaître la revue sans que personne ne l'apprenne.
+   * narrowe par `typeof === 'function'`. Son absence, comme une panne, rend `null` — la revue
+   * disparaît fail-closed plutôt que de devenir une liste entièrement anonyme, et la ligne
+   * d'audit dit pourquoi. Une entrée absente DANS une réponse valide garde en revanche son rang
+   * avec `label: null`.
    */
   private async duplicateLabels(
     owner: JarvisAdmissionOwner,
     state: CustomerContactStateV1,
-  ): Promise<ReadonlyMap<string, string>> {
+  ): Promise<ReadonlyMap<string, string> | null> {
     const cites = new Set<string>();
     for (const candidate of state.duplicateReview?.candidates ?? []) {
       cites.add(candidate.customerId);
@@ -1393,7 +1411,13 @@ export class JarvisRunController {
     if (state.resolvedExistingCustomerId !== null) cites.add(state.resolvedExistingCustomerId);
     if (cites.size === 0) return new Map();
     const admission = this.admission;
-    if (admission === null) return new Map();
+    if (admission === null) {
+      this.logger.audit('jarvis.presentation.duplicate_labels_unavailable', {
+        companyId: owner.companyId,
+        reason: 'admission_absent',
+      });
+      return null;
+    }
     const identites = [...cites];
     try {
       const read = await admission.readJarvisStateless(owner, async (view) => {
@@ -1406,7 +1430,7 @@ export class JarvisRunController {
           companyId: owner.companyId,
           reason: 'view_member_absent',
         });
-        return new Map();
+        return null;
       }
       return new Map(
         references.map((reference) => [reference.customerId, reference.canonicalName] as const),
@@ -1416,7 +1440,7 @@ export class JarvisRunController {
         companyId: owner.companyId,
         reason: cause instanceof Error ? cause.message : String(cause),
       });
-      return new Map();
+      return null;
     }
   }
 

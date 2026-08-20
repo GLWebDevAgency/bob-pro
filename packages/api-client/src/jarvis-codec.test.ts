@@ -538,12 +538,17 @@ describe('jarvis-codec — U1-h : la revue énoncée, et la fin du run', () => {
 
   it('décode les DEUX fins de run, et `existing_selected` n’affirme aucune écriture', () => {
     const ecrit = decodeCustomerContactPresentation(
-      presentation({ completion: { kind: 'recorded' } }),
+      presentation({ phase: 'completed', completion: { kind: 'recorded' } }),
     );
     expect(ecrit?.completion).toEqual({ kind: 'recorded' });
 
     const retenu = decodeCustomerContactPresentation(
-      presentation({ completion: { kind: 'existing_selected', label: 'Dupont Plomberie' } }),
+      presentation({
+        phase: 'completed',
+        proposal: null,
+        confirmation: null,
+        completion: { kind: 'existing_selected', label: 'Dupont Plomberie' },
+      }),
     );
     expect(retenu?.completion).toEqual({ kind: 'existing_selected', label: 'Dupont Plomberie' });
 
@@ -554,8 +559,66 @@ describe('jarvis-codec — U1-h : la revue énoncée, et la fin du run', () => {
       { kind: 'existing_selected' },
       { kind: 'existing_selected', label: 42 },
     ]) {
-      expect(decodeCustomerContactPresentation(presentation({ completion: mauvaise }))).toBeNull();
+      expect(
+        decodeCustomerContactPresentation(
+          presentation({ phase: 'completed', completion: mauvaise }),
+        ),
+      ).toBeNull();
     }
+  });
+
+  it('REFUSE toute contradiction entre phase, intention et issue terminale', () => {
+    // Un succès avant la phase terminale et une phase terminale sans issue sont deux mensonges.
+    expect(
+      decodeCustomerContactPresentation(
+        presentation({ completion: { kind: 'recorded' } }),
+      ),
+    ).toBeNull();
+    expect(
+      decodeCustomerContactPresentation(
+        presentation({ phase: 'completed', completion: null }),
+      ),
+    ).toBeNull();
+
+    // Choisir un existant est une issue du parcours de création uniquement : une édition ne peut
+    // jamais se transformer en rattachement à une autre fiche par un wire incohérent.
+    expect(
+      decodeCustomerContactPresentation(
+        presentation({
+          phase: 'completed',
+          intent: 'update',
+          targetCustomerId: CUSTOMER_ID,
+          proposal: null,
+          confirmation: null,
+          completion: { kind: 'existing_selected', label: 'Dupont Plomberie' },
+        }),
+      ),
+    ).toBeNull();
+
+    // L'édition enregistrée reste une issue valide : la garde ne ferme pas le vrai chemin CAS.
+    expect(
+      decodeCustomerContactPresentation(
+        presentation({
+          phase: 'completed',
+          intent: 'update',
+          targetCustomerId: CUSTOMER_ID,
+          completion: { kind: 'recorded' },
+        }),
+      )?.completion,
+    ).toEqual({ kind: 'recorded' });
+
+    expect(
+      decodeCustomerContactPresentation(
+        presentation({
+          phase: 'awaiting_duplicate_review',
+          intent: 'update',
+          targetCustomerId: CUSTOMER_ID,
+          proposal: null,
+          confirmation: null,
+          duplicateReview: revue(),
+        }),
+      ),
+    ).toBeNull();
   });
 
   it('encode l’issue de revue en la RECONSTRUISANT, et refuse toute autre décision', () => {

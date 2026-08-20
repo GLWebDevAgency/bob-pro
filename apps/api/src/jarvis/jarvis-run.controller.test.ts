@@ -43,6 +43,11 @@ const PROPOSAL_COMMAND_ID = '25000000-0000-4000-8000-000000000001';
 const CONFIRMATION_ID = '22000000-0000-4000-8000-000000000001';
 const EFFECT_ID = '24000000-0000-4000-8000-000000000001';
 const TARGET_CUSTOMER_ID = '26000000-0000-4000-8000-000000000001';
+const DUPLICATE_CUSTOMER_A = '27000000-0000-4000-8000-000000000001';
+const DUPLICATE_CUSTOMER_B = '27000000-0000-4000-8000-000000000002';
+const DUPLICATE_REVIEW_ID = '28000000-0000-4000-8000-000000000001';
+const DUPLICATE_CHOICE_A = '29000000-0000-4000-8000-000000000001';
+const DUPLICATE_CHOICE_B = '29000000-0000-4000-8000-000000000002';
 const WAKE_ID = '23000000-0000-4000-8000-000000000001';
 const PROPOSAL_HASH = 'd'.repeat(64);
 /** Sceau de la cible RELUE (§9.1) — distinct du digest des champs proposés, par construction. */
@@ -104,7 +109,36 @@ function stateWith(overrides: Record<string, unknown> = {}): unknown {
   };
 }
 
-function runWith(state: unknown, revision = 4): JarvisRunEnvelope {
+function duplicateReviewState(): unknown {
+  return stateWith({
+    phase: 'awaiting_duplicate_review',
+    duplicateReview: {
+      reviewId: DUPLICATE_REVIEW_ID,
+      candidates: [
+        {
+          choiceId: DUPLICATE_CHOICE_A,
+          customerId: DUPLICATE_CUSTOMER_A,
+          matchDigest: 'a'.repeat(64),
+        },
+        {
+          choiceId: DUPLICATE_CHOICE_B,
+          customerId: DUPLICATE_CUSTOMER_B,
+          matchDigest: 'b'.repeat(64),
+        },
+      ],
+      candidateSetHash: 'c'.repeat(64),
+    },
+    proposal: null,
+    confirmation: null,
+  });
+}
+
+type StatefulJarvisRunEnvelope = Extract<
+  JarvisRunEnvelope,
+  { readonly stateVersion: number }
+>;
+
+function runWith(state: unknown, revision = 4): StatefulJarvisRunEnvelope {
   return {
     kind: 'customer_contact',
     runId: RUN_ID,
@@ -117,6 +151,14 @@ function runWith(state: unknown, revision = 4): JarvisRunEnvelope {
     state,
     nextWakeAt: null,
     terminalAt: null,
+  };
+}
+
+function terminalRunWith(state: unknown, revision = 4): JarvisRunEnvelope {
+  return {
+    ...runWith(state, revision),
+    status: 'completed',
+    terminalAt: READ_AT,
   };
 }
 
@@ -136,6 +178,7 @@ class FakeAdmission implements JarvisAdmissionUnitOfWorkPort {
      * comme la persistance d'aujourd'hui) ; un objet = annuaire lié rendant ce run courant.
      */
     private readonly directory: { readonly currentRun: JarvisRunEnvelope | null } | null = null,
+    private readonly extraView: Partial<JarvisStatelessReadView> = {},
   ) {}
 
   runJarvisAdmission(envelope: JarvisUserAdmissionEnvelope): Promise<JarvisAdmissionResult> {
@@ -153,13 +196,14 @@ class FakeAdmission implements JarvisAdmissionUnitOfWorkPort {
   ): Promise<JarvisStatelessReadResult<T>> {
     this.reads.push(owner);
     const directory = this.directory;
-    const view: JarvisStatelessReadView =
+    const baseView: JarvisStatelessReadView =
       directory === null
         ? { runById: () => Promise.resolve(this.run) }
         : {
             runById: () => Promise.resolve(this.run),
             currentRun: () => Promise.resolve(directory.currentRun),
           };
+    const view: JarvisStatelessReadView = { ...baseView, ...this.extraView };
     return { status: 'executed', value: await read(view), readAt: READ_AT };
   }
 }
@@ -358,6 +402,17 @@ describe('corps exact (422) — le serveur ne devine jamais', () => {
       submitBody({ command: { type: 'confirm', confirmationId: CONFIRMATION_ID } }),
       'proposalHash',
     ],
+    [
+      'adoption hostile d’un doublon',
+      submitBody({
+        command: {
+          type: 'choose_duplicate_resolution',
+          reviewId: DUPLICATE_REVIEW_ID,
+          decision: { kind: 'adopt_existing', choiceId: DUPLICATE_CHOICE_A },
+        },
+      }),
+      'command.decision.kind',
+    ],
   ];
 
   it.each(refusals)('refuse %s en 422 sans rien exécuter', async (_label, body, field) => {
@@ -389,6 +444,28 @@ describe('corps exact (422) — le serveur ne devine jamais', () => {
     expect(parseJarvisSubmitCommandBody(submitBody({
       command: { type: 'cancel_run', reason: 'manual_handoff' },
     })).command).toEqual({ type: 'cancel_run', reason: 'manual_handoff' });
+    expect(parseJarvisSubmitCommandBody(submitBody({
+      command: {
+        type: 'choose_duplicate_resolution',
+        reviewId: DUPLICATE_REVIEW_ID,
+        decision: { kind: 'use_existing', choiceId: DUPLICATE_CHOICE_A },
+      },
+    })).command).toEqual({
+      type: 'choose_duplicate_resolution',
+      reviewId: DUPLICATE_REVIEW_ID,
+      decision: { kind: 'use_existing', choiceId: DUPLICATE_CHOICE_A },
+    });
+    expect(parseJarvisSubmitCommandBody(submitBody({
+      command: {
+        type: 'choose_duplicate_resolution',
+        reviewId: DUPLICATE_REVIEW_ID,
+        decision: { kind: 'continue_create' },
+      },
+    })).command).toEqual({
+      type: 'choose_duplicate_resolution',
+      reviewId: DUPLICATE_REVIEW_ID,
+      decision: { kind: 'continue_create' },
+    });
   });
 
   it('laisse replay et drain atteindre l’admission même après retrait de l’allowlist technique', () => {
@@ -429,6 +506,27 @@ describe('enveloppe d’admission — les faits serveur restent serveur (G7)', (
       type: 'record_presentation_ack',
       confirmationId: CONFIRMATION_ID,
       ack: 'screen_ack',
+    });
+  });
+
+  it('transmet le choix tactile de doublon clé par clé jusqu’à l’admission', async () => {
+    const admission = new FakeAdmission(admitted(runWith(duplicateReviewState(), 3)));
+    const { controller: candidate } = controller({ admission });
+
+    await asOwner(() => candidate.submitCommand(RUN_ID, submitBody({
+      expectedRevision: 2,
+      command: {
+        type: 'choose_duplicate_resolution',
+        reviewId: DUPLICATE_REVIEW_ID,
+        decision: { kind: 'use_existing', choiceId: DUPLICATE_CHOICE_A },
+      },
+    })));
+
+    expect(admission.envelopes).toHaveLength(1);
+    expect(admission.envelopes[0]?.command).toEqual({
+      type: 'choose_duplicate_resolution',
+      reviewId: DUPLICATE_REVIEW_ID,
+      decision: { kind: 'use_existing', choiceId: DUPLICATE_CHOICE_A },
     });
   });
 
@@ -690,6 +788,153 @@ describe('présentation écran (greffe G4) — jamais une proposition non scell�
     const snapshot = await asOwner(() => candidate.getRun(RUN_ID));
 
     expect(snapshot.presentation).toMatchObject({ phase: 'preparing_proposal', proposal: null, confirmation: null });
+  });
+
+  it('projette la revue scellée sans exposer les customerId et conserve un rang irrésolu', async () => {
+    const run = runWith(duplicateReviewState(), 2);
+    const admission = new FakeAdmission(admitted(run), run, null, {
+      customerLabels: (customerIds) => {
+        expect(customerIds).toEqual([DUPLICATE_CUSTOMER_A, DUPLICATE_CUSTOMER_B]);
+        // Le second client a disparu entre la recherche et la lecture : son rang reste présent.
+        return Promise.resolve([
+          { customerId: DUPLICATE_CUSTOMER_A, canonicalName: 'Dupont\u00a0 Plomberie' },
+        ]);
+      },
+    });
+    const { controller: candidate } = controller({ admission });
+
+    const snapshot = await asOwner(() => candidate.getRun(RUN_ID));
+
+    expect(snapshot.presentation?.duplicateReview).toEqual({
+      reviewId: DUPLICATE_REVIEW_ID,
+      choices: [
+        { ordinal: 1, choiceId: DUPLICATE_CHOICE_A, label: 'Dupont Plomberie' },
+        { ordinal: 2, choiceId: DUPLICATE_CHOICE_B, label: null },
+      ],
+    });
+    const wire = JSON.stringify(snapshot.presentation);
+    expect(wire).not.toContain(DUPLICATE_CUSTOMER_A);
+    expect(wire).not.toContain(DUPLICATE_CUSTOMER_B);
+  });
+
+  it.each([
+    ['port absent', {}],
+    [
+      'port en panne',
+      { customerLabels: () => Promise.reject(new Error('annuaire indisponible')) },
+    ],
+  ] as const)('%s : masque la revue entière et journalise le refus fail-closed', async (_label, extraView) => {
+    const run = runWith(duplicateReviewState(), 2);
+    const admission = new FakeAdmission(admitted(run), run, null, extraView);
+    const { controller: candidate, logger } = controller({ admission });
+
+    const snapshot = await asOwner(() => candidate.getRun(RUN_ID));
+
+    expect(snapshot.presentation).toMatchObject({
+      phase: 'awaiting_duplicate_review',
+      duplicateReview: null,
+      proposal: null,
+      confirmation: null,
+    });
+    expect(logger.audit).toHaveBeenCalledWith(
+      'jarvis.presentation.duplicate_labels_unavailable',
+      expect.objectContaining({ companyId: COMPANY_ID }),
+    );
+  });
+
+  it('nomme séparément la fiche existante retenue et l’écriture réellement acquittée', async () => {
+    const selected = terminalRunWith(stateWith({
+      phase: 'completed',
+      duplicateReview: (duplicateReviewState() as Record<string, unknown>).duplicateReview,
+      proposal: null,
+      confirmation: null,
+      resolvedExistingCustomerId: DUPLICATE_CUSTOMER_A,
+    }), 3);
+    const selectedAdmission = new FakeAdmission(admitted(selected), selected, null, {
+      customerLabels: () => Promise.resolve([
+        { customerId: DUPLICATE_CUSTOMER_A, canonicalName: 'Dupont Plomberie' },
+        { customerId: DUPLICATE_CUSTOMER_B, canonicalName: 'Durand Couverture' },
+      ]),
+    });
+    const { controller: selectedController } = controller({ admission: selectedAdmission });
+
+    expect((await asOwner(() => selectedController.getRun(RUN_ID))).presentation?.completion)
+      .toEqual({ kind: 'existing_selected', label: 'Dupont Plomberie' });
+
+    const recorded = terminalRunWith(stateWith({
+      phase: 'completed',
+      receipt: {
+        effectId: EFFECT_ID,
+        customerId: DUPLICATE_CUSTOMER_A,
+        customerRevision: 1,
+        recordedAt: READ_AT,
+      },
+    }), 7);
+    const recordedAdmission = new FakeAdmission(admitted(recorded), recorded);
+    const { controller: recordedController } = controller({
+      admission: recordedAdmission,
+      payloads: new FakePayloads(sealedPayload()),
+    });
+
+    expect((await asOwner(() => recordedController.getRun(RUN_ID))).presentation?.completion)
+      .toEqual({ kind: 'recorded' });
+  });
+
+  it.each([
+    [
+      'reçu hors phase completed',
+      runWith(stateWith({
+        receipt: {
+          effectId: EFFECT_ID,
+          customerId: DUPLICATE_CUSTOMER_A,
+          customerRevision: 1,
+          recordedAt: READ_AT,
+        },
+      }), 6),
+    ],
+    [
+      'fiche existante retenue depuis une intention update',
+      terminalRunWith(stateWith({
+        phase: 'completed',
+        intent: { mode: 'update', target: { customerId: TARGET_CUSTOMER_ID, revision: 2 } },
+        proposal: null,
+        confirmation: null,
+        resolvedExistingCustomerId: DUPLICATE_CUSTOMER_A,
+      }), 6),
+    ],
+    [
+      'reçu et fiche retenue simultanés',
+      terminalRunWith(stateWith({
+        phase: 'completed',
+        receipt: {
+          effectId: EFFECT_ID,
+          customerId: DUPLICATE_CUSTOMER_A,
+          customerRevision: 1,
+          recordedAt: READ_AT,
+        },
+        resolvedExistingCustomerId: DUPLICATE_CUSTOMER_A,
+      }), 7),
+    ],
+    [
+      'revue de doublons greffée sur une intention update',
+      runWith(stateWith({
+        // `preparing_proposal` laisse volontairement passer cette forme au parseur de state :
+        // le test mord donc sur la garde du projecteur, pas sur une garde de phase antérieure.
+        phase: 'preparing_proposal',
+        intent: { mode: 'update', target: { customerId: TARGET_CUSTOMER_ID, revision: 2 } },
+        duplicateReview: (duplicateReviewState() as Record<string, unknown>).duplicateReview,
+        proposal: null,
+        confirmation: null,
+      }), 5),
+    ],
+  ] as const)('%s : la projection serveur échoue fermée', async (_label, run) => {
+    const admission = new FakeAdmission(admitted(run), run);
+    const { controller: candidate } = controller({
+      admission,
+      payloads: new FakePayloads(sealedPayload()),
+    });
+
+    expect((await asOwner(() => candidate.getRun(RUN_ID))).presentation).toBeNull();
   });
 
   it('state illisible ou run absent : présentation nulle, 404 franc', async () => {
