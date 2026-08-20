@@ -19,8 +19,11 @@ import { JarvisCustomerEffectExecutor } from '../jobs/jarvis-customer-effect.exe
 import type { JarvisCustomerEffectAuthority } from '../jobs/jarvis-customer-effect.executor';
 import {
   JARVIS_DISPATCH_ADMISSION,
+  JARVIS_DISPATCH_RUN_DIRECTORY,
+  JARVIS_WORK_ITEMS_DISPATCH,
   JARVIS_EFFECT_EXECUTORS,
 } from '../jobs/jarvis-work-item-dispatch.service';
+import { JARVIS_CUSTOMER_EFFECT_AUTHORITY } from './jarvis-admission.provider';
 import { AppLogger } from '../observability/logger';
 import type { Persistence } from '../persistence/persistence';
 import { PERSISTENCE } from '../persistence/persistence-token';
@@ -305,14 +308,41 @@ describe('graphe d’injection réel', () => {
     }
   });
 
-  it('registre : le magasin lié NE SUFFIT PAS — l’autorité métier manque encore', async () => {
+  it('U1-f : une persistance COMPLÈTE arme la chaîne — dispatch, annuaire, autorité, registre', async () => {
+    // LE FAIT QUE CE LOT ÉTABLIT. Jusqu'ici `JARVIS_WORK_ITEMS_DISPATCH` et
+    // `JARVIS_DISPATCH_RUN_DIRECTORY` n'étaient liés par AUCUN provider : le worker rendait
+    // `dependencies_absent` à chaque minute et un `confirm` d'artisan n'écrivait JAMAIS sa fiche.
+    // Ici la persistance porte les trois fabriques : les trois jetons se résolvent NON NULS et
+    // le registre ouvre les deux actions du lot. C'est la preuve d'ARMEMENT, pas de câblage.
+    const dispatch = { claimDue: vi.fn(), listPendingSignals: vi.fn() };
+    const directory = { listDispatchCoordinates: vi.fn() };
+    const persistence = {
+      ...bootPersistence(FAKE_PAYLOADS),
+      createJarvisWorkItemsDispatch: vi.fn(() => dispatch),
+      createJarvisDispatchRunDirectory: vi.fn(() => directory),
+      createJarvisCustomerEffectAuthority: vi.fn(() => FAKE_CUSTOMERS),
+    };
+    const moduleRef = await compileJarvis(persistence as unknown as ReturnType<typeof bootPersistence>);
+
+    try {
+      expect(moduleRef.get(JARVIS_WORK_ITEMS_DISPATCH)).toBe(dispatch);
+      expect(moduleRef.get(JARVIS_DISPATCH_RUN_DIRECTORY)).toBe(directory);
+      expect(moduleRef.get(JARVIS_CUSTOMER_EFFECT_AUTHORITY)).toBe(FAKE_CUSTOMERS);
+      const registry = moduleRef.get(JARVIS_EFFECT_EXECUTORS) as ReadonlyMap<string, unknown>;
+      expect([...registry.keys()].sort()).toEqual(['client-creer@1', 'client-modifier@1']);
+    } finally {
+      await moduleRef.close();
+    }
+  });
+
+  it('registre : un adapter SANS autorité métier laisse le registre vide (fail-closed)', async () => {
     const persistence = bootPersistence(FAKE_PAYLOADS);
     const moduleRef = await compileJarvis(persistence);
 
     try {
-      // Honnêteté du câblage : `JARVIS_CUSTOMER_EFFECT_AUTHORITY` (adapter tenant/principal sur
-      // `BackendService.createCustomer`/`updateCustomer`) n'a pas d'adapter — le registre reste
-      // donc VIDE et le worker règle `executor_unregistered`, jamais un effet sans son autorité.
+      // Un adapter de persistance qui ne SAIT PAS fabriquer l'autorité métier (double de test,
+      // génération antérieure) laisse le registre VIDE : le worker règle `executor_unregistered`,
+      // jamais un effet exécuté sans son autorité. C'est le pendant fail-closed de l'armement.
       expect((moduleRef.get(JARVIS_EFFECT_EXECUTORS) as ReadonlyMap<string, unknown>).size).toBe(0);
       // Et dès que cette autorité arrive, le MÊME magasin arme les deux actions du lot.
       const registry = buildJarvisCustomerEffectExecutors({

@@ -109,6 +109,7 @@ import { hasBlockingAuthoritativeDataError } from '../../src/data/authoritative-
 import {
   jarvisFrameTargetsCustomer,
   usePublishAgentContext,
+  useJarvisOpenRun,
   useJarvisRunFrame,
   type AgentContext,
   type AgentAccessLayout,
@@ -462,6 +463,14 @@ export default function ClientDetail() {
    * `commandId`) : monter la carte dans les deux hôtes est idempotent, jamais deux commandes.
    */
   const jarvis = useJarvisRunFrame();
+  /**
+   * U1-f §3 — LE GESTE D'OUVERTURE. La fiche est la surface cataloguée de `client-modifier@1` :
+   * c'est ici que l'artisan demande à Bob de modifier ce qu'il a sous les yeux. Le reçu déclenche
+   * `jarvis.refresh()`, et la carte apparaît EN PLACE — aucune navigation, aucune perte de
+   * contexte. [DÉCISION D1] Aucun gate d'entitlement : l'artisan modifie sa fiche à la main sans
+   * abonnement, Bob qui l'assiste sur la MÊME surface suit la même règle (parité humain↔Bob).
+   */
+  const jarvisOpen = useJarvisOpenRun({ client, onOpened: jarvis.refresh });
   const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: 150 });
 
   // Docs DU client = documents du coffre liés à SES pièces (factures, devis, chantiers).
@@ -1143,13 +1152,28 @@ export default function ClientDetail() {
                 />
               ) : null}
 
-              {/* ── 4 actions rapides — QuickAction kit (Lot 4 ; parité humain ↔ Bob ;
+              {/* ── Actions rapides — QuickAction kit (Lot 4 ; parité humain ↔ Bob ;
                    tel:/mailto: = device). Tones : devis b2b (même canal que la Home),
                    relance ai (c'est Bob qui agit — l'indigo est SON canal), appel success,
-                   email warning — pastilles distinctes, icônes teintées comme la Home. ── */}
-              <View style={{ flexDirection: 'row', gap: 9 }}>
+                   email warning — pastilles distinctes, icônes teintées comme la Home.
+                   U1-f ajoute « Modifier avec Bob » (tone ai) : la rangée peut donc porter CINQ
+                   tuiles. Elle passe en `flexWrap` — à cinq, des `flex:1` sur une seule ligne
+                   tronqueraient les libellés sur un écran étroit, y compris ceux d'avant. ── */}
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 9 }}>
+                {jarvisOpen.supported ? (
+                  <QuickAction
+                    style={{ flexGrow: 1, flexBasis: 96 }}
+                    label={t('fiche.actionBobEdit', { personality })}
+                    tone="ai"
+                    icon={<PencilIcon color={semantic.ai} size={18} />}
+                    // Même gate d'écriture que les autres gestes : sur une fiche qu'on n'a pas
+                    // pu relire, on ne demande à personne de la modifier.
+                    disabled={!customerFresh || jarvisOpen.state.kind === 'opening'}
+                    onPress={() => jarvisOpen.open(id)}
+                  />
+                ) : null}
                 <QuickAction
-                  style={{ flex: 1 }}
+                  style={{ flexGrow: 1, flexBasis: 96 }}
                   label={t('fiche.actionQuote', { personality })}
                   tone="b2b"
                   icon={<FileTextIcon color={semantic.b2b} size={18} />}
@@ -1157,7 +1181,7 @@ export default function ClientDetail() {
                   onPress={() => router.push('/devis/new')}
                 />
                 <QuickAction
-                  style={{ flex: 1 }}
+                  style={{ flexGrow: 1, flexBasis: 96 }}
                   label={t('fiche.actionRelance', { personality })}
                   tone="ai"
                   icon={<SendIcon color={semantic.ai} size={18} />}
@@ -1167,7 +1191,7 @@ export default function ClientDetail() {
                   }
                 />
                 <QuickAction
-                  style={{ flex: 1 }}
+                  style={{ flexGrow: 1, flexBasis: 96 }}
                   label={t('fiche.actionCall', { personality })}
                   tone="success"
                   icon={<PhoneIcon color={semantic.success} size={18} />}
@@ -1177,7 +1201,7 @@ export default function ClientDetail() {
                     : {})}
                 />
                 <QuickAction
-                  style={{ flex: 1 }}
+                  style={{ flexGrow: 1, flexBasis: 96 }}
                   label={t('fiche.actionEmail', { personality })}
                   tone="warning"
                   icon={<MailIcon color={semantic.warning} size={18} />}
@@ -1185,6 +1209,29 @@ export default function ClientDetail() {
                   {...(email !== null ? { onPress: () => openLink(`mailto:${email}`) } : {})}
                 />
               </View>
+
+              {/* Une demande DÉJÀ EN COURS n'est pas une panne : rien à réessayer, l'artisan doit
+                  seulement savoir où la retrouver. Un bouton « Réessayer » y serait un mensonge —
+                  il ne rouvrirait rien. L'échec, lui, se réessaie vraiment. */}
+              {jarvisOpen.state.kind === 'busy' ? (
+                <View accessibilityLiveRegion="polite" style={{ marginTop: 9 }}>
+                  <Text selectable style={[font('sub'), { color: colors.slate500 }]}>
+                    {t('fiche.bobEditBusy', { personality })}
+                  </Text>
+                </View>
+              ) : null}
+              {jarvisOpen.state.kind === 'failed' ? (
+                <View accessibilityLiveRegion="polite" style={{ marginTop: 9 }}>
+                  <ErrorRetry
+                    message={t('fiche.bobEditFailed', { personality })}
+                    // Même gate d'écriture que la tuile : sur une fiche qu'on n'a pas pu relire,
+                    // on ne rouvre pas de demande.
+                    onRetry={() => {
+                      if (customerFresh) jarvisOpen.open(id);
+                    }}
+                  />
+                </View>
+              ) : null}
 
               {customerRefreshFailed ? (
                 <ErrorRetry

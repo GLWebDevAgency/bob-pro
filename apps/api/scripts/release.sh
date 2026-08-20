@@ -2907,6 +2907,258 @@ SELECT format('REVOKE %I FROM %I CASCADE', 'bob_jarvis_payload_retention_directo
 SQL
 }
 
+ensure_jarvis_dispatch_directory_role() {
+  psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 <<'SQL'
+-- Supabase intercepte fatalement tout GRANT/REVOKE d'adhesion visant postgres (connexion tuee) :
+-- l'adhesion SET est donc accordee IMPLICITEMENT a la creation (createrole_self_grant, PG16+),
+-- sans aucun fallback GRANT explicite.
+SET createrole_self_grant = 'set';
+
+SELECT format(
+  'CREATE ROLE %I NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS',
+  'bob_jarvis_dispatch_directory'
+)
+WHERE NOT EXISTS (
+  SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'bob_jarvis_dispatch_directory'
+) \gexec
+
+DO $$
+DECLARE
+  deployer_oid OID;
+  deployer_is_superuser BOOLEAN;
+  authority_oid OID;
+BEGIN
+  SELECT role.oid, role.rolsuper
+    INTO STRICT deployer_oid, deployer_is_superuser
+    FROM pg_catalog.pg_roles AS role
+   WHERE role.rolname = current_user;
+  SELECT role.oid
+    INTO STRICT authority_oid
+    FROM pg_catalog.pg_roles AS role
+   WHERE role.rolname = 'bob_jarvis_dispatch_directory';
+
+  IF NOT pg_catalog.pg_has_role(current_user, authority_oid, 'SET')
+     OR (
+       NOT deployer_is_superuser
+       AND NOT EXISTS (
+         SELECT 1
+           FROM pg_catalog.pg_auth_members AS membership
+          WHERE membership.roleid = authority_oid
+            AND membership.member = deployer_oid
+            AND membership.set_option
+            AND NOT membership.inherit_option
+       )
+     ) THEN
+    RAISE EXCEPTION
+      'bob_jarvis_dispatch_directory is not available through implicit SET membership; create it as this deployer with createrole_self_grant=set before retrying';
+  END IF;
+END;
+$$;
+
+-- Un CREATEROLE non-superuser ne peut pas reaffirmer NOSUPERUSER/NOBYPASSRLS/NOREPLICATION.
+-- Ces attributs restent attestes ci-dessous ; seuls les attributs administrables sont rejoues.
+ALTER ROLE bob_jarvis_dispatch_directory
+  NOLOGIN NOCREATEDB NOCREATEROLE NOINHERIT;
+
+DO $$
+DECLARE authority pg_catalog.pg_roles%ROWTYPE;
+BEGIN
+  SELECT * INTO STRICT authority
+    FROM pg_catalog.pg_roles WHERE rolname = 'bob_jarvis_dispatch_directory';
+  IF authority.rolcanlogin OR authority.rolsuper OR authority.rolcreatedb
+     OR authority.rolcreaterole OR authority.rolinherit OR authority.rolreplication
+     OR authority.rolbypassrls THEN
+    RAISE EXCEPTION 'Jarvis payload retention directory role privilege drift';
+  END IF;
+END;
+$$;
+
+SELECT format(
+  'REVOKE %I FROM %I CASCADE', parent.rolname, 'bob_jarvis_dispatch_directory'
+)
+  FROM pg_catalog.pg_auth_members AS membership
+  JOIN pg_catalog.pg_roles AS parent ON parent.oid = membership.roleid
+ WHERE membership.member = 'bob_jarvis_dispatch_directory'::regrole
+   AND parent.rolname <> 'postgres'
+\gexec
+SELECT format(
+  'REVOKE %I FROM %I CASCADE', 'bob_jarvis_dispatch_directory', member.rolname
+)
+  FROM pg_catalog.pg_auth_members AS membership
+  JOIN pg_catalog.pg_roles AS member ON member.oid = membership.member
+ WHERE membership.roleid = 'bob_jarvis_dispatch_directory'::regrole
+   AND member.rolname NOT IN (current_user, 'postgres')
+\gexec
+
+DO $$
+DECLARE
+  authority_oid OID;
+BEGIN
+  SELECT role.oid
+    INTO STRICT authority_oid
+    FROM pg_catalog.pg_roles AS role
+   WHERE role.rolname = 'bob_jarvis_dispatch_directory';
+
+  IF EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_auth_members AS membership
+     WHERE membership.member = authority_oid
+  ) OR EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_auth_members AS membership
+      JOIN pg_catalog.pg_roles AS member ON member.oid = membership.member
+     WHERE membership.roleid = authority_oid
+       AND member.rolname <> current_user
+  ) THEN
+    RAISE EXCEPTION
+      'bob_jarvis_dispatch_directory has an unexpected member; membership remediation must be performed outside this release without targeting postgres';
+  END IF;
+END;
+$$;
+SQL
+}
+
+provision_jarvis_dispatch_directory() {
+  ensure_jarvis_dispatch_directory_role
+  psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
+    -v app_role="${APP_DATABASE_ROLE:-}" <<'SQL'
+-- Le proprietaire de la fonction n'est jamais devine : soit le role qui vient d'appliquer la
+-- migration, soit le proprietaire de la table (meme role de schema), soit l'autorite elle-meme
+-- (release rejouee). Tout autre proprietaire est une derive et arrete la release.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_catalog.pg_proc AS function
+     WHERE function.oid =
+       'public.list_jarvis_dispatch_coordinates_v1(text,integer)'::regprocedure
+       AND function.proowner NOT IN (
+         (SELECT role.oid FROM pg_catalog.pg_roles AS role WHERE role.rolname = current_user),
+         (SELECT relation.relowner FROM pg_catalog.pg_class AS relation
+           WHERE relation.oid = 'public.jarvis_work_items'::regclass),
+         'bob_jarvis_dispatch_directory'::regrole
+       )
+  ) THEN
+    RAISE EXCEPTION 'Jarvis payload retention directory function has an unexpected owner';
+  END IF;
+END;
+$$;
+
+-- Les privileges de SCHEMA appartiennent au proprietaire des objets : le deployeur l'ASSUME,
+-- exactement comme la migration U1-d, plutot que de supposer un droit herite. CREATE est requis
+-- LE TEMPS de la bascule (PostgreSQL exige que le NOUVEAU proprietaire d'une fonction ait CREATE
+-- sur son schema) ; il est retire plus bas, dans ce meme bloc transactionnel.
+SELECT format('SET LOCAL ROLE %I', owner.rolname)
+  FROM pg_catalog.pg_class AS relation
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = relation.relowner
+ WHERE relation.oid = 'public.jarvis_work_items'::regclass
+\gexec
+GRANT USAGE, CREATE ON SCHEMA public TO bob_jarvis_dispatch_directory;
+RESET ROLE;
+
+-- La bascule de proprietaire est faite par LE DEPLOYEUR, jamais sous un role assume : PostgreSQL
+-- exige de pouvoir SET ROLE vers le nouveau proprietaire, et seul le deployeur est membre SET de
+-- l'autorite. C'est aussi pourquoi la migration rend le role de schema avant de creer la fonction.
+SELECT format(
+  'ALTER FUNCTION %s OWNER TO bob_jarvis_dispatch_directory',
+  function.oid::regprocedure
+)
+  FROM pg_catalog.pg_proc AS function
+ WHERE function.oid =
+   'public.list_jarvis_dispatch_coordinates_v1(text,integer)'::regprocedure
+   AND function.proowner = (
+     SELECT role.oid FROM pg_catalog.pg_roles AS role WHERE role.rolname = current_user
+   )
+\gexec
+
+SET LOCAL ROLE bob_jarvis_dispatch_directory;
+REVOKE ALL ON FUNCTION public.list_jarvis_dispatch_coordinates_v1(TEXT, INTEGER) FROM PUBLIC;
+ALTER FUNCTION public.list_jarvis_dispatch_coordinates_v1(TEXT, INTEGER) SECURITY DEFINER;
+ALTER FUNCTION public.list_jarvis_dispatch_coordinates_v1(TEXT, INTEGER)
+  SET search_path = pg_catalog;
+ALTER FUNCTION public.list_jarvis_dispatch_coordinates_v1(TEXT, INTEGER)
+  SET row_security = on;
+ALTER FUNCTION public.list_jarvis_dispatch_coordinates_v1(TEXT, INTEGER)
+  SET statement_timeout = '4s';
+ALTER FUNCTION public.list_jarvis_dispatch_coordinates_v1(TEXT, INTEGER)
+  SET lock_timeout = '1s';
+
+-- ACL = allowlist EXACTE, jamais une liste de roles connus a revoquer : un ancien grantee
+-- arbitraire sur une fonction SECURITY DEFINER enumererait les proprietaires d'un tenant.
+SELECT format('REVOKE ALL ON FUNCTION %s FROM %s CASCADE',
+              function.oid::regprocedure,
+              CASE WHEN privilege.grantee = 0 THEN 'PUBLIC'
+                   ELSE quote_ident(grantee.rolname) END)
+  FROM pg_catalog.pg_proc AS function
+ CROSS JOIN LATERAL pg_catalog.aclexplode(
+   COALESCE(function.proacl, pg_catalog.acldefault('f', function.proowner))
+ ) AS privilege
+  LEFT JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = privilege.grantee
+ WHERE function.oid =
+   'public.list_jarvis_dispatch_coordinates_v1(text,integer)'::regprocedure
+   AND privilege.privilege_type = 'EXECUTE'
+   AND privilege.grantee <> function.proowner
+\gexec
+-- Fence Data API Supabase : ces trois roles recoivent EXECUTE par defaut sur toute fonction neuve
+-- du schema public. Un annuaire de proprietaires atteignable depuis PostgREST serait une fuite.
+SELECT format(
+  'REVOKE ALL PRIVILEGES ON FUNCTION public.list_jarvis_dispatch_coordinates_v1(TEXT, INTEGER) FROM %I',
+  role.rolname
+)
+  FROM pg_catalog.pg_roles AS role
+ WHERE role.rolname IN ('anon', 'authenticated', 'service_role')
+\gexec
+SELECT format(
+  'GRANT EXECUTE ON FUNCTION public.list_jarvis_dispatch_coordinates_v1(TEXT, INTEGER) TO %I',
+  :'app_role'
+)
+ WHERE :'app_role' <> ''
+\gexec
+RESET ROLE;
+
+SELECT format('SET LOCAL ROLE %I', owner.rolname)
+  FROM pg_catalog.pg_class AS relation
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = relation.relowner
+ WHERE relation.oid = 'public.jarvis_work_items'::regclass
+\gexec
+REVOKE CREATE ON SCHEMA public FROM bob_jarvis_dispatch_directory;
+GRANT USAGE ON SCHEMA public TO bob_jarvis_dispatch_directory;
+
+-- Table remise a plat pour cette autorite AVANT le grant par colonne : un privilege de table
+-- entier qui survivrait rendrait la restriction par colonne inoperante.
+REVOKE ALL PRIVILEGES ON TABLE public.jarvis_work_items
+  FROM bob_jarvis_dispatch_directory CASCADE;
+SELECT DISTINCT format(
+  'REVOKE ALL PRIVILEGES (%I) ON TABLE public.jarvis_work_items FROM bob_jarvis_dispatch_directory CASCADE',
+  attribute.attname
+)
+  FROM pg_catalog.pg_attribute AS attribute
+ CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) AS privilege
+ WHERE attribute.attrelid = 'public.jarvis_work_items'::regclass
+   AND attribute.attnum > 0 AND NOT attribute.attisdropped
+   AND privilege.grantee = 'bob_jarvis_dispatch_directory'::regrole
+\gexec
+-- GRANT PAR COLONNE, `payload` EXCLU : l'autorite lit des coordonnees, jamais du contenu. Meme
+-- SECURITY DEFINER, la fonction ne peut pas atteindre la PII — le privilege n'existe pas.
+GRANT SELECT ("companyId", "ownerUserId", "runId", "status", "nextAttemptAt", "leaseExpiresAt", "resultDigest", "signalAppliedAt")
+  ON TABLE public.jarvis_work_items
+  TO bob_jarvis_dispatch_directory;
+RESET ROLE;
+
+-- Dernier geste : le role runtime ne doit JAMAIS pouvoir SET ROLE vers l'autorite. Il n'a que le
+-- droit d'EXECUTER la fonction, dont le corps refuse tout appelant qui n'est pas le definer.
+SELECT format('REVOKE %I FROM %I CASCADE', 'bob_jarvis_dispatch_directory', :'app_role')
+ WHERE :'app_role' <> ''
+   AND EXISTS (
+     SELECT 1
+       FROM pg_catalog.pg_auth_members AS membership
+       JOIN pg_catalog.pg_roles AS member ON member.oid = membership.member
+      WHERE membership.roleid = 'bob_jarvis_dispatch_directory'::regrole
+        AND member.rolname = :'app_role'
+   )
+\gexec
+SQL
+}
+
 certify_cabinet_worker_scope() {
   : "${CABINET_RELEASE_ENV:?CABINET_RELEASE_ENV is required}"
   : "${CABINET_INVITATION_WORKER_ENABLED:?CABINET_INVITATION_WORKER_ENABLED is required}"
@@ -3570,6 +3822,7 @@ ensure_agent_mission_fingerprint_readiness_authority_role
 ensure_catalogue_search_token_authority_role
 ensure_realtime_voice_trace_authority_roles
 ensure_jarvis_payload_retention_directory_role
+ensure_jarvis_dispatch_directory_role
 DIRECT_URL="$DIRECT_URL" sh apps/api/scripts/realtime-capacity-release.sh ensure
 if [ "$BOB_RELEASE_PHASE" = predeploy ]; then
   close_and_drain_realtime_before_cancellation_fence_expand
@@ -3600,6 +3853,7 @@ certify_agent_mission_release_acl
 provision_openai_native_maintenance_directory
 provision_realtime_reaper_directory
 provision_jarvis_payload_retention_directory
+provision_jarvis_dispatch_directory
 provision_agent_mission_release_flag_authority
 certify_agent_mission_realtime_release_acl
 DIRECT_URL="$DIRECT_URL" APP_DATABASE_ROLE="${APP_DATABASE_ROLE:-}" \

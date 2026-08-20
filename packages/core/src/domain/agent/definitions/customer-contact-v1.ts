@@ -460,6 +460,20 @@ export function computeCustomerContactProposalHash(input: {
   ]));
 }
 
+/**
+ * Sceau de cible d'un work item de MODIFICATION : (fiche, révision vérifiée). Le worker le
+ * recalcule AVANT d'écrire — si la fiche a bougé depuis la confirmation, les digests divergent et
+ * l'effet est annulé (`target_digest_drift`) plutôt que d'écraser un travail que l'artisan n'a
+ * pas vu. EXPORTÉ pour que l'exécuteur puisse le REPRODUIRE : un axe de sécurité que personne ne
+ * sait recalculer est un axe mort.
+ */
+export function computeCustomerContactUpdateTargetDigest(
+  customerId: string,
+  revision: number,
+): string {
+  return computeUpdateTargetDigest(customerId, revision);
+}
+
 function computeUpdateTargetDigest(customerId: string, revision: number): string {
   return sha256Hex(JSON.stringify([
     'bob.jarvis-run.customer-contact.target.v1',

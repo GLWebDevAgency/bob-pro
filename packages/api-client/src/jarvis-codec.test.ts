@@ -51,6 +51,7 @@ function presentation(overrides: Record<string, unknown> = {}): Record<string, u
     phase: 'awaiting_confirmation',
     intent: 'create',
     targetCustomerId: null,
+    targetLabel: null,
     proposal: {
       proposalId: PROPOSAL_ID,
       proposalHash: HASH,

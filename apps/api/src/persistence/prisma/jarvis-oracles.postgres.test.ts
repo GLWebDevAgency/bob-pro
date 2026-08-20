@@ -68,7 +68,6 @@ import {
   computeCustomerContactProposalHash,
   computeCustomerContactSensitiveDigest,
   computeCustomerContactTargetSensitiveDigest,
-  deriveJarvisSystemCommandId,
   deriveRealtimeTurnId,
   sha256Hex,
   type AgentMissionFingerprintPort,
@@ -515,38 +514,6 @@ describe.skipIf(!RUN_CERT)(
           : { realtimeCorrelation: channel.correlation(input.step) }),
         command: input.command,
         ...(input.actionId === undefined ? {} : { actionId: input.actionId }),
-      });
-    }
-
-    function systemEnvelope(input: {
-      readonly companyId: string;
-      readonly ownerUserId: string;
-      readonly runId: string;
-      readonly effectId: string;
-      readonly expectedRevision: number;
-      readonly command: unknown;
-      readonly observationKind: string;
-    }): JarvisSystemAdmissionEnvelope {
-      const derived = deriveJarvisSystemCommandId(
-        input.runId,
-        input.effectId,
-        input.observationKind,
-      );
-      if (!derived.ok) {
-        throw new Error(`Jarvis U1-d: dérivation système refusée ${JSON.stringify(derived.error)}`);
-      }
-      return Object.freeze({
-        kind: 'customer_contact' as const,
-        definitionVersion: 1,
-        companyId: input.companyId,
-        ownerUserId: input.ownerUserId,
-        runId: input.runId,
-        commandId: derived.value,
-        expectedRevision: input.expectedRevision,
-        command: input.command,
-        observationKind: input.observationKind,
-        effectId: input.effectId,
-        occurredAt: new Date().toISOString(),
       });
     }
 
@@ -1403,43 +1370,6 @@ describe.skipIf(!RUN_CERT)(
           return { runId, effectId };
         };
 
-        /**
-         * Clôture du run par la voie SYSTÈME §5.6. Le worker U1-c ne sait pas reconstruire le
-         * reçu d'un SUCCÈS customer_contact depuis la seule ligne persistée (`customerId` et
-         * `customerRevision` n'y sont pas) : il laisse le signal en redelivery plutôt que
-         * d'inventer un reçu — la preuve l'observe (`signalAppliedAt` NULL) puis signale par la
-         * voie durable, exactement ce que devra faire le câblage U1-d.
-         */
-        const signalSuccess = async (input: {
-          readonly runId: string;
-          readonly effectId: string;
-          readonly customerId: string;
-          readonly expectedRevision: number;
-        }): Promise<void> => {
-          expectAdmission(
-            await uowA.runJarvisSystemAdmission(
-              systemEnvelope({
-                companyId: effectCompanyId,
-                ownerUserId: owner,
-                runId: input.runId,
-                effectId: input.effectId,
-                expectedRevision: input.expectedRevision,
-                observationKind: 'effect_receipt',
-                command: {
-                  type: 'record_effect_receipt',
-                  effectId: input.effectId,
-                  outcome: {
-                    kind: 'succeeded',
-                    customerId: input.customerId,
-                    customerRevision: 1,
-                  },
-                },
-              }),
-              PRODUCTION_DEPS,
-            ),
-            'admitted',
-          );
-        };
 
         // ---------------------------------------------------------------------------
         // A. CRÉER — admission → worker RÉEL → exécuteur RÉEL → fiche en base
@@ -1469,14 +1399,12 @@ describe.skipIf(!RUN_CERT)(
         expect(createdItems[0]?.resultDigest).toBe(
           jarvisCustomerEffectSuccessDigest(created.effectId, customerId),
         );
-        // Le signal reste dû : le worker n'a rien inventé (voir signalSuccess).
-        expect(createdItems[0]?.signalAppliedAt).toBeNull();
-        await signalSuccess({
-          runId: created.runId,
-          effectId: created.effectId,
-          customerId,
-          expectedRevision: 5,
-        });
+        // U1-f — LE SIGNAL EST DÉSORMAIS APPLIQUÉ PAR LE WORKER. Avant ce lot, le reçu de succès
+        // d'un `customer_contact` était INCONSTRUCTIBLE (il exige l'identité et la révision
+        // écrites, qu'un digest opaque ne porte pas) : la ligne restait éternellement due et le
+        // run bloqué en `committing`. L'exécuteur décrit maintenant son effet, donc la boucle se
+        // referme SEULE — la simuler à la main masquerait précisément ce que ce lot établit.
+        expect(createdItems[0]?.signalAppliedAt).not.toBeNull();
         const completed = await requireRun(created.runId);
         expect(completed.status).toBe('completed');
         expect(completed.phase).toBe('completed');
@@ -1740,12 +1668,8 @@ describe.skipIf(!RUN_CERT)(
         expect(updateItems[0]?.resultDigest).toBe(
           jarvisCustomerEffectSuccessDigest(updateEffectId, customerId),
         );
-        await signalSuccess({
-          runId: updateRunId,
-          effectId: updateEffectId,
-          customerId,
-          expectedRevision: 8,
-        });
+        // Même fait qu'en création : le worker a signalé lui-même, le run s'est refermé seul.
+        expect(updateItems[0]?.signalAppliedAt).not.toBeNull();
         await expect(requireRun(updateRunId)).resolves.toMatchObject({ status: 'completed' });
       },
       TEST_TIMEOUT_MS,
@@ -1972,6 +1896,17 @@ class CertificationCustomerAuthority implements JarvisCustomerEffectAuthority {
     void id;
     void companyId;
     return { customerId: target.customerId, fields };
+  }
+
+  /** Même surface que l'autorité de PRODUCTION : sans elle, l'axe `targetDigest` serait muet. */
+  async readCustomerRevision(target: JarvisCustomerEffectTarget): Promise<number | null> {
+    const rows = await this.prisma.withTenant(target.companyId, () =>
+      this.prisma.client().customer.findFirst({
+        where: { id: target.customerId, companyId: target.companyId },
+        select: { revision: true },
+      }),
+    );
+    return rows === null ? null : rows.revision;
   }
 
   async createCustomer(

@@ -69,10 +69,13 @@ import {
   type CustomerType,
   type JarvisAdmissionUnitOfWorkPort,
   type JarvisProposalPayloadStorePort,
+  computeCustomerContactUpdateTargetDigest,
+  type CustomerContactEffectOutcome,
 } from '@bob/core';
 
 import type {
   JarvisEffectExecutionInput,
+  JarvisSucceededEffectQuery,
   JarvisEffectExecutionOutcome,
   JarvisEffectExecutor,
   JarvisEffectReconciliation,
@@ -166,6 +169,14 @@ export interface JarvisCustomerEffectTarget {
  */
 export interface JarvisCustomerEffectAuthority {
   readCustomer(target: JarvisCustomerEffectTarget): Promise<JarvisCustomerSnapshot | null>;
+  /**
+   * Révision PERSISTÉE de la fiche (U1-f). Elle n'appartient pas au domaine — c'est un compteur
+   * d'écriture, comme `updatedAt` — mais le reçu de succès du run l'exige (§5.3 :
+   * `outcome.customerRevision`) : c'est ce qui referme le run sur la VÉRITÉ écrite, et non sur
+   * un digest opaque. Optionnelle : une autorité qui ne sait pas la rendre laisse le signal
+   * inconstructible, donc le work item DÛ — jamais un reçu inventé.
+   */
+  readCustomerRevision?(target: JarvisCustomerEffectTarget): Promise<number | null>;
   createCustomer(
     target: JarvisCustomerEffectTarget,
     fields: JarvisCustomerFields,
@@ -366,6 +377,103 @@ export class JarvisCustomerEffectExecutor implements JarvisEffectExecutor {
    * Réconciliation d'un effet dont le résultat n'a jamais été persisté. Pure lecture : elle
    * n'écrit rien et ne clôt rien elle-même — elle rend au worker de quoi décider.
    */
+  /**
+   * U1-f — DÉCRIT L'EFFET RÉUSSI pour que le worker puisse refermer le run sur la VÉRITÉ écrite.
+   *
+   * Le reçu de succès de `customer_contact` exige l'identité ET la révision de la fiche (§5.3) :
+   * un `resultDigest` opaque ne les porte pas, et le worker ne peut pas les inventer. Cette
+   * description est RECONSTRUCTIBLE sans lease ni mémoire — exactement ce qu'exige la redelivery
+   * après un redémarrage :
+   *   · en création, le `customerId` est DÉRIVÉ de l'`effectId` (namespace d'idempotence) ;
+   *   · en modification, il est porté par l'intention du run, relue en stateless.
+   * La révision, elle, est RELUE : c'est l'entier réellement écrit, jamais un compteur supposé.
+   *
+   * `null` à la moindre incertitude — fiche absente, autorité muette, run illisible : le signal
+   * reste alors inconstructible et le work item DÛ. Un reçu approximatif refermerait un run sur
+   * une révision fausse, et la garde §9.1 deviendrait aveugle pour la proposition suivante.
+   */
+  async describeSucceededEffect(
+    input: JarvisSucceededEffectQuery,
+  ): Promise<CustomerContactEffectOutcome | null> {
+    const { coordinates, effectId } = input;
+    const readRevision = this.deps.customers.readCustomerRevision?.bind(this.deps.customers);
+    if (readRevision === undefined) return null;
+    const state = await this.readRunState(
+      coordinates.companyId,
+      coordinates.ownerUserId,
+      coordinates.runId,
+    );
+    if (state.kind !== 'read' || state.state === null) return null;
+    const intent = state.state.intent;
+    // Le `customerId` suit la MÊME règle que l'écriture — sinon la description décrirait une
+    // autre fiche que celle qui a été touchée.
+    const customerId =
+      intent.mode === 'update' ? intent.target.customerId : deriveJarvisEffectCustomerId(effectId);
+    // L'effet doit être VÉRIFIABLE : une fiche absente signifie que rien n'a atterri, donc
+    // qu'aucun succès ne peut être acquitté.
+    try {
+      const revision = await readRevision({
+        companyId: coordinates.companyId,
+        ownerUserId: coordinates.ownerUserId,
+        customerId,
+      });
+      if (revision === null || !Number.isSafeInteger(revision) || revision < 1) return null;
+      return { kind: 'succeeded', customerId, customerRevision: revision };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * AXE `targetDigest` DE LA REVALIDATION (§5.3) — le worker recalcule le sceau de cible AVANT
+   * d'écrire, et annule (`target_digest_drift`) s'il a bougé. Sans cette méthode, le worker
+   * SAUTAIT silencieusement la vérification : le sceau était posé par le domaine, transporté par
+   * la ligne… et jamais confronté à la réalité. Un axe de sûreté que personne ne sait recalculer
+   * est un axe mort.
+   *
+   * Le sceau est `(customerId, révision vérifiée)` : on relit donc la révision COURANTE et on
+   * reproduit le calcul du domaine. Si la fiche a été modifiée entre la confirmation et
+   * l'exécution, les digests divergent et l'effet est annulé plutôt que d'écraser un travail que
+   * l'artisan n'a jamais vu. Aucune révision lisible ⇒ `null`, ce que le worker traite comme une
+   * divergence : on n'écrit pas sur une cible qu'on ne peut pas vérifier.
+   */
+  async recalculateTargetDigest(input: JarvisEffectExecutionInput): Promise<string | null> {
+    const { coordinates, lease } = input;
+    // Le sceau n'existe QUE pour une modification : ailleurs, il n'y a rien à revalider et
+    // `null` dit exactement cela — le worker ne compare alors rien (il ne rentre dans cet axe
+    // que si la ligne porte un `targetDigest`).
+    if (customerEffectMode(lease.actionId, lease.actionVersion) !== 'update') return null;
+    // « JE NE SAIS PAS » N'EST PAS « ÇA A CHANGÉ ». Le worker traite tout écart au sceau comme
+    // une dérive et ANNULE l'effet ; rendre `null` sur une simple panne de lecture annulerait
+    // donc une écriture que l'artisan a confirmée. On LÈVE : le worker traduit l'exception en
+    // réessai motivé (`target_digest_recalculation_failed`), et l'effet reste dû.
+    const readRevision = this.deps.customers.readCustomerRevision?.bind(this.deps.customers);
+    if (readRevision === undefined) {
+      throw new Error('jarvis_customer_effect_revision_unreadable:authority_without_revision');
+    }
+    const state = await this.readRunState(
+      coordinates.companyId,
+      coordinates.ownerUserId,
+      coordinates.runId,
+    );
+    if (state.kind !== 'read' || state.state === null) {
+      throw new Error('jarvis_customer_effect_revision_unreadable:run_unreadable');
+    }
+    const intent = state.state.intent;
+    if (intent.mode !== 'update') return null;
+    const revision = await readRevision({
+      companyId: coordinates.companyId,
+      ownerUserId: coordinates.ownerUserId,
+      customerId: intent.target.customerId,
+    });
+    if (revision === null) {
+      // Fiche introuvable : ce n'est pas une panne de lecture, c'est une cible qui n'est plus là.
+      // Le sceau ne peut plus correspondre, et l'annulation est la bonne réponse.
+      return null;
+    }
+    return computeCustomerContactUpdateTargetDigest(intent.target.customerId, revision);
+  }
+
   async reconcileEffect(
     input: JarvisEffectExecutionInput,
   ): Promise<JarvisCustomerEffectReconciliation> {

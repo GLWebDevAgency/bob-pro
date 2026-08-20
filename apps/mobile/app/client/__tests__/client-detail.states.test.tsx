@@ -67,6 +67,11 @@ vi.mock('react-native-svg', () => ({ default: 'Svg', Circle: 'Circle', Path: 'Pa
 // ActionDiffView (grammaire partagée de la carte Jarvis) tire les icônes Expo : le vrai paquet
 // n'est pas résolvable hors bundler Metro.
 vi.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons' }));
+// Le geste d'ouverture Jarvis (U1-f §3) dérive son `commandId` d'expo-crypto : le vrai module
+// touche le runtime natif, indisponible hors bundler.
+vi.mock('expo-crypto', () => ({
+  randomUUID: (): string => '88888888-8888-4888-8888-888888888888',
+}));
 vi.mock('expo-linear-gradient', () => ({ LinearGradient: 'LinearGradient' }));
 vi.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ top: 59, right: 0, bottom: 34, left: 0 }),
@@ -92,6 +97,14 @@ vi.mock('../../../src/agent', () => ({
     refresh: vi.fn(),
   }),
   jarvisFrameTargetsCustomer: () => false,
+  // Le geste d'ouverture U1-f n'est pas le sujet de cette planche : transport sans ouverture,
+  // donc aucune QuickAction supplémentaire — la fiche rend EXACTEMENT comme avant.
+  useJarvisOpenRun: () => ({
+    state: { kind: 'unsupported' },
+    supported: false,
+    open: vi.fn(),
+    dismiss: vi.fn(),
+  }),
 }));
 vi.mock('../../../src/components/customer-form', () => ({ CustomerForm: () => null }));
 vi.mock('../../../src/components/CustomerBillingSections', () => ({ CustomerBillingSections: () => null }));

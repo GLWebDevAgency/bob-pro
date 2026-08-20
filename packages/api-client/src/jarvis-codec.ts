@@ -74,6 +74,9 @@ const PRESENTATION_KEYS = [
   'phase',
   'intent',
   'targetCustomerId',
+  // U1-f §4 — le nom de la fiche visée. Décodé comme du texte présentable ou `null` : l'écran ne
+  // compose JAMAIS un libellé lui-même (il n'a pas la fiche), il rend ce que le serveur a nommé.
+  'targetLabel',
   'proposal',
   'confirmation',
 ] as const;
@@ -285,7 +288,11 @@ export function decodeCustomerContactPresentation(
     (value.intent !== 'create' && value.intent !== 'update') ||
     (value.targetCustomerId !== null && !isCanonicalUuid(value.targetCustomerId)) ||
     // Une modification sans cible relue n'existe pas (§8) ; une création n'en porte jamais.
-    (value.intent === 'update') !== (value.targetCustomerId !== null)
+    (value.intent === 'update') !== (value.targetCustomerId !== null) ||
+    // U1-f §4 — le libellé est du texte PRÉSENTABLE ou `null`. Un serveur qui enverrait autre
+    // chose (objet, nombre, chaîne de contrôle) est refusé À LA FORME : l'écran n'affiche jamais
+    // un nom qu'il n'a pas pu valider.
+    (value.targetLabel !== null && !isPresentedText(value.targetLabel))
   ) {
     return null;
   }
@@ -307,6 +314,7 @@ export function decodeCustomerContactPresentation(
     phase: value.phase,
     intent: value.intent,
     targetCustomerId: value.targetCustomerId as string | null,
+    targetLabel: value.targetLabel as string | null,
     proposal,
     confirmation,
   });

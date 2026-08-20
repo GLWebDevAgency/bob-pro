@@ -12,5 +12,6 @@ export * from './QuoteAgentMissionSurface';
 export * from './QuoteMissionResumeGate';
 export * from './quote-line-mission-coordinator';
 export * from './quote-screen-mission-coordinator';
+export * from './use-jarvis-open-run';
 export * from './use-quote-screen-mission-binding';
 export * from './wizard-hints';

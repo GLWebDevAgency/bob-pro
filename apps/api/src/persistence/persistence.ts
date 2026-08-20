@@ -41,6 +41,9 @@ import type {
   SubscriptionRepository,
   WorksiteMediaStorage,
 } from '@bob/core';
+import type { JarvisCustomerEffectAuthority } from '../jobs/jarvis-customer-effect.executor';
+import type { JarvisWorkItemsDispatchRepository } from './prisma/jarvis-work-items.persistence';
+import type { JarvisDispatchRunDirectoryPort } from '../jobs/jarvis-work-item-dispatch.service';
 import type { CabinetInfrastructure } from '../cabinet/cabinet-infrastructure';
 import type { DocumentFolderDeletionPlanStore } from '../documents/document-folder-deletion-plan';
 import type {
@@ -188,6 +191,23 @@ export interface Persistence {
    * demi-implémentation ferait croire à une charge scellée là où il n'y a qu'une mémoire.
    */
   createJarvisProposalPayloadStore(): JarvisProposalPayloadStorePort | null;
+  /**
+   * Annuaire des coordonnées à dispatcher (U1-f §1). `null` est fail-closed pour tout adapter
+   * incapable de prouver l'autorité SECURITY DEFINER : le worker retrouve alors son no-op audité
+   * `dependencies_absent` plutôt que de balayer sur une liste inventée.
+   */
+  /**
+   * Repository de dispatch des work items (U1-f §1) — claim fencé, autorisation et règlement
+   * sous les GUC de la ligne cible. `null` est fail-closed : le worker reste un no-op audité.
+   */
+  createJarvisWorkItemsDispatch(): JarvisWorkItemsDispatchRepository | null;
+  createJarvisDispatchRunDirectory(): JarvisDispatchRunDirectoryPort | null;
+  /**
+   * Autorité métier de l'effet fiche client (U1-f §1) — les use cases CANONIQUES du domaine,
+   * jamais une écriture directe. `null` laisse le registre d'exécuteurs VIDE : le worker règle
+   * `executor_unregistered`, jamais un effet exécuté sans son autorité.
+   */
+  createJarvisCustomerEffectAuthority(): JarvisCustomerEffectAuthority | null;
   /**
    * Snapshot froid JWT+RLS des missions Jarvis. `null` reste fail-closed pour tout adapter qui
    * ne peut pas prouver READ ONLY + REPEATABLE READ + scoping owner.

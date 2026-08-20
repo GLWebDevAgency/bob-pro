@@ -137,9 +137,32 @@ export interface JarvisStatelessReadResult<T> {
  * une moitié — l'appelant le narrowe et échoue FERMÉ plutôt que de deviner un run. Même
  * doctrine que la résolution fermée du UoW d'admission.
  */
+/**
+ * État COURANT d'une fiche client cible, tel que l'écran peut honnêtement le montrer (U1-f §4/§5).
+ *
+ * DISPLAY-ONLY, et c'est un choix : cette lecture n'est PAS l'autorité. La garde §9.1 — relecture
+ * SOUS VERROU dans la transaction d'admission, au moment du `confirm` — reste seule à décider si
+ * une proposition est encore valide. Ce que porte cet objet sert à NOMMER la cible et à montrer
+ * l'« avant » d'un diff : deux informations qui n'engagent rien et dont l'absence, elle, coûte
+ * cher (confirmer une modification sans savoir sur QUI elle porte).
+ */
+export interface JarvisTargetSnapshot {
+  /** Nom d'usage de la fiche — ce que l'artisan reconnaît, jamais un identifiant technique. */
+  readonly displayName: string | null;
+  /** Valeurs courantes des champs adressables, clés du frame sémantique. */
+  readonly fields: Readonly<Record<string, string | null>>;
+}
+
 export interface JarvisStatelessReadView {
   readonly runById: (runId: string) => Promise<JarvisRunEnvelope | null>;
   readonly currentRun?: () => Promise<JarvisRunEnvelope | null>;
+  /**
+   * Fiche cible d'un run de modification, lue sur le MÊME snapshot que le run (U1-f §4/§5).
+   * OPTIONNELLE, même doctrine que `currentRun` : un adaptateur qui ne sait pas la lire ne
+   * fournit pas une moitié — l'appelant rend alors une présentation SANS libellé ni « avant »,
+   * jamais une présentation qui invente l'un ou l'autre.
+   */
+  readonly targetSnapshot?: (customerId: string) => Promise<JarvisTargetSnapshot | null>;
 }
 
 export interface JarvisAdmissionUnitOfWorkPort {

@@ -41,7 +41,9 @@ import {
 } from '../jobs/jarvis-proposal-payload-purge.service';
 import {
   JARVIS_DISPATCH_ADMISSION,
+  JARVIS_DISPATCH_RUN_DIRECTORY,
   JARVIS_EFFECT_EXECUTORS,
+  JARVIS_WORK_ITEMS_DISPATCH,
   jarvisEffectExecutorKey,
   type JarvisEffectExecutor,
 } from '../jobs/jarvis-work-item-dispatch.service';
@@ -124,6 +126,62 @@ export function buildJarvisCustomerEffectExecutors(deps: {
   return registry;
 }
 
+/**
+ * U1-f §1 — LES TROIS LIAISONS QUI ARMENT LA CHAÎNE D'EFFET. Jusqu'ici, `JARVIS_WORK_ITEMS_DISPATCH`
+ * et `JARVIS_DISPATCH_RUN_DIRECTORY` n'étaient liés par AUCUN provider du dépôt : le worker rendait
+ * `dependencies_absent` à chaque minute, et une confirmation d'artisan n'écrivait JAMAIS sa fiche —
+ * le run restait en `committing`, où même `cancel_run` ne fait qu'observer un reçu qui ne vient pas.
+ *
+ * Elles viennent de LA persistance, comme tous les autres adapters : une seule connexion, une seule
+ * identité. `null` reste possible (adapter incapable de prouver ce qu'il avance) et le worker
+ * retrouve alors son no-op AUDITÉ — jamais un demi-dispatch.
+ */
+/**
+ * Reconnaissance STRUCTURELLE de la fabrique, exactement comme `asJarvisProposalPayloadRetention`
+ * le fait pour la purge : un adapter d'une génération antérieure (ou un double de test) qui ne
+ * porte pas la méthode rend `null` — le boot reste VERT et le worker garde son no-op audité. Un
+ * `TypeError` au démarrage serait le pire des deux mondes : ni service, ni diagnostic.
+ */
+function fabriqueOuNull<K extends keyof Persistence>(
+  persistence: Persistence,
+  nom: K,
+): ReturnType<Extract<Persistence[K], (...args: never[]) => unknown>> | null {
+  // `nom` est contraint aux CLÉS de `Persistence` : un renommage de fabrique casse la
+  // compilation ici, au lieu de désarmer la chaîne en silence à l'exécution.
+  const candidate = persistence as unknown as Record<string, unknown>;
+  const fabrique = candidate[nom as string];
+  if (typeof fabrique !== 'function') return null;
+  return (fabrique.call(persistence) ?? null) as ReturnType<
+    Extract<Persistence[K], (...args: never[]) => unknown>
+  > | null;
+}
+
+const jarvisWorkItemsDispatchProvider: Provider = {
+  provide: JARVIS_WORK_ITEMS_DISPATCH,
+  inject: [PERSISTENCE],
+  useFactory: (persistence: Persistence) =>
+    fabriqueOuNull(persistence, 'createJarvisWorkItemsDispatch'),
+};
+
+const jarvisDispatchRunDirectoryProvider: Provider = {
+  provide: JARVIS_DISPATCH_RUN_DIRECTORY,
+  inject: [PERSISTENCE],
+  useFactory: (persistence: Persistence) =>
+    fabriqueOuNull(persistence, 'createJarvisDispatchRunDirectory'),
+};
+
+/**
+ * L'autorité métier de l'effet fiche client — le « livrable à part » annoncé par U1-d. Elle appelle
+ * les use cases CANONIQUES sous `withTenant` : mêmes invariants, mêmes refus et même incrément de
+ * révision que l'artisan qui édite sa fiche à la main (§9.1, parité humain↔Bob).
+ */
+const jarvisCustomerEffectAuthorityProvider: Provider = {
+  provide: JARVIS_CUSTOMER_EFFECT_AUTHORITY,
+  inject: [PERSISTENCE],
+  useFactory: (persistence: Persistence) =>
+fabriqueOuNull(persistence, 'createJarvisCustomerEffectAuthority'),
+};
+
 const jarvisEffectExecutorsProvider: Provider = {
   provide: JARVIS_EFFECT_EXECUTORS,
   inject: [
@@ -132,15 +190,15 @@ const jarvisEffectExecutorsProvider: Provider = {
     // nulle (adapter incapable de prouver RLS), jamais son provider — un jeton non lié doit
     // casser le boot, pas désarmer le registre en silence.
     JARVIS_PROPOSAL_PAYLOAD_STORE,
-    // L'autorité métier fiche client, elle, n'a pas encore d'adapter (livrable à part : portée
-    // tenant/principal sur `BackendService.createCustomer`/`updateCustomer`). Optionnelle donc :
-    // le boot reste vert et le registre reste vide, jamais à moitié armé.
-    { token: JARVIS_CUSTOMER_EFFECT_AUTHORITY, optional: true },
+    // L'autorité métier fiche client est désormais FOURNIE par ce module (U1-f §1) : injection
+    // REQUISE. Sa valeur peut être nulle (adapter incapable), jamais son provider — un jeton non
+    // lié doit casser le boot, pas désarmer le registre en silence.
+    JARVIS_CUSTOMER_EFFECT_AUTHORITY,
   ],
   useFactory: (
     admission: JarvisAdmissionUnitOfWorkPort | null,
     payloads: JarvisProposalPayloadStorePort | null,
-    customers?: JarvisCustomerEffectAuthority | null,
+    customers: JarvisCustomerEffectAuthority | null,
   ) =>
     buildJarvisCustomerEffectExecutors({
       admission,
@@ -158,6 +216,9 @@ const jarvisEffectExecutorsProvider: Provider = {
     jarvisProposalPayloadStoreProvider,
     jarvisProposalPayloadRetentionOwnersProvider,
     jarvisTapAuthorityProvider,
+    jarvisWorkItemsDispatchProvider,
+    jarvisDispatchRunDirectoryProvider,
+    jarvisCustomerEffectAuthorityProvider,
     jarvisEffectExecutorsProvider,
   ],
   // Exportés parce qu'ils sont injectés HORS de ce module : le worker de dispatch est déclaré
@@ -171,6 +232,12 @@ const jarvisEffectExecutorsProvider: Provider = {
     // résoudrait `null` et le tick resterait `owner_directory_absent` — le silence exact que
     // ce lot referme.
     JARVIS_PROPOSAL_PAYLOAD_RETENTION_OWNERS,
+    // Le worker de dispatch est déclaré par AppModule : sans EXPORT, ses injections @Optional
+    // résoudraient `null` et le tick resterait `dependencies_absent` — le silence exact que
+    // ce lot referme.
+    JARVIS_WORK_ITEMS_DISPATCH,
+    JARVIS_DISPATCH_RUN_DIRECTORY,
+    JARVIS_CUSTOMER_EFFECT_AUTHORITY,
     JARVIS_EFFECT_EXECUTORS,
   ],
 })

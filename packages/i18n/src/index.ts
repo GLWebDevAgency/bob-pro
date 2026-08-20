@@ -2395,6 +2395,21 @@ const legacyFr = {
     pro: 'Relancer',
     direct: 'Relancer',
   },
+  'fiche.actionBobEdit': {
+    pote: 'Modifier avec Bob',
+    pro: 'Modifier avec Bob',
+    direct: 'Modifier avec Bob',
+  },
+  'fiche.bobEditBusy': {
+    pote: 'Bob a déjà une demande en cours. Termine-la, puis reviens ici.',
+    pro: 'Bob a déjà une demande en cours. Terminez-la, puis revenez ici.',
+    direct: 'Une demande est déjà en cours. Terminez-la avant d’en ouvrir une autre.',
+  },
+  'fiche.bobEditFailed': {
+    pote: 'Je n’ai pas pu ouvrir la demande. Rien n’a été enregistré : réessaie.',
+    pro: 'Impossible d’ouvrir la demande. Rien n’a été enregistré : réessayez.',
+    direct: 'Ouverture impossible. Rien n’a été enregistré : réessayez.',
+  },
   'fiche.actionCall': {
     pote: 'Appeler',
     pro: 'Appeler',

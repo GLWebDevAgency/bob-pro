@@ -204,6 +204,7 @@ function presentation(): CustomerContactPresentationV1 {
     phase: 'awaiting_confirmation',
     intent: 'update',
     targetCustomerId: CUSTOMER_ID,
+    targetLabel: 'SARL Martin',
     proposal: {
       proposalId: PROPOSAL_ID,
       proposalHash: HASH,
