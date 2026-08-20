@@ -5,8 +5,9 @@
 - **Amendement** : Codex, 2026-08-20 — état réel après Safety, intégration et contre-revue U1-h.
 - **Statut normatif** : `specified` — la gate moteur unique du parent Jarvis §17/§21.2 reste
   fermée. L0/L1/L9 (`3a51593f6`), L2/L3 (`ab7b4439d` + durcissement `5a86f94d6`) et L4
-  (`d4742b35d`) sont réalisés et prouvés localement ; L5–L8 et L10–L11 restent à réaliser.
-  Aucun livrable U1-h n'est `certified` ni `released`.
+  (`d4742b35d`) sont réalisés et prouvés localement ; la mesure/correction M1 est implémentée
+  localement par `e79d205e0`. L5–L8 et L10–L11 restent à réaliser. Aucun livrable U1-h n'est
+  `certified` ni `released`.
 - **Deltas mesurés** : `3a51593f6` = 7 fichiers, +453/-15 ; `ab7b4439d` = 6 fichiers,
   +503/-13 ; `5a86f94d6` = 4 fichiers, +359/-16. Safety et U1-i ne sont pas attribués à U1-h.
 - **Parents** : SPEC_U1G §6 (hors-lot tracé) · spec Jarvis §7.0/§8/§9.1/§14/§17.1 · FD-2026-0817-06.
@@ -142,6 +143,12 @@ Le défaut est confirmé si le writer tente l'insert puis retourne
   l'index `agent_missions_one_active_owner_key` ;
 - la matrice exacte reste `active | waiting_user | waiting_screen | retry_due`, gardée contre la
   migration par le test de vocabulaire ; aucune migration ni modification de schéma n'est requise.
+
+**Évidence locale M1 — `e79d205e0`.** La mesure pré-correction rend 121 preuves PostgreSQL vertes
+et une rouge avec `insert_conflict_without_active_foreground`. Après correction : 8 fichiers / 122
+preuves PostgreSQL, test core 14/14, synchronisation SQL 13/13, typechecks core/API, ESLint ciblé et
+`git diff --check` verts. Cette preuve établit `implemented` localement ; elle ne promeut ni U1-h ni
+le moteur Jarvis en `certified` ou `released`.
 
 ## 4. Gardes à rendre vraies avant certification
 
