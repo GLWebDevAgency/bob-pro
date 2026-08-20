@@ -155,23 +155,32 @@ le moteur Jarvis en `certified` ou `released`.
 Le terminal ne devient pas une nouvelle projection mobile : `GET /jarvis/runs/current` conserve sa
 loi et ne sert que le foreground non terminal. Le hook mémorise la dernière vue **autoritaire** du
 même principal. Lorsqu'un run observé dans une phase d'écriture (`committing`,
-`awaiting_receipt`, `cancelling`) quitte le foreground, la lecture suivante rend soit l'absence
-canonique `{ run: null, presentation: null }`, soit un autre `runId` si un nouveau foreground a été
-ouvert entre les deux lectures. Cette transition invalide une fois les préfixes métier canoniques,
-puis laisse leurs écrans relire la base. Elle ne déduit ni succès, ni échec, ni entité modifiée.
+`awaiting_receipt`, `cancelling`) quitte ce canal, la lecture suivante rend soit l'absence canonique
+`{ run: null, presentation: null }`, soit un autre `runId` si un nouveau foreground a été ouvert
+pendant que le premier effet reste en vol.
+
+Ce départ ne vaut **jamais** preuve de fin : `waiting_external` libère déjà le foreground. Le hook
+suit donc chaque run parti via l'endpoint stateless existant `GET /jarvis/runs/:runId`. Tant que le
+statut exact reste `waiting_external`, `retry_due` ou `cancelling`, il ne conclut rien. Dès que la
+lecture exacte rend une sortie stable, terminale ou gelée, il invalide une fois les préfixes métier
+canoniques, puis laisse leurs écrans relire la base. Il ne déduit ni succès, ni échec, ni entité
+modifiée. Aucun endpoint neuf et aucune seconde projection terminale ne sont ajoutés.
 
 L'acceptation L7 est fermée :
 
-- écriture → absence autoritaire invalide notamment `['customers']` exactement une fois ;
-- écriture → autre `runId` applique la même convergence sans confondre les deux runs ;
+- écriture → absence autoritaire arme le suivi exact ; le terminal exact invalide notamment
+  `['customers']` exactement une fois ;
+- écriture A → autre `runId` B n'invalide rien tant que A reste en vol ; la sortie exacte de A
+  applique ensuite la convergence sans confondre les deux runs ;
 - une absence initiale, une disparition depuis une phase hors écriture, une lecture en chargement
   ou en erreur et un run vivant sans présentation n'invalident rien ;
-- une erreur de relecture ne détruit pas le dernier témoin d'écriture : une lecture autoritaire
-  ultérieure qui constate l'absence converge encore ;
+- une erreur de relecture courante ou exacte ne détruit ni le dernier témoin d'écriture ni la cible
+  suivie : une lecture autoritaire ultérieure converge encore ;
 - le changement de principal remet le témoin à zéro ; aucune observation d'un compte ne déclenche
   une invalidation pour un autre ;
-- les absences répétées restent des no-op. Aucun polling permanent, aucun endpoint terminal et
-  aucune seconde autorité de cache ne sont ajoutés.
+- les absences répétées restent des no-op ; plusieurs effets masqués sont suivis séparément, sans
+  qu'un effet bloqué affame les suivants. Le suivi s'arrête sur toute sortie stable, terminale ou
+  gelée ; aucun polling d'un run réglé et aucune seconde autorité de cache ne sont ajoutés.
 
 ## 4. Gardes à rendre vraies avant certification
 
