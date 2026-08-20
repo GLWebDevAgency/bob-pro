@@ -632,6 +632,8 @@ describe.skipIf(!RUN_CERT)(
      * de conduite.
      */
     async function driveOracleScript(input: {
+      /** Société alternative pour une preuve worker ; défaut = société des oracles de canal. */
+      readonly companyId?: string;
       readonly ownerUserId: string;
       readonly channelAt: (step: number) => AdmissionChannel;
       readonly proposalId: string;
@@ -642,6 +644,7 @@ describe.skipIf(!RUN_CERT)(
       readonly target?: { readonly customerId: string; readonly revision: number };
     }): Promise<OracleTrace> {
       const runId = randomUUID();
+      const scriptCompanyId = input.companyId ?? companyId;
       const ownerUserId = input.ownerUserId;
       const target = input.target ?? null;
       const actionId =
@@ -653,7 +656,7 @@ describe.skipIf(!RUN_CERT)(
 
       const envelopeAt = (step: number, expectedRevision: number, command: unknown) => {
         const envelope = channelEnvelope(input.channelAt(step), {
-          companyId,
+          companyId: scriptCompanyId,
           ownerUserId,
           runId,
           step,
@@ -695,7 +698,7 @@ describe.skipIf(!RUN_CERT)(
 
       // 3 — la charge PII est scellée AVANT que le run ne promette son digest.
       await sealPayload({
-        companyId,
+        companyId: scriptCompanyId,
         ownerUserId,
         runId,
         proposalId: input.proposalId,
@@ -742,7 +745,7 @@ describe.skipIf(!RUN_CERT)(
         code: 'invalid_command',
         reason: 'confirmation_not_presented',
       });
-      await expect(commandEventCount(companyId, premature.commandId)).resolves.toBe(0);
+      await expect(commandEventCount(scriptCompanyId, premature.commandId)).resolves.toBe(0);
 
       // 5 — reçu de présentation : la MODALITÉ est celle du canal (table §7.0).
       const presentationChannel = input.channelAt(5);
@@ -1828,6 +1831,183 @@ describe.skipIf(!RUN_CERT)(
       TEST_TIMEOUT_MS,
     );
 
+    it(
+      'preuve U1-i — commit CAS perdu avant storeResult : reprise indécidable, zéro second UPDATE et quarantaine durable',
+      async () => {
+        const ownerUserId = freshOwner('cas-failpoint-owner');
+        const customerId = randomUUID();
+        const authority = new CertificationCustomerAuthority(workerA);
+
+        await expect(
+          authority.createCustomer(
+            { companyId: effectCompanyId, ownerUserId, customerId },
+            {
+              type: 'b2c',
+              name: 'Client failpoint CAS',
+              email: 'cas-failpoint@example.test',
+              phone: '0600000000',
+              address: { line1: '1 rue du CAS', zip: '75001', city: 'Paris' },
+            },
+          ),
+        ).resolves.toEqual({ status: 'written' });
+        await expect(auditCustomer(customerId)).resolves.toMatchObject({
+          revision: 1,
+          addrCity: 'Paris',
+        });
+
+        const admissionPort: JarvisAdmissionUnitOfWorkPort = {
+          runJarvisAdmission: (envelope: JarvisUserAdmissionEnvelope) =>
+            uowA.runJarvisAdmission(envelope, TEST_ONLY_DEPS),
+          runJarvisSystemAdmission: (envelope: JarvisSystemAdmissionEnvelope) =>
+            uowA.runJarvisSystemAdmission(envelope, TEST_ONLY_DEPS),
+          readJarvisStateless: <T>(
+            owner: JarvisAdmissionOwner,
+            read: (view: {
+              readonly runById: (runId: string) => Promise<JarvisRunEnvelope | null>;
+            }) => Promise<T>,
+          ): Promise<JarvisStatelessReadResult<T>> =>
+            uowA.readJarvisStateless(owner, read),
+        };
+        const executor = new JarvisCustomerEffectExecutor({
+          admission: admissionPort,
+          payloads: store,
+          customers: authority,
+          certificationCustomerType: 'b2c',
+        });
+
+        const channel = tapChannel('cas-failpoint-device');
+        const trace = await driveOracleScript({
+          companyId: effectCompanyId,
+          ownerUserId,
+          channelAt: () => channel,
+          proposalId: randomUUID(),
+          confirmationId: randomUUID(),
+          fields: proposedFields({
+            displayName: null,
+            legalName: null,
+            email: null,
+            phone: null,
+            addressLine: null,
+            postalCode: null,
+            city: 'Nantes',
+          }),
+          target: { customerId, revision: 1 },
+        });
+        const workItemId = trace.workItemIds[0];
+        if (workItemId === undefined) {
+          throw new Error('Jarvis U1-i: work item CAS absent.');
+        }
+
+        // Premier worker réel : authorize -> UPDATE CAS committé -> perte AVANT storeResult.
+        const writesBeforeEffect = authority.writes;
+        const crashingWorker = dispatchWorker(
+          executor,
+          admissionPort,
+          new FailBeforeStoreResultRepository(workerA),
+        );
+        expect(await crashingWorker.runForCompany(effectCompanyId)).toEqual({
+          claimed: 1,
+          executed: 0,
+          unknown: 0,
+          cancelled: 0,
+          retried: 0,
+          signalled: 0,
+          failures: 1,
+        });
+
+        expect(authority.writes).toBe(writesBeforeEffect + 1);
+        await expect(auditCustomer(customerId)).resolves.toMatchObject({
+          addrCity: 'Nantes',
+          revision: 2,
+        });
+        const [authorized] = await auditWorkItems(trace.runId);
+        expect(authorized).toMatchObject({
+          id: workItemId,
+          status: 'authorized',
+          leaseFence: 1n,
+          resultDigest: null,
+          signalAppliedAt: null,
+        });
+
+        // Le crash est simulé APRÈS le commit métier : on vieillit uniquement la lease afin que
+        // le prochain tick emprunte `reclaimExpiredAuthorized`, jamais claim/authorize/execute.
+        const aged = await admin.$executeRaw`
+          UPDATE public.jarvis_work_items
+             SET "leaseExpiresAt" = statement_timestamp() - INTERVAL '1 hour'
+           WHERE "id" = ${workItemId}::uuid
+             AND "status" = 'authorized'
+             AND "resultDigest" IS NULL
+        `;
+        expect(aged).toBe(1);
+
+        const writesAfterCommit = authority.writes;
+        const recoveryWorker = dispatchWorker(executor, admissionPort);
+        expect(await recoveryWorker.runForCompany(effectCompanyId)).toEqual({
+          claimed: 0,
+          executed: 0,
+          unknown: 1,
+          cancelled: 0,
+          retried: 0,
+          signalled: 0,
+          failures: 0,
+        });
+
+        // Une modification sans reçu purpose-specific reste indécidable : aucun second appel
+        // d'écriture, aucune révision 3, aucun reçu terminal inventé.
+        expect(authority.writes).toBe(writesAfterCommit);
+        await expect(auditCustomer(customerId)).resolves.toMatchObject({
+          addrCity: 'Nantes',
+          revision: 2,
+        });
+        const [unknown] = await auditWorkItems(trace.runId);
+        expect(unknown).toMatchObject({
+          id: workItemId,
+          status: 'outcome_unknown',
+          leaseFence: 2n,
+          signalAppliedAt: null,
+        });
+        expect(unknown?.resultDigest).toBe(
+          sha256Hex(
+            JSON.stringify([
+              'bob.jarvis.dispatch.outcome-unknown.v1',
+              trace.effectId,
+              'reconciliation_undecidable',
+            ]),
+          ),
+        );
+
+        const unresolvedRun = await requireRun(trace.runId);
+        expect(unresolvedRun).toMatchObject({
+          status: 'waiting_external',
+          phase: 'committing',
+          terminalAt: null,
+        });
+        expect(
+          (unresolvedRun.payload as { readonly receipt?: unknown }).receipt,
+        ).toBeNull();
+        await expect(auditEvents(trace.runId)).resolves.toHaveLength(5);
+
+        // Tick supplémentaire : l'inconnu durable n'est ni réexécuté, ni signalé, ni bougé.
+        expect(await recoveryWorker.runForCompany(effectCompanyId)).toEqual({
+          claimed: 0,
+          executed: 0,
+          unknown: 0,
+          cancelled: 0,
+          retried: 0,
+          signalled: 0,
+          failures: 0,
+        });
+        expect(authority.writes).toBe(writesAfterCommit);
+        const [durableUnknown] = await auditWorkItems(trace.runId);
+        expect(durableUnknown).toMatchObject({
+          status: 'outcome_unknown',
+          leaseFence: 2n,
+          signalAppliedAt: null,
+        });
+      },
+      TEST_TIMEOUT_MS,
+    );
+
     /**
      * Worker de dispatch RÉEL, câblé sur les autorités réelles. Deux collaborateurs sont fournis
      * par le harnais parce que leur implémentation de production arrive avec le module (vague B) :
@@ -1839,6 +2019,7 @@ describe.skipIf(!RUN_CERT)(
     function dispatchWorker(
       executor: JarvisEffectExecutor,
       admissionPort: JarvisAdmissionUnitOfWorkPort,
+      repository: PrismaJarvisWorkItemsRepository = workItems,
     ): JarvisWorkItemDispatchService {
       const persistence = {
         companies: {
@@ -1878,7 +2059,7 @@ describe.skipIf(!RUN_CERT)(
         persistence,
         { listCompanyIds: async () => [effectCompanyId] } as unknown as ScheduledTenantDirectory,
         new AppLogger(),
-        workItems,
+        repository,
         directory,
         admissionPort,
         executors,
@@ -1887,6 +2068,22 @@ describe.skipIf(!RUN_CERT)(
     }
   },
 );
+
+/**
+ * Failpoint U1-i : toute la chaîne utilise le vrai repository jusqu'au COMMIT client, puis le
+ * résultat du premier worker est perdu avant l'UPDATE de `storeResult`. Aucun hook test-only ne
+ * pénètre le code de production ; la reprise suivante relit la vraie ligne `authorized`.
+ */
+class FailBeforeStoreResultRepository extends PrismaJarvisWorkItemsRepository {
+  override storeResult(
+    ...args: Parameters<PrismaJarvisWorkItemsRepository['storeResult']>
+  ): Promise<boolean> {
+    void args;
+    return Promise.reject(
+      new Error('TEST_FAILPOINT_AFTER_CUSTOMER_COMMIT_BEFORE_STORE_RESULT'),
+    );
+  }
+}
 
 /**
  * Autorité métier de certification : elle ne SIMULE rien — elle appelle les use cases canoniques
