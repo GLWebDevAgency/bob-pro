@@ -1515,6 +1515,27 @@ describe.skipIf(!RUN_CERT)(
           return chercher('Wxyzptlk Aeronautique');
         });
         expect(rien.value).toEqual([]);
+
+        // LE SEUIL DU MOTEUR, MESURÉ PLUTÔT QUE SUPPOSÉ. `isSearchableQuery` refuse de conclure
+        // « aucun doublon » sous DEUX caractères alphanumériques. Ce chiffre ne vient pas d'une
+        // intuition : `<%` compare des trigrammes sous `word_similarity_threshold` (0,6 par
+        // défaut, jamais surchargé ici), et un mot d'un seul caractère ne l'atteint jamais. Si un
+        // jour ce seuil bougeait, cette preuve tomberait — et la garde du domaine avec elle.
+        const parLongueur: Record<string, number> = {};
+        for (const requete of ['Z', 'Zo', 'Zorglub']) {
+          const trouve = await uowA.readJarvisStateless(owner, async (view) => {
+            const chercher = view.customerCandidates;
+            if (typeof chercher !== 'function') throw new Error('U1-g : recherche absente');
+            return chercher(requete);
+          });
+          parLongueur[requete] = trouve.value.length;
+        }
+        // Un caractère : la fiche EXISTE et ressemble, mais le moteur ne peut pas la voir. Conclure
+        // « aucun doublon » ici scellerait un fait certifié faux dans un journal immuable.
+        expect(parLongueur['Z']).toBe(0);
+        // Deux caractères : le moteur retrouve la fiche. Le seuil du domaine est bien celui-ci.
+        expect(parLongueur['Zo']).toBe(1);
+        expect(parLongueur['Zorglub']).toBe(1);
       },
       TEST_TIMEOUT_MS,
     );

@@ -90,6 +90,36 @@ sur un monde changé construiraient des commandes différentes ⇒ reçu trouvé
 ⇒ `command_conflict` sur un run pourtant déjà résolu. On vérifie donc `revision === 1` et
 `phase === resolving_customer` avant d'émettre ; sinon rejeu tardif, zéro écriture.
 
+## 4 bis. Ce que la revue adversariale a corrigé (6 défauts non réfutés)
+
+Revue en trois temps (6 lentilles → 34 constats → 33 réfutations indépendantes) ; 10 verdicts
+« non réfuté », regroupés en 6 défauts. Tous corrigés dans le lot, chacun avec sa preuve.
+
+- **G4 — « bien formée » ≠ « exploitable ».** `<%` compare des trigrammes sous un seuil : une
+  requête d'un seul caractère ne peut RIEN trouver par ressemblance. Elle scellait pourtant
+  `no_duplicates`. La garde ne mord que sur la conclusion d'**absence** — des candidats remontés
+  par la branche d'égalité restent présentables, donc aucune capacité n'est perdue. Seuil mesuré
+  sur PostgreSQL réel (preuve 7), jamais supposé.
+- **G5 — la parole ne peut plus rendre l'assistant muet.** Le nom relu en base entrait verbatim
+  dans la parole, donc dans l'historique, que le planner refuse ENTIER — devis compris — au
+  moindre invisible ou au-delà de 1 200 caractères. Les libellés sont désormais assainis et bornés
+  dans le domaine (`sanitizeSpokenLabel`), et la propriété est prouvée **contre le planner
+  lui-même** (`isPlannerSafeHistoryText`), jamais contre une borne recopiée.
+- **Le planner ne tue plus le tour** quand un nom traîne hors recherche : il l'IGNORE, et sa
+  description suit désormais la phase. Refuser était pire qu'inutile — le refus ne changeait ni la
+  phase ni la révision, donc chaque reformulation (« oui, Dupont Plomberie ») échouait à
+  l'identique. Dissymétrie assumée avec `fields`, où ignorer perdrait une donnée dictée.
+- **Deux assertions de régression étaient VIDES** : la porte d'arité mordait avant les gardes
+  visées, si bien que les gardes de phase et de fenêtre d'ordinal étaient supprimables sans faire
+  rougir la suite. Réparées, puis vérifiées **par mutation**.
+- **La parole de reprise mentait** : elle affirmait « je n'ai rien ouvert » alors que la garde
+  d'entrée venait de prouver le contraire, et taisait l'annulation pourtant offerte. Constante
+  scindée ; la reprise ne dit plus non plus « j'ouvre une fiche ».
+- **Octets de contrôle BRUTS dans les sources** (8 fichiers suivis, dont la dérivation de ce lot) :
+  git les classait binaires, `git diff` n'affichait qu'une taille et `grep` était silencieusement
+  aveugle. Tous échappés — valeur d'exécution identique, prouvée sur les 256 points de code — et la
+  rechute est désormais impossible (`assert-source-control-bytes`).
+
 ## 5. Ce que le lot assume, et qui doit être dit
 
 Les noms prononcés par Bob reviennent au planner au tour suivant via l'historique — comme la lane

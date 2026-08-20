@@ -200,7 +200,7 @@ describe('Intervention — invariants §3.4', () => {
 
   it('résumé : 2000 max, multiligne admis, contrôle non admis refusé', () => {
     expect(Intervention.record(props({ summary: 'Détartrage.\nPrévoir cartouche.' })).ok).toBe(true);
-    expect(Intervention.record(props({ summary: 'sonnerie ' })).ok).toBe(false);
+    expect(Intervention.record(props({ summary: 'sonnerie \u0007' })).ok).toBe(false);
     expect(Intervention.record(props({ summary: 'x'.repeat(2001) })).ok).toBe(false);
   });
 });

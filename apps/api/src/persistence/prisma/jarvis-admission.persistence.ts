@@ -205,7 +205,7 @@ function canonicalCommandRequest(envelope: AdmissionEnvelope): string {
     String(envelope.actor === 'user' ? envelope.actionVersion : 0),
     envelope.actor === 'system' ? envelope.effectId : '',
     envelope.canonicalInputDigest,
-  ].join('');
+  ].join('\u001f');
 }
 
 interface ExistingReceipt {

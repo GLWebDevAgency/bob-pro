@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { isPlannerSafeHistoryText } from '@bob/ai';
 import {
   type CustomerCandidate,
   CUSTOMER_CONTACT_STATE_SCHEMA,
@@ -596,6 +597,117 @@ describe('RealtimeJarvisMissionOrchestrator — runPlanned', () => {
     expect(resolution?.resolution?.candidates?.map((one) => one.customerId)).toEqual(['c-1', 'c-2']);
     // ZÉRO NOM dans ce qui est scellé : le durable ne porte que des identités et des digests.
     expect(JSON.stringify(h.runJarvisAdmission.mock.calls[1]?.[0]?.command)).not.toContain('Dupont');
+  });
+
+  it('U1-g : la REPRISE d’un run parqué résout sans jamais le rouvrir', async () => {
+    // Le second maillon a été refusé au tour précédent : le run est resté en `resolving_customer`.
+    // `probe_duplicates` est la seule issue autre que l'annulation — et elle doit produire UNE
+    // commande, pas un nouveau semis : le run existe déjà et tient le premier plan.
+    const parque = runEnvelope({ revision: 1, state: state({ phase: 'resolving_customer', steps: 1 }) });
+    const h = harness({ run: parque, candidates: [] });
+    const prepared = await h.orchestrator.prepare(request());
+    if (prepared.status !== 'prepared') throw new Error('préparation attendue');
+
+    const outcome = await h.orchestrator.runPlanned({
+      request: request(),
+      prepared: prepared.prepared,
+      frame: frame({ kind: 'probe_duplicates', customerName: 'Dupont Plomberie' }),
+    });
+
+    expect(outcome.status).toBe('handled');
+    expect(h.runJarvisAdmission).toHaveBeenCalledTimes(1);
+    expect(h.runJarvisAdmission.mock.calls[0]?.[0]?.command).toEqual({
+      type: 'record_customer_resolution',
+      resolution: { kind: 'no_duplicates' },
+    });
+    // Bob RACONTE l'état réel : il reprend une fiche ouverte, il n'en ouvre pas une seconde.
+    expect(outcome.canonicalSpeech).toContain('Je reprends la fiche');
+    expect(outcome.canonicalSpeech).not.toContain('J’ouvre une fiche');
+  });
+
+  it('U1-g : recherche indisponible À LA REPRISE — Bob ne prétend PAS n’avoir rien ouvert', async () => {
+    // DÉFAUT TROUVÉ PAR LA REVUE. La garde d'entrée de cette branche vient d'établir qu'un run EST
+    // ouvert et confisque le premier plan de l'artisan jusqu'à 24 h. Lui dire « je n'ai rien
+    // ouvert » était faux sur l'état durable — et personne n'annule ce qu'on lui dit inexistant.
+    const parque = runEnvelope({ revision: 1, state: state({ phase: 'resolving_customer', steps: 1 }) });
+    for (const candidates of ['throws' as const, undefined]) {
+      const h = harness({ run: parque, candidates });
+      const prepared = await h.orchestrator.prepare(request());
+      if (prepared.status !== 'prepared') throw new Error('préparation attendue');
+
+      const outcome = await h.orchestrator.runPlanned({
+        request: request(),
+        prepared: prepared.prepared,
+        frame: frame({ kind: 'probe_duplicates', customerName: 'Dupont Plomberie' }),
+      });
+
+      expect(outcome.status).toBe('failed');
+      expect(h.runJarvisAdmission).not.toHaveBeenCalled();
+      expect(outcome.canonicalSpeech).toContain('La fiche reste ouverte');
+      expect(outcome.canonicalSpeech).toContain('annule');
+      expect(outcome.canonicalSpeech).not.toContain('Je n’ai rien ouvert');
+    }
+  });
+
+  it('U1-g : un libellé porteur d’un invisible ne peut PAS empoisonner la parole', async () => {
+    // Le nom relu en base n'est pas de confiance : U+200B franchit le validateur de création, se
+    // stocke, et ressortirait ici dans une parole que le planner refuserait au tour suivant —
+    // rendant l'assistant muet sur TOUTES les lanes, devis compris.
+    const h = harness({
+      run: null,
+      candidates: [
+        {
+          customerId: 'c-1',
+          canonicalName: 'Dupont\u200b\u00a0Plomberie',
+          matchKind: 'exact',
+          score: 1,
+        },
+      ],
+    });
+    const prepared = await h.orchestrator.prepare(request());
+    if (prepared.status !== 'prepared') throw new Error('préparation attendue');
+
+    const outcome = await h.orchestrator.runPlanned({
+      request: request(),
+      prepared: prepared.prepared,
+      frame: frame({ kind: 'open_customer_creation', customerName: 'Dupont Plomberie' }),
+    });
+
+    expect(outcome.status).toBe('handled');
+    expect(outcome.canonicalSpeech).toContain('Dupont Plomberie');
+    expect(outcome.canonicalSpeech).not.toContain('\u200b');
+    expect(outcome.canonicalSpeech).not.toContain('\u00a0');
+  });
+
+  it('U1-g : la PIRE parole possible reste recevable par le planner du tour suivant', async () => {
+    // LA PROPRIÉTÉ QUI COMPTE, prouvée contre le planner lui-même et non contre un nombre recopié.
+    // Cinq fiches aux noms saturés, page saturée, un invisible glissé dans chacune : c'est la
+    // parole la plus longue et la plus hostile que ce lot puisse produire. Si elle franchit
+    // `isPlannerSafeHistoryText`, aucune fiche de la base ne peut rendre l'assistant muet.
+    const nomHostile = `${'Ateliers Bâtiment & Fils de Dupont-Plomberie '.repeat(6)}\u200b`;
+    const h = harness({
+      run: null,
+      candidates: Array.from({ length: 6 }, (_, index) => ({
+        customerId: `c-${index}`,
+        canonicalName: `${nomHostile}${index}`,
+        matchKind: 'fuzzy' as const,
+        score: 0.9,
+      })),
+    });
+    const prepared = await h.orchestrator.prepare(request());
+    if (prepared.status !== 'prepared') throw new Error('préparation attendue');
+
+    const outcome = await h.orchestrator.runPlanned({
+      request: request(),
+      prepared: prepared.prepared,
+      frame: frame({ kind: 'open_customer_creation', customerName: 'Dupont Plomberie' }),
+    });
+
+    expect(outcome.status).toBe('handled');
+    const parole = outcome.status === 'handled' ? outcome.canonicalSpeech : '';
+    expect(isPlannerSafeHistoryText(parole)).toBe(true);
+    // Et la saturation est DITE : on ne prétend jamais avoir montré toutes les fiches.
+    expect(parole).toContain('au moins');
   });
 
   it('CORRÉLATION REALTIME : l’enveloppe la porte, sinon l’admission refuse TOUTE commande vocale', async () => {

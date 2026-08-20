@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { CustomerCandidate } from '../../application/ports/customer-candidate-search';
 import {
+  CUSTOMER_CONTACT_SPOKEN_LABEL_LIMIT,
   deriveCustomerContactDuplicateReview,
   type CustomerContactDuplicateProbe,
 } from './customer-contact-duplicate-review';
@@ -144,5 +145,54 @@ describe('deriveCustomerContactDuplicateReview — la revue de doublons', () => 
     // Les libellés vivent À PART, pour la parole. Le scellé, lui, ne porte que des digests.
     expect(JSON.stringify(probe.candidates)).not.toContain('Zorglub');
     expect(probe.labels).toContain('Zorglub Ferronnerie');
+  });
+
+  it('une requête que le MOTEUR ne sait pas exploiter ne scelle JAMAIS « aucun doublon »', () => {
+    // Le prédicat `<%` compare des trigrammes sous un seuil : un seul caractère alphanumérique ne
+    // peut rien trouver par ressemblance, et une requête sans lettre ni chiffre ne produit même
+    // aucun trigramme. Zéro résultat n'y prouve donc RIEN — surtout pas une absence.
+    for (const requete of ['?', '...', '-', 'A', 'd', '4', 'J-C', '   x   ']) {
+      expect(derive([], requete)).toEqual({ kind: 'unusable', reason: 'invalid_query' });
+    }
+    // Deux caractères suffisent au moteur : là, « aucun doublon » redevient un fait établi.
+    for (const requete of ['du', 'Dupont Plomberie', 'A1', 'Éé']) {
+      expect(derive([], requete)).toEqual({ kind: 'no_duplicates' });
+    }
+  });
+
+  it('la garde ne mord QUE sur l’absence : des candidats trouvés restent présentables', () => {
+    // La branche d'ÉGALITÉ du SQL marche à n'importe quelle longueur : une fiche nommée « A » est
+    // réellement trouvable. Refuser la revue ici retirerait une capacité sans rien protéger.
+    const probe = derive([candidat({ canonicalName: 'A' })], 'A');
+    expect(probe.kind).toBe('duplicate_candidates');
+  });
+
+  it('ASSAINIT les libellés parlés — un invisible relu en base rendrait l’assistant muet', () => {
+    // U+200B franchit le validateur de création (qui ne refuse que les contrôles ASCII), se
+    // stocke, ressort ici, entre dans la parole puis dans l'historique — que le planner rejette
+    // ENTIER, devis compris. L'assainissement est le seul endroit où cela s'arrête.
+    const probe = derive([candidat({ canonicalName: 'Dupont\u200b\u00a0Plomberie' })]);
+    if (probe.kind !== 'duplicate_candidates') throw new Error('revue attendue');
+    expect(probe.labels).toEqual(['Dupont Plomberie']);
+  });
+
+  it('BORNE les libellés parlés, et l’évidence continue de porter le nom ENTIER', () => {
+    const nom = 'A'.repeat(200);
+    const probe = derive([candidat({ canonicalName: nom })]);
+    if (probe.kind !== 'duplicate_candidates') throw new Error('revue attendue');
+    expect(Array.from(probe.labels[0] ?? '')).toHaveLength(CUSTOMER_CONTACT_SPOKEN_LABEL_LIMIT);
+    expect(probe.labels[0]).toContain('\u2026');
+    // Ce qui est SCELLÉ ne dépend pas de ce qui est DIT : le digest reste celui du nom complet.
+    const entier = derive([candidat({ canonicalName: nom })]);
+    const tronque = derive([candidat({ canonicalName: `${nom}B` })]);
+    if (entier.kind !== 'duplicate_candidates' || tronque.kind !== 'duplicate_candidates') {
+      throw new Error('revues attendues');
+    }
+    expect(entier.candidates[0]?.matchDigest).not.toBe(tronque.candidates[0]?.matchDigest);
+  });
+
+  it('un nom qui ne laisse RIEN une fois assaini est une dérive — jamais un libellé de secours', () => {
+    const probe = derive([candidat({ canonicalName: '\u200b\u200b' })]);
+    expect(probe).toEqual({ kind: 'unusable', reason: 'invalid_candidate_set' });
   });
 });

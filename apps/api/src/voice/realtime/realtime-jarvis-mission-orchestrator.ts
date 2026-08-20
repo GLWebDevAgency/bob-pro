@@ -109,6 +109,18 @@ const DUPLICATE_CHECK_UNAVAILABLE =
   'Je ne peux pas vérifier si ce client existe déjà chez toi. Je n’ai rien ouvert et rien n’a été enregistré. Redis-le-moi dans un instant.';
 
 /**
+ * MÊME PANNE, MAIS PAS LE MÊME ÉTAT — d'où deux paroles et non une.
+ *
+ * Sur la REPRISE, la garde d'entrée vient d'établir qu'un run EST ouvert et tient le premier plan
+ * de l'artisan (une seule mission au premier plan par propriétaire, jusqu'à 24 h). Lui dire « je
+ * n'ai rien ouvert » serait faux sur l'état durable, et surtout : personne n'annule ce qu'on vient
+ * de lui affirmer inexistant. La phrase doit donc rendre l'affordance d'annulation que la capacité
+ * `customer_contact.run.cancel`, elle, offre bel et bien à cette phase.
+ */
+const DUPLICATE_RECHECK_UNAVAILABLE =
+  'Je ne peux pas vérifier si ce client existe déjà chez toi. La fiche reste ouverte et rien n’a été enregistré. Redis-moi le nom dans un instant, ou dis « annule ».';
+
+/**
  * Traduit la sonde en RÉSOLUTION du domaine. `unusable` rend `null` — et surtout PAS
  * `no_duplicates` : sceller « aucun doublon » sans avoir cherché écrirait un fait certifié faux
  * dans un journal immuable, et brûlerait l'unique fenêtre de résolution du run.
@@ -125,10 +137,21 @@ function duplicateResolutionOf(probe: CustomerContactDuplicateProbe): unknown | 
   return null;
 }
 
-/** Ce que Bob DIT après avoir cherché — et il a vraiment cherché. */
-function openedSpeech(nom: string, probe: CustomerContactDuplicateProbe): string {
+/**
+ * Ce que Bob DIT après avoir cherché — et il a vraiment cherché.
+ *
+ * `resumed` distingue l'OUVERTURE de la REPRISE : à la reprise, la fiche est déjà ouverte depuis le
+ * tour précédent, et annoncer « j'ouvre une fiche » ferait croire à l'artisan qu'il en a désormais
+ * deux. Bob raconte l'état réel, jamais une formule passe-partout.
+ */
+function openedSpeech(
+  nom: string,
+  probe: CustomerContactDuplicateProbe,
+  moment: 'opened' | 'resumed' = 'opened',
+): string {
+  const ouverture = moment === 'resumed' ? `Je reprends la fiche de ${nom}` : `J’ouvre une fiche pour ${nom}`;
   if (probe.kind !== 'duplicate_candidates') {
-    return `J’ouvre une fiche pour ${nom}. J’ai vérifié : tu n’as aucune fiche à ce nom. Dis-moi ce qu’il faut y mettre — adresse, ville, destinataire. Rien ne sera enregistré tant que tu n’auras pas confirmé.`;
+    return `${ouverture}. J’ai vérifié : tu n’as aucune fiche à ce nom. Dis-moi ce qu’il faut y mettre — adresse, ville, destinataire. Rien ne sera enregistré tant que tu n’auras pas confirmé.`;
   }
   const enumeration = probe.labels
     .map((label, index) => `${['Un', 'Deux', 'Trois', 'Quatre', 'Cinq'][index]}, « ${label} »`)
@@ -193,11 +216,11 @@ export function deriveRealtimeCustomerContactRunId(
   realtimeSessionId: string,
   ordinal: number,
 ): string {
-  return uuidFromDigest(sha256Hex(`${VOICE_RUN_NAMESPACE} ${realtimeSessionId} ${ordinal}`));
+  return uuidFromDigest(sha256Hex(`${VOICE_RUN_NAMESPACE}\u0000${realtimeSessionId}\u0000${ordinal}`));
 }
 
 function derivedProposalId(runId: string, commandId: string, purpose: string): string {
-  return uuidFromDigest(sha256Hex(`${VOICE_PROPOSAL_NAMESPACE} ${runId} ${commandId} ${purpose}`));
+  return uuidFromDigest(sha256Hex(`${VOICE_PROPOSAL_NAMESPACE}\u0000${runId}\u0000${commandId}\u0000${purpose}`));
 }
 
 /** Digest canonique de l'entrée admise — calculé SERVEUR, stable au retry du même tour. */
@@ -754,16 +777,18 @@ export class RealtimeJarvisMissionOrchestrator implements RealtimeJarvisMissionO
         return { status: 'failed', canonicalSpeech: UNSAFE_UNDERSTANDING };
       }
       const probe = await this.probeDuplicates(request, prepared.runId, operation.customerName);
-      if (probe === null) return { status: 'failed', canonicalSpeech: DUPLICATE_CHECK_UNAVAILABLE };
+      if (probe === null) {
+        return { status: 'failed', canonicalSpeech: DUPLICATE_RECHECK_UNAVAILABLE };
+      }
       const resolution = duplicateResolutionOf(probe);
       if (resolution === null) {
-        return { status: 'failed', canonicalSpeech: DUPLICATE_CHECK_UNAVAILABLE };
+        return { status: 'failed', canonicalSpeech: DUPLICATE_RECHECK_UNAVAILABLE };
       }
       return {
         status: 'planned',
         command: { type: 'record_customer_resolution', resolution },
         outcome: handled(
-          openedSpeech(operation.customerName, probe),
+          openedSpeech(operation.customerName, probe, 'resumed'),
           probe.kind === 'duplicate_candidates' ? 'structured_choice' : 'action_result',
         ),
       };

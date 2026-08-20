@@ -36,7 +36,7 @@ describe('Equipment — invariants de composition (Bloc A §1.3)', () => {
   it('refuse un label vide, trop long ou avec caractères de contrôle', () => {
     expect(Equipment.record(props({ label: '   ' })).ok).toBe(false);
     expect(Equipment.record(props({ label: 'a'.repeat(201) })).ok).toBe(false);
-    expect(Equipment.record(props({ label: 'Fontaine' })).ok).toBe(false);
+    expect(Equipment.record(props({ label: 'Fontaine\u0007' })).ok).toBe(false);
     expect(Equipment.record(props({ label: 'a'.repeat(200) })).ok).toBe(true);
   });
 
