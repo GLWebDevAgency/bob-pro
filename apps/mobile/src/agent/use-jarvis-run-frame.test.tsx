@@ -84,6 +84,10 @@ function presentation(
     intent: 'update',
     targetCustomerId: CUSTOMER_ID,
     targetLabel: 'SARL Martin',
+    // U1-h — LOCKSTEP : le type de presentation est TOTAL. Une cle ajoutee au wire doit
+    // apparaitre dans chaque fixture, sinon la compilation le dit — et c'est voulu.
+    duplicateReview: null,
+    completion: null,
     proposal: {
       proposalId: PROPOSAL_ID,
       proposalHash: HASH,
