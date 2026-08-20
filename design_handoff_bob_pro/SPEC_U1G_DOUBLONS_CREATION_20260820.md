@@ -64,15 +64,24 @@ troisième.
 - **L3 — Dérivation d'UUID utilisateur unifiée** : les deux copies privées de `uuidFromDigest`
   (controller, orchestrateur) se branchent sur une source unique. Fixtures d'égalité
   **obligatoires** : une divergence d'un bit changerait des identités déjà en base.
-- **L4 — Port stateless** : `customerCandidates(query)` et `customerLabels(ids)`, tous deux
+- **L4 — Port stateless** : `customerCandidates(query)` et `customerLabels(ids)` — ce dernier est
+  câblé mais **sans appelant dans ce lot** : il sert la revue tactile (U1-h §6), et le livrer avec
+  son SQL évite de rouvrir la couture stateless pour une seule fonction. Tous deux
   OPTIONNELS (même doctrine que `currentRun`/`targetSnapshot`). La borne est pincée par
   l'ADAPTATEUR — un `limit` choisi par l'appelant serait une mini-autorité.
 - **L5 — SQL, source unique** : prédicat et ordre de rapprochement factorisés, verrou en
-  paramètre. Les trois sites certifiés du devis y basculent, **SQL byte-identique**.
+  paramètre. Les trois sites certifiés du devis y basculent. **Recherche : SQL byte-identique.**
+  Les deux références par identité gagnent un alias explicite (`FOR SHARE` → `FOR SHARE OF c`) :
+  même sémantique — une seule table est en jeu — mais ce n'est pas le même octet, et le dire
+  autrement serait faux.
 - **L6 — Orchestrateur** : la recherche a lieu **AVANT le semis** ; le tour produit **deux
   admissions chaînées** (patron `resolveOpenedTarget`, transposé). Paroles canoniques refondues.
 - **L7 — Planner** : l'outil gagne `customer_name` ; `resolving_customer` en création offre
-  `probe_duplicates`.
+  `probe_duplicates`. Le schéma **suit la phase sur les trois champs** (`customer_name`,
+  `choice_ordinal`, `fields`) : un champ sans emploi à l'étape courante y déclare lui-même
+  « toujours null », et l'ordinal est borné à la fenêtre réellement énoncée. Un nom prononcé hors
+  recherche est **ignoré**, jamais fatal — contrairement à `fields`, qu'ignorer ferait perdre une
+  donnée réellement dictée.
 
 ## 4. Les trois gardes qui font la valeur du lot
 
