@@ -15,6 +15,7 @@ import {
   type AgentMissionSnapshot,
 } from './agent-mission';
 import {
+  JARVIS_FOREGROUND_HOLDING_STATUSES,
   JARVIS_RUN_KINDS,
   JARVIS_RUN_LEASE_RELEASING_STATUSES,
   JARVIS_RUN_PERSISTED_STATUSES,
@@ -124,6 +125,22 @@ describe('JarvisRun — unions fermées §5.1', () => {
     }
     for (const status of JARVIS_RUN_LEASE_RELEASING_STATUSES) {
       expect(JARVIS_RUN_STATUSES).toContain(status);
+    }
+  });
+
+  it('fige une seule liste des statuts qui tiennent le premier plan', () => {
+    expect([...JARVIS_FOREGROUND_HOLDING_STATUSES]).toEqual([
+      'active',
+      'waiting_user',
+      'waiting_screen',
+      'retry_due',
+    ]);
+    expect(Object.isFrozen(JARVIS_FOREGROUND_HOLDING_STATUSES)).toBe(true);
+    for (const status of JARVIS_FOREGROUND_HOLDING_STATUSES) {
+      expect(JARVIS_RUN_STATUSES).toContain(status);
+      expect(JARVIS_RUN_TERMINAL_STATUSES.has(status)).toBe(false);
+      expect(JARVIS_RUN_LEASE_RELEASING_STATUSES.has(status)).toBe(false);
+      expect(status).not.toBe('quarantined');
     }
   });
 });

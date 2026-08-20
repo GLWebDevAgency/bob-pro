@@ -19,10 +19,9 @@ import {
   CUSTOMER_CONTACT_PHASES,
   CUSTOMER_CONTACT_STATE_SCHEMA,
   CUSTOMER_CONTACT_STATE_VERSION,
+  JARVIS_FOREGROUND_HOLDING_STATUSES,
   JARVIS_RUN_KINDS,
-  JARVIS_RUN_LEASE_RELEASING_STATUSES,
   JARVIS_RUN_PERSISTED_STATUSES,
-  JARVIS_RUN_STATUSES,
   JARVIS_RUN_TERMINAL_STATUSES,
   JARVIS_WORK_ITEM_STATUSES,
   SINGLE_BUSINESS_ACTION_DEFINITION_VERSION,
@@ -264,16 +263,12 @@ describe('Migration U1-c jarvis_admission_expand — branches jarvis ≡ défini
 
 describe('Migration U1-c jarvis_foreground_backstop — statuts non-libérants ≡ §5.1', () => {
   it('index partiel ≡ statuts qui TIENNENT le premier plan', () => {
-    // Non-libérants = tous les statuts §5.1 moins les terminaux, les libérants
-    // (waiting_external/parked/cancelling) et `quarantined` (§5.5 : un run gelé ne
-    // doit jamais bloquer le premier plan de son owner — spec U1-c §4).
-    const expected = JARVIS_RUN_STATUSES.filter(
-      (status) =>
-        !JARVIS_RUN_TERMINAL_STATUSES.has(status) &&
-        !JARVIS_RUN_LEASE_RELEASING_STATUSES.has(status) &&
-        status !== 'quarantined',
-    );
-    expect(expected).toEqual(['active', 'waiting_user', 'waiting_screen', 'retry_due']);
+    expect(JARVIS_FOREGROUND_HOLDING_STATUSES).toEqual([
+      'active',
+      'waiting_user',
+      'waiting_screen',
+      'retry_due',
+    ]);
     expect(
       generatedBlock(
         u1cBackstopMigration,
@@ -281,6 +276,6 @@ describe('Migration U1-c jarvis_foreground_backstop — statuts non-libérants �
         'JARVIS_FOREGROUND_HOLDING_STATUSES',
       ),
       'Liste fautive : JARVIS_FOREGROUND_HOLDING_STATUSES — le backstop agent_missions_one_active_owner_key diverge de §5.1',
-    ).toEqual([...expected]);
+    ).toEqual([...JARVIS_FOREGROUND_HOLDING_STATUSES]);
   });
 });

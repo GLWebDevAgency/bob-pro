@@ -76,6 +76,21 @@ export const JARVIS_RUN_LEASE_RELEASING_STATUSES: ReadonlySet<JarvisRunStatus> =
 ]);
 
 /**
+ * Statuts qui TIENNENT le premier plan owner-scopé. Cette liste est l'autorité
+ * commune du backstop SQL, de l'admission Jarvis et des lecteurs legacy : un
+ * writer ne peut donc pas croire le premier plan libre alors que l'index le
+ * considère occupé.
+ */
+export const JARVIS_FOREGROUND_HOLDING_STATUSES: readonly JarvisRunStatus[] = Object.freeze(
+  JARVIS_RUN_STATUSES.filter(
+    (status) =>
+      !JARVIS_RUN_TERMINAL_STATUSES.has(status)
+      && !JARVIS_RUN_LEASE_RELEASING_STATUSES.has(status)
+      && status !== 'quarantined',
+  ),
+);
+
+/**
  * Projection totale statut×phase du writer N-1 vers §5.1 — l'oracle unique de la
  * projection déterministe du cutover §17. `expired` est un terminal legacy que le
  * domaine JarvisRun n'émettra jamais : il se projette en `failed_terminal`.

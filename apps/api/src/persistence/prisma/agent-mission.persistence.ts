@@ -24,6 +24,7 @@ import {
   AGENT_MISSION_PROTOCOL_VERSIONS,
   AgentMission,
   AgentMissionEvent,
+  JARVIS_FOREGROUND_HOLDING_STATUSES,
   parseAgentMissionQuoteLineWork,
   parseCustomPrestation,
   parseQuoteDraftPayload,
@@ -826,7 +827,7 @@ class PrismaAgentMissionReadRepository implements AgentMissionReadRepositoryPort
       where: {
         companyId: input.companyId,
         ownerUserId: input.ownerUserId,
-        status: 'active',
+        status: { in: [...JARVIS_FOREGROUND_HOLDING_STATUSES] },
       },
       select: { id: true, kind: true, protocolVersion: true },
       orderBy: { id: 'asc' },
@@ -957,7 +958,7 @@ class PrismaAgentMissionRepository
       where: {
         companyId: input.companyId,
         ownerUserId: input.ownerUserId,
-        status: 'active',
+        status: { in: [...JARVIS_FOREGROUND_HOLDING_STATUSES] },
       },
       select: { id: true, kind: true, protocolVersion: true },
       orderBy: { id: 'asc' },
@@ -976,7 +977,7 @@ class PrismaAgentMissionRepository
         WHERE "id" = ${reference.id}::UUID
           AND "companyId" = ${input.companyId}
           AND "ownerUserId" = ${input.ownerUserId}
-          AND "status" = 'active'
+          AND "status" IN (${Prisma.join(JARVIS_FOREGROUND_HOLDING_STATUSES)})
         LIMIT 1
         FOR UPDATE
       `;
@@ -1008,7 +1009,7 @@ class PrismaAgentMissionRepository
         AND "companyId" = ${input.companyId}
         AND "ownerUserId" = ${input.ownerUserId}
         AND "kind" = 'quote_creation'
-        AND "status" = 'active'
+        AND "status" IN (${Prisma.join(JARVIS_FOREGROUND_HOLDING_STATUSES)})
         AND "protocolVersion" = ${this.expectedProtocolVersion}
       LIMIT 1
       FOR UPDATE

@@ -4,6 +4,7 @@ import {
   AdvanceQuoteAgentMission,
   CancelQuoteAgentMission,
   ContinueQuoteAgentMissionLineQueue,
+  CUSTOMER_CONTACT_CREATE_ACTION_ID,
   DecideQuoteAgentMissionCatalogueChoice,
   GetActiveAgentMission,
   StageQuoteAgentMissionLines,
@@ -22,6 +23,7 @@ import {
   type AdvanceQuoteAgentMissionInput,
   type CancelQuoteAgentMissionInput,
   type Instant,
+  type JarvisUserAdmissionEnvelope,
   type StartQuoteAgentMissionCommand,
 } from '@bob/core';
 import { Prisma, PrismaClient } from '@prisma/client';
@@ -42,6 +44,8 @@ import {
 import {
   fingerprintAgentMissionHmacKey,
 } from '../../agent-missions/agent-mission-fingerprint-key-version';
+import { TEST_ONLY_JARVIS_ACTION_RELEASE_POLICY } from '../../jarvis/jarvis-release-policy.testing';
+import type { JarvisAdmissionDeps } from './jarvis-admission.persistence';
 import {
   PrismaService,
   type IsolatedOwnerTransactionOptions,
@@ -69,6 +73,14 @@ const FINGERPRINTS: AgentMissionFingerprintPort = {
     if (fingerprint.keyVersion !== 1) return null;
     return fingerprint.hmac === sha256Hex(`test-key:${canonicalRequest}`);
   },
+};
+
+const TEST_ONLY_JARVIS_ADMISSION_DEPS: JarvisAdmissionDeps = {
+  fingerprints: FINGERPRINTS,
+  canonicalizationVersion: 1,
+  admissionEnabled: true,
+  allowCertificationAuthority: true,
+  actionReleasePolicy: TEST_ONLY_JARVIS_ACTION_RELEASE_POLICY,
 };
 
 function ids() {
@@ -2047,6 +2059,109 @@ describe.skipIf(!RUN_CERT)(
       });
       expect(await admin.agentMission.count({ where: owner })).toBe(1);
       expect(await admin.agentMissionEvent.count({ where: owner })).toBe(3);
+    });
+
+    it('refuse le démarrage devis face à un run Jarvis waiting_user sans persister un second writer', async () => {
+      const owner: AgentMissionOwner = {
+        companyId: companyA,
+        ownerUserId: `owner-jarvis-foreground-${randomUUID()}`,
+      };
+      const runId = randomUUID();
+      const envelope = (
+        expectedRevision: number,
+        command: unknown,
+      ): JarvisUserAdmissionEnvelope => Object.freeze({
+        kind: 'customer_contact',
+        definitionVersion: 1,
+        companyId: owner.companyId,
+        ownerUserId: owner.ownerUserId,
+        runId,
+        commandId: randomUUID(),
+        expectedRevision,
+        actionId: CUSTOMER_CONTACT_CREATE_ACTION_ID,
+        actionVersion: 1,
+        authority: { source: 'certification_fixture' },
+        command,
+        canonicalInputDigest: sha256Hex(
+          `u1h-m1-foreground:${expectedRevision}:${JSON.stringify(command)}`,
+        ),
+        occurredAt: new Date().toISOString(),
+      });
+
+      const started = await uowA.runJarvisAdmission(
+        envelope(0, { type: 'start_run', intent: { mode: 'create' } }),
+        TEST_ONLY_JARVIS_ADMISSION_DEPS,
+      );
+      expect(started.status, JSON.stringify(started)).toBe('admitted');
+
+      const waiting = await uowA.runJarvisAdmission(
+        envelope(1, {
+          type: 'record_customer_resolution',
+          resolution: {
+            kind: 'duplicate_candidates',
+            reviewId: randomUUID(),
+            candidates: [{
+              choiceId: randomUUID(),
+              customerId: exactCustomerId,
+              matchDigest: sha256Hex('u1h-m1-existing-customer-match'),
+            }],
+          },
+        }),
+        TEST_ONLY_JARVIS_ADMISSION_DEPS,
+      );
+      expect(waiting.status, JSON.stringify(waiting)).toBe('admitted');
+      if (waiting.status !== 'admitted') return;
+      expect(waiting.postimage).toMatchObject({
+        runId,
+        kind: 'customer_contact',
+        status: 'waiting_user',
+        revision: 2,
+        state: { phase: 'awaiting_duplicate_review' },
+      });
+
+      const before = await Promise.all([
+        admin.agentMission.count({ where: owner }),
+        admin.agentMissionEvent.count({ where: owner }),
+        admin.quoteDraftSlot.count({ where: owner }),
+      ]);
+      expect(before).toEqual([1, 2, 0]);
+
+      const quoteStart = await start(uowA).execute({
+        ...owner,
+        commandId: randomUUID(),
+      });
+      expect(quoteStart).toEqual({
+        ok: false,
+        error: {
+          kind: 'conflict',
+          entity: 'agent_mission_foreground',
+          reason: 'active_mission_exists',
+        },
+      });
+      await expect(get(uowA).execute(owner)).resolves.toEqual({
+        ok: false,
+        error: {
+          kind: 'conflict',
+          entity: 'agent_mission_foreground',
+          reason: 'active_mission_exists',
+        },
+      });
+
+      const after = await Promise.all([
+        admin.agentMission.count({ where: owner }),
+        admin.agentMissionEvent.count({ where: owner }),
+        admin.quoteDraftSlot.count({ where: owner }),
+      ]);
+      expect(after).toEqual(before);
+      await expect(admin.agentMission.findMany({
+        where: owner,
+        select: { id: true, kind: true, status: true, phase: true },
+      })).resolves.toEqual([{
+        id: runId,
+        kind: 'customer_contact',
+        status: 'waiting_user',
+        phase: 'awaiting_duplicate_review',
+      }]);
     });
 
     it('ordonne Company SHARE avant owner/kind et refuse tout writer après clôture', async () => {

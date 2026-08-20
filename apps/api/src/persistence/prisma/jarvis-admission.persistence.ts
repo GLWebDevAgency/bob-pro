@@ -21,8 +21,7 @@ import {
   computeCustomerContactTargetSensitiveDigest,
   CUSTOMER_CONTACT_MAX_DUPLICATE_CANDIDATES,
   CUSTOMER_CONTACT_V1,
-  JARVIS_RUN_LEASE_RELEASING_STATUSES,
-  JARVIS_RUN_STATUSES,
+  JARVIS_FOREGROUND_HOLDING_STATUSES,
   JARVIS_RUN_TERMINAL_STATUSES,
   SINGLE_BUSINESS_ACTION_V1,
   evaluateJarvisActionPublication,
@@ -30,7 +29,6 @@ import {
   projectQuoteMissionJarvisStatus,
   reduceJarvisRun,
   resolveJarvisDefinition,
-  type ActionCatalogEntry,
   type AgentMissionFingerprintPort,
   type CustomerCandidate,
   type CustomerCandidateReference,
@@ -897,18 +895,6 @@ export async function runJarvisSystemAdmissionInTransaction(
     deps,
   );
 }
-
-/**
- * Statuts qui TIENNENT le premier plan (§5.1) — DÉRIVÉS des constantes du domaine, jamais
- * recopiés : c'est exactement le prédicat de l'index partiel `agent_missions_one_active_owner_key`
- * (migration 20260819000200), donc au plus UNE ligne de l'owner peut les porter.
- */
-const JARVIS_FOREGROUND_HOLDING_STATUSES: readonly string[] = JARVIS_RUN_STATUSES.filter(
-  (status) =>
-    !JARVIS_RUN_TERMINAL_STATUSES.has(status) &&
-    !JARVIS_RUN_LEASE_RELEASING_STATUSES.has(status) &&
-    status !== 'quarantined',
-);
 
 /**
  * Statuts qu'un run COURANT ne peut pas porter : les terminaux §5.1 et le gel §5.5. Dérivés eux
