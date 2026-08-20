@@ -1260,9 +1260,16 @@ export class JarvisRunController {
         return typeof snapshot === 'function' ? snapshot(customerId) : null;
       });
       return read.value;
-    } catch {
+    } catch (cause) {
       // Une fiche illisible ne casse JAMAIS la présentation : elle la prive seulement de son
-      // libellé et de son avant — le geste, lui, reste offert.
+      // libellé et de son avant — le geste, lui, reste offert. Mais elle LAISSE UNE TRACE : sans
+      // elle, le nom de la cible pourrait disparaître pour tout le monde sans que personne ne
+      // l'apprenne, et la carte redeviendrait muette exactement comme avant ce lot.
+      this.logger.audit('jarvis.presentation.target_snapshot_unavailable', {
+        companyId: owner.companyId,
+        customerId,
+        reason: cause instanceof Error ? cause.message : String(cause),
+      });
       return null;
     }
   }
