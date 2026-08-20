@@ -22,14 +22,12 @@
  */
 import { useCallback, useRef, useState } from 'react';
 import { randomUUID } from 'expo-crypto';
-import { isU1OpenAction } from '@bob/core';
 import type { BobClient } from '@bob/api-client';
 
 import { useAgentMissionCommandIdRegistry } from './agent-mission-provider';
 
-/** Action pincée par la route — la borne de rollout (G2) est la source unique de @bob/core. */
+/** Action pincée par la route ; la publication reste fermée tant que la vue serveur manque. */
 const OPEN_ACTION_ID = 'client-modifier';
-const OPEN_ACTION_VERSION = 1;
 
 export type JarvisOpenRunState =
   /** Le transport ne porte pas l'ouverture : le geste n'est pas offert. */
@@ -42,7 +40,7 @@ export type JarvisOpenRunState =
 
 export interface JarvisOpenRunHandle {
   readonly state: JarvisOpenRunState;
-  /** Offert seulement si le transport le supporte ET si le rollout laisse l'action ouverte. */
+  /** Transport techniquement capable ; la disponibilité produit vient toujours du serveur. */
   readonly supported: boolean;
   readonly open: (customerId: string) => void;
   readonly dismiss: () => void;
@@ -60,9 +58,10 @@ export function useJarvisOpenRun(input: {
   const openRun = typeof input.client.jarvisOpenRun === 'function'
     ? input.client.jarvisOpenRun.bind(input.client)
     : null;
-  // La borne G2 vient de @bob/core, jamais d'une liste locale : fermer le rollout ferme AUSSI ce
-  // geste, sans quoi l'écran sèmerait des runs que plus rien ne peut faire avancer ni annuler.
-  const supported = openRun !== null && isU1OpenAction(OPEN_ACTION_ID, OPEN_ACTION_VERSION);
+  // Le transport présent ne prouve aucune publication. Tant que l'API ne projette pas la décision
+  // de l'unique policy serveur, le CTA de création reste masqué ; cancel/replay d'un run existant
+  // passent par le coordinateur dédié et ne dépendent pas de cette offre.
+  const supported = false;
 
   const open = useCallback(
     (customerId: string): void => {

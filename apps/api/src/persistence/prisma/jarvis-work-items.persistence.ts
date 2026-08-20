@@ -42,6 +42,13 @@ export type JarvisWorkItemStatus =
 export type JarvisWorkItemResultStatus = 'succeeded' | 'failed_terminal' | 'outcome_unknown';
 
 /**
+ * Seuls les résultats décidés peuvent être transformés en reçu de run.
+ * `outcome_unknown` reste durablement non acquitté jusqu'à une réconciliation
+ * purpose-specific : le convertir en signal terminal mentirait sur l'effet externe.
+ */
+export type JarvisWorkItemSignalableStatus = 'succeeded' | 'failed_terminal' | 'cancelled';
+
+/**
  * Coordonnées complètes de la ligne cible. Elles proviennent d'un directory serveur
  * (jamais d'un client) : le repository les transforme en GUC de transaction pour que les
  * policies U1-a — épinglées company/user/mission — s'appliquent fail-closed.
@@ -75,7 +82,7 @@ export interface JarvisWorkItemLease {
 export interface JarvisWorkItemPendingSignal {
   readonly id: string;
   readonly effectId: string;
-  readonly status: JarvisWorkItemStatus;
+  readonly status: JarvisWorkItemSignalableStatus;
   readonly resultDigest: string;
   readonly leaseFence: bigint;
   readonly updatedAt: string;
@@ -144,9 +151,8 @@ export interface JarvisWorkItemsDispatchRepository {
   /**
    * Reprise des lignes `authorized` dont la lease a expiré (worker mort APRÈS le point de
    * non-retour — §5.3, revue C10) : CAS fence+1, token neuf, statut INCHANGÉ `authorized`
-   * — jamais re-`prepared`. Le worker route ces reprises vers la réconciliation : en U1-c
-   * le registre d'exécuteurs VIDE prouve qu'aucune I/O n'a pu partir (règlement
-   * `outcome_unknown` motif `executor_unregistered`, puis signal).
+   * — jamais re-`prepared`. Le worker route ces reprises vers la réconciliation. Sans arbitre,
+   * l'ancienne image ayant pu exécuter l'effet, l'issue reste `outcome_unknown` non signalée.
    */
   reclaimExpiredAuthorized(
     coordinates: JarvisWorkItemCoordinates,
@@ -187,17 +193,17 @@ export interface JarvisWorkItemsDispatchRepository {
     input: CancelUnauthorizedJarvisWorkItemInput,
   ): Promise<boolean>;
   /**
-   * Redelivery level-triggered (§5.3) : résultats persistés dont le signal n'est pas
-   * appliqué — porté par l'index partiel U1-a (`signalAppliedAt IS NULL AND
-   * resultDigest IS NOT NULL`). Lecture pure, zéro verrou.
+   * Redelivery level-triggered (§5.3) : résultats DÉCIDÉS dont le signal n'est pas appliqué.
+   * `outcome_unknown` est volontairement exclu : il reste quarantiné jusqu'à une
+   * réconciliation purpose-specific. Lecture pure, zéro verrou.
    */
   listPendingSignals(
     coordinates: JarvisWorkItemCoordinates,
     limit: number,
   ): Promise<readonly JarvisWorkItemPendingSignal[]>;
   /**
-   * Acquittement du signal, fencé et épinglé au digest attendu : un signal stale est un
-   * no-op EXPLICITE (false), jamais un écrasement silencieux.
+   * Acquittement d'un signal DÉCIDÉ, fencé et épinglé au digest attendu : un signal stale
+   * ou `outcome_unknown` est un no-op EXPLICITE (false), jamais un écrasement silencieux.
    */
   markSignalApplied(
     coordinates: JarvisWorkItemCoordinates,
@@ -552,7 +558,9 @@ export class PrismaJarvisWorkItemsRepository implements JarvisWorkItemsDispatchR
            AND "status" IN ('prepared', 'leased')
            AND "leaseFence" = ${input.expectedLeaseFence}
            AND "authorizedAt" IS NULL
+           AND "authorizationDigest" IS NULL
            AND "resultDigest" IS NULL
+           AND "signalAppliedAt" IS NULL
       `,
     );
     return count === 1;
@@ -571,7 +579,7 @@ export class PrismaJarvisWorkItemsRepository implements JarvisWorkItemsDispatchR
           Array<{
             id: string;
             effectId: string;
-            status: JarvisWorkItemStatus;
+            status: JarvisWorkItemSignalableStatus;
             resultDigest: string;
             leaseFence: bigint;
             updatedAt: Date;
@@ -584,6 +592,13 @@ export class PrismaJarvisWorkItemsRepository implements JarvisWorkItemsDispatchR
            AND "runId" = ${coordinates.runId}::uuid
            AND "signalAppliedAt" IS NULL
            AND "resultDigest" IS NOT NULL
+           AND "status" IN ('succeeded', 'failed_terminal', 'cancelled')
+           AND ("status" <> 'succeeded' OR (
+             "authorizedAt" IS NOT NULL AND "authorizationDigest" IS NOT NULL
+           ))
+           AND ("status" <> 'cancelled' OR (
+             "authorizedAt" IS NULL AND "authorizationDigest" IS NULL
+           ))
          ORDER BY "updatedAt" ASC, "id" ASC
          LIMIT ${safeLimit}
       `,
@@ -619,6 +634,13 @@ export class PrismaJarvisWorkItemsRepository implements JarvisWorkItemsDispatchR
            AND "resultDigest" = ${input.resultDigest}
            AND "signalAppliedAt" IS NULL
            AND "leaseFence" = ${input.leaseFence}
+           AND "status" IN ('succeeded', 'failed_terminal', 'cancelled')
+           AND ("status" <> 'succeeded' OR (
+             "authorizedAt" IS NOT NULL AND "authorizationDigest" IS NOT NULL
+           ))
+           AND ("status" <> 'cancelled' OR (
+             "authorizedAt" IS NULL AND "authorizationDigest" IS NULL
+           ))
       `,
     );
     return count === 1;

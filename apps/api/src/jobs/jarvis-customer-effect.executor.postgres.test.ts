@@ -15,7 +15,7 @@
  *  (3) édition : les champs PROPOSÉS recouvrent la fiche, les autres survivent, et le rejeu
  *      converge sur le même état (aucune seconde fiche, aucun champ perdu) ;
  *  (4) fail-closed G4 : charge scellée absente ⇒ `failed_terminal`, ZÉRO écriture métier ;
- *  (5) borne d'ouverture (G2) : une action hors `U1_OPEN_ACTIONS` ne touche rien ;
+ *  (5) borne technique (G2) : une action hors `U1_CANDIDATE_ACTIONS` ne touche rien ;
  *  (6) §8 : sans type légal PROPOSÉ, la création est refusée — jamais un régime légal deviné.
  */
 import { randomUUID } from 'node:crypto';
@@ -43,6 +43,7 @@ import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { PrismaAgentMissionUnitOfWork } from '../persistence/prisma/agent-mission.persistence';
+import { TEST_ONLY_JARVIS_ACTION_RELEASE_POLICY } from '../jarvis/jarvis-release-policy.testing';
 import type { JarvisAdmissionDeps } from '../persistence/prisma/jarvis-admission.persistence';
 import { PrismaJarvisProposalPayloadStore } from '../persistence/prisma/jarvis-proposal-payloads.persistence';
 import {
@@ -84,11 +85,12 @@ const FINGERPRINTS: AgentMissionFingerprintPort = {
   },
 };
 
-const DEPS: JarvisAdmissionDeps = {
+const TEST_ONLY_ADMISSION_DEPS: JarvisAdmissionDeps = {
   fingerprints: FINGERPRINTS,
   canonicalizationVersion: 1,
   admissionEnabled: true,
   allowCertificationAuthority: true,
+  actionReleasePolicy: TEST_ONLY_JARVIS_ACTION_RELEASE_POLICY,
 };
 
 function proposedFields(
@@ -216,7 +218,7 @@ describe.skipIf(!RUN_CERT)(
       envelope: JarvisUserAdmissionEnvelope,
       label: string,
     ): Promise<JarvisAdmissionResult> {
-      return uow.runJarvisAdmission(envelope, DEPS).then((result) => {
+      return uow.runJarvisAdmission(envelope, TEST_ONLY_ADMISSION_DEPS).then((result) => {
         if (result.status !== 'admitted') {
           throw new Error(`Jarvis U1-d: ${label} refusé ${JSON.stringify(result)}`);
         }
@@ -418,9 +420,9 @@ describe.skipIf(!RUN_CERT)(
       authority = new CertificationCustomerAuthority(worker);
       admission = {
         runJarvisAdmission: (envelope: JarvisUserAdmissionEnvelope) =>
-          uow.runJarvisAdmission(envelope, DEPS),
+          uow.runJarvisAdmission(envelope, TEST_ONLY_ADMISSION_DEPS),
         runJarvisSystemAdmission: (envelope: JarvisSystemAdmissionEnvelope) =>
-          uow.runJarvisSystemAdmission(envelope, DEPS),
+          uow.runJarvisSystemAdmission(envelope, TEST_ONLY_ADMISSION_DEPS),
         readJarvisStateless: <T>(
           owner: JarvisAdmissionOwner,
           read: (view: {
@@ -581,7 +583,7 @@ describe.skipIf(!RUN_CERT)(
         });
         const before = authority.writes;
 
-        // Action hors U1_OPEN_ACTIONS : refus AVANT toute lecture de run ou de charge.
+        // Action hors U1_CANDIDATE_ACTIONS : refus AVANT toute lecture de run ou de charge.
         await expect(
           executor().execute({
             coordinates,

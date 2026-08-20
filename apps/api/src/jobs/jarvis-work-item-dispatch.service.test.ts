@@ -5,8 +5,9 @@
  * dans jarvis-work-items.persistence.postgres.test.ts. Ici on prouve l'ORCHESTRATION :
  * claim → revalidation → authorize → execute → store → signal ; revalidation en échec ⇒
  * cancel SANS authorize ; kill switch ⇒ aucun claim MAIS signaux et réconciliation
- * toujours servis (revue C11) ; exécuteur absent ⇒ outcome_unknown `executor_unregistered`
- * sans appel provider ; redelivery poussée au tick suivant ; backoff borné ; cancel gagné
+ * toujours servis (revue C11) ; exécuteur absent avant authorize ⇒ annulation no-effect,
+ * tandis qu'une reprise authorized sans arbitre reste outcome_unknown non signalée ;
+ * redelivery poussée au tick suivant ; backoff borné ; cancel gagné
  * ⇒ résultat no-effect signalé ; `authorized` repris (lease expirée) ⇒ réconciliation
  * (revue C10) ; fakes NON complaisants (revue C19) : authorize/storeResult peuvent rendre
  * false et le worker S'ARRÊTE — aucun exécuteur après une autorisation perdue, aucun
@@ -21,14 +22,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ACTION_CATALOG_V0,
   deriveJarvisSystemCommandId,
+  initialSingleBusinessActionState,
+  isU1CandidateAction,
   sha256Hex,
   type JarvisAdmissionResult,
   type JarvisAdmissionUnitOfWorkPort,
+  type JarvisActionReleasePolicy,
   type JarvisRunEnvelope,
   type JarvisSystemAdmissionEnvelope,
   type Notification,
 } from '@bob/core';
 import { AppLogger } from '../observability/logger';
+import { TEST_ONLY_JARVIS_ACTION_RELEASE_POLICY } from '../jarvis/jarvis-release-policy.testing';
 import type { Persistence } from '../persistence/persistence';
 import type {
   AuthorizeJarvisWorkItemInput,
@@ -46,6 +51,7 @@ import type { ScheduledTenantDirectory } from './tenant-directory';
 import {
   JarvisWorkItemDispatchService,
   NotificationJobEffectExecutor,
+  jarvisDispatchEnabled,
   jarvisDispatchRetryDelayMs,
   jarvisEffectExecutorKey,
   jarvisNotificationEffectDedupeKey,
@@ -67,18 +73,19 @@ const EFFECT_ID = '22222222-2222-4222-8222-222222222222';
 const RECEIPT_ID = '33333333-3333-4333-8333-333333333333';
 const LEASE_TOKEN = '44444444-4444-4444-8444-444444444444';
 const READ_AT = '2026-08-19T10:00:00.000Z';
-
 const COORDINATES: JarvisWorkItemCoordinates = {
   companyId: COMPANY_ID,
   ownerUserId: OWNER_USER_ID,
   runId: RUN_ID,
 };
 
-/** Action RÉELLE du catalogue, non fermée — la revalidation lit le vrai ACTION_CATALOG_V0. */
-const OPEN_ACTION = (() => {
-  const entry = ACTION_CATALOG_V0.find((candidate) => candidate.voiceMode !== 'closed');
+/** Action RÉELLE de la borne U1 — le statut de release est injecté séparément au harnais. */
+const CANDIDATE_ACTION = (() => {
+  const entry = ACTION_CATALOG_V0.find((candidate) =>
+    isU1CandidateAction(candidate.actionId, candidate.version),
+  );
   if (entry === undefined)
-    throw new Error('Fixture impossible : aucune action ouverte au catalogue.');
+    throw new Error('Fixture impossible : aucune action candidate U1 au catalogue.');
   return entry;
 })();
 
@@ -86,8 +93,8 @@ function leaseFixture(overrides: Partial<JarvisWorkItemLease> = {}): JarvisWorkI
   return {
     id: 'wi_1',
     effectId: EFFECT_ID,
-    actionId: OPEN_ACTION.actionId,
-    actionVersion: OPEN_ACTION.version,
+    actionId: CANDIDATE_ACTION.actionId,
+    actionVersion: CANDIDATE_ACTION.version,
     authorizationSource: { source: 'confirmation', receiptId: RECEIPT_ID },
     actingPrincipalId: OWNER_USER_ID,
     targetDigest: null,
@@ -102,6 +109,12 @@ function leaseFixture(overrides: Partial<JarvisWorkItemLease> = {}): JarvisWorkI
 }
 
 function runFixture(overrides: Partial<Record<string, unknown>> = {}): JarvisRunEnvelope {
+  const initial = initialSingleBusinessActionState({
+    actionId: CANDIDATE_ACTION.actionId,
+    actionVersion: CANDIDATE_ACTION.version,
+  });
+  if (!initial.ok) throw new Error('Fixture SBA invalide.');
+  const proposalId = '55555555-5555-4555-8555-555555555555';
   return {
     kind: 'single_business_action',
     runId: RUN_ID,
@@ -111,7 +124,40 @@ function runFixture(overrides: Partial<Record<string, unknown>> = {}): JarvisRun
     status: 'waiting_external',
     revision: 5,
     stateVersion: 1,
-    state: { effect: { effectId: EFFECT_ID, authorizationReceiptId: RECEIPT_ID } },
+    state: {
+      ...initial.value,
+      phase: 'committing',
+      stepCount: 3,
+      proposal: {
+        proposalId,
+        proposalCommandId: 'proposal-command-dispatch',
+        canonicalInputDigest: sha256Hex('dispatch-input'),
+        proposalHash: sha256Hex('dispatch-proposal'),
+        presentationRequirement: 'screen_ack',
+        targetDigest: null,
+        payloadRef: null,
+        confirmationTtlMs: 60_000,
+        executeWindowMs: 60_000,
+        status: 'consumed',
+        issuedAt: '2026-08-19T09:00:00.000Z',
+        presentedAt: '2026-08-19T09:01:00.000Z',
+        presentationAck: 'screen_ack',
+        expiresAt: '2026-08-19T10:30:00.000Z',
+        ttlWakeId: `sba-confirmation-ttl:${proposalId}`,
+        consumedByCommandId: RECEIPT_ID,
+        invalidationReason: null,
+      },
+      effect: {
+        effectId: EFFECT_ID,
+        proposalId,
+        authorizationReceiptId: RECEIPT_ID,
+        actingPrincipalId: OWNER_USER_ID,
+        executeBy: '2026-08-19T12:00:00.000Z',
+        submittedJobRef: null,
+        outcome: null,
+        resultDigest: null,
+      },
+    },
     nextWakeAt: null,
     terminalAt: null,
     ...overrides,
@@ -289,6 +335,7 @@ function harness(
     admissionResults?: JarvisAdmissionResult[];
     executors?: ReadonlyMap<string, JarvisEffectExecutor> | null;
     persistence?: { closed?: boolean; findByIdError?: Error };
+    releasePolicy?: JarvisActionReleasePolicy | null;
   } = {},
 ): Harness {
   const calls: string[] = [];
@@ -309,6 +356,9 @@ function harness(
     directory,
     admission.port,
     options.executors ?? null,
+    options.releasePolicy === undefined
+      ? TEST_ONLY_JARVIS_ACTION_RELEASE_POLICY
+      : options.releasePolicy,
   );
   return { service, repository, admission, enqueue, listDispatchCoordinates, calls };
 }
@@ -327,7 +377,7 @@ function recordingExecutor(
 const ORIGINAL_KILL_SWITCH = process.env.BOB_JARVIS_DISPATCH_ENABLED;
 
 beforeEach(() => {
-  delete process.env.BOB_JARVIS_DISPATCH_ENABLED;
+  process.env.BOB_JARVIS_DISPATCH_ENABLED = 'true';
 });
 
 afterEach(() => {
@@ -340,6 +390,39 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('JarvisWorkItemDispatchService — orchestration §5.3 (fakes, zéro PostgreSQL)', () => {
+  it('le dispatch est fermé par défaut et ne s’ouvre que par la valeur littérale true', () => {
+    delete process.env.BOB_JARVIS_DISPATCH_ENABLED;
+    expect(jarvisDispatchEnabled()).toBe(false);
+    process.env.BOB_JARVIS_DISPATCH_ENABLED = 'true';
+    expect(jarvisDispatchEnabled()).toBe(true);
+    process.env.BOB_JARVIS_DISPATCH_ENABLED = 'TRUE';
+    expect(jarvisDispatchEnabled()).toBe(false);
+  });
+
+  it('manifest runtime vide ⇒ annule avant authorize et n’appelle aucun exécuteur', async () => {
+    const execute = vi.fn(async () => ({
+      status: 'succeeded' as const,
+      resultDigest: sha256Hex('ne-doit-pas-partir'),
+    }));
+    const h = harness({
+      executors: new Map([
+        [
+          jarvisEffectExecutorKey(CANDIDATE_ACTION.actionId, CANDIDATE_ACTION.version),
+          { execute } satisfies JarvisEffectExecutor,
+        ],
+      ]),
+      releasePolicy: null,
+    });
+    h.repository.leases = [leaseFixture()];
+
+    const summary = await h.service.runAllCompanies();
+
+    expect(h.calls).not.toContain('repo.authorize');
+    expect(execute).not.toHaveBeenCalled();
+    expect(h.repository.cancelInputs).toHaveLength(1);
+    expect(summary).toMatchObject({ cancelled: 1, executed: 0, failures: 0 });
+  });
+
   it('déroule le pipeline dans l’ordre : claim → revalidation → authorize → execute → store → signal', async () => {
     const resultDigest = sha256Hex('resultat-effet');
     const h = harnessWithExecutor(resultDigest);
@@ -478,39 +561,32 @@ describe('JarvisWorkItemDispatchService — orchestration §5.3 (fakes, zéro Po
     expect(summary).toMatchObject({ skipped: 'kill_switch', claimed: 0, signalled: 1 });
   });
 
-  it('exécuteur absent (registre statique VIDE en U1-c) ⇒ outcome_unknown executor_unregistered, sans appel provider', async () => {
+  it('exécuteur absent avant authorize ⇒ annulation no-effect fencée, sans appel provider', async () => {
     const h = harness(); // executors: null ⇒ registre statique (vide)
     h.repository.leases = [leaseFixture()];
 
     const summary = await h.service.runAllCompanies();
 
-    // Le point de non-retour est posé (le CHECK U1-a exige `authorized` pour outcome_unknown)…
-    expect(h.calls).toContain('repo.authorize');
-    // …mais AUCUNE I/O provider ne part : le registre vide le prouve.
+    // Le registre est lu avant le point de non-retour : ni authorize, ni I/O provider.
+    expect(h.calls).not.toContain('repo.authorize');
     expect(h.enqueue).not.toHaveBeenCalled();
     const expectedDigest = sha256Hex(
       JSON.stringify([
-        'bob.jarvis.dispatch.outcome-unknown.v1',
+        'bob.jarvis.dispatch.no-effect.v1',
         EFFECT_ID,
         'executor_unregistered',
       ]),
     );
-    expect(h.repository.storeInputs).toEqual([
-      {
-        id: 'wi_1',
-        leaseToken: LEASE_TOKEN,
-        leaseFence: 1n,
-        status: 'outcome_unknown',
-        resultDigest: expectedDigest,
-      },
+    expect(h.repository.storeInputs).toHaveLength(0);
+    expect(h.repository.cancelInputs).toEqual([
+      { id: 'wi_1', expectedLeaseFence: 1n, noEffectResultDigest: expectedDigest },
     ]);
-    // Clôture honnête signalée au run (registre vide ⇒ rien n'est jamais parti).
     expect(h.admission.admitted[0]?.command).toEqual({
       type: 'record_effect_receipt',
       effectId: EFFECT_ID,
       receipt: { kind: 'failed_terminal', failureDigest: expectedDigest },
     });
-    expect(summary).toMatchObject({ unknown: 1, executed: 0, signalled: 1 });
+    expect(summary).toMatchObject({ cancelled: 1, unknown: 0, executed: 0, signalled: 1 });
   });
 
   it('redelivery level-triggered : un résultat non signalé est repoussé au tick suivant', async () => {
@@ -547,7 +623,27 @@ describe('JarvisWorkItemDispatchService — orchestration §5.3 (fakes, zéro Po
     ]);
   });
 
-  it('authorized repris (lease expirée) + registre VIDE ⇒ outcome_unknown executor_unregistered signalé (revue C10)', async () => {
+  it('un outcome_unknown durable n’est jamais converti en reçu terminal ni acquitté', async () => {
+    const h = harness();
+    h.repository.pending = [
+      {
+        id: 'wi_unknown',
+        effectId: EFFECT_ID,
+        status: 'outcome_unknown',
+        resultDigest: sha256Hex('issue-indecidable'),
+        leaseFence: 4n,
+        updatedAt: READ_AT,
+      } as unknown as JarvisWorkItemPendingSignal,
+    ];
+
+    const summary = await h.service.runAllCompanies();
+
+    expect(h.admission.admitted).toHaveLength(0);
+    expect(h.repository.signalAppliedInputs).toHaveLength(0);
+    expect(summary).toMatchObject({ signalled: 0, failures: 0 });
+  });
+
+  it('authorized repris (lease expirée) + registre VIDE ⇒ outcome_unknown quarantiné, jamais signalé (revue C10)', async () => {
     const h = harness(); // executors: null ⇒ registre statique VIDE : zéro I/O n'a pu partir
     h.repository.reclaimable = [leaseFixture({ leaseFence: 4n })];
 
@@ -572,15 +668,9 @@ describe('JarvisWorkItemDispatchService — orchestration §5.3 (fakes, zéro Po
         resultDigest: expectedDigest,
       },
     ]);
-    expect(h.admission.admitted[0]?.command).toEqual({
-      type: 'record_effect_receipt',
-      effectId: EFFECT_ID,
-      receipt: { kind: 'failed_terminal', failureDigest: expectedDigest },
-    });
-    expect(h.repository.signalAppliedInputs).toEqual([
-      { id: 'wi_1', leaseFence: 4n, resultDigest: expectedDigest },
-    ]);
-    expect(summary).toMatchObject({ unknown: 1, signalled: 1, claimed: 0, failures: 0 });
+    expect(h.admission.admitted).toHaveLength(0);
+    expect(h.repository.signalAppliedInputs).toHaveLength(0);
+    expect(summary).toMatchObject({ unknown: 1, signalled: 0, claimed: 0, failures: 0 });
   });
 
   it('authorized repris, exécuteur enregistré SANS réconciliation ⇒ fail-closed : aucune clôture inventée', async () => {
@@ -680,7 +770,57 @@ describe('JarvisWorkItemDispatchService — orchestration §5.3 (fakes, zéro Po
     expect(h.repository.storeInputs[0]).toMatchObject({ resultDigest: replayDigest });
   });
 
-  it('réconciliation `undecidable` ⇒ outcome_unknown MOTIVÉ et signalé — jamais une lease renouvelée à vie', async () => {
+  it('manifest fermé + absence prouvée ⇒ aucun rejeu, reçu no-effect et compteur cancelled', async () => {
+    const h = harnessWithReconciler(
+      { kind: 'not_landed' },
+      { status: 'succeeded', resultDigest: sha256Hex('interdit') },
+      null,
+    );
+    h.repository.reclaimable = [leaseFixture({ leaseFence: 4n })];
+
+    const summary = await h.service.runAllCompanies();
+
+    const expectedDigest = sha256Hex(
+      JSON.stringify([
+        'bob.jarvis.dispatch.no-effect.v1',
+        EFFECT_ID,
+        'action_not_released_after_authorization',
+      ]),
+    );
+    expect(h.execute).not.toHaveBeenCalled();
+    expect(h.repository.storeInputs[0]).toMatchObject({
+      status: 'failed_terminal',
+      resultDigest: expectedDigest,
+    });
+    expect(summary).toMatchObject({ cancelled: 1, executed: 0, unknown: 0 });
+  });
+
+  it('manifest fermé + safe_to_replay ⇒ outcome_unknown, jamais un faux no-effect', async () => {
+    const h = harnessWithReconciler(
+      { kind: 'safe_to_replay' },
+      { status: 'succeeded', resultDigest: sha256Hex('interdit') },
+      null,
+    );
+    h.repository.reclaimable = [leaseFixture({ leaseFence: 4n })];
+
+    const summary = await h.service.runAllCompanies();
+
+    const expectedDigest = sha256Hex(
+      JSON.stringify([
+        'bob.jarvis.dispatch.outcome-unknown.v1',
+        EFFECT_ID,
+        'action_not_released_safe_replay_suppressed',
+      ]),
+    );
+    expect(h.execute).not.toHaveBeenCalled();
+    expect(h.repository.storeInputs[0]).toMatchObject({
+      status: 'outcome_unknown',
+      resultDigest: expectedDigest,
+    });
+    expect(summary).toMatchObject({ executed: 0, unknown: 1 });
+  });
+
+  it('réconciliation `undecidable` ⇒ outcome_unknown MOTIVÉ et quarantiné', async () => {
     const h = harnessWithReconciler({ kind: 'undecidable' });
     h.repository.reclaimable = [leaseFixture({ leaseFence: 4n })];
 
@@ -703,10 +843,9 @@ describe('JarvisWorkItemDispatchService — orchestration §5.3 (fakes, zéro Po
         resultDigest: expectedDigest,
       },
     ]);
-    expect(h.repository.signalAppliedInputs).toEqual([
-      { id: 'wi_1', leaseFence: 4n, resultDigest: expectedDigest },
-    ]);
-    expect(summary).toMatchObject({ unknown: 1, signalled: 1, failures: 0 });
+    expect(h.admission.admitted).toHaveLength(0);
+    expect(h.repository.signalAppliedInputs).toHaveLength(0);
+    expect(summary).toMatchObject({ unknown: 1, signalled: 0, failures: 0 });
   });
 
   it('réconciliation qui LÈVE ⇒ indécidable (aucune absence prouvée), jamais un rejeu à l’aveugle', async () => {
@@ -726,7 +865,7 @@ describe('JarvisWorkItemDispatchService — orchestration §5.3 (fakes, zéro Po
         ]),
       ),
     });
-    expect(summary).toMatchObject({ unknown: 1, signalled: 1 });
+    expect(summary).toMatchObject({ unknown: 1, signalled: 0 });
   });
 
   it('rejeu réconcilié qui LÈVE ⇒ outcome_unknown executor_error, résultat tout de même persisté', async () => {
@@ -742,7 +881,7 @@ describe('JarvisWorkItemDispatchService — orchestration §5.3 (fakes, zéro Po
         JSON.stringify(['bob.jarvis.dispatch.outcome-unknown.v1', EFFECT_ID, 'executor_error']),
       ),
     });
-    expect(summary).toMatchObject({ unknown: 1, signalled: 1, failures: 0 });
+    expect(summary).toMatchObject({ unknown: 1, signalled: 0, failures: 0 });
   });
 
   it('storeResult REFUSÉ après réconciliation ⇒ aucun signal indû (fence repris par un successeur)', async () => {
@@ -945,7 +1084,7 @@ describe('JarvisWorkItemDispatchService — orchestration §5.3 (fakes, zéro Po
   });
 });
 
-/** Harness avec UN exécuteur enregistré sous la clé réelle de l'action ouverte du catalogue. */
+/** Harness avec UN exécuteur enregistré sous la clé réelle de l'action candidate U1. */
 function harnessWithExecutor(resultDigest: string): Harness {
   const calls: string[] = [];
   const { executor } = recordingExecutor(calls, resultDigest);
@@ -963,6 +1102,7 @@ function harnessWithReconciler(
     status: 'succeeded',
     resultDigest: sha256Hex('rejeu-reconcilie'),
   },
+  releasePolicy: JarvisActionReleasePolicy | null = TEST_ONLY_JARVIS_ACTION_RELEASE_POLICY,
 ): Harness & {
   readonly execute: ReturnType<typeof vi.fn>;
   readonly reconcile: ReturnType<typeof vi.fn>;
@@ -978,13 +1118,17 @@ function harnessWithReconciler(
     if (verdict instanceof Error) throw verdict;
     return verdict;
   });
-  const base = harnessWith(calls, { execute, reconcileEffect: reconcile });
+  const base = harnessWith(calls, { execute, reconcileEffect: reconcile }, releasePolicy);
   return { ...base, execute, reconcile };
 }
 
-function harnessWith(calls: string[], executor: JarvisEffectExecutor): Harness {
+function harnessWith(
+  calls: string[],
+  executor: JarvisEffectExecutor,
+  releasePolicy: JarvisActionReleasePolicy | null = TEST_ONLY_JARVIS_ACTION_RELEASE_POLICY,
+): Harness {
   const executors = new Map<string, JarvisEffectExecutor>([
-    [jarvisEffectExecutorKey(OPEN_ACTION.actionId, OPEN_ACTION.version), executor],
+    [jarvisEffectExecutorKey(CANDIDATE_ACTION.actionId, CANDIDATE_ACTION.version), executor],
   ]);
   const repository = new FakeDispatchRepository(calls);
   const admission = fakeAdmission(calls, runFixture());
@@ -998,6 +1142,7 @@ function harnessWith(calls: string[], executor: JarvisEffectExecutor): Harness {
     { listDispatchCoordinates },
     admission.port,
     executors,
+    releasePolicy,
   );
   return { service, repository, admission, enqueue, listDispatchCoordinates, calls };
 }

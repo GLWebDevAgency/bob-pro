@@ -26,13 +26,18 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   ACTION_CATALOG_V0,
+  CLOSED_JARVIS_ACTION_RELEASE_POLICY,
+  initialSingleBusinessActionState,
+  isU1CandidateAction,
   sha256Hex,
   type JarvisAdmissionResult,
   type JarvisAdmissionUnitOfWorkPort,
+  type JarvisActionReleasePolicy,
   type JarvisRunEnvelope,
   type JarvisSystemAdmissionEnvelope,
 } from '@bob/core';
 import { AppLogger } from '../observability/logger';
+import { TEST_ONLY_JARVIS_ACTION_RELEASE_POLICY } from '../jarvis/jarvis-release-policy.testing';
 import type { Persistence } from '../persistence/persistence';
 import type {
   AuthorizeJarvisWorkItemInput,
@@ -72,11 +77,13 @@ const COORDINATES: JarvisWorkItemCoordinates = {
   runId: RUN_ID,
 };
 
-/** Action OUVERTE réelle du catalogue — la revalidation lit le vrai ACTION_CATALOG_V0. */
-const OPEN_ACTION = (() => {
-  const entry = ACTION_CATALOG_V0.find((candidate) => candidate.voiceMode !== 'closed');
+/** Action RÉELLE de la borne U1 — le statut de release est injecté séparément au harnais. */
+const CANDIDATE_ACTION = (() => {
+  const entry = ACTION_CATALOG_V0.find((candidate) =>
+    isU1CandidateAction(candidate.actionId, candidate.version),
+  );
   if (entry === undefined) {
-    throw new Error('Fixture impossible : aucune action ouverte au catalogue.');
+    throw new Error('Fixture impossible : aucune action candidate U1 au catalogue.');
   }
   return entry;
 })();
@@ -99,8 +106,8 @@ function leaseFixture(overrides: Partial<JarvisWorkItemLease> = {}): JarvisWorkI
   return {
     id: 'wi_reval',
     effectId: EFFECT_ID,
-    actionId: OPEN_ACTION.actionId,
-    actionVersion: OPEN_ACTION.version,
+    actionId: CANDIDATE_ACTION.actionId,
+    actionVersion: CANDIDATE_ACTION.version,
     authorizationSource: { source: 'confirmation', receiptId: RECEIPT_ID },
     actingPrincipalId: OWNER_USER_ID,
     targetDigest: null,
@@ -115,6 +122,12 @@ function leaseFixture(overrides: Partial<JarvisWorkItemLease> = {}): JarvisWorkI
 }
 
 function runFixture(overrides: Partial<Record<string, unknown>> = {}): JarvisRunEnvelope {
+  const initial = initialSingleBusinessActionState({
+    actionId: CANDIDATE_ACTION.actionId,
+    actionVersion: CANDIDATE_ACTION.version,
+  });
+  if (!initial.ok) throw new Error('Fixture SBA invalide.');
+  const proposalId = '99999999-9999-4999-8999-999999999999';
   return {
     kind: 'single_business_action',
     runId: RUN_ID,
@@ -124,7 +137,40 @@ function runFixture(overrides: Partial<Record<string, unknown>> = {}): JarvisRun
     status: 'waiting_external',
     revision: 5,
     stateVersion: 1,
-    state: { effect: { effectId: EFFECT_ID, authorizationReceiptId: RECEIPT_ID } },
+    state: {
+      ...initial.value,
+      phase: 'committing',
+      stepCount: 3,
+      proposal: {
+        proposalId,
+        proposalCommandId: 'proposal-command-revalidation',
+        canonicalInputDigest: sha256Hex('revalidation-input'),
+        proposalHash: sha256Hex('revalidation-proposal'),
+        presentationRequirement: 'screen_ack',
+        targetDigest: null,
+        payloadRef: null,
+        confirmationTtlMs: 60_000,
+        executeWindowMs: 60_000,
+        status: 'consumed',
+        issuedAt: '2026-08-19T09:00:00.000Z',
+        presentedAt: '2026-08-19T09:01:00.000Z',
+        presentationAck: 'screen_ack',
+        expiresAt: '2026-08-19T10:30:00.000Z',
+        ttlWakeId: `sba-confirmation-ttl:${proposalId}`,
+        consumedByCommandId: RECEIPT_ID,
+        invalidationReason: null,
+      },
+      effect: {
+        effectId: EFFECT_ID,
+        proposalId,
+        authorizationReceiptId: RECEIPT_ID,
+        actingPrincipalId: OWNER_USER_ID,
+        executeBy: '2026-08-19T12:00:00.000Z',
+        submittedJobRef: null,
+        outcome: null,
+        resultDigest: null,
+      },
+    },
     nextWakeAt: null,
     terminalAt: null,
     ...overrides,
@@ -246,6 +292,7 @@ function harness(
     admissionResults?: JarvisAdmissionResult[];
     executors?: ReadonlyMap<string, JarvisEffectExecutor>;
     tenantClosed?: boolean;
+    releasePolicy?: JarvisActionReleasePolicy;
   } = {},
 ): Harness {
   const calls: string[] = [];
@@ -300,6 +347,7 @@ function harness(
     directory,
     admission,
     options.executors ?? null,
+    options.releasePolicy ?? TEST_ONLY_JARVIS_ACTION_RELEASE_POLICY,
   );
   return { service, repository, admitted, calls };
 }
@@ -314,7 +362,7 @@ function expectRefusedWithoutAuthorize(h: Harness): void {
 const ORIGINAL_KILL_SWITCH = process.env.BOB_JARVIS_DISPATCH_ENABLED;
 
 beforeEach(() => {
-  delete process.env.BOB_JARVIS_DISPATCH_ENABLED;
+  process.env.BOB_JARVIS_DISPATCH_ENABLED = 'true';
 });
 
 afterEach(() => {
@@ -327,6 +375,19 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('Revalidation §3 — liste fermée, axes restants (revue C20)', () => {
+  it('action seulement specified ⇒ no-effect avant authorize, même dans la borne U1', async () => {
+    const h = harness({ releasePolicy: CLOSED_JARVIS_ACTION_RELEASE_POLICY });
+    h.repository.leases = [leaseFixture()];
+
+    const result = await h.service.runForCompany(COMPANY_ID);
+
+    expect(result).toMatchObject({ claimed: 1, cancelled: 1, executed: 0 });
+    expect(h.repository.cancelInputs[0]?.noEffectResultDigest).toBe(
+      noEffectDigestFor('action_not_released'),
+    );
+    expectRefusedWithoutAuthorize(h);
+  });
+
   it('source d’autorisation non-confirmation (union fermée, FD-05) ⇒ cancel sans authorize', async () => {
     const h = harness();
     h.repository.leases = [
@@ -390,7 +451,20 @@ describe('Revalidation §3 — liste fermée, axes restants (revue C20)', () => 
   });
 
   it('action FERMÉE au catalogue (voiceMode closed — le catalogue a bougé) ⇒ cancel sans authorize', async () => {
-    const h = harness();
+    const current = runFixture();
+    if (current.kind !== 'single_business_action') {
+      throw new Error('Fixture SBA attendue.');
+    }
+    const currentState = current.state as Record<string, unknown>;
+    const h = harness({
+      run: {
+        ...current,
+        state: {
+          ...currentState,
+          action: { actionId: CLOSED_ACTION.actionId, actionVersion: CLOSED_ACTION.version },
+        },
+      } as JarvisRunEnvelope,
+    });
     h.repository.leases = [
       leaseFixture({ actionId: CLOSED_ACTION.actionId, actionVersion: CLOSED_ACTION.version }),
     ];
@@ -403,6 +477,25 @@ describe('Revalidation §3 — liste fermée, axes restants (revue C20)', () => 
         id: 'wi_reval',
         expectedLeaseFence: 1n,
         noEffectResultDigest: noEffectDigestFor('action_closed'),
+      },
+    ]);
+    expect(summary).toMatchObject({ cancelled: 1, failures: 0 });
+  });
+
+  it("l'action de la lease diverge du state ⇒ cancel avant publication et avant authorize", async () => {
+    const h = harness();
+    h.repository.leases = [
+      leaseFixture({ actionId: CLOSED_ACTION.actionId, actionVersion: CLOSED_ACTION.version }),
+    ];
+
+    const summary = await h.service.runAllCompanies();
+
+    expectRefusedWithoutAuthorize(h);
+    expect(h.repository.cancelInputs).toEqual([
+      {
+        id: 'wi_reval',
+        expectedLeaseFence: 1n,
+        noEffectResultDigest: noEffectDigestFor('action_binding_mismatch'),
       },
     ]);
     expect(summary).toMatchObject({ cancelled: 1, failures: 0 });
@@ -453,7 +546,7 @@ describe('Revalidation §3 — liste fermée, axes restants (revue C20)', () => 
     };
     const h = harness({
       executors: new Map([
-        [jarvisEffectExecutorKey(OPEN_ACTION.actionId, OPEN_ACTION.version), executor],
+        [jarvisEffectExecutorKey(CANDIDATE_ACTION.actionId, CANDIDATE_ACTION.version), executor],
       ]),
     });
     h.repository.leases = [leaseFixture({ targetDigest: sha256Hex('cible-originale') })];
@@ -483,7 +576,7 @@ describe('Revalidation §3 — liste fermée, axes restants (revue C20)', () => 
     };
     const h = harness({
       executors: new Map([
-        [jarvisEffectExecutorKey(OPEN_ACTION.actionId, OPEN_ACTION.version), executor],
+        [jarvisEffectExecutorKey(CANDIDATE_ACTION.actionId, CANDIDATE_ACTION.version), executor],
       ]),
     });
     h.repository.leases = [leaseFixture({ targetDigest: sha256Hex('cible-originale') })];

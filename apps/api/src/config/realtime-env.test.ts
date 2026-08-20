@@ -181,6 +181,21 @@ describe('Bob Live — validation de la politique d’admission', () => {
     expect(resolveAgentMissionHmacKeyRing(env)).toBeNull();
   });
 
+  it('garde les deux masters Jarvis fermés par défaut et refuse toute valeur ambiguë', () => {
+    validRealtimeEnv();
+    expect(loadEnv()).toMatchObject({
+      BOB_JARVIS_ADMISSION_ENABLED: 'false',
+      BOB_JARVIS_DISPATCH_ENABLED: 'false',
+    });
+
+    vi.stubEnv('BOB_JARVIS_ADMISSION_ENABLED', '1');
+    expect(() => loadEnv()).toThrow(/BOB_JARVIS_ADMISSION_ENABLED/u);
+
+    vi.stubEnv('BOB_JARVIS_ADMISSION_ENABLED', 'false');
+    vi.stubEnv('BOB_JARVIS_DISPATCH_ENABLED', 'yes');
+    expect(() => loadEnv()).toThrow(/BOB_JARVIS_DISPATCH_ENABLED/u);
+  });
+
   it('interdit le master M2-A sans le socle V1 et accepte son bloc complet dormant', () => {
     validRealtimeEnv();
     vi.stubEnv('CABINET_RELEASE_ENV', 'staging');

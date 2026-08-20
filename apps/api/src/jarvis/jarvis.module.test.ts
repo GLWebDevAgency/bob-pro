@@ -45,8 +45,13 @@ import {
   JarvisModule,
   buildJarvisCustomerEffectExecutors,
   buildJarvisProposalPayloadStore,
+  jarvisActionReleasePolicyProvider,
 } from './jarvis.module';
-import { JARVIS_ADMISSION, JARVIS_PROPOSAL_PAYLOAD_STORE } from './jarvis.tokens';
+import {
+  JARVIS_ACTION_RELEASE_POLICY,
+  JARVIS_ADMISSION,
+  JARVIS_PROPOSAL_PAYLOAD_STORE,
+} from './jarvis.tokens';
 
 function metadata(key: string, target: unknown): readonly unknown[] {
   return (Reflect.getMetadata(key, target as object) as unknown[] | undefined) ?? [];
@@ -126,6 +131,7 @@ describe('tranche verticale Jarvis (U1-d)', () => {
     expect(metadata(MODULE_METADATA.IMPORTS, AppModule)).toContain(JarvisModule);
     expect(metadata(MODULE_METADATA.CONTROLLERS, JarvisModule)).toEqual([JarvisRunController]);
     const providers = metadata(MODULE_METADATA.PROVIDERS, JarvisModule);
+    expect(providers).toContain(jarvisActionReleasePolicyProvider);
     expect(providers).toContain(jarvisAdmissionProvider);
     expect(providers).toContain(jarvisDispatchAdmissionProvider);
     expect(providers).toContain(jarvisTapAuthorityProvider);
@@ -142,6 +148,7 @@ describe('tranche verticale Jarvis (U1-d)', () => {
 
   it('EXPORTE ce qui est injecté hors du module (worker de dispatch d’AppModule)', () => {
     const exports = metadata(MODULE_METADATA.EXPORTS, JarvisModule);
+    expect(exports).toContain(JARVIS_ACTION_RELEASE_POLICY);
     expect(exports).toContain(JARVIS_ADMISSION);
     expect(exports).toContain(JARVIS_DISPATCH_ADMISSION);
     // Injecté par `RealtimeVoiceModule` (voix) : non exporté, il resterait invisible donc nul.

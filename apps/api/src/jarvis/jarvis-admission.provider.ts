@@ -21,11 +21,13 @@
  */
 
 import type { Provider } from '@nestjs/common';
+import { CLOSED_JARVIS_ACTION_RELEASE_POLICY } from '@bob/core';
 import type {
   AgentMissionFingerprintPort,
   JarvisAdmissionOwner,
   JarvisAdmissionResult,
   JarvisAdmissionUnitOfWorkPort,
+  JarvisActionReleasePolicy,
   JarvisRunEnvelope,
   JarvisStatelessReadResult,
   JarvisSystemAdmissionEnvelope,
@@ -38,7 +40,7 @@ import type { Persistence } from '../persistence/persistence';
 import { PERSISTENCE } from '../persistence/persistence-token';
 import type { JarvisAdmissionDeps } from '../persistence/prisma/jarvis-admission.persistence';
 
-import { JARVIS_ADMISSION } from './jarvis.tokens';
+import { JARVIS_ACTION_RELEASE_POLICY, JARVIS_ADMISSION } from './jarvis.tokens';
 
 /** Contrat `agentMissionEvent` du journal durable — jamais un nombre libre. */
 export const JARVIS_CANONICALIZATION_VERSION = 1;
@@ -49,7 +51,7 @@ export const JARVIS_CANONICALIZATION_VERSION = 1;
  * l'oppose qu'aux enveloppes `user`). Lu à chaque appel — jamais figé au boot.
  */
 export function jarvisAdmissionEnabled(): boolean {
-  return process.env.BOB_JARVIS_ADMISSION_ENABLED !== 'false';
+  return process.env.BOB_JARVIS_ADMISSION_ENABLED === 'true';
 }
 
 /**
@@ -98,6 +100,7 @@ export class JarvisAdmissionAdapter implements JarvisAdmissionUnitOfWorkPort {
   constructor(
     private readonly unitOfWork: JarvisAdmissionUnitOfWorkAuthority,
     private readonly fingerprints: AgentMissionFingerprintPort,
+    private readonly actionReleasePolicy: JarvisActionReleasePolicy,
   ) {}
 
   private deps(): JarvisAdmissionDeps {
@@ -107,6 +110,8 @@ export class JarvisAdmissionAdapter implements JarvisAdmissionUnitOfWorkPort {
       admissionEnabled: jarvisAdmissionEnabled(),
       // Jamais `true` dans un câblage de production : la fixture est réservée au harnais.
       allowCertificationAuthority: false,
+      // Manifest vide : aucun statut catalogue ne publie implicitement une action.
+      actionReleasePolicy: this.actionReleasePolicy,
     });
   }
 
@@ -133,14 +138,17 @@ export class JarvisAdmissionAdapter implements JarvisAdmissionUnitOfWorkPort {
 export function buildJarvisAdmission(
   persistence: Pick<Persistence, 'createAgentMissionUnitOfWork'>,
   fingerprints: AgentMissionFingerprintPort,
+  actionReleasePolicy: JarvisActionReleasePolicy = CLOSED_JARVIS_ACTION_RELEASE_POLICY,
 ): JarvisAdmissionUnitOfWorkPort | null {
   const unitOfWork = jarvisAdmissionUnitOfWork(persistence);
-  return unitOfWork === null ? null : new JarvisAdmissionAdapter(unitOfWork, fingerprints);
+  return unitOfWork === null
+    ? null
+    : new JarvisAdmissionAdapter(unitOfWork, fingerprints, actionReleasePolicy);
 }
 
 export const jarvisAdmissionProvider: Provider = {
   provide: JARVIS_ADMISSION,
-  inject: [PERSISTENCE, AGENT_MISSION_FINGERPRINTS],
+  inject: [PERSISTENCE, AGENT_MISSION_FINGERPRINTS, JARVIS_ACTION_RELEASE_POLICY],
   useFactory: buildJarvisAdmission,
 };
 

@@ -26,7 +26,6 @@ import {
   CUSTOMER_CONTACT_CREATE_ACTION_ID,
   CUSTOMER_CONTACT_UPDATE_ACTION_ID,
   JARVIS_RUN_TERMINAL_STATUSES,
-  isU1OpenAction,
   type AppError,
   type Result,
 } from '@bob/core';
@@ -78,16 +77,16 @@ function invalid(): Promise<JarvisRunCall> {
 }
 
 /**
- * Borne d'ouverture du lot consommée depuis sa source UNIQUE (`rollout.ts`, greffe G2) : la paire
- * action/version vient des constantes de la définition, jamais d'une chaîne écrite ici.
+ * Référence d'action pincée par les constantes de la définition. La disponibilité produit reste
+ * une décision serveur ; ce coordinateur doit toujours pouvoir rejouer ou annuler un run existant.
  */
 function actionForIntent(
   intent: CustomerContactPresentationV1['intent'],
-): { readonly actionId: string; readonly actionVersion: number } | null {
+): { readonly actionId: string; readonly actionVersion: number } {
   const actionId =
     intent === 'create' ? CUSTOMER_CONTACT_CREATE_ACTION_ID : CUSTOMER_CONTACT_UPDATE_ACTION_ID;
   const actionVersion: number = CUSTOMER_CONTACT_ACTION_VERSION;
-  return isU1OpenAction(actionId, actionVersion) ? { actionId, actionVersion } : null;
+  return { actionId, actionVersion };
 }
 
 export class JarvisRunCoordinator {
@@ -220,8 +219,7 @@ export class JarvisRunCoordinator {
       run.terminalAt !== null ||
       JARVIS_RUN_TERMINAL_STATUSES.has(run.status) ||
       presentation.schema !== PRESENTATION_SCHEMA ||
-      presentation.version !== 1 ||
-      action === null
+      presentation.version !== 1
     ) {
       return null;
     }

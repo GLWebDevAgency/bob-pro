@@ -30,6 +30,25 @@ case "$CABINET_RELEASE_ENV" in
     exit 1
     ;;
 esac
+
+# Les certificats PostgreSQL éphémères de CI tournent en `development` et n'ont aucun parc N-1 à
+# protéger : ils héritent donc du défaut fermé du code. Staging/production doivent au contraire
+# POSER les deux valeurs pour protéger aussi l'ancien binaire fail-open pendant le rolling deploy.
+# `check-release-env.sh` applique la même loi au workflow Railway avant d'entrer ici.
+if [ "$CABINET_RELEASE_ENV" = development ]; then
+  BOB_JARVIS_ADMISSION_ENABLED="${BOB_JARVIS_ADMISSION_ENABLED:-false}"
+  BOB_JARVIS_DISPATCH_ENABLED="${BOB_JARVIS_DISPATCH_ENABLED:-false}"
+  export BOB_JARVIS_ADMISSION_ENABLED BOB_JARVIS_DISPATCH_ENABLED
+else
+  : "${BOB_JARVIS_ADMISSION_ENABLED:?BOB_JARVIS_ADMISSION_ENABLED=false is required before release}"
+  : "${BOB_JARVIS_DISPATCH_ENABLED:?BOB_JARVIS_DISPATCH_ENABLED=false is required before release}"
+fi
+if [ "$BOB_JARVIS_ADMISSION_ENABLED" != false ] \
+   || [ "$BOB_JARVIS_DISPATCH_ENABLED" != false ]; then
+  echo "Both Jarvis masters must remain false during release" >&2
+  exit 1
+fi
+
 if [ "$BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED" = true ] \
    && [ "$CABINET_RELEASE_ENV" != staging ]; then
   echo "BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED=true is restricted to staging preview" >&2
@@ -3141,12 +3160,12 @@ SELECT DISTINCT format(
 -- SECURITY DEFINER, la fonction ne peut pas atteindre la PII — le privilege n'existe pas.
 -- CE QUE L'AUTORITE LIT, ET POURQUOI. La projection ne rend que (ownerUserId, runId) ; les autres
 -- colonnes sont accordees parce que sa POLICY les evalue : status/nextAttemptAt/leaseExpiresAt
--- pour les trois premieres branches, resultDigest/signalAppliedAt pour la redelivery. Un digest
--- de resultat est une empreinte opaque, pas une charge — il n'expose rien du contenu ecrit.
+-- pour les trois premieres branches, resultDigest/signalAppliedAt et la paire
+-- authorizedAt/authorizationDigest pour refuser un faux `cancelled` no-effect. Ces valeurs sont
+-- des preuves opaques, jamais la charge métier.
 -- CE QUI RESTE INATTEIGNABLE, et c'est la le point : payloadRef, authorizationSource,
--- submittedJobRef, targetDigest, authorizationDigest. L'autorite oriente le worker ; elle ne lit
--- ni la charge, ni la preuve d'autorisation.
-GRANT SELECT ("companyId", "ownerUserId", "runId", "status", "nextAttemptAt", "leaseExpiresAt", "resultDigest", "signalAppliedAt")
+-- submittedJobRef et targetDigest. L'autorite oriente le worker ; elle ne lit pas la charge.
+GRANT SELECT ("companyId", "ownerUserId", "runId", "status", "nextAttemptAt", "leaseExpiresAt", "authorizedAt", "authorizationDigest", "resultDigest", "signalAppliedAt")
   ON TABLE public.jarvis_work_items
   TO bob_jarvis_dispatch_directory;
 RESET ROLE;
@@ -3772,6 +3791,13 @@ if [ "$BOB_RELEASE_PHASE" = predeploy ]; then
 fi
 node apps/api/scripts/assert-database-pair.mjs
 node --test apps/api/scripts/document-archive-quarantine-release-safety.test.mjs
+# Jarvis U1 est fermé sur cette image. Avant toute mutation, la base doit prouver qu'aucun effet
+# n'est encore exécutable/incertain, qu'aucun signal n'attend et qu'aucune ligne n'a bougé pendant
+# une lease worker. Ce snapshot ne prouve PAS que le processus N-1 a rechargé les masters : le
+# train de fermeture et son attestation opérateur restent requis avant ce predeploy.
+if [ "$BOB_RELEASE_PHASE" = predeploy ]; then
+  node apps/api/scripts/check-jarvis-u1-drain.mjs
+fi
 # Avant la première mutation, toute migration déjà appliquée doit encore correspondre octet pour
 # octet au dépôt. Seul predeploy accepte des fichiers locaux en attente jusqu'au migrate deploy ;
 # postdeploy exige une bijection stricte et ne sert jamais de voie de migration de secours.

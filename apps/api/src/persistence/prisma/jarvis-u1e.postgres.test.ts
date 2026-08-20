@@ -8,7 +8,7 @@
  *
  * Rien n'est simulé : chaque preuve appelle le VRAI controller (`JarvisRunController` avec son
  * autorité `DurableJarvisTapAuthority`, l'owner et le hash de liaison dérivés du bearer), branché
- * sur le VRAI adaptateur d'admission (`PrismaAgentMissionUnitOfWork` + deps de PRODUCTION,
+ * sur le VRAI adaptateur d'admission (`PrismaAgentMissionUnitOfWork` + harnais test-only,
  * `allowCertificationAuthority: false`), le VRAI magasin de charges scellées, le VRAI worker de
  * dispatch et le VRAI exécuteur d'effet, dont l'autorité métier appelle les use cases CANONIQUES
  * de la fiche client. Chaque assertion RELIT LA BASE par l'auditeur — jamais le seul reçu rendu.
@@ -94,6 +94,7 @@ import {
   type JarvisCommandReceiptWire,
   type JarvisCurrentRunWire,
 } from '../../jarvis/jarvis-run.controller';
+import { TEST_ONLY_JARVIS_ACTION_RELEASE_POLICY } from '../../jarvis/jarvis-release-policy.testing';
 import { AppLogger, requestContext } from '../../observability/logger';
 import { agentMissionPrincipalBindingHash } from '../../voice/realtime/realtime-agent-mission-admission';
 import type { Persistence } from '../persistence';
@@ -112,6 +113,7 @@ import {
 
 const RUN_CERT = process.env.RUN_AGENT_MISSION_POSTGRES_CERT === 'true';
 const DISPOSABLE = process.env.AGENT_MISSION_CERT_DATABASE_IS_DISPOSABLE === 'true';
+const ORIGINAL_DISPATCH_ENABLED = process.env.BOB_JARVIS_DISPATCH_ENABLED;
 
 /** Le parcours §2 enchaîne un run complet, deux propositions, un tick de worker et deux écritures. */
 const TEST_TIMEOUT_MS = 90_000;
@@ -130,15 +132,15 @@ const FINGERPRINTS: AgentMissionFingerprintPort = {
 };
 
 /**
- * CÂBLAGE DE PRODUCTION — `allowCertificationAuthority: false`, exactement ce que pose l'adapter
- * `JARVIS_ADMISSION`. Le canal tactile est certifié SOUS ces deps : une preuve qui aurait besoin
- * du drapeau de harnais ne prouverait rien de la prod.
+ * HARNAIS D'INTÉGRATION TEST-ONLY — il exerce le code avant promotion du catalogue. Il ne prouve
+ * ni publication, ni canary, ni configuration de production.
  */
-const PRODUCTION_DEPS: JarvisAdmissionDeps = {
+const TEST_ONLY_DEPS: JarvisAdmissionDeps = {
   fingerprints: FINGERPRINTS,
   canonicalizationVersion: 1,
   admissionEnabled: true,
   allowCertificationAuthority: false,
+  actionReleasePolicy: TEST_ONLY_JARVIS_ACTION_RELEASE_POLICY,
 };
 
 function expectAdmission<S extends JarvisAdmissionResult['status']>(
@@ -233,6 +235,8 @@ describe.skipIf(!RUN_CERT)(
     const companyId = `jarvis-u1e-company-${randomUUID()}`;
     /** Société VOISINE : elle prouve que l'annuaire ne traverse jamais le tenant. */
     const neighborCompanyId = `jarvis-u1e-voisin-${randomUUID()}`;
+    /** Société isolée de la preuve d'annuaire : ses unknown ne polluent aucun autre scénario. */
+    const directorySignalableCompanyId = `jarvis-u1e-directory-${randomUUID()}`;
     let admin: PrismaClient;
     let workerA: PrismaService;
     let workerB: PrismaService;
@@ -252,9 +256,9 @@ describe.skipIf(!RUN_CERT)(
     function admissionPortOf(uow: PrismaAgentMissionUnitOfWork): JarvisAdmissionUnitOfWorkPort {
       return {
         runJarvisAdmission: (envelope: JarvisUserAdmissionEnvelope) =>
-          uow.runJarvisAdmission(envelope, PRODUCTION_DEPS),
+          uow.runJarvisAdmission(envelope, TEST_ONLY_DEPS),
         runJarvisSystemAdmission: (envelope: JarvisSystemAdmissionEnvelope) =>
-          uow.runJarvisSystemAdmission(envelope, PRODUCTION_DEPS),
+          uow.runJarvisSystemAdmission(envelope, TEST_ONLY_DEPS),
         readJarvisStateless: <T>(
           owner: JarvisAdmissionOwner,
           read: (view: JarvisStatelessReadView) => Promise<T>,
@@ -326,7 +330,7 @@ describe.skipIf(!RUN_CERT)(
         canonicalInputDigest: sha256Hex(`jarvis-u1e-port:${commandId}`),
         occurredAt: new Date().toISOString(),
       });
-      return uow.runJarvisAdmission(envelope, PRODUCTION_DEPS);
+      return uow.runJarvisAdmission(envelope, TEST_ONLY_DEPS);
     }
 
     async function auditRun(runId: string): Promise<RunAuditRow | null> {
@@ -517,6 +521,8 @@ describe.skipIf(!RUN_CERT)(
     }
 
     beforeAll(async () => {
+      // Le runtime reste fail-closed. Ce harnais ouvre explicitement le worker qu'il exerce.
+      process.env.BOB_JARVIS_DISPATCH_ENABLED = 'true';
       if (!DISPOSABLE) {
         throw new Error(
           'AGENT_MISSION_CERT_DATABASE_IS_DISPOSABLE=true est obligatoire : le journal est immuable.',
@@ -554,6 +560,17 @@ describe.skipIf(!RUN_CERT)(
           "id", "name", "legalForm", "siren", "siret", "trade", "vatRegime",
           "addrLine1", "addrZip", "addrCity"
         ) VALUES (
+          ${directorySignalableCompanyId}, ${'Jarvis directory signalable 13'}, ${'EI'},
+          ${'903000013'}, ${'90300001300013'},
+          ${'certification'}, ${'reel_normal'},
+          ${'3 rue du Test'}, ${'75003'}, ${'Paris'}
+        )
+      `;
+      await admin.$executeRaw`
+        INSERT INTO public.companies (
+          "id", "name", "legalForm", "siren", "siret", "trade", "vatRegime",
+          "addrLine1", "addrZip", "addrCity"
+        ) VALUES (
           ${neighborCompanyId}, ${'Jarvis U1-e voisin 12'}, ${'EI'},
           ${'903000012'}, ${'90300001200012'},
           ${'certification'}, ${'reel_normal'},
@@ -564,6 +581,11 @@ describe.skipIf(!RUN_CERT)(
 
     afterAll(async () => {
       await Promise.all([admin?.$disconnect(), workerA?.$disconnect(), workerB?.$disconnect()]);
+      if (ORIGINAL_DISPATCH_ENABLED === undefined) {
+        delete process.env.BOB_JARVIS_DISPATCH_ENABLED;
+      } else {
+        process.env.BOB_JARVIS_DISPATCH_ENABLED = ORIGINAL_DISPATCH_ENABLED;
+      }
     });
 
     it(
@@ -1202,7 +1224,7 @@ describe.skipIf(!RUN_CERT)(
     );
 
     it(
-      "preuve 5 — U1-f : la chaîne ARMÉE, adaptateurs de PRODUCTION — l'annuaire d'autorité trouve le travail dû et l'effet s'exécute",
+      "preuve 5 — U1-f : intégration test-only des vrais adaptateurs — l'annuaire trouve le travail dû et l'effet s'exécute",
       async () => {
         // CE QUE CETTE PREUVE ÉTABLIT, et qu'aucune autre ne pouvait établir : le worker de
         // production, câblé sur les TROIS adaptateurs réels (repository, annuaire SECURITY
@@ -1218,7 +1240,7 @@ describe.skipIf(!RUN_CERT)(
         expect(opened.outcome).toBe('admitted');
         const runId = opened.run.runId;
 
-        // L'ANNUAIRE DE PRODUCTION, avant tout travail : un run ouvert n'a AUCUN work item, donc
+        // L'annuaire runtime réel, avant tout travail : un run ouvert n'a AUCUN work item, donc
         // il ne doit PAS apparaître. La borne de la policy n'est pas décorative — sans elle,
         // l'autorité énumérerait tous les runs actifs du tenant.
         const directory = new PrismaJarvisDispatchRunDirectory(workerA);
@@ -1286,7 +1308,7 @@ describe.skipIf(!RUN_CERT)(
         // — il y meurt sur `companies.apeCode does not exist`. Le remplacer ici prouverait la
         // complétude du harnais, pas celle de la chaîne. La lecture réelle de société est par
         // ailleurs exercée par toute la suite API.
-        const productionWorker = new JarvisWorkItemDispatchService(
+        const testWorker = new JarvisWorkItemDispatchService(
           harnessPersistence,
           { listCompanyIds: async () => [companyId] } as unknown as ScheduledTenantDirectory,
           new AppLogger(),
@@ -1303,8 +1325,9 @@ describe.skipIf(!RUN_CERT)(
               }),
             ],
           ]),
+          TEST_ONLY_JARVIS_ACTION_RELEASE_POLICY,
         );
-        const tick = await productionWorker.runForCompany(companyId);
+        const tick = await testWorker.runForCompany(companyId);
         expect(tick).toMatchObject({ failures: 0, claimed: 1, executed: 1 });
 
         // LA FICHE EST ÉCRITE — relue par l'auditeur, jamais le seul résumé du tick. Et sa
@@ -1405,12 +1428,193 @@ describe.skipIf(!RUN_CERT)(
         expect(reprises.some((coordinate) => coordinate.runId === orphelinRunId)).toBe(true);
 
         // Et le worker le REPREND vraiment : l'effet s'exécute, la fiche est écrite.
-        const rattrapage = await productionWorker.runForCompany(companyId);
+        const rattrapage = await testWorker.runForCompany(companyId);
         expect(rattrapage.failures).toBe(0);
         await expect(auditCustomer(orphelinCustomerId)).resolves.toMatchObject({
           addrCity: 'Nantes',
           addrZip: '44000',
         });
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it(
+      'preuve 5b — plus d’une page d’outcome_unknown ne peut pas affamer un vrai signal dû',
+      async () => {
+        const directoryLimit = 25;
+        const fixturePrefix = `jarvis-u1e-directory-${randomUUID()}`;
+        const unknownOwners = Array.from(
+          { length: directoryLimit + 1 },
+          (_, index) => `${fixturePrefix}-aaa-${index.toString().padStart(2, '0')}`,
+        );
+        const contradictoryOwner = `${fixturePrefix}-yyy-cancelled-authorized`;
+        const signalOwner = `${fixturePrefix}-zzz-signal`;
+        const allOwners = [...unknownOwners, contradictoryOwner, signalOwner];
+        const signalPrincipal: JarvisAdmissionOwner = {
+          companyId: directorySignalableCompanyId,
+          ownerUserId: signalOwner,
+        };
+        const customerId = await seedTargetCustomer(signalPrincipal);
+        const runsByOwner = new Map<string, string>();
+
+        for (const ownerUserId of allOwners) {
+          const owner: JarvisAdmissionOwner = {
+            companyId: directorySignalableCompanyId,
+            ownerUserId,
+          };
+          const opened = await openRun(controllerA, owner, {
+            commandId: randomUUID(),
+            customerId,
+          });
+          expect(opened.outcome).toBe('admitted');
+          const runId = opened.run.runId;
+          runsByOwner.set(ownerUserId, runId);
+
+          // L'admission reste l'UNIQUE inserteur de work items. L'auditeur de certification
+          // n'a volontairement aucun INSERT sur cette table : il ne fait ensuite que transformer
+          // ces postimages réelles en résultats historiques pour exercer l'annuaire.
+          const { confirmationId } = await presentProposal({
+            owner,
+            runId,
+            customerId,
+            targetRevision: 1,
+            expectedRevision: opened.run.revision,
+            fields: proposedFields({ city: 'Paris', postalCode: '75001' }),
+          });
+          const presented = await requireRun(runId);
+          const proposalHash = stateOf(presented).proposal?.proposalHash;
+          if (proposalHash === undefined) {
+            throw new Error(`Jarvis U1-f: proposition absente pour ${ownerUserId}`);
+          }
+          const confirmed = await asOwner(owner, () =>
+            controllerA.submitCommand(runId, {
+              kind: 'customer_contact',
+              definitionVersion: CUSTOMER_CONTACT_DEFINITION_VERSION,
+              commandId: randomUUID(),
+              expectedRevision: presented.revision,
+              actionId: CUSTOMER_CONTACT_UPDATE_ACTION_ID,
+              actionVersion: 1,
+              command: { type: 'confirm', confirmationId, proposalHash },
+            }),
+          );
+          expect(confirmed.outcome).toBe('admitted');
+          await expect(countWorkItems(runId)).resolves.toBe(1);
+        }
+
+        const signalRunId = runsByOwner.get(signalOwner);
+        if (signalRunId === undefined) throw new Error('Jarvis U1-f: vrai signal sans run.');
+
+        // Le rôle d'audit n'a que SELECT/UPDATE sur les work items. Il ne peut donc pas rendre
+        // la preuve verte avec une ligne inventée : chaque UPDATE cible l'effet réellement
+        // préparé ci-dessus par le reducer et exige exactement un gagnant.
+        await admin.$transaction(async (transaction) => {
+          for (const ownerUserId of allOwners) {
+            const runId = runsByOwner.get(ownerUserId);
+            if (runId === undefined) throw new Error(`Jarvis U1-f: run absent pour ${ownerUserId}`);
+            const status =
+              ownerUserId === signalOwner
+                ? 'succeeded'
+                : ownerUserId === contradictoryOwner
+                  ? 'cancelled'
+                  : 'outcome_unknown';
+            const updated = await transaction.$executeRaw`
+              UPDATE public.jarvis_work_items
+                 SET "status" = ${status},
+                     "authorizedAt" = statement_timestamp(),
+                     "authorizationDigest" = ${sha256Hex(`directory-authorization:${runId}`)},
+                     "resultDigest" = ${sha256Hex(`directory-result:${runId}`)},
+                     "updatedAt" = statement_timestamp()
+               WHERE "companyId" = ${directorySignalableCompanyId}
+                 AND "ownerUserId" = ${ownerUserId}
+                 AND "runId" = ${runId}::uuid
+                 AND "status" = 'prepared'
+            `;
+            expect(updated).toBe(1);
+          }
+        });
+
+        const population = await admin.$queryRaw<
+          Array<{ unknownCount: number; contradictoryCount: number; signalCount: number }>
+        >`
+          SELECT
+            count(*) FILTER (
+              WHERE "status" = 'outcome_unknown'
+                AND "resultDigest" IS NOT NULL
+                AND "signalAppliedAt" IS NULL
+            )::int AS "unknownCount",
+            count(*) FILTER (
+              WHERE "ownerUserId" = ${contradictoryOwner}
+                AND "status" = 'cancelled'
+                AND "authorizedAt" IS NOT NULL
+                AND "authorizationDigest" IS NOT NULL
+                AND "resultDigest" IS NOT NULL
+                AND "signalAppliedAt" IS NULL
+            )::int AS "contradictoryCount",
+            count(*) FILTER (
+              WHERE "status" = 'succeeded'
+                AND "resultDigest" IS NOT NULL
+                AND "signalAppliedAt" IS NULL
+            )::int AS "signalCount"
+          FROM public.jarvis_work_items
+          WHERE "companyId" = ${directorySignalableCompanyId}
+        `;
+        expect(population[0]).toEqual({
+          unknownCount: directoryLimit + 1,
+          contradictoryCount: 1,
+          signalCount: 1,
+        });
+
+        const [pendingSignalIndex] = await admin.$queryRaw<
+          Array<{ valid: boolean; ready: boolean; predicate: string | null; owner: string }>
+        >`
+          SELECT pg_index.indisvalid AS "valid",
+                 pg_index.indisready AS "ready",
+                 pg_catalog.pg_get_expr(pg_index.indpred, pg_index.indrelid) AS "predicate",
+                 pg_catalog.pg_get_userbyid(index_relation.relowner) AS "owner"
+            FROM pg_catalog.pg_index AS pg_index
+            JOIN pg_catalog.pg_class AS index_relation
+              ON index_relation.oid = pg_index.indexrelid
+           WHERE pg_index.indexrelid =
+             'public.jarvis_work_items_pending_signal_idx'::regclass
+        `;
+        expect(pendingSignalIndex).toMatchObject({ valid: true, ready: true });
+        expect(pendingSignalIndex?.owner).toBe('bob_schema_owner');
+        expect(pendingSignalIndex?.predicate).toContain("status = ANY (ARRAY['succeeded'::text");
+        expect(pendingSignalIndex?.predicate).toContain('"authorizedAt" IS NULL');
+        expect(pendingSignalIndex?.predicate).toContain('"authorizationDigest" IS NULL');
+
+        // Le prédicat historique remplit sa page avec les unknown et manque le vrai signal.
+        const legacyPage = await admin.$queryRaw<
+          Array<{ ownerUserId: string; runId: string; status: string }>
+        >`
+          SELECT "ownerUserId", "runId"::text AS "runId", "status"
+            FROM public.jarvis_work_items
+           WHERE "companyId" = ${directorySignalableCompanyId}
+             AND "resultDigest" IS NOT NULL
+             AND "signalAppliedAt" IS NULL
+           ORDER BY "ownerUserId", "runId"::text
+           LIMIT ${directoryLimit}
+        `;
+        expect(legacyPage).toHaveLength(directoryLimit);
+        expect(legacyPage.every((row) => row.status === 'outcome_unknown')).toBe(true);
+        expect(legacyPage.map((row) => row.ownerUserId)).not.toContain(signalOwner);
+
+        // La policy corrigée élimine les unknown AVANT DISTINCT / ORDER / LIMIT.
+        const directory = new PrismaJarvisDispatchRunDirectory(workerA);
+        const page = await directory.listDispatchCoordinates(
+          directorySignalableCompanyId,
+          directoryLimit,
+        );
+        expect(page).toEqual([
+          {
+            companyId: directorySignalableCompanyId,
+            ownerUserId: signalOwner,
+            runId: signalRunId,
+          },
+        ]);
+        const unknownOwnerSet = new Set(unknownOwners);
+        expect(page.some((row) => unknownOwnerSet.has(row.ownerUserId))).toBe(false);
+        expect(page.some((row) => row.ownerUserId === contradictoryOwner)).toBe(false);
       },
       TEST_TIMEOUT_MS,
     );
@@ -1600,6 +1804,7 @@ describe.skipIf(!RUN_CERT)(
         new Map<string, JarvisEffectExecutor>([
           [jarvisEffectExecutorKey(CUSTOMER_CONTACT_UPDATE_ACTION_ID, 1), executor],
         ]),
+        TEST_ONLY_JARVIS_ACTION_RELEASE_POLICY,
       );
     }
   },
@@ -1627,7 +1832,7 @@ class CertificationCustomerAuthority implements JarvisCustomerEffectAuthority {
     return { customerId: target.customerId, fields };
   }
 
-  /** Même surface que l'autorité de PRODUCTION : sans elle, l'axe `targetDigest` serait muet. */
+  /** Même surface que l'autorité runtime : sans elle, l'axe `targetDigest` serait muet. */
   async readCustomerRevision(target: JarvisCustomerEffectTarget): Promise<number | null> {
     const rows = await this.prisma.withTenant(target.companyId, () =>
       this.prisma.client().customer.findFirst({

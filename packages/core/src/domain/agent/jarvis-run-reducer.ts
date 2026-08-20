@@ -99,6 +99,12 @@ export type JarvisReduceResult =
       readonly quarantine: { readonly kind: string; readonly definitionVersion: number };
     };
 
+/** Action métier pincée par une définition, jamais choisie par un transport. */
+export interface JarvisDefinitionActionReference {
+  readonly actionId: string;
+  readonly actionVersion: number;
+}
+
 /** Commandes de la branche quote absorbée en U1-b (le reste = legacy_route_active). */
 export type JarvisQuoteCommand =
   | { readonly type: 'cancel_run'; readonly reason: 'user_cancelled' | 'manual_handoff' }
@@ -125,6 +131,17 @@ export interface JarvisDefinitionModule {
   readonly definitionVersion: number;
   readonly stateVersion: number;
   readonly limits: JarvisDefinitionLimits;
+  /**
+   * Résout l'action depuis le seed canonique ou le state persisté. `null` signifie que la
+   * définition ne peut pas établir cette identité : l'admission échoue alors avant publication.
+   */
+  readonly actionReference: (
+    run: Extract<
+      JarvisRunEnvelope,
+      { readonly kind: 'single_business_action' | 'customer_contact' }
+    >,
+    command: unknown,
+  ) => JarvisDefinitionActionReference | null;
   readonly reduce: (
     run: Extract<
       JarvisRunEnvelope,

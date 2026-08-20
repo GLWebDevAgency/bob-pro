@@ -6,12 +6,12 @@
  * n'écrit JAMAIS sa fiche — le run reste en `committing`, où même `cancel_run` ne fait
  * qu'observer un reçu qui ne viendra pas. C'est le dernier maillon manquant du parcours.
  *
- * CE QU'IL EST, ET CE QU'IL N'EST PAS. Il n'ouvre aucun chemin d'écriture nouveau : il APPELLE
- * les use cases CANONIQUES du domaine (`Customer.of` + `CustomerRepository.save` en création,
- * `UpdateCustomer` en modification) — exactement ceux qu'emprunte l'artisan quand il édite sa
- * fiche à la main. C'est la condition de la parité humain↔Bob : mêmes invariants, mêmes refus,
- * même incrément de révision (§9.1). Une écriture directe en table contournerait la validation
- * du domaine et ferait de Bob un citoyen privilégié — jamais.
+ * CE QU'IL EST, ET CE QU'IL N'EST PAS. Il APPELLE les use cases du domaine (`Customer.of` +
+ * `CustomerRepository.save` en création, `UpdateCustomer` en modification) et ne fait jamais une
+ * écriture SQL métier directe. Ce partage couvre les invariants internes de ces use cases, mais
+ * ne prouve PAS encore la parité complète avec le parcours manuel : le verrou société, le refus
+ * d'un compte clôturé, les barrières d'archives et le CAS de révision au point d'écriture restent
+ * à unifier avant toute publication. Le manifest runtime demeure donc fermé.
  *
  * TENANT. Chaque geste s'exécute sous `withTenant(target.companyId)` : les GUC de RLS sont posés
  * par la persistance, jamais devinés ici. Le `companyId` vient du work item (donc de l'admission
@@ -19,8 +19,8 @@
  *
  * REFUS. Un refus du domaine devient un `refused` NOMMÉ (`domain_*`), jamais une exception nue :
  * le worker doit pouvoir régler l'effet en `failed_terminal` avec une cause lisible. Une panne
- * d'infrastructure, elle, remonte telle quelle — le worker la traduira en `outcome_unknown` et
- * réessaiera : confondre les deux ferait perdre des écritures ou en rejouerait d'impossibles.
+ * d'infrastructure, elle, remonte telle quelle — le worker la traduit en `outcome_unknown` et la
+ * met en quarantaine pour réconciliation purpose-specific, sans rejeu aveugle.
  */
 import { Inject, Injectable } from '@nestjs/common';
 import { Customer, UpdateCustomer } from '@bob/core';

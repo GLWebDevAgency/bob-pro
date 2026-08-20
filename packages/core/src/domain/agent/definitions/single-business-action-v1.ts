@@ -28,6 +28,7 @@ import {
 } from '../jarvis-run';
 import {
   registerJarvisDefinition,
+  type JarvisDefinitionActionReference,
   type JarvisDefinitionModule,
   type JarvisReduceContext,
   type JarvisReduceResult,
@@ -1380,6 +1381,15 @@ function reduceSingleBusinessAction(
   }
 }
 
+/** SBA est toujours créé avec un state initial qui pince déjà son action. */
+function singleBusinessActionReference(
+  run: SbaRunEnvelope,
+  _command: unknown,
+): JarvisDefinitionActionReference | null {
+  const parsed = parseSingleBusinessActionState(run.state);
+  return parsed.ok ? Object.freeze({ ...parsed.value.action }) : null;
+}
+
 // ---------------------------------------------------------------------------
 // Module de définition + enregistrement (registre gelé du reducer racine)
 // ---------------------------------------------------------------------------
@@ -1389,6 +1399,7 @@ export const SINGLE_BUSINESS_ACTION_V1: JarvisDefinitionModule = Object.freeze({
   definitionVersion: SINGLE_BUSINESS_ACTION_DEFINITION_VERSION,
   stateVersion: SINGLE_BUSINESS_ACTION_STATE_VERSION,
   limits: SINGLE_BUSINESS_ACTION_LIMITS,
+  actionReference: singleBusinessActionReference,
   reduce: reduceSingleBusinessAction,
 });
 

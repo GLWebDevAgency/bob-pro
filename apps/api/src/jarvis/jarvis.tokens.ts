@@ -12,3 +12,6 @@ export const JARVIS_ADMISSION = Symbol('JARVIS_ADMISSION');
 
 /** Port `JarvisProposalPayloadStorePort` (§5.5) — charge PII scellée des propositions. */
 export const JARVIS_PROPOSAL_PAYLOAD_STORE = Symbol('JARVIS_PROPOSAL_PAYLOAD_STORE');
+
+/** Autorité unique de publication, partagée par l'admission et le worker. */
+export const JARVIS_ACTION_RELEASE_POLICY = Symbol('JARVIS_ACTION_RELEASE_POLICY');

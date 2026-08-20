@@ -251,6 +251,7 @@ describe('RealtimeJarvisMissionOrchestrator — prepare', () => {
       prepared: {
         expectedRevision: 0,
         semanticContext: { phase: 'inactive', runAlias: null, intentMode: null },
+        availableCapabilities: [],
       },
     });
   });

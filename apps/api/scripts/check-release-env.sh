@@ -39,6 +39,8 @@ const required = [
   'ERROR_REPORTER_WEBHOOK_URL',
   'RUN_RLS_CERT',
   'RLS_CERT_CLEANUP',
+  'BOB_JARVIS_ADMISSION_ENABLED',
+  'BOB_JARVIS_DISPATCH_ENABLED',
 ];
 
 const paymentVariables = [
@@ -200,6 +202,14 @@ if (process.env.DEMO_MODE !== 'false') {
 
 if (process.env.NODE_ENV !== 'production') {
   fail("NODE_ENV must be 'production' for production release checks");
+}
+
+// Cutover Jarvis non publié : les deux masters doivent être POSÉS à false, pas seulement
+// absents. Cette preuve protège aussi la flotte N-1 dont le code historique était fail-open.
+for (const name of ['BOB_JARVIS_ADMISSION_ENABLED', 'BOB_JARVIS_DISPATCH_ENABLED']) {
+  if (process.env[name] !== 'false') {
+    fail(`${name} must be explicitly 'false' until the Jarvis single-engine cutover`);
+  }
 }
 if (paymentConfigured) {
   if (process.env.STRIPE_LIVEMODE !== 'true') {

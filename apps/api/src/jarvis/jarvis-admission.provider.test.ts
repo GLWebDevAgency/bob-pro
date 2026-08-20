@@ -1,11 +1,12 @@
-import type {
-  AgentMissionFingerprint,
-  AgentMissionFingerprintPort,
-  JarvisAdmissionResult,
-  JarvisRunEnvelope,
-  JarvisStatelessReadResult,
-  JarvisSystemAdmissionEnvelope,
-  JarvisUserAdmissionEnvelope,
+import {
+  ACTION_CATALOG_V0,
+  type AgentMissionFingerprint,
+  type AgentMissionFingerprintPort,
+  type JarvisAdmissionResult,
+  type JarvisRunEnvelope,
+  type JarvisStatelessReadResult,
+  type JarvisSystemAdmissionEnvelope,
+  type JarvisUserAdmissionEnvelope,
 } from '@bob/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -24,7 +25,7 @@ import {
   jarvisDispatchAdmissionProvider,
   type JarvisAdmissionUnitOfWorkAuthority,
 } from './jarvis-admission.provider';
-import { JARVIS_ADMISSION } from './jarvis.tokens';
+import { JARVIS_ACTION_RELEASE_POLICY, JARVIS_ADMISSION } from './jarvis.tokens';
 
 const ORIGINAL_KILL_SWITCH = process.env.BOB_JARVIS_ADMISSION_ENABLED;
 
@@ -121,17 +122,19 @@ afterEach(() => {
 });
 
 describe('kill switch d’admission Jarvis', () => {
-  it('n’est coupé que par la valeur littérale « false », et jamais figé au boot', () => {
+  it('est fermé par défaut et ne s’ouvre que par la valeur littérale « true »', () => {
     delete process.env.BOB_JARVIS_ADMISSION_ENABLED;
-    expect(jarvisAdmissionEnabled()).toBe(true);
+    expect(jarvisAdmissionEnabled()).toBe(false);
     process.env.BOB_JARVIS_ADMISSION_ENABLED = 'true';
     expect(jarvisAdmissionEnabled()).toBe(true);
     process.env.BOB_JARVIS_ADMISSION_ENABLED = 'false';
     expect(jarvisAdmissionEnabled()).toBe(false);
+    process.env.BOB_JARVIS_ADMISSION_ENABLED = 'TRUE';
+    expect(jarvisAdmissionEnabled()).toBe(false);
   });
 
   it('se coupe À CHAUD : la MÊME instance d’adapter change de deps entre deux appels', async () => {
-    delete process.env.BOB_JARVIS_ADMISSION_ENABLED;
+    process.env.BOB_JARVIS_ADMISSION_ENABLED = 'true';
     const unitOfWork = new RecordingUnitOfWork();
     const admission = buildJarvisAdmission(persistenceWith(unitOfWork), TEST_FINGERPRINTS);
     expect(admission).not.toBeNull();
@@ -156,6 +159,21 @@ describe('adapter du port mono-argument (§5.2/§17)', () => {
     expect(unitOfWork.deps[0]?.canonicalizationVersion).toBe(JARVIS_CANONICALIZATION_VERSION);
     expect(JARVIS_CANONICALIZATION_VERSION).toBe(1);
     expect(unitOfWork.deps[0]?.allowCertificationAuthority).toBe(false);
+    const entry = ACTION_CATALOG_V0.find(
+      (candidate) => candidate.actionId === 'client-modifier' && candidate.version === 1,
+    );
+    expect(entry).toBeDefined();
+    expect(
+      unitOfWork.deps[0]?.actionReleasePolicy.isPublished(
+        {
+          companyId: 'company-1',
+          ownerUserId: 'owner-1',
+          actionId: 'client-modifier',
+          actionVersion: 1,
+        },
+        entry!,
+      ),
+    ).toBe(false);
   });
 
   it('sert AUSSI les signaux système et la lecture stateless avec les mêmes deps', async () => {
@@ -214,7 +232,7 @@ describe('providers du vertical', () => {
   it('injecte la persistance et le keyring quote, sans jamais re-déclarer de signeur', () => {
     expect(jarvisAdmissionProvider).toMatchObject({
       provide: JARVIS_ADMISSION,
-      inject: [PERSISTENCE, AGENT_MISSION_FINGERPRINTS],
+      inject: [PERSISTENCE, AGENT_MISSION_FINGERPRINTS, JARVIS_ACTION_RELEASE_POLICY],
       useFactory: buildJarvisAdmission,
     });
   });

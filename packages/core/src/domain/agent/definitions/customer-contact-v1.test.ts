@@ -1376,6 +1376,27 @@ describe('customer_contact@1 — statuts §5.1 et registre racine', () => {
     expect(resolveJarvisDefinition('customer_contact', 1)).toBe(CUSTOMER_CONTACT_V1);
   });
 
+  it('dérive l’action du seed puis du state, jamais d’un champ de transport', () => {
+    expect(CUSTOMER_CONTACT_V1.actionReference(seedRun(), START_CREATE)).toEqual({
+      actionId: CUSTOMER_CONTACT_CREATE_ACTION_ID,
+      actionVersion: CUSTOMER_CONTACT_ACTION_VERSION,
+    });
+    expect(CUSTOMER_CONTACT_V1.actionReference(seedRun(), START_UPDATE)).toEqual({
+      actionId: CUSTOMER_CONTACT_UPDATE_ACTION_ID,
+      actionVersion: CUSTOMER_CONTACT_ACTION_VERSION,
+    });
+    expect(
+      CUSTOMER_CONTACT_V1.actionReference(startedCreate(), {
+        type: 'cancel_run',
+        reason: 'user_cancelled',
+      }),
+    ).toEqual({
+      actionId: CUSTOMER_CONTACT_CREATE_ACTION_ID,
+      actionVersion: CUSTOMER_CONTACT_ACTION_VERSION,
+    });
+    expect(CUSTOMER_CONTACT_V1.actionReference(seedRun(), { type: 'cancel_run' })).toBeNull();
+  });
+
   it("reduceJarvisRun route vers la définition ; une version inconnue part en quarantaine (§5.5)", () => {
     const seed = seedRun();
     const routed = reduceJarvisRun(

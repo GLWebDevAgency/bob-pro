@@ -10,6 +10,7 @@ import {
   AGENT_MISSION_BOOTSTRAP_RECEIPT_ATTEMPTS,
   AGENT_MISSION_BOOTSTRAP_RECEIPT_REQUEST_TIMEOUT_MS,
   isCanonicalAgentMissionUuid,
+  isCanonicalJarvisActionReference,
   isCustomPrestationId,
   parseIanaTimeZone,
   parseCustomPrestation,
@@ -252,7 +253,6 @@ import {
   encodeJarvisOpenRunIntent,
   encodeJarvisRunCommand,
   isJarvisAdmissionKind,
-  isJarvisOpenAction,
   isJarvisUserCommandId,
 } from './jarvis-codec';
 import {
@@ -4627,9 +4627,10 @@ export class HttpBobClient implements BobClient {
   }
   /**
    * Canal tactile d'un run Jarvis (§5.2/§5.4). Rien ne part avant que l'enveloppe soit canonique :
-   * `commandId` UUID v4 (contrat user du journal), révision CAS positive, action DANS la borne
-   * d'ouverture du lot (`U1_OPEN_ACTIONS` de @bob/core — jamais une liste locale) et commande
-   * reconstruite clé par clé. `occurredAt`/`canonicalInputDigest` restent calculés serveur : deux
+   * `commandId` UUID v4 (contrat user du journal), révision CAS positive, référence d'action de
+   * forme canonique et commande reconstruite clé par clé. La publication n'est jamais décidée
+   * par le transport : le serveur la dérive du state sous verrou. `occurredAt` et le digest restent
+   * calculés serveur : deux
    * essais du même geste produisent donc la même empreinte, condition du rejeu §5.2.
    */
   jarvisSubmitCommand(input: JarvisSubmitCommandClientInput, signal?: AbortSignal) {
@@ -4657,10 +4658,10 @@ export class HttpBobClient implements BobClient {
         'Révision positive requise.',
       );
     }
-    if (!isJarvisOpenAction(input.actionId, input.actionVersion)) {
+    if (!isCanonicalJarvisActionReference(input.actionId, input.actionVersion)) {
       return invalidJarvisInput<JarvisCommandReceiptView>(
         'actionId',
-        'Action hors des bornes d’ouverture du lot.',
+        'Référence d’action canonique requise.',
       );
     }
     const command = encodeJarvisRunCommand(input.command);
