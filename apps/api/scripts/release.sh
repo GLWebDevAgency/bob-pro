@@ -3139,6 +3139,13 @@ SELECT DISTINCT format(
 \gexec
 -- GRANT PAR COLONNE, `payload` EXCLU : l'autorite lit des coordonnees, jamais du contenu. Meme
 -- SECURITY DEFINER, la fonction ne peut pas atteindre la PII — le privilege n'existe pas.
+-- CE QUE L'AUTORITE LIT, ET POURQUOI. La projection ne rend que (ownerUserId, runId) ; les autres
+-- colonnes sont accordees parce que sa POLICY les evalue : status/nextAttemptAt/leaseExpiresAt
+-- pour les trois premieres branches, resultDigest/signalAppliedAt pour la redelivery. Un digest
+-- de resultat est une empreinte opaque, pas une charge — il n'expose rien du contenu ecrit.
+-- CE QUI RESTE INATTEIGNABLE, et c'est la le point : payloadRef, authorizationSource,
+-- submittedJobRef, targetDigest, authorizationDigest. L'autorite oriente le worker ; elle ne lit
+-- ni la charge, ni la preuve d'autorisation.
 GRANT SELECT ("companyId", "ownerUserId", "runId", "status", "nextAttemptAt", "leaseExpiresAt", "resultDigest", "signalAppliedAt")
   ON TABLE public.jarvis_work_items
   TO bob_jarvis_dispatch_directory;

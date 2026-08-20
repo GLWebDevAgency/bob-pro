@@ -628,6 +628,16 @@ describe('RealtimeJarvisMissionOrchestrator — runPlanned', () => {
     });
     const prepared = await h.orchestrator.prepare(request());
     if (prepared.status !== 'prepared') throw new Error('préparation attendue');
+    // U1-f — ET LA CAPACITÉ N'EST MÊME PAS ANNONCÉE. Offrir `confirm` puis le refuser
+    // systématiquement ferait répéter l'artisan pour rien : Bob promettrait ce qu'il refuse.
+    // L'outil n'est pas offert, et la parole renvoie à l'écran.
+    expect(prepared.prepared.availableCapabilities).not.toContain(
+      'customer_contact.proposal.confirm',
+    );
+    expect(prepared.prepared.availableCapabilities).toEqual([
+      'customer_contact.proposal.reject',
+      'customer_contact.run.cancel',
+    ]);
 
     const outcome = await h.orchestrator.runPlanned({
       request: request(),

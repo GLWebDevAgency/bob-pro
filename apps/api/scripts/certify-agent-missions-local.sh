@@ -5348,12 +5348,43 @@ GRANT USAGE ON SCHEMA public TO bob_jarvis_dispatch_directory;
 
 REVOKE ALL PRIVILEGES ON TABLE public.jarvis_work_items
   FROM bob_jarvis_dispatch_directory CASCADE;
+-- Remise a plat des ACL PAR COLONNE, comme en release : un privilege de colonne survivant d'un
+-- provisionnement anterieur elargirait la surface sans que le GRANT ci-dessous le dise.
+SELECT DISTINCT format(
+  'REVOKE ALL PRIVILEGES (%I) ON TABLE public.jarvis_work_items FROM bob_jarvis_dispatch_directory CASCADE',
+  attribute.attname
+)
+  FROM pg_catalog.pg_attribute AS attribute
+ CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) AS privilege
+ WHERE attribute.attrelid = 'public.jarvis_work_items'::regclass
+   AND attribute.attnum > 0 AND NOT attribute.attisdropped
+   AND privilege.grantee = 'bob_jarvis_dispatch_directory'::regrole
+\gexec
 -- Coordonnees et colonnes de la BORNE uniquement : ni payloadRef, ni authorizationSource, ni
--- submittedJobRef, ni les digests — l'autorite oriente le worker, elle ne lit aucune charge.
+-- submittedJobRef, ni targetDigest, ni authorizationDigest — l'autorite oriente le worker, elle
+-- ne lit ni charge ni preuve d'autorisation.
 GRANT SELECT ("companyId", "ownerUserId", "runId", "status", "nextAttemptAt", "leaseExpiresAt", "resultDigest", "signalAppliedAt")
   ON TABLE public.jarvis_work_items
   TO bob_jarvis_dispatch_directory;
 RESET ROLE;
+
+-- Dernier geste, comme en release : le role runtime ne doit JAMAIS pouvoir SET ROLE vers
+-- l'autorite. Il n'a que le droit d'EXECUTER la fonction, dont le corps refuse tout appelant qui
+-- n'est pas le definer. Sans ce geste, la certification prouverait une surface PLUS LARGE que
+-- celle que le deploiement laisse en place.
+DO $bob_u1f_dispatch_membership$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_auth_members AS membership
+      JOIN pg_catalog.pg_roles AS member ON member.oid = membership.member
+     WHERE membership.roleid = 'bob_jarvis_dispatch_directory'::regrole
+       AND member.rolname = 'bob_app'
+  ) THEN
+    REVOKE bob_jarvis_dispatch_directory FROM bob_app CASCADE;
+  END IF;
+END;
+$bob_u1f_dispatch_membership$;
 SQL
 
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'

@@ -404,6 +404,19 @@ export class JarvisCustomerEffectExecutor implements JarvisEffectExecutor {
       coordinates.runId,
     );
     if (state.kind !== 'read' || state.state === null) return null;
+    // IDEMPOTENCE D'ABORD. La révision du reçu sert au domaine à reconnaître un REJEU : un second
+    // signal identique est un no-op. Si on relisait la base à chaque redelivery, une écriture
+    // survenue entre-temps (l'artisan corrige sa fiche) donnerait une révision différente, et le
+    // rejeu cesserait d'être reconnu comme tel. Quand le run porte DÉJÀ le reçu de cet effet, il
+    // fait donc foi : on le rend tel quel, à l'octet.
+    const dejaRecu = state.state.receipt;
+    if (dejaRecu !== null && dejaRecu.effectId === effectId) {
+      return {
+        kind: 'succeeded',
+        customerId: dejaRecu.customerId,
+        customerRevision: dejaRecu.customerRevision,
+      };
+    }
     const intent = state.state.intent;
     // Le `customerId` suit la MÊME règle que l'écriture — sinon la description décrirait une
     // autre fiche que celle qui a été touchée.
