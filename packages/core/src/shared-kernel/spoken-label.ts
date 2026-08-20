@@ -13,7 +13,8 @@
  *
  * CE QUE LA SORTIE GARANTIT (et que le test de frontière de `@bob/ai` prouve contre le planner) :
  * aucun caractère interdit, une seule espace ordinaire entre les mots, ni tête ni queue vide, et
- * une longueur bornée. Autrement dit : un point fixe de la canonicalisation du planner.
+ * une longueur bornée EN UNITÉS UTF-16 — l'unité que le planner mesure. Autrement dit : un point
+ * fixe de la canonicalisation du planner, y compris pour un nom d'emoji.
  *
  * RENDRE `null` EST UN SIGNAL, PAS UN REPLI. Une valeur qui ne laisse rien après assainissement
  * est une dérive de la base : l'appelant doit refuser son jeu de données, jamais lui substituer un
@@ -34,8 +35,16 @@ const ASCII_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/gu;
 const TRUNCATION_MARK = '…';
 
 /**
- * @param maximumLength borne en POINTS DE CODE (jamais en unités UTF-16 : couper une paire de
- *   substitution fabriquerait un caractère de remplacement au milieu d'un nom propre).
+ * @param maximumLength borne en UNITÉS UTF-16 — l'unité dans laquelle la chaîne sera MESURÉE en
+ *   aval (`String.prototype.length`, ce que compte le planner). Compter en points de code ici
+ *   paraissait plus juste et ne l'était pas : un nom d'emoji tient 160 points de code mais pèse
+ *   320 unités, et la parole assemblée franchissait la borne du planner — rendant l'assistant muet
+ *   sur TOUTES les lanes, exactement le défaut que cette fonction existe pour empêcher. La borne
+ *   doit se compter dans l'unité de celui qui la fait respecter.
+ *
+ *   Le DÉCOUPAGE, lui, reste fait par points de code : c'est la seule façon de ne jamais couper une
+ *   paire de substitution en deux moitiés, qui fabriqueraient un caractère de remplacement au
+ *   milieu d'un nom propre. Les deux comptages coexistent, chacun là où il est juste.
  */
 export function sanitizeSpokenLabel(value: string, maximumLength: number): string | null {
   if (maximumLength < 1) return null;
@@ -44,9 +53,9 @@ export function sanitizeSpokenLabel(value: string, maximumLength: number): strin
   // le planner écrase lui aussi — sans quoi la parole ne serait pas un point fixe de sa règle.
   const collapsed = stripped.replace(/\s+/gu, ' ').trim();
   if (collapsed.length === 0) return null;
-  const points = Array.from(collapsed);
-  if (points.length <= maximumLength) return collapsed;
+  if (collapsed.length <= maximumLength) return collapsed;
   if (maximumLength === 1) return TRUNCATION_MARK;
+  const points = Array.from(collapsed);
 
   // ÉLISION AU MILIEU, PAS À LA FIN — et c'est un correctif, pas une preference.
   //
@@ -59,11 +68,24 @@ export function sanitizeSpokenLabel(value: string, maximumLength: number): strin
   // Ce que cela ne repare pas, et qu'il faut dire : deux noms qui ne different qu'au MILIEU
   // restent indiscernables une fois elides. On est alors ramene au cas des vrais homonymes, que
   // ce lot n'a jamais pretendu resoudre — mais la troncature n'en CREE plus.
+  // Le marqueur occupe UNE unité : le reste se partage entre la tête et la queue. On accumule des
+  // POINTS DE CODE tant que leur poids en UNITÉS tient dans le budget — jamais l'inverse.
   const reste = maximumLength - 1;
-  const tete = Math.ceil(reste / 2);
-  const queue = reste - tete;
-  const debut = points.slice(0, tete).join('').trimEnd();
-  const fin = queue > 0 ? points.slice(points.length - queue).join('').trimStart() : '';
+  const budgetTete = Math.ceil(reste / 2);
+  const budgetQueue = reste - budgetTete;
+  let debut = '';
+  for (const point of points) {
+    if (debut.length + point.length > budgetTete) break;
+    debut += point;
+  }
+  let fin = '';
+  for (let index = points.length - 1; index >= 0; index -= 1) {
+    const point = points[index] as string;
+    if (fin.length + point.length > budgetQueue) break;
+    fin = `${point}${fin}`;
+  }
+  debut = debut.trimEnd();
+  fin = fin.trimStart();
   if (debut.length === 0 && fin.length === 0) return null;
   return `${debut}${TRUNCATION_MARK}${fin}`;
 }

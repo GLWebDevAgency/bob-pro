@@ -54,12 +54,27 @@ describe('sanitizeSpokenLabel — la frontière entre la base et la parole', () 
   });
 
   it('ne COUPE JAMAIS une paire de substitution — un emoji dans un nom propre reste entier', () => {
-    // 5 points de code, 10 unités UTF-16 : une troncature naïve couperait au milieu de la paire
-    // et fabriquerait un caractère de remplacement au beau milieu d'un nom propre.
-    const sortie = sanitizeSpokenLabel('\u{1f527}\u{1f528}\u{1f529}\u{1f52a}\u{1f52b}', 4);
-    expect(sortie).toBe('\u{1f527}\u{1f528}\u2026\u{1f52b}');
+    // 5 points de code, 10 unités UTF-16. Le DÉCOUPAGE se fait par points de code (sans quoi une
+    // paire coupée fabriquerait un caractère de remplacement au milieu d'un nom propre), mais la
+    // BORNE se compte en unités : c'est ce que mesure celui qui la fait respecter.
+    const sortie = sanitizeSpokenLabel('\u{1f527}\u{1f528}\u{1f529}\u{1f52a}\u{1f52b}', 6);
+    expect(sortie).toBe('\u{1f527}\u2026\u{1f52b}');
     expect(sortie).not.toContain('\ufffd');
-    expect(Array.from(sortie ?? '')).toHaveLength(4);
+    expect((sortie ?? '').length).toBeLessThanOrEqual(6);
+  });
+
+  it('BORNE EN UNITÉS UTF-16, jamais en points de code — un nom d’emoji pèse le double', () => {
+    // LE DEFAUT QUE CETTE PREUVE FERME. Compter en points de code paraissait plus juste : un nom de
+    // 160 emoji tenait la borne « 160 » tout en pesant 320 unités. Cinq de ces libellés faisaient
+    // franchir au tour de parole la borne du planner, qui refuse alors l'historique ENTIER — et
+    // l'assistant devenait muet sur toutes les lanes, exactement ce que ce module doit empêcher.
+    const astral = '\u{1f527}'.repeat(100); // 100 points de code, 200 unités
+    const sortie = sanitizeSpokenLabel(astral, 160);
+    expect((sortie ?? '').length).toBeLessThanOrEqual(160);
+    expect(sortie).not.toContain('\ufffd');
+    // Un nom latin de 160 unités, lui, passe ENTIER : la borne ne punit pas le cas normal.
+    const latin = 'A'.repeat(160);
+    expect(sanitizeSpokenLabel(latin, 160)).toBe(latin);
   });
 
   it('rend `null` quand il ne reste RIEN : c’est un signal de dérive, pas un libellé de secours', () => {

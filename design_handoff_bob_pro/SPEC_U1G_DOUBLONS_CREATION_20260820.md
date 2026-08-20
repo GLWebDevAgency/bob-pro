@@ -154,6 +154,21 @@ introduites par le solde lui-même, ce qui justifie à lui seul d'avoir revu les
   pour mot. Elle était supprimable en entier sans faire rougir une assertion. Écrite, et vérifiée
   par mutation.
 
+Un **troisième round**, ciblé sur ces correctifs-là, a trouvé un dernier P1 — introduit par le
+correctif précédent : la borne parlée se comptait en **points de code** quand le planner mesure en
+**unités UTF-16**. Un nom d'emoji tient 160 points de code mais pèse 200 unités ; cinq de ces
+libellés portaient la parole à 1 223, au-dessus du seuil du planner, et rendaient l'assistant muet
+sur toutes les lanes — exactement le défaut G5 que le solde venait de fermer. La borne se compte
+désormais dans l'unité de celui qui la fait respecter, le découpage reste par points de code (une
+paire de substitution ne doit jamais être coupée), et la preuve de frontière exerce enfin un nom
+**astral** : tant qu'elle était latine, points de code et unités coïncidaient et elle certifiait
+une borne qu'elle n'atteignait jamais.
+
+**Ce que ces trois rondes enseignent, et qui vaut plus que les correctifs :** les trois régressions
+successives ont la même cause — une propriété d'un système en aval (pg_trgm, puis le comptage du
+planner) **affirmée par raisonnement au lieu d'être mesurée sur la forme qui compte**. Une preuve
+qui n'exerce pas la forme hostile ne prouve rien : elle certifie une borne qu'elle n'atteint pas.
+
 Cinq constats ont été réfutés, dont un P1 qui affirmait que le nom dicté était perdu en silence.
 
 ## 5. Ce que le lot assume, et qui doit être dit

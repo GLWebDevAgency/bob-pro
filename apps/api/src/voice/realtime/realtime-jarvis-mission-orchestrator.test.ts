@@ -681,33 +681,39 @@ describe('RealtimeJarvisMissionOrchestrator — runPlanned', () => {
 
   it('U1-g : la PIRE parole possible reste recevable par le planner du tour suivant', async () => {
     // LA PROPRIÉTÉ QUI COMPTE, prouvée contre le planner lui-même et non contre un nombre recopié.
-    // Cinq fiches aux noms saturés, page saturée, un invisible glissé dans chacune : c'est la
-    // parole la plus longue et la plus hostile que ce lot puisse produire. Si elle franchit
-    // `isPlannerSafeHistoryText`, aucune fiche de la base ne peut rendre l'assistant muet.
-    const nomHostile = `${'Ateliers Bâtiment & Fils de Dupont-Plomberie '.repeat(6)}\u200b`;
-    const h = harness({
-      run: null,
-      candidates: Array.from({ length: 6 }, (_, index) => ({
-        customerId: `c-${index}`,
-        canonicalName: `${nomHostile}${index}`,
-        matchKind: 'fuzzy' as const,
-        score: 0.9,
-      })),
-    });
-    const prepared = await h.orchestrator.prepare(request());
-    if (prepared.status !== 'prepared') throw new Error('préparation attendue');
+    // Cinq fiches aux noms saturés, page saturée, un invisible glissé dans chacune.
+    //
+    // LE CAS ASTRAL EST OBLIGATOIRE ICI, et son absence a déjà coûté un défaut : tant que le nom
+    // témoin était intégralement latin, points de code et unités UTF-16 coïncidaient, et la preuve
+    // certifiait une borne qu'elle n'atteignait jamais. Un nom d'emoji pèse DEUX unités par
+    // caractère — c'est lui qui fait franchir la borne du planner, et lui seul qui le prouve.
+    const latin = `${'Ateliers Bâtiment & Fils de Dupont-Plomberie '.repeat(6)}\u200b`;
+    const astral = '\u{1f527}'.repeat(100);
+    for (const nomHostile of [latin, astral]) {
+      const h = harness({
+        run: null,
+        candidates: Array.from({ length: 6 }, (_, index) => ({
+          customerId: `c-${index}`,
+          canonicalName: `${nomHostile}${index}`,
+          matchKind: 'fuzzy' as const,
+          score: 0.9,
+        })),
+      });
+      const prepared = await h.orchestrator.prepare(request());
+      if (prepared.status !== 'prepared') throw new Error('préparation attendue');
 
-    const outcome = await h.orchestrator.runPlanned({
-      request: request(),
-      prepared: prepared.prepared,
-      frame: frame({ kind: 'open_customer_creation', customerName: 'Dupont Plomberie' }),
-    });
+      const outcome = await h.orchestrator.runPlanned({
+        request: request(),
+        prepared: prepared.prepared,
+        frame: frame({ kind: 'open_customer_creation', customerName: 'Dupont Plomberie' }),
+      });
 
-    expect(outcome.status).toBe('handled');
-    const parole = outcome.status === 'handled' ? outcome.canonicalSpeech : '';
-    expect(isPlannerSafeHistoryText(parole)).toBe(true);
-    // Et la saturation est DITE : on ne prétend jamais avoir montré toutes les fiches.
-    expect(parole).toContain('au moins');
+      expect(outcome.status).toBe('handled');
+      const parole = outcome.status === 'handled' ? outcome.canonicalSpeech : '';
+      expect(isPlannerSafeHistoryText(parole)).toBe(true);
+      // Et la saturation est DITE : on ne prétend jamais avoir montré toutes les fiches.
+      expect(parole).toContain('au moins');
+    }
   });
 
   it('U1-g G3 : sur un monde MUTÉ, le second maillon n’est pas émis — zéro écriture, parole honnête', async () => {

@@ -39,7 +39,7 @@ import {
 export const CUSTOMER_CONTACT_CANDIDATE_PROBE_LIMIT = 6;
 
 /**
- * Borne d'un libellé PRONONCÉ, en points de code.
+ * Borne d'un libellé PRONONCÉ, en UNITÉS UTF-16 — l'unité que mesure le planner.
  *
  * Elle protège la chaîne vocale : la parole entière entre dans l'historique du tour suivant, que le
  * planner refuse au-delà de 1 200 caractères — cinq libellés de 200 plus l'ossature de la phrase
@@ -53,8 +53,12 @@ export const CUSTOMER_CONTACT_CANDIDATE_PROBE_LIMIT = 6;
  * durable. Ménager l'oreille ne vaut pas de faire prendre une décision aveugle : à 160, les noms
  * réels passent entiers, et au-delà l'élision MÉDIANE préserve le discriminant final.
  *
- * Cinq libellés de 160 plus l'ossature restent très en deçà de 1 200, et la preuve de frontière de
- * `@bob/ai` le vérifie contre le planner lui-même plutôt que contre un nombre recopié ici.
+ * LE CALCUL, ET SON UNITÉ. L'ossature de la parole saturée pèse 223 unités, donc le budget est de
+ * (1 200 − 223) / 5 = 195,4 unités par libellé : à 160, cinq libellés donnent 1 023, et la marge de
+ * 177 est STRUCTURELLE — aucun contenu ne peut la franchir. Ce n'était pas vrai tant que la borne
+ * se comptait en points de code : un nom d'emoji pesait alors jusqu'à 200 unités et la parole
+ * atteignait 1 223, au-dessus du seuil du planner. La preuve de frontière de `@bob/ai` exerce
+ * désormais un nom ASTRAL, sans quoi elle certifiait une borne qu'elle n'atteignait jamais.
  */
 export const CUSTOMER_CONTACT_SPOKEN_LABEL_LIMIT = 160;
 
