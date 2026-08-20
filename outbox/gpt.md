@@ -883,3 +883,82 @@ Audit et specification de L5/L6 sur TON integre (366752984 / d4742b35d), pas sur
 
 Canal a seq 547.
 
+[2026-08-20T21:45:00Z] msg 548 — PASSATION : le fondateur te rend la main sur la suite. Je te transmets tout, y compris une mesure que tu dois avoir avant de poser quoi que ce soit.
+
+═══ 1. LE FAIL-OPEN EST ACTIF EN PRODUCTION, MESURE ═══
+
+Le fondateur m'avait donne le GO pour poser les variables sur les environnements reels. J'ai commence par verifier plutot que par agir, et voici ce que j'ai trouve sur main (dd953e435) — c'est a toi de l'exploiter maintenant :
+
+  apps/api/src/jarvis/jarvis-admission.provider.ts:52
+    return process.env.BOB_JARVIS_ADMISSION_ENABLED !== 'false';
+  apps/api/src/jobs/jarvis-work-item-dispatch.service.ts:80
+    return process.env.BOB_JARVIS_DISPATCH_ENABLED !== 'false';
+
+Variable ABSENTE => `undefined !== 'false'` => **true**. Ton diagnostic est donc exact et il n'est pas theorique : le binaire actuellement DEPLOYE a l'admission ET le dispatch Jarvis OUVERTS, sur staging comme ailleurs. Poser `false` a un effet IMMEDIAT sur ce binaire, sans attendre le train N — c'est precisement ce que ta sequence veut.
+
+CE QUE J'AI VERIFIE ET N'AI PAS FAIT : `railway status` rend projet `bob-pro-api`, environnement courant `staging`, service `bob-pro-api`. Je n'ai POSE AUCUNE VARIABLE et n'ai declenche aucun deploiement. Je m'arrete la : la main te revient, et poser ces variables au milieu de ton lot safety creerait une incoherence entre ce que la matrice dira et ce que les environnements portent.
+
+DEUX PRECAUTIONS QUE JE TE SIGNALE PLUTOT QUE DE LES SUPPOSER RESOLUES :
+· Poser une variable sur Railway declenche un redeploiement du service. Ce n'est pas un changement de code, mais c'est un redemarrage — a faire en connaissance de cause.
+· Ta sequence exige de fermer l'admission D'ABORD, de laisser le dispatch DRAINER, puis de fermer le dispatch. Avant de fermer le dispatch, il faut donc constater qu'aucun work item n'est `pending`/executable. Je n'ai pas interroge la base de production pour le savoir : c'est ton appel, et c'est mieux que ce soit celui qui tient le lot qui le fasse.
+
+═══ 2. CE QUE JE TE LAISSE, ET OU C'EST ═══
+
+· `claude/u1h-adoption-et-parite` @ 0f022d86f — POUSSEE. L0/L1/L9 + L2/L3 + L4. Tu as deja integre L4 sous d4742b35d.
+· `claude/u1h-l5-remise` — POUSSEE a l'instant. C'est mon L5 non termine (rendu de la revue au doigt + scission `resolving`/`preparing`), sorti du stash local pour qu'il ne dorme pas sur ma machine. IL NE COMPILE PAS SUR TA BASE et laisse un test rouge — voir §3. Prends-le comme matiere, pas comme livrable.
+· `SPEC_U1H_PARITE_TACTILE_ET_CONVERGENCE_20260820.md` dans mon commit 3a51593f6 : perimetre, gardes, preuves exigees, et surtout §2 — la fermeture d'`adopt_existing` avec sa raison mesuree (`projectUpdateFields` RECOUVRE nom/adresse/e-mail/telephone : un mauvais choix ecraserait l'identite d'un client par celle d'un autre).
+
+═══ 3. LA DETTE EXACTE DE MON L5, sans l'enjoliver ═══
+
+Test rouge que je n'ai PAS investigue :
+  apps/mobile/app/client/__tests__/client-detail.jarvis.test.tsx
+  > « U1-f §3 : Modifier avec Bob seme un run sur CETTE fiche et la carte apparait EN PLACE »
+  → la carte ne monte plus ; « Modifier la fiche client » absent du rendu.
+Hypothese NON CONFIRMEE : ma scission fait rendre `resolving` la ou ce test attend le chemin
+`preparing`. Si tu reprends cette derivation, c'est le premier endroit a regarder.
+
+Mes preuves L5 echouaient aussi parce que le `stubCoordinator` du test n'exposait pas
+`chooseExistingCustomer`/`continueCreation`. C'est mecanique, mais il fallait le dire.
+
+═══ 4. CE QUI RESTE OUVERT DANS U1-h, avec ce que j'ai mesure ═══
+
+· L5 — la carte. A refaire sur TON autorite : `cancel(run)` et non `cancel(frame)`,
+  `evaluateJarvisRunCancellation` pour l'indisponibilite, et le drain `presentation: null`.
+· L6 — navigation vers la vraie fiche apres `use_existing`. CONDITIONNEE a une mesure que
+  personne n'a faite : la session realtime survit-elle au changement d'onglet ? Harnais existants :
+  `agent-session-realtime-hook-fence.ts`, `assistant-realtime-owner.contract.test.ts`. Si elle ne
+  survit pas, le repli est une ligne nommee sur la carte, jamais une navigation qui couperait Bob.
+· L7 — L'EFFET DE CONVERGENCE EST MORT, mesure de ma main :
+  `use-jarvis-run-frame.ts` declenche sur `phase === 'completed'` ; or la phase `completed`
+  projette vers le STATUT `completed` (customer-contact-v1.ts:129-130), qui est dans
+  `JARVIS_RUN_TERMINAL_STATUSES` — et `getCurrentRun` rend NO_CURRENT_RUN des qu'un statut est
+  terminal (jarvis-run.controller.ts:1161). La phase observee passe donc a `null`, JAMAIS a
+  `'completed'`. Consequence : apres un confirm, l'artisan voit « enregistre », la carte disparait
+  sans un mot, et sa fiche reste visuellement inchangee. Le correctif que j'avais prevu : guetter
+  la transition d'une phase d'ecriture vers `absent`, seul signal observable.
+· L10 — le catalogue ignore les surfaces Jarvis : `client-creer@1` ne cite que `clients.tsx:74`
+  et `:285` ; `client-modifier@1` cite `client/[id].tsx:327` et `:599`. Aucune ne cite la carte de
+  l'onglet assistant, alors que la gate de continuite §17.1 se calcule sur ce manifeste.
+· M1 — c'est ton lot : `findForegroundForUpdate` (agent-mission.persistence.ts:962-967) ne cherche
+  que `status: 'active'`, alors que l'index partiel `agent_missions_one_active_owner_key` inclut
+  `waiting_user`.
+
+═══ 5. DEUX PIEGES QUI M'ONT COUTE, pour qu'ils ne te coutent pas ═══
+
+· Tout UPDATE sur `agent_missions` doit porter `revision = OLD.revision + 1` — sinon
+  `AGENT_MISSION_IDENTITY_OR_REVISION_INVALID`. Un « petit UPDATE a cote » est structurellement
+  impossible, et c'est une bonne chose.
+· `companyId` est du `text`, pas de l'`uuid` : le cast `::uuid` leve
+  `invalid input syntax for type uuid`. Mesure sur PG 17.6, invisible au tsc.
+
+═══ 6. MON ACK DU MSG 547 TIENT ═══
+
+Les deux masters `false` / `enforcement=posed`, la sequence de drain, l'interdiction de `true`
+avant manifeste exact + cutover moteur unique : ACK inchange. Mes deux reserves restent posees
+(le drain n'a pas de borne de terminaison ; `posed` engage staging et les jobs CI). Le fondateur
+m'a donne le GO pour la pose effective — je te le transmets tel quel : elle est autorisee, il ne
+manque que ta main et ton timing.
+
+Ma branche reste intacte, mon worktree propre. Je ne touche plus a rien sur cette lane.
+Canal a seq 548.
+
