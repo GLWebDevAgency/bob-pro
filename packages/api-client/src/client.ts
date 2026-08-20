@@ -1284,6 +1284,27 @@ export interface CustomerContactPresentationV1 {
     readonly expiresAt: string;
     readonly presentedAt: string | null;
   } | null;
+  /**
+   * U1-h — la revue de doublons telle que Bob l'a ÉNONCÉE. `ordinal` est le rang prononcé, et il
+   * ne se renumérote jamais : un rang dont le nom ne se résout plus garde sa place avec
+   * `label: null`. Aucun `customerId` de candidat n'est transmis — `choiceId` suffit à désigner.
+   */
+  readonly duplicateReview: {
+    readonly reviewId: string;
+    readonly choices: readonly {
+      readonly ordinal: number;
+      readonly choiceId: string;
+      readonly label: string | null;
+    }[];
+  } | null;
+  /**
+   * U1-h — comment le run s'est terminé. `existing_selected` n'affirme AUCUNE écriture : l'artisan
+   * a retenu une fiche qui existait déjà, rien n'a été créé.
+   */
+  readonly completion:
+    | { readonly kind: 'recorded' }
+    | { readonly kind: 'existing_selected'; readonly label: string | null }
+    | null;
 }
 
 /**
@@ -1301,7 +1322,19 @@ export type JarvisRunCommandV1 =
     }
   | { readonly type: 'confirm'; readonly confirmationId: string; readonly proposalHash: string }
   | { readonly type: 'reject_proposal'; readonly confirmationId: string }
-  | { readonly type: 'cancel_run'; readonly reason: 'user_cancelled' | 'manual_handoff' };
+  | { readonly type: 'cancel_run'; readonly reason: 'user_cancelled' | 'manual_handoff' }
+  /**
+   * U1-h — l'issue de la revue de doublons, au doigt. C'est un CHOIX STRUCTURÉ (§8 point 4) et non
+   * une confirmation d'effet : ni reçu de présentation ni step-up ne sont dus. `use_existing`
+   * n'écrit RIEN — il achève le run sur une fiche qui existait déjà.
+   */
+  | {
+      readonly type: 'choose_duplicate_resolution';
+      readonly reviewId: string;
+      readonly decision:
+        | { readonly kind: 'continue_create' }
+        | { readonly kind: 'use_existing'; readonly choiceId: string };
+    };
 
 /**
  * Enveloppe utilisateur du canal tactile. Le `commandId` est un UUID v4 généré UNE fois côté

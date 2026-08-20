@@ -26,6 +26,7 @@
 import {
   AGENT_MISSION_KIND,
   CUSTOMER_CONTACT_CONFIRMATION_STATUSES,
+  CUSTOMER_CONTACT_MAX_DUPLICATE_CANDIDATES,
   CUSTOMER_CONTACT_PHASES,
   CUSTOMER_CONTACT_SENSITIVE_FIELDS,
   JARVIS_RUN_KINDS,
@@ -78,7 +79,16 @@ const PRESENTATION_KEYS = [
   'targetLabel',
   'proposal',
   'confirmation',
+  // U1-h — la revue énoncée par Bob, et la façon dont le run s'est terminé. LOCKSTEP STRICT : ce
+  // décodeur refuse À LA FORME sur clé inconnue, donc un serveur qui enverrait ces clés à un
+  // client qui les ignore rendrait `null` — soit PLUS AUCUNE carte, y compris le parcours de
+  // modification. Risque nul avant publication (aucune APK publique) ; après V1, toute clé neuve
+  // s'ajoute OPTIONNELLE ou derrière une version de schéma (SPEC_U1H §7).
+  'duplicateReview',
+  'completion',
 ] as const;
+const DUPLICATE_REVIEW_KEYS = ['reviewId', 'choices'] as const;
+const DUPLICATE_CHOICE_KEYS = ['ordinal', 'choiceId', 'label'] as const;
 const PROPOSAL_KEYS = ['proposalId', 'proposalHash', 'fieldsDigest', 'fields'] as const;
 const CONFIRMATION_KEYS = ['confirmationId', 'status', 'expiresAt', 'presentedAt'] as const;
 const FIELD_KEYS = ['field', 'label', 'before', 'after', 'sensitiveField'] as const;
@@ -275,6 +285,51 @@ function decodeConfirmation(value: unknown): CustomerContactPresentationV1['conf
   });
 }
 
+
+/**
+ * U1-h — la revue ÉNONCÉE. Les rangs sont refusés à la forme s'ils ne sont pas exactement
+ * `1..n` dans l'ordre : l'écran ne renumérote jamais, et un ordre reçu au hasard ferait de
+ * « le troisième » à l'oreille un autre rang à l'écran, sur un rattachement durable.
+ */
+function decodeDuplicateReview(
+  value: unknown,
+): CustomerContactPresentationV1['duplicateReview'] {
+  if (!isRecord(value) || !hasExactKeys(value, DUPLICATE_REVIEW_KEYS)) return null;
+  if (!isCanonicalUuid(value.reviewId) || !Array.isArray(value.choices)) return null;
+  if (value.choices.length < 1 || value.choices.length > CUSTOMER_CONTACT_MAX_DUPLICATE_CANDIDATES) return null;
+  const choices: CustomerContactPresentationV1['duplicateReview'] extends null
+    ? never
+    : NonNullable<CustomerContactPresentationV1['duplicateReview']>['choices'][number][] = [];
+  for (const [index, brut] of value.choices.entries()) {
+    if (!isRecord(brut) || !hasExactKeys(brut, DUPLICATE_CHOICE_KEYS)) return null;
+    // Le rang EST la position : refusé s'il diverge, jamais « réparé » en silence.
+    if (brut.ordinal !== index + 1) return null;
+    if (!isCanonicalUuid(brut.choiceId)) return null;
+    if (brut.label !== null && !isPresentedText(brut.label)) return null;
+    choices.push(
+      Object.freeze({ ordinal: brut.ordinal, choiceId: brut.choiceId, label: brut.label }),
+    );
+  }
+  // Deux rangs qui désigneraient la même fiche seraient un jeu dérivé : refus, jamais de fusion.
+  if (new Set(choices.map((choice) => choice.choiceId)).size !== choices.length) return null;
+  return Object.freeze({ reviewId: value.reviewId, choices: Object.freeze(choices) });
+}
+
+/** U1-h — la fin du run. `existing_selected` n'affirme aucune écriture. */
+function decodeCompletion(value: unknown): CustomerContactPresentationV1['completion'] {
+  if (!isRecord(value)) return null;
+  if (value.kind === 'recorded') {
+    return hasExactKeys(value, ['kind'] as const) ? Object.freeze({ kind: 'recorded' }) : null;
+  }
+  if (value.kind === 'existing_selected') {
+    if (!hasExactKeys(value, ['kind', 'label'] as const)) return null;
+    if (value.label !== null && !isPresentedText(value.label)) return null;
+    return Object.freeze({ kind: 'existing_selected', label: value.label });
+  }
+  return null;
+}
+
+
 export function decodeCustomerContactPresentation(
   value: unknown,
 ): CustomerContactPresentationV1 | null {
@@ -305,6 +360,16 @@ export function decodeCustomerContactPresentation(
     confirmation = decodeConfirmation(value.confirmation);
     if (confirmation === null) return null;
   }
+  let duplicateReview: CustomerContactPresentationV1['duplicateReview'] = null;
+  if (value.duplicateReview !== null) {
+    duplicateReview = decodeDuplicateReview(value.duplicateReview);
+    if (duplicateReview === null) return null;
+  }
+  let completion: CustomerContactPresentationV1['completion'] = null;
+  if (value.completion !== null) {
+    completion = decodeCompletion(value.completion);
+    if (completion === null) return null;
+  }
   // Une confirmation sans proposition scellée n'a rien à confirmer : refus fermé.
   if (confirmation !== null && proposal === null) return null;
   return Object.freeze({
@@ -316,6 +381,8 @@ export function decodeCustomerContactPresentation(
     targetLabel: value.targetLabel as string | null,
     proposal,
     confirmation,
+    duplicateReview,
+    completion,
   });
 }
 
@@ -412,6 +479,36 @@ export function encodeJarvisRunCommand(value: unknown): JarvisRunCommandV1 | nul
         isCanonicalUuid(value.confirmationId)
         ? Object.freeze({ type: 'reject_proposal', confirmationId: value.confirmationId })
         : null;
+    case 'choose_duplicate_resolution': {
+      // U1-h — l'issue de la revue, au doigt. Reconstruite CLÉ PAR CLÉ des deux côtés : ce codec
+      // ne transmet jamais l'objet reçu, il en rebâtit un depuis des valeurs validées.
+      if (!hasExactKeys(value, ['type', 'reviewId', 'decision'])) return null;
+      if (!isCanonicalUuid(value.reviewId) || !isRecord(value.decision)) return null;
+      const decision = value.decision;
+      if (decision.kind === 'continue_create') {
+        return hasExactKeys(decision, ['kind'])
+          ? Object.freeze({
+              type: 'choose_duplicate_resolution' as const,
+              reviewId: value.reviewId,
+              decision: Object.freeze({ kind: 'continue_create' as const }),
+            })
+          : null;
+      }
+      if (decision.kind === 'use_existing') {
+        return hasExactKeys(decision, ['kind', 'choiceId']) && isCanonicalUuid(decision.choiceId)
+          ? Object.freeze({
+              type: 'choose_duplicate_resolution' as const,
+              reviewId: value.reviewId,
+              decision: Object.freeze({
+                kind: 'use_existing' as const,
+                choiceId: decision.choiceId,
+              }),
+            })
+          : null;
+      }
+      // L'union est FERMÉE à deux membres : sa fermeture porte la garantie FD-06.
+      return null;
+    }
     case 'cancel_run':
       return hasExactKeys(value, ['type', 'reason']) &&
         (value.reason === 'user_cancelled' || value.reason === 'manual_handoff')
