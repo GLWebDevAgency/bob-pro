@@ -251,6 +251,7 @@ describe.skipIf(!RUN_CERT)(
       readonly expectedRevision: number;
       readonly command: unknown;
       readonly observationKind: string;
+      readonly observationDigest?: string;
     }): JarvisSystemAdmissionEnvelope {
       return Object.freeze({
         kind: 'customer_contact' as const,
@@ -264,7 +265,7 @@ describe.skipIf(!RUN_CERT)(
         subject: {
           type: 'effect_observation',
           observationKind: input.observationKind,
-          observationDigest: null,
+          observationDigest: input.observationDigest ?? null,
           effectId: input.effectId,
         },
         occurredAt: new Date().toISOString(),
@@ -1550,6 +1551,7 @@ describe.skipIf(!RUN_CERT)(
             },
           },
           observationKind: 'effect_receipt',
+          observationDigest: sha256Hex('jarvis-u1m-effect-observation-non-null'),
         });
         const applied = expectAdmission(
           await uowA.runJarvisSystemAdmission(receiptEnvelope, TEST_ONLY_ADMISSION_DEPS),
@@ -1644,6 +1646,15 @@ describe.skipIf(!RUN_CERT)(
         } as JarvisSystemAdmissionEnvelope;
         await expect(
           uowA.runJarvisSystemAdmission(commandMismatched, TEST_ONLY_ADMISSION_DEPS),
+        ).resolves.toEqual({ status: 'system_command_binding_mismatch' });
+        await expect(commandEventCount(envelope.commandId)).resolves.toBe(0);
+
+        const missingSubject = {
+          ...envelope,
+          subject: null,
+        } as unknown as JarvisSystemAdmissionEnvelope;
+        await expect(
+          uowA.runJarvisSystemAdmission(missingSubject, TEST_ONLY_ADMISSION_DEPS),
         ).resolves.toEqual({ status: 'system_command_binding_mismatch' });
         await expect(commandEventCount(envelope.commandId)).resolves.toBe(0);
 

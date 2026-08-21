@@ -299,6 +299,19 @@ function wakeCanonicalInputDigest(wakeId: string): string {
   return sha256Hex(JSON.stringify(['bob.jarvis.wake-input.v1', 'wake_run', wakeId]));
 }
 
+function systemCanonicalInputDigest(envelope: JarvisSystemAdmissionEnvelope): string {
+  const subject = (envelope as { readonly subject?: unknown }).subject;
+  if (typeof subject !== 'object' || subject === null || Array.isArray(subject)) return '';
+  const typed = subject as Record<string, unknown>;
+  if (typed['type'] === 'effect_observation' && typeof typed['observationKind'] === 'string') {
+    return typed['observationKind'];
+  }
+  if (typed['type'] === 'wake_due') {
+    return wakeCanonicalInputDigest(parseWakeCommand(envelope.command) ?? '');
+  }
+  return '';
+}
+
 interface ExistingReceipt {
   readonly missionId: string;
   readonly missionKind: string;
@@ -1086,10 +1099,7 @@ export async function runJarvisSystemAdmissionInTransaction(
       actor: 'system',
       actionId: null,
       actionVersion: null,
-      canonicalInputDigest:
-        envelope.subject.type === 'effect_observation'
-          ? envelope.subject.observationKind
-          : wakeCanonicalInputDigest(parseWakeCommand(envelope.command) ?? ''),
+      canonicalInputDigest: systemCanonicalInputDigest(envelope),
     },
     deps,
   );
