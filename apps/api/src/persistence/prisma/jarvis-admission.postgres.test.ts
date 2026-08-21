@@ -45,10 +45,13 @@ import {
   computeCustomerContactProposalHash,
   CUSTOMER_CONTACT_CREATE_ACTION_ID,
   CUSTOMER_CONTACT_LIMITS,
+  CUSTOMER_CONTACT_UPDATE_ACTION_ID,
   deriveJarvisSystemCommandId,
+  deriveJarvisWakeCommandId,
+  parseCustomerContactState,
   sha256Hex,
   type AgentMissionFingerprintPort,
-  type JarvisAdmissionResult,
+  type JarvisSystemAdmissionResult,
   type JarvisSystemAdmissionEnvelope,
   type JarvisUserAdmissionEnvelope,
 } from '@bob/core';
@@ -90,14 +93,14 @@ const TEST_ONLY_ADMISSION_DEPS: JarvisAdmissionDeps = {
 
 const START_CREATE = { type: 'start_run', intent: { mode: 'create' } } as const;
 
-function expectAdmission<S extends JarvisAdmissionResult['status']>(
-  result: JarvisAdmissionResult,
+function expectAdmission<S extends JarvisSystemAdmissionResult['status']>(
+  result: JarvisSystemAdmissionResult,
   status: S,
-): Extract<JarvisAdmissionResult, { status: S }> {
+): Extract<JarvisSystemAdmissionResult, { status: S }> {
   if (result.status !== status) {
     throw new Error(`Jarvis U1-c: statut ${status} attendu, reçu ${JSON.stringify(result)}`);
   }
-  return result as Extract<JarvisAdmissionResult, { status: S }>;
+  return result as Extract<JarvisSystemAdmissionResult, { status: S }>;
 }
 
 function deriveSystemCommandId(runId: string, effectId: string, observationKind: string): string {
@@ -132,6 +135,7 @@ interface RunAuditRow {
   readonly payloadVersion: number;
   readonly definitionVersion: number | null;
   readonly payload: unknown;
+  readonly nextWakeAt: Date | null;
   readonly terminalAt: Date | null;
 }
 
@@ -140,8 +144,24 @@ interface EventAuditRow {
   readonly eventType: string;
   readonly actor: string;
   readonly commandId: string;
+  readonly requestFingerprintHmac: string;
+  readonly fingerprintKeyVersion: number;
+  readonly fingerprintCanonicalizationVersion: number;
   readonly missionRevisionBefore: number;
   readonly missionRevisionAfter: number;
+  readonly occurredAt: Date;
+}
+
+interface RunStorageAuditRow {
+  readonly snapshot: unknown;
+  readonly xmin: string;
+  readonly ctid: string;
+}
+
+interface WorkItemStorageAuditRow {
+  readonly snapshot: unknown;
+  readonly xmin: string;
+  readonly ctid: string;
 }
 
 interface WorkItemAuditRow {
@@ -241,8 +261,46 @@ describe.skipIf(!RUN_CERT)(
         commandId: deriveSystemCommandId(input.runId, input.effectId, input.observationKind),
         expectedRevision: input.expectedRevision,
         command: input.command,
-        observationKind: input.observationKind,
-        effectId: input.effectId,
+        subject: {
+          type: 'effect_observation',
+          observationKind: input.observationKind,
+          observationDigest: null,
+          effectId: input.effectId,
+        },
+        occurredAt: new Date().toISOString(),
+      });
+    }
+
+    function wakeEnvelope(input: {
+      readonly ownerUserId: string;
+      readonly runId: string;
+      readonly wakeId: string;
+      readonly dueAt: string;
+      readonly expectedRevision: number;
+    }): JarvisSystemAdmissionEnvelope {
+      const derived = deriveJarvisWakeCommandId(
+        input.runId,
+        input.wakeId,
+        input.dueAt,
+        input.expectedRevision,
+      );
+      if (!derived.ok) {
+        throw new Error(`Jarvis U1-m: dérivation wake refusée ${JSON.stringify(derived.error)}`);
+      }
+      return Object.freeze({
+        kind: 'customer_contact' as const,
+        definitionVersion: 1,
+        companyId,
+        ownerUserId: input.ownerUserId,
+        runId: input.runId,
+        commandId: derived.value,
+        expectedRevision: input.expectedRevision,
+        command: { type: 'wake_run', wakeId: input.wakeId } as const,
+        subject: {
+          type: 'wake_due' as const,
+          wakeId: input.wakeId,
+          dueAt: input.dueAt,
+        },
         occurredAt: new Date().toISOString(),
       });
     }
@@ -269,7 +327,7 @@ describe.skipIf(!RUN_CERT)(
     async function auditRun(runId: string): Promise<RunAuditRow | null> {
       const rows = await admin.$queryRaw<RunAuditRow[]>`
         SELECT "kind", "status", "phase", "revision", "protocolVersion",
-               "payloadVersion", "definitionVersion", "payload", "terminalAt"
+               "payloadVersion", "definitionVersion", "payload", "nextWakeAt", "terminalAt"
           FROM public.agent_missions
          WHERE "id" = ${runId}::uuid
       `;
@@ -282,10 +340,44 @@ describe.skipIf(!RUN_CERT)(
       return row;
     }
 
+    async function auditRunStorage(runId: string): Promise<RunStorageAuditRow> {
+      const rows = await admin.$queryRaw<RunStorageAuditRow[]>`
+        SELECT to_jsonb(mission) AS "snapshot",
+               mission.xmin::text AS "xmin",
+               mission.ctid::text AS "ctid"
+          FROM public.agent_missions AS mission
+         WHERE mission."id" = ${runId}::uuid
+      `;
+      const row = rows[0];
+      if (row === undefined) throw new Error(`Jarvis U1-m: run introuvable ${runId}`);
+      return row;
+    }
+
+    async function authoritativeWake(runId: string): Promise<{
+      readonly wakeId: string;
+      readonly dueAt: string;
+      readonly revision: number;
+    }> {
+      const run = await requireRun(runId);
+      const state = parseCustomerContactState(run.payload);
+      const wake = state?.wakes[0];
+      if (
+        state === null
+        || state.wakes.length !== 1
+        || wake === undefined
+        || run.nextWakeAt?.toISOString() !== wake.dueAt
+      ) {
+        throw new Error(`Jarvis U1-m: wake autoritaire absent ou incohérent ${runId}`);
+      }
+      return { wakeId: wake.wakeId, dueAt: wake.dueAt, revision: run.revision };
+    }
+
     async function auditEvents(runId: string): Promise<EventAuditRow[]> {
       return admin.$queryRaw<EventAuditRow[]>`
         SELECT "sequence", "eventType", "actor", "commandId",
-               "missionRevisionBefore", "missionRevisionAfter"
+               "requestFingerprintHmac", "fingerprintKeyVersion",
+               "fingerprintCanonicalizationVersion",
+               "missionRevisionBefore", "missionRevisionAfter", "occurredAt"
           FROM public.agent_mission_events
          WHERE "missionId" = ${runId}::uuid
          ORDER BY "sequence"
@@ -312,6 +404,103 @@ describe.skipIf(!RUN_CERT)(
           FROM public.jarvis_work_items
          WHERE "runId" = ${runId}::uuid
       `;
+    }
+
+    async function auditWorkItemStorage(workItemId: string): Promise<WorkItemStorageAuditRow> {
+      const rows = await admin.$queryRaw<WorkItemStorageAuditRow[]>`
+        SELECT to_jsonb(item) AS "snapshot",
+               item.xmin::text AS "xmin",
+               item.ctid::text AS "ctid"
+          FROM public.jarvis_work_items AS item
+         WHERE item."id" = ${workItemId}::uuid
+      `;
+      const row = rows[0];
+      if (row === undefined) throw new Error(`Jarvis U1-m: work item introuvable ${workItemId}`);
+      return row;
+    }
+
+    async function insertWakeRestampSentinel(input: {
+      readonly ownerUserId: string;
+      readonly runId: string;
+      readonly effectId: string;
+    }): Promise<string> {
+      const workItemId = randomUUID();
+      await deployer.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe('SET LOCAL ROLE bob_schema_owner');
+        await tx.$executeRaw`SELECT set_config('app.current_company_id', ${companyId}, true)`;
+        await tx.$executeRaw`SELECT set_config('app.current_user_id', ${input.ownerUserId}, true)`;
+        await tx.$executeRaw`SELECT set_config('app.current_agent_mission_id', ${input.runId}, true)`;
+        await tx.$executeRaw`
+          INSERT INTO public.jarvis_work_items (
+            "id", "companyId", "runId", "ownerUserId", "effectId",
+            "actionId", "actionVersion", "authorizationSource", "actingPrincipalId",
+            "executeBy", "status", "authorizedAt", "authorizationDigest", "resultDigest",
+            "createdAt", "updatedAt"
+          ) VALUES (
+            ${workItemId}::uuid, ${companyId}, ${input.runId}::uuid, ${input.ownerUserId},
+            ${input.effectId}::uuid, 'client-creer', 1,
+            jsonb_build_object('source', 'confirmation', 'receiptId', ${randomUUID()}::text),
+            ${input.ownerUserId}, clock_timestamp() + interval '1 hour', 'succeeded',
+            clock_timestamp(), ${sha256Hex('jarvis-u1m-sentinel-authorization')},
+            ${sha256Hex('jarvis-u1m-sentinel-result')}, clock_timestamp(), clock_timestamp()
+          )
+        `;
+      });
+      return workItemId;
+    }
+
+    async function pinWakeDueAt(
+      ownerUserId: string,
+      runId: string,
+      dueAt: string,
+    ): Promise<void> {
+      await deployer.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe('SET LOCAL ROLE bob_schema_owner');
+        await tx.$executeRaw`SELECT set_config('app.current_company_id', ${companyId}, true)`;
+        await tx.$executeRaw`SELECT set_config('app.current_user_id', ${ownerUserId}, true)`;
+        await tx.$executeRaw`SELECT set_config('app.current_agent_mission_id', ${runId}, true)`;
+        await tx.$executeRawUnsafe('ALTER TABLE public.agent_missions DISABLE TRIGGER USER');
+        const updated = await tx.$executeRaw`
+          UPDATE public.agent_missions
+             SET "payload" = jsonb_set(
+                   jsonb_set(
+                     "payload",
+                     '{confirmation,expiresAt}',
+                     to_jsonb(${dueAt}::text),
+                     false
+                   ),
+                   '{wakes,0,dueAt}',
+                   to_jsonb(${dueAt}::text),
+                   false
+                 ),
+                 "nextWakeAt" = ${dueAt}::timestamptz
+           WHERE "id" = ${runId}::uuid
+             AND "companyId" = ${companyId}
+        `;
+        if (updated !== 1) throw new Error('Jarvis U1-m: épinglage dueAt raté.');
+        await tx.$executeRawUnsafe('ALTER TABLE public.agent_missions ENABLE TRIGGER USER');
+      });
+    }
+
+    async function databaseDueAtAfter(milliseconds: number): Promise<string> {
+      const rows = await admin.$queryRaw<Array<{ dueAt: Date }>>`
+        SELECT date_trunc('milliseconds', clock_timestamp())
+               + (${milliseconds}::int * interval '1 millisecond') AS "dueAt"
+      `;
+      const dueAt = rows[0]?.dueAt;
+      if (dueAt === undefined) throw new Error('Jarvis U1-m: horloge DB indisponible.');
+      return dueAt.toISOString();
+    }
+
+    async function waitUntilDatabaseDue(dueAt: string): Promise<void> {
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        const rows = await admin.$queryRaw<Array<{ due: boolean }>>`
+          SELECT clock_timestamp() >= ${dueAt}::timestamptz AS "due"
+        `;
+        if (rows[0]?.due === true) return;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      throw new Error(`Jarvis U1-m: échéance DB non atteinte ${dueAt}`);
     }
 
     /** Seed par le VRAI port : start_run create, expectedRevision 0 (convention U1-b). */
@@ -400,6 +589,73 @@ describe.skipIf(!RUN_CERT)(
         effectId,
       });
       return { runId, effectId, confirmationId, proposalHash };
+    }
+
+    async function driveUpdateRunToPresented(
+      ownerUserId: string,
+      customerId: string,
+    ): Promise<{ readonly runId: string }> {
+      const runId = randomUUID();
+      const admit = async (expectedRevision: number, command: unknown) =>
+        expectAdmission(
+          await uowA.runJarvisAdmission(
+            userEnvelope({
+              ownerUserId,
+              runId,
+              expectedRevision,
+              actionId: CUSTOMER_CONTACT_UPDATE_ACTION_ID,
+              command,
+            }),
+            TEST_ONLY_ADMISSION_DEPS,
+          ),
+          'admitted',
+        );
+      await admit(0, {
+        type: 'start_run',
+        intent: { mode: 'update', target: { customerId, revision: 1 } },
+      });
+      await admit(1, {
+        type: 'record_customer_resolution',
+        resolution: { kind: 'target_verified', customerId },
+      });
+      const confirmationId = randomUUID();
+      await admit(2, {
+        type: 'stage_proposal',
+        proposalId: randomUUID(),
+        confirmationId,
+        fieldsDigest: sha256Hex('jarvis-u1m-target-lock-fields'),
+        sensitiveDigest: sha256Hex('jarvis-u1m-target-lock-sensitive'),
+        targetRevision: 1,
+      });
+      await admit(3, {
+        type: 'record_presentation_ack',
+        confirmationId,
+        ack: 'screen_ack',
+      });
+      return { runId };
+    }
+
+    async function waitForRuntimeLockWait(
+      blockerPid: number,
+      sourceFragment: 'FROM public.customers' | 'FROM public.jarvis_work_items',
+    ): Promise<{ readonly pid: number; readonly observedAt: Date } | null> {
+      for (let attempt = 0; attempt < 150; attempt += 1) {
+        // Même rôle runtime que l'admission bloquée : PostgreSQL ne révèle le texte complet
+        // d'une requête d'un autre rôle qu'à un membre de pg_read_all_stats/superuser.
+        const rows = await workerA.$queryRaw<Array<{ pid: number; observedAt: Date }>>`
+          SELECT activity.pid::int AS "pid", clock_timestamp() AS "observedAt"
+            FROM pg_catalog.pg_stat_activity AS activity
+           WHERE activity.datname = current_database()
+             AND ${blockerPid}::int = ANY(pg_catalog.pg_blocking_pids(activity.pid))
+             AND position(${sourceFragment} IN activity.query) > 0
+             AND position('FOR UPDATE' IN activity.query) > 0
+           ORDER BY activity.pid
+           LIMIT 1
+        `;
+        if (rows[0] !== undefined) return rows[0];
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      return null;
     }
 
     function confirmCommand(confirmationId: string, proposalHash: string): unknown {
@@ -1313,6 +1569,25 @@ describe.skipIf(!RUN_CERT)(
         expect(events[5]?.commandId).toMatch(
           /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$/u,
         );
+        const effectCanonicalRequest = [
+          'bob.jarvis.admission.v1',
+          companyId,
+          ownerUserId,
+          'customer_contact',
+          '1',
+          runId,
+          receiptEnvelope.commandId,
+          '5',
+          'effect_receipt',
+          '0',
+          effectId,
+          'effect_receipt',
+        ].join('\u001f');
+        const expectedEffectFingerprint = FINGERPRINTS.sign(effectCanonicalRequest);
+        if (expectedEffectFingerprint === null) {
+          throw new Error('Jarvis U1-m: fingerprint effet v1 de certification indisponible.');
+        }
+        expect(events[5]?.requestFingerprintHmac).toBe(expectedEffectFingerprint.hmac);
 
         // La même observation re-soumise dérive le MÊME commandId : replay zéro-write.
         const replayed = expectAdmission(
@@ -1321,6 +1596,431 @@ describe.skipIf(!RUN_CERT)(
         );
         expect(replayed.eventSequence).toBe(6);
         await expect(auditEvents(runId)).resolves.toHaveLength(6);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it(
+      'U1-m M1 — wake prématuré exact : ignored répété, aucune version logique ni foreground muté',
+      async () => {
+        const ownerUserId = freshOwner();
+        const { runId } = await driveRunToPresented(ownerUserId);
+        const wake = await authoritativeWake(runId);
+        const envelope = wakeEnvelope({
+          ownerUserId,
+          runId,
+          wakeId: wake.wakeId,
+          dueAt: wake.dueAt,
+          expectedRevision: wake.revision,
+        });
+        const storageBefore = await auditRunStorage(runId);
+        const eventsBefore = await auditEvents(runId);
+        const workItemsBefore = await auditWorkItems(runId);
+
+        await expect(
+          uowA.runJarvisSystemAdmission(envelope, TEST_ONLY_ADMISSION_DEPS),
+        ).resolves.toEqual({ status: 'ignored', reason: 'wake_not_due' });
+        await expect(
+          uowA.runJarvisSystemAdmission(envelope, TEST_ONLY_ADMISSION_DEPS),
+        ).resolves.toEqual({ status: 'ignored', reason: 'wake_not_due' });
+        await expect(commandEventCount(envelope.commandId)).resolves.toBe(0);
+
+        const divergentDueAt = new Date(Date.parse(wake.dueAt) + 1_000).toISOString();
+        const divergent = wakeEnvelope({
+          ownerUserId,
+          runId,
+          wakeId: wake.wakeId,
+          dueAt: divergentDueAt,
+          expectedRevision: wake.revision,
+        });
+        await expect(
+          uowA.runJarvisSystemAdmission(divergent, TEST_ONLY_ADMISSION_DEPS),
+        ).resolves.toEqual({ status: 'system_command_binding_mismatch' });
+        await expect(commandEventCount(divergent.commandId)).resolves.toBe(0);
+
+        const commandMismatched = {
+          ...envelope,
+          command: { type: 'wake_run', wakeId: randomUUID() },
+        } as JarvisSystemAdmissionEnvelope;
+        await expect(
+          uowA.runJarvisSystemAdmission(commandMismatched, TEST_ONLY_ADMISSION_DEPS),
+        ).resolves.toEqual({ status: 'system_command_binding_mismatch' });
+        await expect(commandEventCount(envelope.commandId)).resolves.toBe(0);
+
+        const stale = wakeEnvelope({
+          ownerUserId,
+          runId,
+          wakeId: wake.wakeId,
+          dueAt: wake.dueAt,
+          expectedRevision: wake.revision - 1,
+        });
+        await expect(
+          uowA.runJarvisSystemAdmission(stale, TEST_ONLY_ADMISSION_DEPS),
+        ).resolves.toEqual({ status: 'stale_revision', actualRevision: wake.revision });
+        await expect(commandEventCount(stale.commandId)).resolves.toBe(0);
+
+        await expect(
+          uowA.runJarvisSystemAdmission(envelope, {
+            ...TEST_ONLY_ADMISSION_DEPS,
+            admissionEnabled: false,
+          }),
+        ).resolves.toEqual({ status: 'action_refused', reason: 'admission_kill_switch' });
+
+        const secondRunId = randomUUID();
+        const secondSeed = userEnvelope({
+          ownerUserId,
+          runId: secondRunId,
+          expectedRevision: 0,
+          command: START_CREATE,
+        });
+        expectAdmission(
+          await uowA.runJarvisAdmission(secondSeed, TEST_ONLY_ADMISSION_DEPS),
+          'foreground_busy',
+        );
+        await expect(auditRun(secondRunId)).resolves.toBeNull();
+        await expect(commandEventCount(secondSeed.commandId)).resolves.toBe(0);
+
+        expect(await auditRunStorage(runId)).toEqual(storageBefore);
+        expect(await auditEvents(runId)).toEqual(eventsBefore);
+        expect(await auditWorkItems(runId)).toEqual(workItemsBefore);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it(
+      'U1-m M1 — wake dû : R+1 exact puis replay OFF strictement zéro-write',
+      async () => {
+        const ownerUserId = freshOwner();
+        const { runId } = await driveRunToPresented(ownerUserId);
+        const dueAt = await databaseDueAtAfter(2_000);
+        await pinWakeDueAt(ownerUserId, runId, dueAt);
+        const wake = await authoritativeWake(runId);
+        const envelope = wakeEnvelope({
+          ownerUserId,
+          runId,
+          wakeId: wake.wakeId,
+          dueAt: wake.dueAt,
+          expectedRevision: wake.revision,
+        });
+
+        await expect(
+          uowA.runJarvisSystemAdmission(envelope, TEST_ONLY_ADMISSION_DEPS),
+        ).resolves.toEqual({ status: 'ignored', reason: 'wake_not_due' });
+        await expect(commandEventCount(envelope.commandId)).resolves.toBe(0);
+
+        await expect(
+          uowA.runJarvisSystemAdmission(envelope, {
+            ...TEST_ONLY_ADMISSION_DEPS,
+            admissionEnabled: false,
+          }),
+        ).resolves.toEqual({ status: 'action_refused', reason: 'admission_kill_switch' });
+        await expect(commandEventCount(envelope.commandId)).resolves.toBe(0);
+
+        await waitUntilDatabaseDue(dueAt);
+        const disguisedAsEffect = systemEnvelope({
+          ownerUserId,
+          runId,
+          effectId: wake.wakeId,
+          expectedRevision: wake.revision,
+          command: { type: 'wake_run', wakeId: wake.wakeId },
+          observationKind: 'effect_result',
+        });
+        const storageBeforeDisguised = await auditRunStorage(runId);
+        const eventsBeforeDisguised = await auditEvents(runId);
+        const workItemsBeforeDisguised = await auditWorkItems(runId);
+        await expect(
+          uowA.runJarvisSystemAdmission(disguisedAsEffect, {
+            ...TEST_ONLY_ADMISSION_DEPS,
+            admissionEnabled: false,
+            actionReleasePolicy: CLOSED_JARVIS_ACTION_RELEASE_POLICY,
+          }),
+        ).resolves.toEqual({ status: 'system_command_binding_mismatch' });
+        await expect(commandEventCount(disguisedAsEffect.commandId)).resolves.toBe(0);
+        expect(await auditRunStorage(runId)).toEqual(storageBeforeDisguised);
+        expect(await auditEvents(runId)).toEqual(eventsBeforeDisguised);
+        expect(await auditWorkItems(runId)).toEqual(workItemsBeforeDisguised);
+
+        const admitted = expectAdmission(
+          await uowA.runJarvisSystemAdmission(envelope, TEST_ONLY_ADMISSION_DEPS),
+          'admitted',
+        );
+        expect(admitted.eventSequence).toBe(5);
+        expect(admitted.postimage).toMatchObject({ revision: 5, nextWakeAt: null });
+        expect(admitted.workItemIds).toEqual([]);
+
+        const run = await requireRun(runId);
+        expect(run).toMatchObject({
+          revision: 5,
+          phase: 'preparing_proposal',
+          nextWakeAt: null,
+        });
+        const state = parseCustomerContactState(run.payload);
+        expect(state?.confirmation?.status).toBe('expired');
+        expect(state?.wakes).toEqual([]);
+        await expect(auditWorkItems(runId)).resolves.toEqual([]);
+
+        const events = await auditEvents(runId);
+        expect(events).toHaveLength(5);
+        expect(events[4]).toMatchObject({
+          sequence: 5,
+          eventType: 'cc_proposal_expired',
+          actor: 'system',
+          commandId: envelope.commandId,
+          missionRevisionBefore: 4,
+          missionRevisionAfter: 5,
+          fingerprintKeyVersion: 1,
+          fingerprintCanonicalizationVersion: 1,
+        });
+        const canonicalInputDigest = sha256Hex(
+          JSON.stringify(['bob.jarvis.wake-input.v1', 'wake_run', wake.wakeId]),
+        );
+        const canonicalRequest = [
+          'bob.jarvis.admission.wake.v1',
+          companyId,
+          ownerUserId,
+          'customer_contact',
+          '1',
+          runId,
+          envelope.commandId,
+          '4',
+          wake.wakeId,
+          wake.dueAt,
+          canonicalInputDigest,
+        ].join('\u001f');
+        const expectedFingerprint = FINGERPRINTS.sign(canonicalRequest);
+        if (expectedFingerprint === null) {
+          throw new Error('Jarvis U1-m: fingerprint de certification indisponible.');
+        }
+        expect(events[4]?.requestFingerprintHmac).toBe(expectedFingerprint.hmac);
+
+        // Sentinelle adversariale post-transition : elle ressemble volontairement à une
+        // observation d'effet du même identifiant. Un replay wake ne doit jamais emprunter
+        // la greffe historique qui re-stampe les work items d'effet.
+        const sentinelId = await insertWakeRestampSentinel({
+          ownerUserId,
+          runId,
+          effectId: wake.wakeId,
+        });
+        const sentinelBeforeReplay = await auditWorkItemStorage(sentinelId);
+        expect(
+          (await auditWorkItems(runId)).find((item) => item.id === sentinelId)?.signalAppliedAt,
+        ).toBeNull();
+
+        const storageAfterCommit = await auditRunStorage(runId);
+        const eventsAfterCommit = await auditEvents(runId);
+        const workItemsAfterCommit = await auditWorkItems(runId);
+        const replayed = expectAdmission(
+          await uowA.runJarvisSystemAdmission(envelope, {
+            ...TEST_ONLY_ADMISSION_DEPS,
+            admissionEnabled: false,
+            actionReleasePolicy: CLOSED_JARVIS_ACTION_RELEASE_POLICY,
+          }),
+          'replayed',
+        );
+        expect(replayed).toMatchObject({
+          eventSequence: 5,
+          signalRestamped: false,
+          postimage: { runId, revision: 5 },
+        });
+        expect(await auditRunStorage(runId)).toEqual(storageAfterCommit);
+        expect(await auditEvents(runId)).toEqual(eventsAfterCommit);
+        expect(await auditWorkItems(runId)).toEqual(workItemsAfterCommit);
+        expect(await auditWorkItemStorage(sentinelId)).toEqual(sentinelBeforeReplay);
+        await expect(commandEventCount(envelope.commandId)).resolves.toBe(1);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it(
+      'U1-m M1 — l’horloge d’expiration est capturée après le verrou de la fiche cible',
+      async () => {
+        const ownerUserId = freshOwner();
+        const customerId = randomUUID();
+        await admin.$executeRaw`
+          INSERT INTO public.customers (
+            "id", "companyId", "type", "name", "addrLine1", "addrZip", "addrCity"
+          ) VALUES (
+            ${customerId}, ${companyId}, 'b2c', ${'Cible U1-m'},
+            ${'1 rue du Verrou'}, ${'75001'}, ${'Paris'}
+          )
+        `;
+        const { runId } = await driveUpdateRunToPresented(ownerUserId, customerId);
+        const dueAt = await databaseDueAtAfter(3_000);
+        await pinWakeDueAt(ownerUserId, runId, dueAt);
+        const wake = await authoritativeWake(runId);
+        const envelope = wakeEnvelope({
+          ownerUserId,
+          runId,
+          wakeId: wake.wakeId,
+          dueAt: wake.dueAt,
+          expectedRevision: wake.revision,
+        });
+        const blockerReady = deferred<
+          | { readonly ok: true; readonly pid: number }
+          | { readonly ok: false; readonly error: unknown }
+        >();
+        const releaseBlocker = deferred<void>();
+        const blocker = deployer
+          .$transaction(
+            async (tx) => {
+              await tx.$executeRawUnsafe('SET LOCAL ROLE bob_schema_owner');
+              await tx.$executeRaw`SELECT set_config('app.current_company_id', ${companyId}, true)`;
+              await tx.$executeRaw`SELECT set_config('app.current_user_id', ${ownerUserId}, true)`;
+              await tx.$executeRaw`SELECT set_config('app.current_agent_mission_id', ${runId}, true)`;
+              const locked = await tx.$queryRaw<Array<{ pid: number }>>`
+                SELECT pg_backend_pid()::int AS "pid"
+                  FROM public.customers
+                 WHERE "id" = ${customerId}
+                   AND "companyId" = ${companyId}
+                 FOR UPDATE
+              `;
+              const pid = locked[0]?.pid ?? -1;
+              if (pid < 0) throw new Error('Jarvis U1-m: cible à verrouiller introuvable.');
+              blockerReady.resolve({ ok: true, pid });
+              await releaseBlocker.promise;
+              const marker = await tx.$queryRaw<Array<{ releasedAt: Date }>>`
+                SELECT clock_timestamp() AS "releasedAt"
+              `;
+              const releasedAt = marker[0]?.releasedAt;
+              if (releasedAt === undefined) {
+                throw new Error('Jarvis U1-m: horloge de libération indisponible.');
+              }
+              return releasedAt;
+            },
+            { maxWait: 10_000, timeout: 12_000 },
+          )
+          .catch((error: unknown) => {
+            blockerReady.resolve({ ok: false, error });
+            throw error;
+          });
+        const readiness = await blockerReady.promise;
+        if (!readiness.ok) {
+          await Promise.allSettled([blocker]);
+          throw readiness.error;
+        }
+        const blockerPid = readiness.pid;
+
+        const admission = uowB.runJarvisSystemAdmission(envelope, TEST_ONLY_ADMISSION_DEPS);
+        const waiting = await waitForRuntimeLockWait(blockerPid, 'FROM public.customers');
+        if (waiting === null || waiting.observedAt.toISOString() >= dueAt) {
+          releaseBlocker.resolve();
+          await Promise.allSettled([blocker, admission]);
+          throw new Error('Jarvis U1-m: attente cible pré-échéance non observée.');
+        }
+        await waitUntilDatabaseDue(dueAt);
+        releaseBlocker.resolve();
+        const [releasedAt, result] = await Promise.all([blocker, admission]);
+
+        const admitted = expectAdmission(result, 'admitted');
+        expect(admitted.eventSequence).toBe(5);
+        expect(admitted.postimage).toMatchObject({ revision: 5, nextWakeAt: null });
+        expect(admitted.workItemIds).toEqual([]);
+        const events = await auditEvents(runId);
+        expect(events).toHaveLength(5);
+        const expiration = events[4];
+        expect(expiration).toMatchObject({
+          eventType: 'cc_proposal_expired',
+          actor: 'system',
+          missionRevisionBefore: 4,
+          missionRevisionAfter: 5,
+        });
+        expect(expiration?.occurredAt.getTime()).toBeGreaterThanOrEqual(Date.parse(dueAt));
+        expect(expiration?.occurredAt.getTime()).toBeGreaterThanOrEqual(releasedAt.getTime());
+        await expect(requireRun(runId)).resolves.toMatchObject({ revision: 5, nextWakeAt: null });
+        await expect(auditWorkItems(runId)).resolves.toEqual([]);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it(
+      'U1-m M1 — l’horloge d’expiration est capturée après le dernier verrou work item',
+      async () => {
+        const ownerUserId = freshOwner();
+        const { runId } = await driveRunToPresented(ownerUserId);
+        const sentinelId = await insertWakeRestampSentinel({
+          ownerUserId,
+          runId,
+          effectId: randomUUID(),
+        });
+        const sentinelBefore = await auditWorkItemStorage(sentinelId);
+        const dueAt = await databaseDueAtAfter(3_000);
+        await pinWakeDueAt(ownerUserId, runId, dueAt);
+        const wake = await authoritativeWake(runId);
+        const envelope = wakeEnvelope({
+          ownerUserId,
+          runId,
+          wakeId: wake.wakeId,
+          dueAt: wake.dueAt,
+          expectedRevision: wake.revision,
+        });
+        const blockerReady = deferred<
+          | { readonly ok: true; readonly pid: number }
+          | { readonly ok: false; readonly error: unknown }
+        >();
+        const releaseBlocker = deferred<void>();
+        const blocker = admin
+          .$transaction(
+            async (tx) => {
+              const locked = await tx.$queryRaw<Array<{ pid: number }>>`
+                SELECT pg_backend_pid()::int AS "pid"
+                  FROM public.jarvis_work_items
+                 WHERE "id" = ${sentinelId}::uuid
+                 FOR UPDATE
+              `;
+              const pid = locked[0]?.pid ?? -1;
+              if (pid < 0) throw new Error('Jarvis U1-m: work item à verrouiller introuvable.');
+              blockerReady.resolve({ ok: true, pid });
+              await releaseBlocker.promise;
+              const marker = await tx.$queryRaw<Array<{ releasedAt: Date }>>`
+                SELECT clock_timestamp() AS "releasedAt"
+              `;
+              const releasedAt = marker[0]?.releasedAt;
+              if (releasedAt === undefined) {
+                throw new Error('Jarvis U1-m: horloge de libération work item indisponible.');
+              }
+              return releasedAt;
+            },
+            { maxWait: 10_000, timeout: 12_000 },
+          )
+          .catch((error: unknown) => {
+            blockerReady.resolve({ ok: false, error });
+            throw error;
+          });
+        const readiness = await blockerReady.promise;
+        if (!readiness.ok) {
+          await Promise.allSettled([blocker]);
+          throw readiness.error;
+        }
+
+        const admission = uowB.runJarvisSystemAdmission(envelope, TEST_ONLY_ADMISSION_DEPS);
+        const waiting = await waitForRuntimeLockWait(
+          readiness.pid,
+          'FROM public.jarvis_work_items',
+        );
+        if (waiting === null || waiting.observedAt.toISOString() >= dueAt) {
+          releaseBlocker.resolve();
+          await Promise.allSettled([blocker, admission]);
+          throw new Error('Jarvis U1-m: attente work item pré-échéance non observée.');
+        }
+        await waitUntilDatabaseDue(dueAt);
+        releaseBlocker.resolve();
+        const [releasedAt, result] = await Promise.all([blocker, admission]);
+
+        const admitted = expectAdmission(result, 'admitted');
+        expect(admitted.eventSequence).toBe(5);
+        expect(admitted.postimage).toMatchObject({ revision: 5, nextWakeAt: null });
+        const events = await auditEvents(runId);
+        expect(events).toHaveLength(5);
+        const expiration = events[4];
+        expect(expiration).toMatchObject({
+          eventType: 'cc_proposal_expired',
+          actor: 'system',
+          missionRevisionBefore: 4,
+          missionRevisionAfter: 5,
+        });
+        expect(expiration?.occurredAt.getTime()).toBeGreaterThanOrEqual(Date.parse(dueAt));
+        expect(expiration?.occurredAt.getTime()).toBeGreaterThanOrEqual(releasedAt.getTime());
+        expect(await auditWorkItemStorage(sentinelId)).toEqual(sentinelBefore);
       },
       TEST_TIMEOUT_MS,
     );
@@ -1791,6 +2491,87 @@ describe.skipIf(!RUN_CERT)(
           signalAppliedAt: null,
         });
         await expect(repository.listPendingSignals(coordinates, 10)).resolves.toHaveLength(0);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it(
+      'U1-m M1 — société fermée : wake neuf refusé, reçu wake exact toujours rejoué',
+      async () => {
+        // DERNIER scénario du fichier : closedAt est volontairement monotone et ne sera jamais
+        // remis à NULL par le harnais.
+        const committedOwnerUserId = freshOwner();
+        const { runId: committedRunId } = await driveRunToPresented(committedOwnerUserId);
+        const dueAt = await databaseDueAtAfter(300);
+        await pinWakeDueAt(committedOwnerUserId, committedRunId, dueAt);
+        const committedWake = await authoritativeWake(committedRunId);
+        const committedEnvelope = wakeEnvelope({
+          ownerUserId: committedOwnerUserId,
+          runId: committedRunId,
+          wakeId: committedWake.wakeId,
+          dueAt: committedWake.dueAt,
+          expectedRevision: committedWake.revision,
+        });
+        await waitUntilDatabaseDue(dueAt);
+        expectAdmission(
+          await uowA.runJarvisSystemAdmission(committedEnvelope, TEST_ONLY_ADMISSION_DEPS),
+          'admitted',
+        );
+
+        const pendingOwnerUserId = freshOwner();
+        const { runId: pendingRunId } = await driveRunToPresented(pendingOwnerUserId);
+        const pendingWake = await authoritativeWake(pendingRunId);
+        const pendingEnvelope = wakeEnvelope({
+          ownerUserId: pendingOwnerUserId,
+          runId: pendingRunId,
+          wakeId: pendingWake.wakeId,
+          dueAt: pendingWake.dueAt,
+          expectedRevision: pendingWake.revision,
+        });
+
+        await workerA.withTenant(companyId, async (tx) => {
+          const closed = await tx.$executeRaw`
+            UPDATE public.companies
+               SET "closedAt" = clock_timestamp(),
+                   "closureReason" = ${'certification wake U1-m'}
+             WHERE "id" = ${companyId}
+               AND "closedAt" IS NULL
+          `;
+          if (closed !== 1) throw new Error('Jarvis U1-m: clôture société de certification ratée.');
+        });
+
+        const committedStorageAfterClose = await auditRunStorage(committedRunId);
+        const committedEventsAfterClose = await auditEvents(committedRunId);
+        const committedWorkItemsAfterClose = await auditWorkItems(committedRunId);
+        const pendingStorageAfterClose = await auditRunStorage(pendingRunId);
+        const pendingEventsAfterClose = await auditEvents(pendingRunId);
+        const pendingWorkItemsAfterClose = await auditWorkItems(pendingRunId);
+
+        await expect(
+          uowA.runJarvisSystemAdmission(pendingEnvelope, TEST_ONLY_ADMISSION_DEPS),
+        ).resolves.toEqual({ status: 'company_unavailable', reason: 'closed' });
+        const replayed = expectAdmission(
+          await uowA.runJarvisSystemAdmission(committedEnvelope, {
+            ...TEST_ONLY_ADMISSION_DEPS,
+            admissionEnabled: false,
+            actionReleasePolicy: CLOSED_JARVIS_ACTION_RELEASE_POLICY,
+          }),
+          'replayed',
+        );
+        expect(replayed).toMatchObject({
+          eventSequence: 5,
+          signalRestamped: false,
+          postimage: { runId: committedRunId, revision: 5 },
+        });
+
+        expect(await auditRunStorage(committedRunId)).toEqual(committedStorageAfterClose);
+        expect(await auditEvents(committedRunId)).toEqual(committedEventsAfterClose);
+        expect(await auditWorkItems(committedRunId)).toEqual(committedWorkItemsAfterClose);
+        expect(await auditRunStorage(pendingRunId)).toEqual(pendingStorageAfterClose);
+        expect(await auditEvents(pendingRunId)).toEqual(pendingEventsAfterClose);
+        expect(await auditWorkItems(pendingRunId)).toEqual(pendingWorkItemsAfterClose);
+        await expect(commandEventCount(committedEnvelope.commandId)).resolves.toBe(1);
+        await expect(commandEventCount(pendingEnvelope.commandId)).resolves.toBe(0);
       },
       TEST_TIMEOUT_MS,
     );

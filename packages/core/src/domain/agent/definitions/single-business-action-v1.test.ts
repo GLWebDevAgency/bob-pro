@@ -8,6 +8,7 @@ import {
   type JarvisRunEnvelope,
 } from '../jarvis-run';
 import {
+  classifyJarvisDefinitionTransition,
   reduceJarvisRun,
   resolveJarvisDefinition,
   type JarvisReduceContext,
@@ -201,6 +202,60 @@ describe('single_business_action@1 — module', () => {
     });
     expect(Object.isFrozen(SINGLE_BUSINESS_ACTION_LIMITS)).toBe(true);
     expect(Object.isFrozen(SINGLE_BUSINESS_ACTION_V1)).toBe(true);
+  });
+
+  it('projette le wake de confirmation sans connaître l’horloge et refuse toute dérive', () => {
+    const staged = step(makeRun(initialState()), stageCommand(), { commandId: CMD_STAGE });
+    const projected = SINGLE_BUSINESS_ACTION_V1.pendingWakes(staged.run);
+    expect(projected).toEqual({
+      ok: true,
+      value: [{ wakeId: TTL_WAKE_ID, kind: 'confirmation_ttl', dueAt: EXPIRES_AT }],
+    });
+    if (projected.ok) {
+      expect(Object.isFrozen(projected.value)).toBe(true);
+      expect(Object.isFrozen(projected.value[0])).toBe(true);
+    }
+    expect(
+      SINGLE_BUSINESS_ACTION_V1.pendingWakes({ ...staged.run, nextWakeAt: null }),
+    ).toEqual({ ok: false, error: 'invalid_state' });
+    expect(
+      SINGLE_BUSINESS_ACTION_V1.pendingWakes({ ...staged.run, status: 'active' }),
+    ).toEqual({ ok: false, error: 'invalid_state' });
+    expect(
+      SINGLE_BUSINESS_ACTION_V1.pendingWakes({ ...staged.run, state: { broken: true } }),
+    ).toEqual({ ok: false, error: 'invalid_state' });
+  });
+
+  it('classe uniquement un no-op strict explicitement autorisé ; tout autre shape est refusé', () => {
+    const staged = step(makeRun(initialState()), stageCommand(), { commandId: CMD_STAGE }).run;
+    const early = expectOk(
+      SINGLE_BUSINESS_ACTION_V1.reduce(
+        staged,
+        { type: 'wake_run', wakeId: TTL_WAKE_ID },
+        makeContext({ expectedRevision: staged.revision, occurredAt: T0 }),
+      ),
+    );
+    expect(
+      classifyJarvisDefinitionTransition(staged, early, SINGLE_BUSINESS_ACTION_V1, {
+        ignoreReason: 'wake_not_due',
+      }),
+    ).toMatchObject({ kind: 'ignored', auditEventDraft: { type: 'sba_wake_ignored' } });
+    expect(
+      classifyJarvisDefinitionTransition(staged, early, SINGLE_BUSINESS_ACTION_V1, {
+        ignoreReason: null,
+      }),
+    ).toEqual({
+      kind: 'refused',
+      error: { code: 'invalid_command', reason: 'invalid_transition_shape' },
+    });
+    expect(
+      classifyJarvisDefinitionTransition(
+        staged,
+        { ...early, releasedForegroundLease: true },
+        SINGLE_BUSINESS_ACTION_V1,
+        { ignoreReason: 'wake_not_due' },
+      ),
+    ).toMatchObject({ kind: 'refused' });
   });
 
   it('est atteint via reduceJarvisRun, et une version inconnue part en quarantaine sans effet', () => {

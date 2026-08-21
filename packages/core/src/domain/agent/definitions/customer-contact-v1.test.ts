@@ -236,6 +236,31 @@ const DUPLICATE_RESOLUTION = {
 // --------------------------------------------------------------------------
 
 describe('customer_contact@1 — démarrage et effectId unique', () => {
+  it('projette exactement le wake de confirmation et refuse les wakes privés incohérents', () => {
+    const issued = step(updateAtPreparing(), STAGE_UPDATE_PROPOSAL).run;
+    expect(CUSTOMER_CONTACT_V1.pendingWakes(issued)).toEqual({
+      ok: true,
+      value: [
+        {
+          wakeId: CONFIRMATION_ID,
+          kind: 'confirmation_ttl',
+          dueAt: at(CUSTOMER_CONTACT_CONFIRMATION_TTL_MS),
+        },
+      ],
+    });
+    const state = stateOf(issued);
+    expect(
+      CUSTOMER_CONTACT_V1.pendingWakes({
+        ...issued,
+        state: { ...state, phase: 'preparing_proposal' },
+      }),
+    ).toEqual({ ok: false, error: 'invalid_state' });
+    expect(CUSTOMER_CONTACT_V1.pendingWakes({ ...issued, nextWakeAt: null })).toEqual({
+      ok: false,
+      error: 'invalid_state',
+    });
+  });
+
   it('pince context.allocatedEffectIds[0] au démarrage — le SEUL effectId du run (§5.4)', () => {
     const { run, transition } = step(seedRun(), START_CREATE, {
       allocatedEffectIds: [EFFECT_ID, OTHER_EFFECT_ID],

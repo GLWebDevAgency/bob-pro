@@ -491,7 +491,12 @@ describe('JarvisWorkItemDispatchService — orchestration §5.3 (fakes, zéro Po
       kind: 'single_business_action',
       runId: RUN_ID,
       expectedRevision: 5,
-      observationKind: 'effect_result',
+      subject: {
+        type: 'effect_observation',
+        effectId: EFFECT_ID,
+        observationKind: 'effect_result',
+        observationDigest: resultDigest,
+      },
       occurredAt: READ_AT,
       command: {
         type: 'record_effect_receipt',
@@ -499,6 +504,14 @@ describe('JarvisWorkItemDispatchService — orchestration §5.3 (fakes, zéro Po
         receipt: { kind: 'succeeded', resultDigest },
       },
     });
+    expect(envelope?.subject).toEqual({
+      type: 'effect_observation',
+      effectId: EFFECT_ID,
+      observationKind: 'effect_result',
+      observationDigest: resultDigest,
+    });
+    expect(envelope?.subject).not.toHaveProperty('wakeId');
+    expect(envelope?.subject).not.toHaveProperty('dueAt');
     // commandId DÉTERMINISTE : dérivé, jamais inventé.
     const derived = deriveJarvisSystemCommandId(RUN_ID, EFFECT_ID, 'effect_result', resultDigest);
     expect(derived.ok && envelope?.commandId === derived.value).toBe(true);

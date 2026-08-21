@@ -24,11 +24,14 @@ import {
   JARVIS_FOREGROUND_HOLDING_STATUSES,
   JARVIS_RUN_TERMINAL_STATUSES,
   SINGLE_BUSINESS_ACTION_V1,
+  deriveJarvisWakeCommandId,
   evaluateJarvisActionPublication,
   parseCustomerContactState,
+  normalizeJarvisDefinitionReduction,
   projectQuoteMissionJarvisStatus,
   reduceJarvisRun,
   resolveJarvisDefinition,
+  sha256Hex,
   type AgentMissionFingerprintPort,
   type CustomerCandidate,
   type CustomerCandidateReference,
@@ -40,6 +43,7 @@ import {
   type JarvisRunEnvelope,
   type JarvisRunTransition,
   type JarvisSystemAdmissionEnvelope,
+  type JarvisSystemAdmissionResult,
   type JarvisTargetRevalidation,
   type JarvisTargetSnapshot,
   type JarvisUserAdmissionEnvelope,
@@ -198,6 +202,33 @@ function isJarvisDrainCommand(command: unknown): boolean {
 }
 
 function canonicalCommandRequest(envelope: AdmissionEnvelope): string {
+  if (envelope.actor === 'system' && envelope.subject.type === 'wake_due') {
+    return [
+      'bob.jarvis.admission.wake.v1',
+      envelope.companyId,
+      envelope.ownerUserId,
+      envelope.kind,
+      String(envelope.definitionVersion),
+      envelope.runId,
+      envelope.commandId,
+      String(envelope.expectedRevision),
+      envelope.subject.wakeId,
+      envelope.subject.dueAt,
+      envelope.canonicalInputDigest,
+    ].join('\u001f');
+  }
+  const actionOrObservation =
+    envelope.actor === 'user'
+      ? envelope.actionId
+      : envelope.subject.type === 'effect_observation'
+        ? envelope.subject.observationKind
+        : (() => {
+            throw new Error('JARVIS_WAKE_CANONICAL_BRANCH_UNREACHABLE');
+          })();
+  const effectId =
+    envelope.actor === 'system' && envelope.subject.type === 'effect_observation'
+      ? envelope.subject.effectId
+      : '';
   // Canonicalisation fermée v1 : champs d'identité de la commande, ordre fixe,
   // séparateur unité — le fingerprint scelle l'intention, jamais le contenu métier.
   return [
@@ -210,11 +241,62 @@ function canonicalCommandRequest(envelope: AdmissionEnvelope): string {
     envelope.commandId,
     String(envelope.expectedRevision),
     // §5.4 : un commandId n'est JAMAIS réutilisable pour une autre action/observation.
-    envelope.actor === 'user' ? envelope.actionId : envelope.observationKind,
+    actionOrObservation,
     String(envelope.actor === 'user' ? envelope.actionVersion : 0),
-    envelope.actor === 'system' ? envelope.effectId : '',
+    effectId,
     envelope.canonicalInputDigest,
   ].join('\u001f');
+}
+
+function isWakeEnvelope(
+  envelope: AdmissionEnvelope,
+): envelope is Extract<AdmissionEnvelope, { readonly actor: 'system' }> & {
+  readonly subject: { readonly type: 'wake_due'; readonly wakeId: string; readonly dueAt: string };
+} {
+  return envelope.actor === 'system' && envelope.subject.type === 'wake_due';
+}
+
+function parseWakeCommand(command: unknown): string | null {
+  if (typeof command !== 'object' || command === null || Array.isArray(command)) return null;
+  const keys = Object.keys(command);
+  return (
+    keys.length === 2
+    && keys.includes('type')
+    && keys.includes('wakeId')
+    && (command as { readonly type?: unknown }).type === 'wake_run'
+    && typeof (command as { readonly wakeId?: unknown }).wakeId === 'string'
+  )
+    ? (command as { readonly wakeId: string }).wakeId
+    : null;
+}
+
+function hasExactKeys(value: object, expected: readonly string[]): boolean {
+  const keys = Object.keys(value);
+  return keys.length === expected.length && expected.every((key) => Object.hasOwn(value, key));
+}
+
+function hasExactSystemSubject(envelope: Extract<AdmissionEnvelope, { readonly actor: 'system' }>): boolean {
+  const subject = (envelope as { readonly subject?: unknown }).subject;
+  if (typeof subject !== 'object' || subject === null || Array.isArray(subject)) return false;
+  const typed = subject as Record<string, unknown>;
+  if (typed['type'] === 'wake_due') {
+    return (
+      hasExactKeys(subject, ['type', 'wakeId', 'dueAt'])
+      && typeof typed['wakeId'] === 'string'
+      && typeof typed['dueAt'] === 'string'
+    );
+  }
+  return (
+    typed['type'] === 'effect_observation'
+    && hasExactKeys(subject, ['type', 'effectId', 'observationKind', 'observationDigest'])
+    && typeof typed['effectId'] === 'string'
+    && typeof typed['observationKind'] === 'string'
+    && (typed['observationDigest'] === null || typeof typed['observationDigest'] === 'string')
+  );
+}
+
+function wakeCanonicalInputDigest(wakeId: string): string {
+  return sha256Hex(JSON.stringify(['bob.jarvis.wake-input.v1', 'wake_run', wakeId]));
 }
 
 interface ExistingReceipt {
@@ -330,6 +412,26 @@ async function readJarvisTargetRevalidation(
       email: row.email,
     }),
   });
+}
+
+/**
+ * Verrouille l'ensemble borné des work items du run AVANT de capturer l'horloge DB. Les UPDATE
+ * de cancel et le replay-heal ne peuvent ainsi reprendre un verrou après l'instant d'autorité.
+ */
+async function lockJarvisRunWorkItems(
+  tx: Prisma.TransactionClient,
+  owner: JarvisAdmissionOwner,
+  runId: string,
+): Promise<void> {
+  await tx.$queryRaw<Array<{ readonly id: string }>>`
+    SELECT "id"
+      FROM public.jarvis_work_items
+     WHERE "companyId" = ${owner.companyId}
+       AND "ownerUserId" = ${owner.ownerUserId}
+       AND "runId" = ${runId}::UUID
+     ORDER BY "id"
+     FOR UPDATE
+  `;
 }
 
 /** Écritures dans l'ordre du garde SQL : run PUIS événement PUIS work items. */
@@ -537,17 +639,38 @@ async function admitCore(
   tx: Prisma.TransactionClient,
   envelope: AdmissionEnvelope,
   deps: JarvisAdmissionDeps,
-): Promise<JarvisAdmissionResult> {
+): Promise<JarvisSystemAdmissionResult> {
   await setTransactionTimeouts(tx);
-  // §5.2 : l'horloge BASE fait autorité sur journal, TTL et CAS — jamais l'Instant client.
-  const now: string = (await databaseClock(tx)).toISOString();
-  const company = await lockOpenCompanyForMissionWrite(tx, envelope.companyId);
-  if (company !== 'open') {
-    // §5.6 : une commande système reste admissible société fermée (signal/observation).
-    if (envelope.actor !== 'system' || company === 'missing') {
-      return { status: 'company_unavailable', reason: company };
+  if (
+    envelope.actor === 'system'
+    && (
+      !hasExactSystemSubject(envelope)
+      || (
+        envelope.subject.type === 'wake_due'
+        && parseWakeCommand(envelope.command) !== envelope.subject.wakeId
+      )
+      || (
+        envelope.subject.type === 'effect_observation'
+        && parseWakeCommand(envelope.command) !== null
+      )
+    )
+  ) {
+    return { status: 'system_command_binding_mismatch' };
+  }
+  if (isWakeEnvelope(envelope)) {
+    const derived = deriveJarvisWakeCommandId(
+      envelope.runId,
+      envelope.subject.wakeId,
+      envelope.subject.dueAt,
+      envelope.expectedRevision,
+    );
+    if (!derived.ok || derived.value !== envelope.commandId) {
+      return { status: 'system_command_binding_mismatch' };
     }
   }
+
+  const company = await lockOpenCompanyForMissionWrite(tx, envelope.companyId);
+  if (company === 'missing') return { status: 'company_unavailable', reason: 'missing' };
   await acquireMissionForegroundOwnerLock(tx, envelope);
   await acquireJarvisKindOwnerLock(tx, envelope, envelope.kind);
 
@@ -613,12 +736,14 @@ async function admitCore(
     // Greffe « replay qui heal », BORNÉE (revue C1) : seul le replay SYSTÈME du signal
     // concerné re-stampe — un replay user n'éteint jamais un signal pas encore admis.
     let signalRestamped = false;
-    if (envelope.actor === 'system') {
+    if (envelope.actor === 'system' && envelope.subject.type === 'effect_observation') {
+      await lockJarvisRunWorkItems(tx, envelope, envelope.runId);
+      const restampAt = await databaseClock(tx);
       const restamped = await tx.jarvisWorkItem.updateMany({
         where: {
           companyId: envelope.companyId,
           runId: envelope.runId,
-          effectId: envelope.effectId,
+          effectId: envelope.subject.effectId,
           resultDigest: { not: null },
           signalAppliedAt: null,
           status: { in: ['succeeded', 'failed_terminal', 'cancelled'] },
@@ -637,7 +762,7 @@ async function admitCore(
             },
           ],
         },
-        data: { signalAppliedAt: new Date(now) },
+        data: { signalAppliedAt: restampAt },
       });
       signalRestamped = restamped.count > 0;
     }
@@ -647,6 +772,21 @@ async function admitCore(
       eventSequence: receipt.sequence,
       signalRestamped,
     };
+  }
+
+  // Les gates de nouvelle avance arrivent APRÈS le reçu. Un retry exact déjà commité reste
+  // replayable ; sans reçu, seul l'effect_observation garde l'exception historique §5.6.
+  if (
+    company === 'closed'
+    && (envelope.actor === 'user' || envelope.subject.type === 'wake_due')
+  ) {
+    return { status: 'company_unavailable', reason: 'closed' };
+  }
+  if (isWakeEnvelope(envelope) && !deps.admissionEnabled) {
+    return { status: 'action_refused', reason: 'admission_kill_switch' };
+  }
+  if (envelope.actor === 'user' && !deps.admissionEnabled && !drainCommand) {
+    return { status: 'action_refused', reason: 'admission_kill_switch' };
   }
 
   // Run courant ou seed (convention U1-b : revision 0, state null, jamais persistée). Il est
@@ -679,9 +819,6 @@ async function admitCore(
       // re-quarantaine qui grossirait le journal à chaque commande empoisonnée.
       return { status: 'refused', error: { code: 'run_terminal', status: 'quarantined' } };
     }
-    if (row.revision !== envelope.expectedRevision) {
-      return { status: 'stale_revision', actualRevision: row.revision };
-    }
     run = envelopeFromRow(row);
   }
 
@@ -689,9 +826,6 @@ async function admitCore(
   // Le kill switch ferme TOUTE nouvelle commande user, y compris une version de définition
   // inconnue. La quarantaine reste disponible quand l'admission est ouverte, mais une version
   // illisible ne doit jamais devenir un chemin d'écriture autour de la fermeture opérationnelle.
-  if (envelope.actor === 'user' && !deps.admissionEnabled && !drainCommand) {
-    return { status: 'action_refused', reason: 'admission_kill_switch' };
-  }
   let serverAction: JarvisDefinitionActionReference | null = null;
   if (envelope.actor === 'user' && definition !== null) {
     serverAction = definition.actionReference(
@@ -730,6 +864,45 @@ async function admitCore(
   // type de commande pour choisir de verrouiller ou non : le verrou est uniforme, donc l'ordre
   // des verrous l'est aussi.
   const targetRevalidation = await readJarvisTargetRevalidation(tx, envelope, run);
+  await lockJarvisRunWorkItems(tx, envelope, run.runId);
+  // Horloge BASE UNIQUE DE RÉDUCTION : seulement après le dernier verrou susceptible de bloquer.
+  // Le champ transport `occurredAt` reste une corrélation et ne décide jamais d'une échéance.
+  const now: string = (await databaseClock(tx)).toISOString();
+  if (row !== null && row.revision !== envelope.expectedRevision) {
+    return { status: 'stale_revision', actualRevision: row.revision };
+  }
+
+  let authoritativeWakeDueAt: string | null = null;
+  if (isWakeEnvelope(envelope)) {
+    if (definition === null) return { status: 'system_command_binding_mismatch' };
+    const oracle = definition.pendingWakes(
+      run as Extract<
+        JarvisRunEnvelope,
+        { readonly kind: 'single_business_action' | 'customer_contact' }
+      >,
+    );
+    const firstWake = oracle.ok ? oracle.value[0] : undefined;
+    if (
+      firstWake === undefined
+      || firstWake.wakeId !== envelope.subject.wakeId
+      || parseWakeCommand(envelope.command) !== firstWake.wakeId
+      || firstWake.dueAt !== envelope.subject.dueAt
+      || (run as Extract<JarvisRunEnvelope, { readonly kind: 'customer_contact' | 'single_business_action' }>).nextWakeAt !== firstWake.dueAt
+    ) {
+      return { status: 'system_command_binding_mismatch' };
+    }
+    const authoritativeCommandId = deriveJarvisWakeCommandId(
+      run.runId,
+      firstWake.wakeId,
+      firstWake.dueAt,
+      run.revision,
+    );
+    if (!authoritativeCommandId.ok || authoritativeCommandId.value !== envelope.commandId) {
+      return { status: 'system_command_binding_mismatch' };
+    }
+    authoritativeWakeDueAt = firstWake.dueAt;
+  }
+
   const reduced = reduceJarvisRun(
     run,
     {
@@ -746,8 +919,21 @@ async function admitCore(
       targetRevalidation,
     },
   );
-  if (!reduced.ok) {
-    if ('quarantine' in reduced) {
+  const normalized = normalizeJarvisDefinitionReduction(
+    run as Extract<
+      JarvisRunEnvelope,
+      { readonly kind: 'single_business_action' | 'customer_contact' }
+    >,
+    reduced,
+    definition,
+    {
+      strictNoOpReason:
+        authoritativeWakeDueAt !== null && Date.parse(now) < Date.parse(authoritativeWakeDueAt)
+          ? 'wake_not_due'
+          : null,
+    },
+  );
+  if (normalized.kind === 'quarantine_required') {
       if (isSeed) return { status: 'quarantined' };
       // Gardes SQL (mutation_v2 + event_required, revue C2) : la quarantaine est une
       // transition COMPLÈTE — revision+1, updatedAt=occurredAt, et son événement système.
@@ -800,13 +986,19 @@ async function admitCore(
         },
       });
       return { status: 'quarantined' };
-    }
-    if (reduced.error.code === 'revision_conflict') {
-      return { status: 'stale_revision', actualRevision: reduced.error.actualRevision };
-    }
-    return { status: 'refused', error: reduced.error };
   }
-  if (drainCommand && reduced.value.workItemIntents.length > 0) {
+  if (normalized.kind === 'refused') {
+    if (normalized.error.code === 'revision_conflict') {
+      return { status: 'stale_revision', actualRevision: normalized.error.actualRevision };
+    }
+    return { status: 'refused', error: normalized.error };
+  }
+  if (normalized.kind === 'ignored') {
+    return { status: 'ignored', reason: normalized.reason };
+  }
+  const transition = normalized.transition;
+  if (definition === null) throw new Error('JARVIS_NORMALIZED_COMMIT_WITHOUT_DEFINITION');
+  if (drainCommand && transition.workItemIntents.length > 0) {
     // Le drain contourne volontairement kill switch et publication afin qu'un run existant
     // puisse toujours être fermé. Cette exception n'accorde JAMAIS une autorité d'effet :
     // même une future définition défectueuse reste arrêtée avant toute persistance.
@@ -818,7 +1010,7 @@ async function admitCore(
   if (
     envelope.actor === 'user'
     && serverAction !== null
-    && reduced.value.workItemIntents.some(
+    && transition.workItemIntents.some(
       (intent) =>
         intent.actionId !== serverAction.actionId
         || intent.actionVersion !== serverAction.actionVersion,
@@ -831,7 +1023,7 @@ async function admitCore(
       error: { code: 'invalid_command', reason: 'work_item_action_binding_mismatch' },
     };
   }
-  if (envelope.actor === 'system' && reduced.value.workItemIntents.length > 0) {
+  if (envelope.actor === 'system' && transition.workItemIntents.length > 0) {
     // §5.6 : une observation système ne rouvre jamais le droit de créer un effet.
     return {
       status: 'refused',
@@ -839,14 +1031,14 @@ async function admitCore(
     };
   }
 
-  const limits = definition?.limits;
+  const limits = definition.limits;
   let persisted: { readonly sequence: number; readonly workItemIds: readonly string[] };
   try {
-    persisted = await persistTransition(tx, envelope, reduced.value, deps, {
+    persisted = await persistTransition(tx, envelope, transition, deps, {
       isSeed,
       limitsTtl: {
-        idleMs: limits?.idleTtlMs ?? 24 * 60 * 60 * 1_000,
-        hardMs: limits?.hardTtlMs ?? 7 * 24 * 60 * 60 * 1_000,
+        idleMs: limits.idleTtlMs,
+        hardMs: limits.hardTtlMs,
       },
       now,
       // Au semis la ligne n'existe pas encore : la valeur n'est alors pas lue (les deux bornes
@@ -864,7 +1056,7 @@ async function admitCore(
   }
   return {
     status: 'admitted',
-    postimage: reduced.value.postimage,
+    postimage: transition.postimage,
     eventSequence: persisted.sequence,
     workItemIds: persisted.workItemIds,
   };
@@ -875,14 +1067,18 @@ export async function runJarvisAdmissionInTransaction(
   envelope: JarvisUserAdmissionEnvelope,
   deps: JarvisAdmissionDeps,
 ): Promise<JarvisAdmissionResult> {
-  return admitCore(tx, { ...envelope, actor: 'user' }, deps);
+  const result = await admitCore(tx, { ...envelope, actor: 'user' }, deps);
+  if (result.status === 'ignored' || result.status === 'system_command_binding_mismatch') {
+    throw new Error('JARVIS_USER_ADMISSION_SYSTEM_RESULT');
+  }
+  return result;
 }
 
 export async function runJarvisSystemAdmissionInTransaction(
   tx: Prisma.TransactionClient,
   envelope: JarvisSystemAdmissionEnvelope,
   deps: JarvisAdmissionDeps,
-): Promise<JarvisAdmissionResult> {
+): Promise<JarvisSystemAdmissionResult> {
   return admitCore(
     tx,
     {
@@ -890,7 +1086,10 @@ export async function runJarvisSystemAdmissionInTransaction(
       actor: 'system',
       actionId: null,
       actionVersion: null,
-      canonicalInputDigest: envelope.observationKind,
+      canonicalInputDigest:
+        envelope.subject.type === 'effect_observation'
+          ? envelope.subject.observationKind
+          : wakeCanonicalInputDigest(parseWakeCommand(envelope.command) ?? ''),
     },
     deps,
   );

@@ -48,11 +48,11 @@ import {
   parseJarvisAuthorizationSource,
   resolveJarvisDefinition,
   sha256Hex,
-  type JarvisAdmissionResult,
   type JarvisAdmissionUnitOfWorkPort,
   type JarvisActionReleasePolicy,
   type JarvisRunEnvelope,
   type JarvisSystemAdmissionEnvelope,
+  type JarvisSystemAdmissionResult,
   type Notification,
 } from '@bob/core';
 import type { Persistence } from '../persistence/persistence';
@@ -1690,11 +1690,15 @@ export class JarvisWorkItemDispatchService implements OnApplicationShutdown {
         commandId: commandId.value,
         expectedRevision: run.revision,
         command,
-        observationKind: EFFECT_RESULT_OBSERVATION_KIND,
-        effectId: stored.effectId,
+        subject: {
+          type: 'effect_observation',
+          observationKind: EFFECT_RESULT_OBSERVATION_KIND,
+          observationDigest: stored.resultDigest,
+          effectId: stored.effectId,
+        },
         occurredAt: read.readAt,
       };
-      const result: JarvisAdmissionResult = await admission.runJarvisSystemAdmission(envelope);
+      const result: JarvisSystemAdmissionResult = await admission.runJarvisSystemAdmission(envelope);
       switch (result.status) {
         case 'admitted':
         case 'replayed':

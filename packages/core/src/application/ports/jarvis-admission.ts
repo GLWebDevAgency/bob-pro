@@ -144,25 +144,41 @@ export interface JarvisUserAdmissionEnvelope extends JarvisAdmissionOwner {
   readonly occurredAt: Instant;
 }
 
-/**
- * Enveloppe système (§5.6 — contrat écrit dans le type, pas en commentaire) :
- * - le commandId est DÉTERMINISTE (deriveJarvisSystemCommandId) ;
- * - une société fermée est ADMISE pour consigner un signal/observation ;
- * - les kill switches ne sont jamais opposés au signal d'un effet déjà autorisé ;
- * - la réduction résultante ne peut créer AUCUN work item sortant.
- */
-export interface JarvisSystemAdmissionEnvelope extends JarvisAdmissionOwner {
+interface JarvisSystemAdmissionBase extends JarvisAdmissionOwner {
   readonly kind: JarvisAdmissionKind;
   readonly definitionVersion: number;
   readonly runId: string;
   readonly commandId: string;
   readonly expectedRevision: number;
   readonly command: unknown;
-  readonly observationKind: string;
-  /** L'effet observé — borne aussi le re-stamp du replay-qui-heal à CE signal. */
-  readonly effectId: string;
   readonly occurredAt: Instant;
 }
+
+/** Observation historique d'un effet déjà autorisé — bytes/replay v1 inchangés. */
+export interface JarvisEffectObservationAdmissionEnvelope extends JarvisSystemAdmissionBase {
+  readonly subject: {
+    readonly type: 'effect_observation';
+    /** L'effet observé — borne aussi le re-stamp du replay-qui-heal à CE signal. */
+    readonly effectId: string;
+    readonly observationKind: string;
+    /** Digest passé au dériveur UUID historique ; `null` représente son absence v1. */
+    readonly observationDigest: string | null;
+  };
+}
+
+/** Réveil durable d'une génération exacte du state ; aucun champ d'effet ne peut s'y glisser. */
+export interface JarvisWakeAdmissionEnvelope extends JarvisSystemAdmissionBase {
+  readonly subject: {
+    readonly type: 'wake_due';
+    readonly wakeId: string;
+    readonly dueAt: Instant;
+  };
+}
+
+/** Union système fermée : une variante ne peut jamais fournir les champs de l'autre. */
+export type JarvisSystemAdmissionEnvelope =
+  | JarvisEffectObservationAdmissionEnvelope
+  | JarvisWakeAdmissionEnvelope;
 
 /** Résultats fermés de l'admission — l'appelant n'a jamais à deviner. */
 export type JarvisAdmissionResult =
@@ -198,6 +214,12 @@ export type JarvisAdmissionResult =
   | { readonly status: 'quarantined' }
   | { readonly status: 'foreground_unavailable'; readonly reason: string }
   | { readonly status: 'refused'; readonly error: JarvisReduceError };
+
+/** Résultats réservés au port système ; ils ne polluent pas les switches voix/tactiles. */
+export type JarvisSystemAdmissionResult =
+  | JarvisAdmissionResult
+  | { readonly status: 'ignored'; readonly reason: 'wake_not_due' }
+  | { readonly status: 'system_command_binding_mismatch' };
 
 /** Lecture stateless §5.2 : zéro verrou, zéro write, réponse non persistée. */
 export interface JarvisStatelessReadResult<T> {
@@ -266,7 +288,9 @@ export interface JarvisStatelessReadView {
 
 export interface JarvisAdmissionUnitOfWorkPort {
   runJarvisAdmission(envelope: JarvisUserAdmissionEnvelope): Promise<JarvisAdmissionResult>;
-  runJarvisSystemAdmission(envelope: JarvisSystemAdmissionEnvelope): Promise<JarvisAdmissionResult>;
+  runJarvisSystemAdmission(
+    envelope: JarvisSystemAdmissionEnvelope,
+  ): Promise<JarvisSystemAdmissionResult>;
   readJarvisStateless<T>(
     owner: JarvisAdmissionOwner,
     read: (view: JarvisStatelessReadView) => Promise<T>,

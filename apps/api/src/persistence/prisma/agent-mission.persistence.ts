@@ -6,6 +6,7 @@ import type {
   JarvisStatelessReadResult,
   JarvisStatelessReadView,
   JarvisSystemAdmissionEnvelope,
+  JarvisSystemAdmissionResult,
   JarvisUserAdmissionEnvelope,
 } from '@bob/core';
 import {
@@ -2181,7 +2182,7 @@ export class PrismaAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort 
   runJarvisSystemAdmission(
     envelope: JarvisSystemAdmissionEnvelope,
     deps: JarvisAdmissionDeps,
-  ): Promise<JarvisAdmissionResult> {
+  ): Promise<JarvisSystemAdmissionResult> {
     return mapForegroundTransactionFailure(() =>
       this.prisma.withIsolatedOwner(
         envelope.companyId,

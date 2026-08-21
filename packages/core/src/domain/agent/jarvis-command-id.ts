@@ -23,6 +23,7 @@ import { sha256Hex } from '../../shared-kernel/sha256';
  * familles de commandes système ne peuvent jamais entrer en collision d'identité.
  */
 export const JARVIS_SYSTEM_COMMAND_NAMESPACE = 'bob.jarvis.system-command.v1';
+export const JARVIS_WAKE_COMMAND_NAMESPACE = 'bob.jarvis.wake-command.v1';
 
 /** UUID canonique (minuscule, versions 1-8, variante RFC 4122) — même grammaire que le domaine. */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -34,6 +35,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const OBSERVATION_KIND = /^[a-z][a-z0-9_]{0,63}$/u;
 /** Digest d'observation : empreinte sha-256 hexadécimale minuscule (64 caractères). */
 const SHA256_DIGEST = /^[0-9a-f]{64}$/u;
+const MAX_WAKE_ID_LENGTH = 200;
 
 export type JarvisSystemCommandIdError = {
   readonly code: 'invalid_jarvis_system_command_input';
@@ -44,6 +46,33 @@ export type JarvisSystemCommandIdError = {
 export type JarvisSystemCommandIdResult =
   | { readonly ok: true; readonly value: string }
   | { readonly ok: false; readonly error: JarvisSystemCommandIdError };
+
+export type JarvisWakeCommandIdError = {
+  readonly code: 'invalid_jarvis_wake_command_input';
+  readonly field: 'runId' | 'wakeId' | 'dueAt' | 'expectedRevision';
+  readonly reason: 'invalid_uuid' | 'invalid_wake_id' | 'invalid_instant' | 'invalid_revision';
+};
+
+export type JarvisWakeCommandIdResult =
+  | { readonly ok: true; readonly value: string }
+  | { readonly ok: false; readonly error: JarvisWakeCommandIdError };
+
+function uuidV8FromHex(hex: string): string {
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    `8${hex.slice(13, 16)}`,
+    `8${hex.slice(17, 20)}`,
+    hex.slice(20, 32),
+  ].join('-');
+}
+
+function hasControlCharacter(value: string): boolean {
+  return [...value].some((character) => {
+    const point = character.codePointAt(0);
+    return point !== undefined && (point < 32 || (point >= 127 && point <= 159));
+  });
+}
 
 function refuse(
   field: JarvisSystemCommandIdError['field'],
@@ -85,12 +114,77 @@ export function deriveJarvisSystemCommandId(
   const hex = sha256Hex(JSON.stringify(canonical));
   return {
     ok: true,
-    value: [
-      hex.slice(0, 8),
-      hex.slice(8, 12),
-      `8${hex.slice(13, 16)}`,
-      `8${hex.slice(17, 20)}`,
-      hex.slice(20, 32),
-    ].join('-'),
+    value: uuidV8FromHex(hex),
+  };
+}
+
+
+/** Identité déterministe d'une génération de wake durable, sans horloge ni aléa. */
+export function deriveJarvisWakeCommandId(
+  runId: string,
+  wakeId: string,
+  dueAt: string,
+  expectedRevision: number,
+): JarvisWakeCommandIdResult {
+  if (!UUID.test(runId)) {
+    return {
+      ok: false,
+      error: {
+        code: 'invalid_jarvis_wake_command_input',
+        field: 'runId',
+        reason: 'invalid_uuid',
+      },
+    };
+  }
+  if (
+    wakeId.length === 0
+    || wakeId.length > MAX_WAKE_ID_LENGTH
+    || wakeId !== wakeId.trim()
+    || hasControlCharacter(wakeId)
+  ) {
+    return {
+      ok: false,
+      error: {
+        code: 'invalid_jarvis_wake_command_input',
+        field: 'wakeId',
+        reason: 'invalid_wake_id',
+      },
+    };
+  }
+  const dueEpoch = Date.parse(dueAt);
+  if (!Number.isFinite(dueEpoch) || new Date(dueEpoch).toISOString() !== dueAt) {
+    return {
+      ok: false,
+      error: {
+        code: 'invalid_jarvis_wake_command_input',
+        field: 'dueAt',
+        reason: 'invalid_instant',
+      },
+    };
+  }
+  if (
+    !Number.isSafeInteger(expectedRevision)
+    || expectedRevision < 1
+    || expectedRevision > 2_147_483_647
+  ) {
+    return {
+      ok: false,
+      error: {
+        code: 'invalid_jarvis_wake_command_input',
+        field: 'expectedRevision',
+        reason: 'invalid_revision',
+      },
+    };
+  }
+  const canonical = [
+    JARVIS_WAKE_COMMAND_NAMESPACE,
+    runId,
+    wakeId,
+    dueAt,
+    expectedRevision,
+  ];
+  return {
+    ok: true,
+    value: uuidV8FromHex(sha256Hex(JSON.stringify(canonical))),
   };
 }

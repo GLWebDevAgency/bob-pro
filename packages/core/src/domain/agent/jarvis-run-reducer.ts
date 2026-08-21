@@ -13,6 +13,8 @@
 import { type Instant } from '../../shared-kernel/time';
 import { AGENT_MISSION_KIND, AgentMission, type AgentMissionSnapshot } from './agent-mission';
 import {
+  JARVIS_RUN_TERMINAL_STATUSES,
+  deriveNextWakeAt,
   projectQuoteMissionEnvelope,
   type JarvisDefinitionLimits,
   type JarvisRunEnvelope,
@@ -99,6 +101,32 @@ export type JarvisReduceResult =
       readonly quarantine: { readonly kind: string; readonly definitionVersion: number };
     };
 
+export type JarvisDefinitionRun = Extract<
+  JarvisRunEnvelope,
+  { readonly kind: 'single_business_action' | 'customer_contact' }
+>;
+
+/** Projection pure et totale des réveils encore portés par le state versionné. */
+export type JarvisPendingWakesResult =
+  | { readonly ok: true; readonly value: readonly JarvisWake[] }
+  | { readonly ok: false; readonly error: 'invalid_state' };
+
+export type JarvisTransitionClassification =
+  | { readonly kind: 'committed'; readonly transition: JarvisRunTransition }
+  | {
+      readonly kind: 'ignored';
+      readonly reason: 'wake_not_due';
+      readonly auditEventDraft: JarvisRunEventDraft;
+    }
+  | { readonly kind: 'refused'; readonly error: JarvisReduceError };
+
+export type JarvisDefinitionReductionClassification =
+  | JarvisTransitionClassification
+  | {
+      readonly kind: 'quarantine_required';
+      readonly quarantine: { readonly kind: string; readonly definitionVersion: number };
+    };
+
 /** Action métier pincée par une définition, jamais choisie par un transport. */
 export interface JarvisDefinitionActionReference {
   readonly actionId: string;
@@ -132,6 +160,11 @@ export interface JarvisDefinitionModule {
   readonly stateVersion: number;
   readonly limits: JarvisDefinitionLimits;
   /**
+   * Oracle temporel de la définition. Il parse le state persisté sans horloge ni I/O et rend
+   * toujours une forme fermée : une incohérence n'est jamais réparée ou devinée.
+   */
+  readonly pendingWakes: (run: JarvisDefinitionRun) => JarvisPendingWakesResult;
+  /**
    * Résout l'action depuis le seed canonique ou le state persisté. `null` signifie que la
    * définition ne peut pas établir cette identité : l'admission échoue alors avant publication.
    */
@@ -150,6 +183,163 @@ export interface JarvisDefinitionModule {
     command: unknown,
     context: JarvisReduceContext,
   ) => JarvisReduceResult;
+}
+
+const MAX_WAKE_ID_LENGTH = 200;
+const JARVIS_WAKE_KINDS = new Set<JarvisWake['kind']>([
+  'confirmation_ttl',
+  'retry',
+  'external_deadline',
+  'park_review',
+]);
+
+function isCanonicalWakeId(value: string): boolean {
+  if (value.length === 0 || value.length > MAX_WAKE_ID_LENGTH || value !== value.trim()) return false;
+  for (const character of value) {
+    const point = character.codePointAt(0);
+    if (point === undefined || point < 32 || (point >= 127 && point <= 159)) return false;
+  }
+  return true;
+}
+
+function isCanonicalInstant(value: string): boolean {
+  const epoch = Date.parse(value);
+  return Number.isFinite(epoch) && new Date(epoch).toISOString() === value;
+}
+
+function compareUtf8(left: string, right: string): number {
+  const encoder = new TextEncoder();
+  const leftBytes = encoder.encode(left);
+  const rightBytes = encoder.encode(right);
+  const length = Math.min(leftBytes.length, rightBytes.length);
+  for (let index = 0; index < length; index += 1) {
+    const difference = leftBytes[index]! - rightBytes[index]!;
+    if (difference !== 0) return difference;
+  }
+  return leftBytes.length - rightBytes.length;
+}
+
+/**
+ * Ferme la sortie brute d'une définition : dates ISO UTC, identités uniques, tri byte-stable et
+ * égalité exacte avec l'index `nextWakeAt` de la projection persistée.
+ */
+export function finalizeJarvisPendingWakes(
+  run: JarvisDefinitionRun,
+  candidates: readonly JarvisWake[],
+): JarvisPendingWakesResult {
+  const wakeIds = new Set<string>();
+  const wakes: JarvisWake[] = [];
+  for (const candidate of candidates) {
+    if (
+      !isCanonicalWakeId(candidate.wakeId)
+      || !isCanonicalInstant(candidate.dueAt)
+      || !JARVIS_WAKE_KINDS.has(candidate.kind)
+      || wakeIds.has(candidate.wakeId)
+    ) {
+      return { ok: false, error: 'invalid_state' };
+    }
+    wakeIds.add(candidate.wakeId);
+    wakes.push(Object.freeze({ ...candidate }));
+  }
+  wakes.sort((left, right) => {
+    const dueDifference = Date.parse(left.dueAt) - Date.parse(right.dueAt);
+    return dueDifference === 0 ? compareUtf8(left.wakeId, right.wakeId) : dueDifference;
+  });
+  const frozen = Object.freeze(wakes);
+  if (deriveNextWakeAt(frozen) !== run.nextWakeAt) {
+    return { ok: false, error: 'invalid_state' };
+  }
+  if (JARVIS_RUN_TERMINAL_STATUSES.has(run.status) && (frozen.length !== 0 || run.nextWakeAt !== null)) {
+    return { ok: false, error: 'invalid_state' };
+  }
+  return { ok: true, value: frozen };
+}
+
+function sameWakes(left: readonly JarvisWake[], right: readonly JarvisWake[]): boolean {
+  return (
+    left.length === right.length
+    && left.every(
+      (wake, index) =>
+        wake.wakeId === right[index]?.wakeId
+        && wake.kind === right[index]?.kind
+        && wake.dueAt === right[index]?.dueAt,
+    )
+  );
+}
+
+/**
+ * Frontière pure entre les reducers versionnés et la persistance. Les drafts no-op historiques
+ * restent produits par les modules @1 mais ne deviennent jamais un faux événement de run.
+ */
+export function classifyJarvisDefinitionTransition(
+  preimage: JarvisDefinitionRun,
+  transition: JarvisRunTransition,
+  definition: JarvisDefinitionModule,
+  options: { readonly ignoreReason: 'wake_not_due' | null },
+): JarvisTransitionClassification {
+  const noOp = transition.postimage === preimage;
+  const oracle = definition.pendingWakes(
+    (noOp ? preimage : transition.postimage) as JarvisDefinitionRun,
+  );
+  const validWakes = oracle.ok && sameWakes(transition.wakes, oracle.value);
+  if (
+    noOp
+    && transition.postimage.revision === preimage.revision
+    && transition.workItemIntents.length === 0
+    && !transition.releasedForegroundLease
+    && validWakes
+    && options.ignoreReason !== null
+  ) {
+    return {
+      kind: 'ignored',
+      reason: options.ignoreReason,
+      auditEventDraft: transition.event,
+    };
+  }
+  const identityPreserved =
+    transition.postimage.kind === preimage.kind
+    && transition.postimage.runId === preimage.runId
+    && transition.postimage.companyId === preimage.companyId
+    && transition.postimage.createdBy === preimage.createdBy
+    && transition.postimage.definitionVersion === preimage.definitionVersion
+    && transition.postimage.stateVersion === definition.stateVersion;
+  if (
+    !noOp
+    && options.ignoreReason === null
+    && transition.postimage.revision === preimage.revision + 1
+    && identityPreserved
+    && validWakes
+  ) {
+    return { kind: 'committed', transition };
+  }
+  return {
+    kind: 'refused',
+    error: { code: 'invalid_command', reason: 'invalid_transition_shape' },
+  };
+}
+
+/** Algèbre complète de normalisation, avant toute frontière d'écriture. */
+export function normalizeJarvisDefinitionReduction(
+  preimage: JarvisDefinitionRun,
+  reduced: JarvisReduceResult,
+  definition: JarvisDefinitionModule | null,
+  options: { readonly strictNoOpReason: 'wake_not_due' | null },
+): JarvisDefinitionReductionClassification {
+  if (!reduced.ok) {
+    if ('quarantine' in reduced) {
+      return { kind: 'quarantine_required', quarantine: reduced.quarantine };
+    }
+    return { kind: 'refused', error: reduced.error };
+  }
+  if (definition === null) {
+    return {
+      kind: 'refused',
+      error: { code: 'invalid_command', reason: 'invalid_transition_shape' },
+    };
+  }
+  return classifyJarvisDefinitionTransition(preimage, reduced.value, definition, {
+    ignoreReason: options.strictNoOpReason,
+  });
 }
 
 const registry = new Map<string, JarvisDefinitionModule>();

@@ -41,6 +41,7 @@ import {
   type JarvisWake,
 } from '../jarvis-run';
 import {
+  finalizeJarvisPendingWakes,
   registerJarvisDefinition,
   type JarvisDefinitionActionReference,
   type JarvisDefinitionModule,
@@ -1797,6 +1798,47 @@ function customerContactActionReference(
   });
 }
 
+function customerContactPendingWakes(run: CustomerContactRunEnvelope) {
+  if (
+    run.kind !== 'customer_contact'
+    || run.definitionVersion !== CUSTOMER_CONTACT_DEFINITION_VERSION
+    || run.stateVersion !== CUSTOMER_CONTACT_STATE_VERSION
+    || run.status === 'quarantined'
+  ) {
+    return { ok: false, error: 'invalid_state' } as const;
+  }
+  const state = parseCustomerContactState(run.state);
+  if (state === null) return { ok: false, error: 'invalid_state' } as const;
+  if (run.status !== customerContactStatusForPhase(state.phase)) {
+    return { ok: false, error: 'invalid_state' } as const;
+  }
+  const confirmation = state.confirmation;
+  const expected =
+    state.phase === 'awaiting_confirmation'
+    && confirmation !== null
+    && (confirmation.status === 'issued' || confirmation.status === 'presented')
+      ? Object.freeze([
+          Object.freeze({
+            wakeId: confirmation.wakeId,
+            kind: 'confirmation_ttl' as const,
+            dueAt: confirmation.expiresAt,
+          }),
+        ])
+      : EMPTY_WAKES;
+  if (
+    state.wakes.length !== expected.length
+    || state.wakes.some(
+      (wake, index) =>
+        wake.wakeId !== expected[index]?.wakeId
+        || wake.kind !== expected[index]?.kind
+        || wake.dueAt !== expected[index]?.dueAt,
+    )
+  ) {
+    return { ok: false, error: 'invalid_state' } as const;
+  }
+  return finalizeJarvisPendingWakes(run, expected);
+}
+
 // ---------------------------------------------------------------------------
 // Module de définition §4.3 — enregistré dans le registre gelé du reducer racine
 // ---------------------------------------------------------------------------
@@ -1806,6 +1848,7 @@ export const CUSTOMER_CONTACT_V1: JarvisDefinitionModule = Object.freeze({
   definitionVersion: CUSTOMER_CONTACT_DEFINITION_VERSION,
   stateVersion: CUSTOMER_CONTACT_STATE_VERSION,
   limits: CUSTOMER_CONTACT_LIMITS,
+  pendingWakes: customerContactPendingWakes,
   actionReference: customerContactActionReference,
   reduce: reduceCustomerContact,
 });

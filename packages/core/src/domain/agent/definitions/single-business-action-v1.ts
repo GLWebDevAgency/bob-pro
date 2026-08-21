@@ -27,6 +27,7 @@ import {
   type JarvisWake,
 } from '../jarvis-run';
 import {
+  finalizeJarvisPendingWakes,
   registerJarvisDefinition,
   type JarvisDefinitionActionReference,
   type JarvisDefinitionModule,
@@ -1390,6 +1391,23 @@ function singleBusinessActionReference(
   return parsed.ok ? Object.freeze({ ...parsed.value.action }) : null;
 }
 
+function singleBusinessActionPendingWakes(run: SbaRunEnvelope) {
+  if (
+    run.kind !== SINGLE_BUSINESS_ACTION_KIND
+    || run.definitionVersion !== SINGLE_BUSINESS_ACTION_DEFINITION_VERSION
+    || run.stateVersion !== SINGLE_BUSINESS_ACTION_STATE_VERSION
+    || run.status === 'quarantined'
+  ) {
+    return { ok: false, error: 'invalid_state' } as const;
+  }
+  const parsed = parseSingleBusinessActionState(run.state);
+  if (!parsed.ok) return { ok: false, error: 'invalid_state' } as const;
+  if (run.status !== singleBusinessActionStatusForState(parsed.value)) {
+    return { ok: false, error: 'invalid_state' } as const;
+  }
+  return finalizeJarvisPendingWakes(run, pendingWakes(parsed.value));
+}
+
 // ---------------------------------------------------------------------------
 // Module de définition + enregistrement (registre gelé du reducer racine)
 // ---------------------------------------------------------------------------
@@ -1399,6 +1417,7 @@ export const SINGLE_BUSINESS_ACTION_V1: JarvisDefinitionModule = Object.freeze({
   definitionVersion: SINGLE_BUSINESS_ACTION_DEFINITION_VERSION,
   stateVersion: SINGLE_BUSINESS_ACTION_STATE_VERSION,
   limits: SINGLE_BUSINESS_ACTION_LIMITS,
+  pendingWakes: singleBusinessActionPendingWakes,
   actionReference: singleBusinessActionReference,
   reduce: reduceSingleBusinessAction,
 });

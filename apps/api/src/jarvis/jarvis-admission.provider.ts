@@ -31,6 +31,7 @@ import type {
   JarvisRunEnvelope,
   JarvisStatelessReadResult,
   JarvisSystemAdmissionEnvelope,
+  JarvisSystemAdmissionResult,
   JarvisUserAdmissionEnvelope,
 } from '@bob/core';
 
@@ -67,7 +68,7 @@ export interface JarvisAdmissionUnitOfWorkAuthority {
   runJarvisSystemAdmission(
     envelope: JarvisSystemAdmissionEnvelope,
     deps: JarvisAdmissionDeps,
-  ): Promise<JarvisAdmissionResult>;
+  ): Promise<JarvisSystemAdmissionResult>;
   readJarvisStateless<T>(
     owner: JarvisAdmissionOwner,
     read: (view: {
@@ -121,7 +122,7 @@ export class JarvisAdmissionAdapter implements JarvisAdmissionUnitOfWorkPort {
 
   runJarvisSystemAdmission(
     envelope: JarvisSystemAdmissionEnvelope,
-  ): Promise<JarvisAdmissionResult> {
+  ): Promise<JarvisSystemAdmissionResult> {
     return this.unitOfWork.runJarvisSystemAdmission(envelope, this.deps());
   }
 

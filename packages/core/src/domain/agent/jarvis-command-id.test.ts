@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   JARVIS_SYSTEM_COMMAND_NAMESPACE,
+  JARVIS_WAKE_COMMAND_NAMESPACE,
   deriveJarvisSystemCommandId,
+  deriveJarvisWakeCommandId,
   type JarvisSystemCommandIdResult,
+  type JarvisWakeCommandIdResult,
 } from './jarvis-command-id';
 
 const RUN_ID = '3f2c8b1a-5d4e-4f6a-9b0c-1d2e3f4a5b6c';
@@ -14,6 +17,11 @@ const DIGEST_OTHER = '2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e8862
 const UUID_V8 = /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
 function unwrap(result: JarvisSystemCommandIdResult): string {
+  if (!result.ok) throw new Error(`refus inattendu : ${JSON.stringify(result.error)}`);
+  return result.value;
+}
+
+function unwrapWake(result: JarvisWakeCommandIdResult): string {
   if (!result.ok) throw new Error(`refus inattendu : ${JSON.stringify(result.error)}`);
   return result.value;
 }
@@ -155,6 +163,63 @@ describe('deriveJarvisSystemCommandId — refus typés', () => {
           field: 'observationDigest',
           reason: 'invalid_digest',
         },
+      });
+    }
+  });
+});
+
+describe('deriveJarvisWakeCommandId — identité temporelle v1 figée', () => {
+  const DUE_AT = '2026-08-21T10:05:00.000Z';
+  const SBA_WAKE_ID = 'sba-confirmation-ttl:11111111-1111-4111-8111-111111111111';
+  const CUSTOMER_WAKE_ID = '22222222-2222-4222-8222-222222222222';
+
+  it('fige namespace et vecteurs UUID v8 à l’octet près', () => {
+    expect(JARVIS_WAKE_COMMAND_NAMESPACE).toBe('bob.jarvis.wake-command.v1');
+    expect(unwrapWake(deriveJarvisWakeCommandId(RUN_ID, SBA_WAKE_ID, DUE_AT, 7))).toBe(
+      '1abbe771-a4f1-8738-8d50-3093266ca6e7',
+    );
+    expect(unwrapWake(deriveJarvisWakeCommandId(RUN_ID, CUSTOMER_WAKE_ID, DUE_AT, 7))).toBe(
+      'f36794cb-07a3-8590-8aac-2c11e39a8437',
+    );
+  });
+
+  it('scelle chaque composante et reste déterministe pour un wake prématuré réessayé', () => {
+    const base = unwrapWake(deriveJarvisWakeCommandId(RUN_ID, SBA_WAKE_ID, DUE_AT, 7));
+    expect(unwrapWake(deriveJarvisWakeCommandId(RUN_ID, SBA_WAKE_ID, DUE_AT, 7))).toBe(base);
+    const variants = [
+      base,
+      unwrapWake(deriveJarvisWakeCommandId(OTHER_EFFECT_ID, SBA_WAKE_ID, DUE_AT, 7)),
+      unwrapWake(deriveJarvisWakeCommandId(RUN_ID, CUSTOMER_WAKE_ID, DUE_AT, 7)),
+      unwrapWake(
+        deriveJarvisWakeCommandId(RUN_ID, SBA_WAKE_ID, '2026-08-21T10:05:00.001Z', 7),
+      ),
+      unwrapWake(deriveJarvisWakeCommandId(RUN_ID, SBA_WAKE_ID, DUE_AT, 8)),
+    ];
+    expect(new Set(variants).size).toBe(variants.length);
+    expect(base).toMatch(UUID_V8);
+  });
+
+  it('refuse toutes les formes non canoniques sans exception', () => {
+    expect(deriveJarvisWakeCommandId('run-1', SBA_WAKE_ID, DUE_AT, 7)).toMatchObject({
+      ok: false,
+      error: { field: 'runId', reason: 'invalid_uuid' },
+    });
+    for (const wakeId of ['', ' wake', 'wake\n', 'x'.repeat(201)]) {
+      expect(deriveJarvisWakeCommandId(RUN_ID, wakeId, DUE_AT, 7)).toMatchObject({
+        ok: false,
+        error: { field: 'wakeId', reason: 'invalid_wake_id' },
+      });
+    }
+    for (const dueAt of ['not-an-instant', '2026-08-21T12:05:00.000+02:00', 'infinity']) {
+      expect(deriveJarvisWakeCommandId(RUN_ID, SBA_WAKE_ID, dueAt, 7)).toMatchObject({
+        ok: false,
+        error: { field: 'dueAt', reason: 'invalid_instant' },
+      });
+    }
+    for (const revision of [0, -1, 1.5, Number.MAX_SAFE_INTEGER]) {
+      expect(deriveJarvisWakeCommandId(RUN_ID, SBA_WAKE_ID, DUE_AT, revision)).toMatchObject({
+        ok: false,
+        error: { field: 'expectedRevision', reason: 'invalid_revision' },
       });
     }
   });

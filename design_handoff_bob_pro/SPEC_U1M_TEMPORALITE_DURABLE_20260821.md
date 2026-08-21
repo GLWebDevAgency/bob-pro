@@ -2,8 +2,8 @@
 
 - **Date** : 2026-08-21
 - **Auteur / writer** : Codex, après audits domaine, PostgreSQL, runtime et mobile en lecture seule.
-- **Statut normatif** : `specified`. Aucun code de ce lot n'est encore `implemented`, `certified`
-  ou `released`.
+- **Statut normatif** : U1-m reste `specified`. Le sous-lot **M1 core/admission** est
+  `implemented` localement, dormant et sans scanner ; il n'est ni `certified` ni `released`.
 - **Parents** :
   [OBJECTIFS_SPECS_DOD_PUBLICATION](OBJECTIFS_SPECS_DOD_PUBLICATION.md) O4/O6/O7,
   [SPEC_JARVIS_UNIVERSEL_ORCHESTRATION](SPEC_JARVIS_UNIVERSEL_ORCHESTRATION_20260817.md)
@@ -132,11 +132,56 @@ serait une capacité silencieusement morte.
 
 ### 2.3 Ledger de livraison
 
-- Le présent fichier porte U1-m à `specified` seulement.
+- Le présent fichier porte le vertical U1-m à `specified` seulement.
+- M1 core/admission est `implemented` localement : oracle pur, identité wake, enveloppe système
+  disjointe, no-op zéro-DML, horloge de réduction post-verrous et preuves PostgreSQL associées.
+  Il ne crée ni annuaire, scheduler, migration, flag ni capacité active.
 - L'existence du code portera chaque sous-lot à `implemented` au maximum.
 - `certified` exige la matrice locale, PostgreSQL non-superuser, replay Supabase staging au SHA
   exact et preuve opérationnelle du scanner fermé puis ouvert.
 - `released` exige le cutover froid §9 et la preuve sur l'environnement réellement servi.
+
+### 2.4 Blocage d'activation découvert pendant M1 — budget de pas des définitions `@1`
+
+**[BLOQUÉ avant M2/certification : un wake dû peut être refusé à la borne `maxSteps` et rester
+éternellement dû.]** Le cas est atteignable dans `customer_contact@1` : une mutation cible peut
+amener le run à l'avant-dernier pas, `stage_proposal` crée alors la confirmation et son wake au
+dernier pas, puis l'expiration devrait consommer un pas supplémentaire que `commit` refuse. La
+garde globale de `single_business_action@1` refuse également `wake_run` sur une postimage parsée au
+dernier pas. Dans les deux cas, un scanner correctement level-triggered redélivrerait sans fin la
+même coordonnée faute de transition ou de reçu.
+
+M1 peut livrer **dormants** l'oracle, l'identité wake, l'enveloppe système et l'admission zéro-write :
+aucun scanner n'est alors actif et les reducers publiés restent inchangés. M2, toute certification
+du vertical et toute ouverture du flag restent interdites tant qu'une des deux voies suivantes
+n'est pas décidée et prouvée :
+
+1. **Correction pré-publication de `@1`**, seulement après inventaire SQL exact sur local, Supabase
+   staging et production prouvant zéro référence, y compris historique, à ces deux versions dans
+   `agent_missions`, zéro work item lié et zéro artefact/reçu durable pertinent. Une décision de spec
+   préalable autorise alors exclusivement l'expiration `wake_run` due à être hors budget, avec
+   compteur clampé et tests de snapshots amendés explicitement.
+2. **Définitions `@2` et migration CAS purpose-specific**, obligatoire dès qu'une seule référence
+   existe, qu'un environnement est inaccessible ou que la non-publication n'est pas prouvable. Les
+   lecteurs N-1 précèdent le writer, `@1` reste lisible tant qu'une référence vit, et le scanner
+   supporte les deux versions pendant le drain.
+
+Le refus actuel à `maxSteps` n'est jamais fossilisé comme comportement attendu « vert » : le test
+de frontière reste rouge/bloqué jusqu'à l'une de ces décisions.
+
+### 2.5 Évidence locale du sous-lot M1 — 2026-08-21
+
+La postimage M1 a été vérifiée sans l'élever au statut du vertical complet :
+
+- tests core ciblés : 145/145 ; tests API admission/dispatch/revalidation : 76/76 ;
+- typecheck API, ESLint ciblé et `git diff --check` : verts ;
+- rituel PostgreSQL jetable non-superuser `certify-agent-missions-local.sh` : 133/133, dont les
+  preuves wake prématuré/dû/replay, HMAC effect v1 byte-stable, horloge après cible et work item,
+  gates admission/société et liaison fermée `effect_observation | wake_due` ;
+- aucun replay Supabase staging au SHA exact, canary, scanner, mobile, alerte ou activation n'est
+  revendiqué ; les cases §10 restent binaires et non cochées tant que leur vertical complet n'est
+  pas livré ;
+- le blocage `maxSteps` §2.4 interdit M2, `certified` et toute ouverture de flag.
 
 ## 3. Autorité domaine et admission
 
@@ -907,11 +952,16 @@ Ordre obligatoire :
       tandis qu'un ignored exact garde la même identité jusqu'à l'échéance.
 - [ ] Vecteurs, HMAC, ordre de validation et reçus effect v1 restent byte/behavior-stables ;
       recalcul commandId et fingerprint métier complet restent explicitement U1-o.
+- [ ] Frontière `maxSteps` : une proposition créée au dernier pas expire réellement en R+1 sans
+      boucle de refus. Cette case reste bloquée par §2.4 et interdit M2 tant que la voie `@1`
+      pré-publication ou `@2` migration n'est pas prouvée.
 
 ### 10.2 Admission et PostgreSQL réel
 
 - [ ] Wake exact mais prématuré : `ignored(wake_not_due)`, zéro UPDATE, event, reçu, work item, idle
-      refresh ou release de foreground ; tous les octets du run et les tests v1 restent identiques.
+      refresh ou release de foreground ; projection, `xmin` et `ctid` du run restent identiques.
+      Les métadonnées transitoires du row-lock PostgreSQL (`xmax`/infomask) sont hors de cette
+      égalité : le verrou autoritaire peut les toucher sans produire de nouvelle version logique.
 - [ ] Wake inconnu, déjà consommé, ancienne échéance ou binding auto-cohérent mais non autoritaire :
       `system_command_binding_mismatch` ou `stale_revision`, zéro-write ; jamais `ignored`.
 - [ ] Le même wake devenu dû committe exactement R+1 et nettoie/replanifie `nextWakeAt` selon le
@@ -1006,6 +1056,8 @@ Il n'est `released` qu'après le cutover froid et la preuve sur l'artefact servi
 
 Risques explicitement non levés par U1-m :
 
+- le budget `maxSteps` des définitions `@1` bloque encore l'expiration due à la frontière ; §2.4
+  interdit donc le scanner M2 et toute certification tant que la compatibilité n'est pas résolue ;
 - les runs U1 v1 ne possèdent toujours pas de cycle de vie idle/hard exécutoire ; U1-n reste dû ;
 - le fingerprint complet des commandes `effect_observation`, son train reader-first et son plancher
   de rollback restent U1-o ; U1-m ne certifie pas l'ACK historique de `command_conflict` effet ;

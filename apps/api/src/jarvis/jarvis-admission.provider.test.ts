@@ -189,8 +189,12 @@ describe('adapter du port mono-argument (§5.2/§17)', () => {
       commandId: '40000000-0000-8000-8000-000000000001',
       expectedRevision: 2,
       command: { type: 'record_effect_receipt' },
-      observationKind: 'effect_receipt',
-      effectId: '50000000-0000-4000-8000-000000000001',
+      subject: {
+        type: 'effect_observation',
+        observationKind: 'effect_receipt',
+        observationDigest: null,
+        effectId: '50000000-0000-4000-8000-000000000001',
+      },
       occurredAt: '2026-08-19T10:00:00.000Z',
     });
     const read = await admission?.readJarvisStateless(

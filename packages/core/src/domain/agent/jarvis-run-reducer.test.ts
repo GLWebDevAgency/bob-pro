@@ -12,10 +12,17 @@ import {
   type AgentMissionResult,
   type AgentMissionSnapshot,
 } from './agent-mission';
-import { projectQuoteMissionEnvelope, type JarvisRunEnvelope } from './jarvis-run';
 import {
+  projectQuoteMissionEnvelope,
+  type JarvisRunEnvelope,
+  type JarvisWake,
+} from './jarvis-run';
+import {
+  finalizeJarvisPendingWakes,
+  normalizeJarvisDefinitionReduction,
   reduceJarvisRun,
   resolveJarvisDefinition,
+  type JarvisDefinitionModule,
   type JarvisReduceContext,
   type JarvisReduceError,
   type JarvisReduceResult,
@@ -272,5 +279,216 @@ describe('reduceJarvisRun — kind du run et de la commande épinglés ensemble'
       context(at(5)),
     );
     expect(errorOf(result)).toEqual({ code: 'invalid_command', reason: 'kind_mismatch' });
+  });
+});
+
+describe('oracle et normalisation temporels U1-m — frontière pure anti-faux-vert', () => {
+  type DefinitionRun = Extract<
+    JarvisRunEnvelope,
+    { readonly kind: 'single_business_action' | 'customer_contact' }
+  >;
+  const baseRun: DefinitionRun = Object.freeze({
+    kind: 'single_business_action',
+    runId: RUN_ID,
+    companyId: 'company-1',
+    createdBy: 'owner-1',
+    definitionVersion: 1,
+    status: 'active',
+    revision: 3,
+    stateVersion: 1,
+    state: Object.freeze({}),
+    nextWakeAt: null,
+    terminalAt: null,
+  });
+  const limits = Object.freeze({
+    maxSteps: 4,
+    maxOpenWorkItems: 1,
+    maxStateBytes: 1024,
+    idleTtlMs: 60_000,
+    hardTtlMs: 120_000,
+    maxWakes: 4,
+  });
+  const definition: JarvisDefinitionModule = Object.freeze({
+    kind: 'single_business_action',
+    definitionVersion: 1,
+    stateVersion: 1,
+    limits,
+    pendingWakes: (run: DefinitionRun) => finalizeJarvisPendingWakes(run, []),
+    actionReference: () => null,
+    reduce: () => ({
+      ok: false as const,
+      error: { code: 'invalid_command' as const, reason: 'unused' },
+    }),
+  });
+
+  function transition(
+    postimage: DefinitionRun,
+    over: Partial<JarvisRunTransition> = {},
+  ): JarvisRunTransition {
+    return {
+      postimage,
+      event: { type: 'test_event', version: 1, data: {} },
+      workItemIntents: [],
+      wakes: [],
+      releasedForegroundLease: false,
+      ...over,
+    };
+  }
+
+  it('trie par échéance puis octets UTF-8, gèle sans muter le tableau source', () => {
+    const due = '2026-08-21T10:00:00.000Z';
+    const later = '2026-08-21T10:00:01.000Z';
+    const source: JarvisWake[] = [
+      { wakeId: '😀', kind: 'retry', dueAt: due },
+      { wakeId: 'later', kind: 'retry', dueAt: later },
+      { wakeId: '\uE000', kind: 'retry', dueAt: due },
+    ];
+    const run = { ...baseRun, nextWakeAt: due };
+    const result = finalizeJarvisPendingWakes(run, source);
+    expect(result).toEqual({
+      ok: true,
+      value: [
+        { wakeId: '\uE000', kind: 'retry', dueAt: due },
+        { wakeId: '😀', kind: 'retry', dueAt: due },
+        { wakeId: 'later', kind: 'retry', dueAt: later },
+      ],
+    });
+    expect(source.map((wake) => wake.wakeId)).toEqual(['😀', 'later', '\uE000']);
+    if (result.ok) {
+      expect(Object.isFrozen(result.value)).toBe(true);
+      expect(result.value.every(Object.isFrozen)).toBe(true);
+    }
+  });
+
+  it.each([
+    {
+      label: 'duplicate',
+      wakes: [
+        { wakeId: 'same', kind: 'retry', dueAt: CREATED_AT },
+        { wakeId: 'same', kind: 'park_review', dueAt: CREATED_AT },
+      ],
+    },
+    {
+      label: 'instant avec offset non canonique',
+      wakes: [{ wakeId: 'wake', kind: 'retry', dueAt: '2026-08-18T12:00:00.000+02:00' }],
+    },
+    {
+      label: 'instant infini',
+      wakes: [{ wakeId: 'wake', kind: 'retry', dueAt: 'infinity' }],
+    },
+    {
+      label: 'kind runtime inconnu',
+      wakes: [{ wakeId: 'wake', kind: 'unknown', dueAt: CREATED_AT }],
+    },
+  ])('refuse $label au lieu de deviner', ({ wakes }) => {
+    expect(
+      finalizeJarvisPendingWakes(
+        { ...baseRun, nextWakeAt: CREATED_AT },
+        wakes as readonly JarvisWake[],
+      ),
+    ).toEqual({ ok: false, error: 'invalid_state' });
+  });
+
+  it('refuse un terminal qui conserve un wake', () => {
+    expect(
+      finalizeJarvisPendingWakes(
+        { ...baseRun, status: 'completed', terminalAt: CREATED_AT, nextWakeAt: CREATED_AT },
+        [{ wakeId: 'wake', kind: 'retry', dueAt: CREATED_AT }],
+      ),
+    ).toEqual({ ok: false, error: 'invalid_state' });
+  });
+
+  it('accepte seulement R+1 avec identité/oracle intacts et interdit un commit prématuré', () => {
+    const committed = transition({ ...baseRun, revision: 4 });
+    expect(
+      normalizeJarvisDefinitionReduction(
+        baseRun,
+        { ok: true, value: committed },
+        definition,
+        { strictNoOpReason: null },
+      ),
+    ).toMatchObject({ kind: 'committed', transition: committed });
+    expect(
+      normalizeJarvisDefinitionReduction(
+        baseRun,
+        { ok: true, value: committed },
+        definition,
+        { strictNoOpReason: 'wake_not_due' },
+      ),
+    ).toMatchObject({ kind: 'refused' });
+    for (const postimage of [
+      { ...baseRun },
+      { ...baseRun, revision: 5 },
+      { ...baseRun, revision: 4, runId: 'other-run' },
+      { ...baseRun, revision: 4, companyId: 'other-company' },
+      { ...baseRun, revision: 4, createdBy: 'other-owner' },
+      { ...baseRun, revision: 4, definitionVersion: 2 },
+      { ...baseRun, revision: 4, stateVersion: 2 },
+    ]) {
+      expect(
+        normalizeJarvisDefinitionReduction(
+          baseRun,
+          { ok: true, value: transition(postimage) },
+          definition,
+          { strictNoOpReason: null },
+        ),
+      ).toMatchObject({ kind: 'refused' });
+    }
+  });
+
+  it('ne classe ignored que le strict no-op autorisé et relaie erreur/quarantaine', () => {
+    const strict = transition(baseRun);
+    expect(
+      normalizeJarvisDefinitionReduction(
+        baseRun,
+        { ok: true, value: strict },
+        definition,
+        { strictNoOpReason: 'wake_not_due' },
+      ),
+    ).toMatchObject({ kind: 'ignored', reason: 'wake_not_due' });
+    expect(
+      normalizeJarvisDefinitionReduction(
+        baseRun,
+        { ok: true, value: strict },
+        definition,
+        { strictNoOpReason: null },
+      ),
+    ).toMatchObject({ kind: 'refused' });
+    for (const malformed of [
+      transition({ ...baseRun }),
+      transition(baseRun, { releasedForegroundLease: true }),
+      transition(baseRun, { workItemIntents: [{} as never] }),
+      transition(baseRun, {
+        wakes: [{ wakeId: 'unexpected', kind: 'retry', dueAt: CREATED_AT }],
+      }),
+    ]) {
+      expect(
+        normalizeJarvisDefinitionReduction(
+          baseRun,
+          { ok: true, value: malformed },
+          definition,
+          { strictNoOpReason: 'wake_not_due' },
+        ),
+      ).toMatchObject({ kind: 'refused' });
+    }
+    expect(
+      normalizeJarvisDefinitionReduction(
+        baseRun,
+        { ok: false, error: { code: 'invalid_command', reason: 'bad' } },
+        definition,
+        { strictNoOpReason: null },
+      ),
+    ).toEqual({ kind: 'refused', error: { code: 'invalid_command', reason: 'bad' } });
+    expect(
+      normalizeJarvisDefinitionReduction(
+        baseRun,
+        { ok: false, quarantine: { kind: baseRun.kind, definitionVersion: 99 } },
+        null,
+        { strictNoOpReason: null },
+      ),
+    ).toEqual({
+      kind: 'quarantine_required',
+      quarantine: { kind: baseRun.kind, definitionVersion: 99 },
+    });
   });
 });
