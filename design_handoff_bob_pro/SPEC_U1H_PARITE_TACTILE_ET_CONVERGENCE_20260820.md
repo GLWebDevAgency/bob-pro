@@ -6,8 +6,8 @@
 - **Statut normatif** : `specified` — la gate moteur unique du parent Jarvis §17/§21.2 reste
   fermée. L0/L1/L9 (`3a51593f6`), L2/L3 (`ab7b4439d` + durcissement `5a86f94d6`) et L4
   (`d4742b35d`) sont réalisés et prouvés localement ; la mesure/correction M1 est implémentée
-  localement par `e79d205e0` ; L7 est implémenté localement par `e9d128c97`. L5/L6, L8 et
-  L10–L11 restent à réaliser. Aucun livrable U1-h n'est `certified` ni `released`.
+  localement par `e79d205e0` ; L7 est implémenté localement par `e9d128c97` et L5 par le présent
+  lot. L6, L8 et L10–L11 restent à réaliser. Aucun livrable U1-h n'est `certified` ni `released`.
 - **Deltas mesurés** : `3a51593f6` = 7 fichiers, +453/-15 ; `ab7b4439d` = 6 fichiers,
   +503/-13 ; `5a86f94d6` = 4 fichiers, +359/-16. Safety et U1-i ne sont pas attribués à U1-h.
 - **Parents** : SPEC_U1G §6 (hors-lot tracé) · spec Jarvis §7.0/§8/§9.1/§14/§17.1 · FD-2026-0817-06.
@@ -214,6 +214,57 @@ mobiles passent 85/85, incluant le reçu A masqué par B, deux hôtes, StrictMod
 tactiles. Typechecks core/mobile, ESLint ciblé et `git diff --check` sont verts. Aucune preuve
 appareil, staging ou voix→écran n'est revendiquée : L7 est `implemented`, jamais `certified`.
 
+### 3.3 L5 — protocole binaire de la carte de revue
+
+La carte consomme exclusivement `duplicateReview`, déjà dérivé serveur de l'état scellé. Elle ne
+retrie, ne renumérote, ne recherche et ne traduit aucun candidat. L'ordre du tableau et chaque
+`ordinal` traversent jusqu'au rendu ; un libellé `null` reste visible à son rang sous « Fiche
+introuvable », avec son bouton de choix désactivé. Aucun `customerId` n'est ajouté au mobile.
+
+`awaiting_duplicate_review` avec `duplicateReview: null` ne signifie pas « Bob cherche encore » :
+la projection n'a pas pu rendre les libellés. La carte le nomme, offre une relecture autoritaire et
+la même annulation honnête que les autres phases sans effet engagé ; elle n'invente ni liste vide,
+ni succès, ni promesse « rien ne sera enregistré ». `resolving_customer` et
+`preparing_proposal` gardent deux notices distinctes. L'issue terminale `existing_selected` reste
+du ressort de L6 : `GET current` masque les runs terminaux, donc une frame terminale injectée dans
+un test de carte serait une preuve artificielle.
+
+Les trois gestes de revue sont ceux du coordinateur déjà gardé : choisir une fiche rendue, créer
+malgré les rapprochements, ou annuler le run. Un seul vol est admis ; pendant ce vol tous les
+gestes sont désactivés. Un reçu abouti est transmis à la convergence L7 avant relecture ; un conflit
+relit, une panne reste visible et relançable sans état optimiste. Une panne est liée au `runId` et à
+la révision qui l'ont produite : une frame autoritaire plus récente ne réaffiche jamais l'erreur de
+l'ancienne. Le montage de la revue n'émet ni ACK de présentation, ni commande.
+
+TalkBack consomme les régions vives Android. VoiceOver reçoit une annonce explicite seulement si
+l'hôte est visible, une fois par `reviewId` et une fois par nouvelle panne ; un montage en arrière-
+plan attend le premier plan et une republication identique ne parle pas deux fois.
+
+Acceptation fermée L5 :
+
+- matrice pure : revue complète → mode revue ; revue `null` → indisponibilité nommée ;
+  `resolving_customer` et `preparing_proposal` → deux notices différentes ;
+- ordre et ordinaux byte-identiques au wire ; rang irrésolu conservé et non choisissable, zéro
+  appel réseau si son handler est invoqué malgré l'état désactivé ;
+- chaque geste disponible appelle exactement la méthode du coordinateur avec la frame ou le run
+  attendu ; le reçu complet part à L7, le conflit déclenche seulement une relecture ;
+- vol différé : un seul départ, tous les boutons exposent leur état désactivé/occupé, puis l'erreur
+  est annoncée et la relecture reste disponible ; une frame plus récente arrivée pendant ce vol
+  reste exempte de son éventuel échec tardif ;
+- VoiceOver/TalkBack disposent d'un titre, de libellés uniques incluant ordinal et nom, d'un état
+  désactivé explicite pour le rang introuvable et d'une région vive/alerte pour les changements ;
+  l'annonce iOS est absente en arrière-plan, part au premier plan et reste dédupliquée ;
+- ce lot ne déplace pas les gates d'entitlement de l'hôte, ne touche ni L6, ni manifest, ni flag,
+  ni contrat serveur. La publication N/N-1 reste bloquée par §7.
+
+**Évidence locale L5 — présent lot.** La carte passe 25/25 et la matrice ciblée carte + coordinateur
+et deux hôtes passe 71/71. La suite mobile complète passe 209 fichiers / 2305 tests, puis 16/16
+contrôles de redirection. La preuve L7 qui dépendait de la vitesse des micro-tâches tient désormais
+la lecture exacte ouverte et passe 28/28 ; mobile typecheck, ESLint ciblé, format et
+`git diff --check` sont verts. Cette preuve établit `implemented` localement. Aucun essai appareil
+VoiceOver/TalkBack, aucune validation staging et aucune compatibilité N/N-1 ne sont revendiqués :
+L5 n'est ni `certified`, ni `released`.
+
 ## 4. Gardes à rendre vraies avant certification
 
 - **G1** — une revue ne peut plus se résoudre à la seule voix.
@@ -235,7 +286,7 @@ appareil, staging ou voix→écran n'est revendiquée : L7 est `implemented`, ja
 - [x] Projection serveur et codec prouvent ordre, absence de `customerId`, panne globale et issue.
 - [x] Le parseur tactile serveur et le codec refusent clés étrangères et `adopt_existing`.
 - [x] Coordinateur : deux gestes gardés, refus sans réseau hors phase/jeu rendu.
-- [ ] Carte : matrice phase × confirmation, ordre, rang irrésolu et accessibilité.
+- [x] Carte : matrice phase × confirmation, ordre, rang irrésolu et accessibilité.
 - [x] Convergence : reçu/current pendant → GET exact owner-scopé → règlement invalide une fois ;
       absence/B, écho divergent et révision stale ne peuvent clore prématurément le suivi.
 - [x] PostgreSQL réel : `idleExpiresAt` avance avec la transition, `hardExpiresAt` reste immuable

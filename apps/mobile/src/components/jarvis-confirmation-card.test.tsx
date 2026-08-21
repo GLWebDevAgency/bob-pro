@@ -25,6 +25,7 @@ const announceForAccessibility = vi.hoisted(() => vi.fn());
 vi.mock('react-native', () => ({
   AccessibilityInfo: { announceForAccessibility },
   ActivityIndicator: 'ActivityIndicator',
+  Platform: { OS: 'ios' },
   Text: 'Text',
   View: 'View',
 }));
@@ -63,6 +64,10 @@ const CONFIRMATION_ID = '33333333-3333-4333-8333-333333333333';
 const NEXT_CONFIRMATION_ID = '22222222-2222-4222-8222-222222222222';
 const PROPOSAL_ID = '44444444-4444-4444-8444-444444444444';
 const CUSTOMER_ID = '55555555-5555-4555-8555-555555555555';
+const REVIEW_ID = '66666666-6666-4666-8666-666666666666';
+const CHOICE_A = '77777777-7777-4777-8777-777777777777';
+const CHOICE_B = '88888888-8888-4888-8888-888888888888';
+const CHOICE_UNAVAILABLE = '99999999-9999-4999-8999-999999999999';
 const HASH = 'a'.repeat(64);
 const DIGEST = 'b'.repeat(64);
 
@@ -137,6 +142,30 @@ function presented(): Partial<CustomerContactPresentationV1> {
   };
 }
 
+function duplicateReview(): NonNullable<CustomerContactPresentationV1['duplicateReview']> {
+  return {
+    reviewId: REVIEW_ID,
+    // L'ordre wire est volontairement l'inverse de l'ordre alphabétique : le composant ne doit
+    // jamais retrier les libellés ni combler le rang dont le libellé n'a pas pu être rendu.
+    choices: [
+      { ordinal: 1, choiceId: CHOICE_A, label: 'Zulu Couverture' },
+      { ordinal: 2, choiceId: CHOICE_B, label: 'Alpha Plomberie' },
+      { ordinal: 3, choiceId: CHOICE_UNAVAILABLE, label: null },
+    ],
+  };
+}
+
+function reviewing(
+  review: CustomerContactPresentationV1['duplicateReview'] = duplicateReview(),
+): CustomerContactPresentationV1 {
+  return presentation({
+    phase: 'awaiting_duplicate_review',
+    duplicateReview: review,
+    proposal: null,
+    confirmation: null,
+  });
+}
+
 function receipt(): JarvisCommandReceiptView {
   return {
     outcome: 'admitted',
@@ -155,6 +184,15 @@ type CardCoordinator = {
   readonly confirm: (frame: JarvisRunFrame, ports: JarvisRunPorts) => Promise<JarvisRunCall>;
   readonly reject: (frame: JarvisRunFrame, ports: JarvisRunPorts) => Promise<JarvisRunCall>;
   readonly cancel: (run: JarvisRunView, ports: JarvisRunPorts) => Promise<JarvisRunCall>;
+  readonly chooseExistingCustomer: (
+    frame: JarvisRunFrame,
+    choiceId: string,
+    ports: JarvisRunPorts,
+  ) => Promise<JarvisRunCall>;
+  readonly continueCreation: (
+    frame: JarvisRunFrame,
+    ports: JarvisRunPorts,
+  ) => Promise<JarvisRunCall>;
 };
 
 function stubCoordinator(result: JarvisRunCall = { status: 'completed', value: receipt() }) {
@@ -163,6 +201,8 @@ function stubCoordinator(result: JarvisRunCall = { status: 'completed', value: r
     confirm: vi.fn(async () => result),
     reject: vi.fn(async () => result),
     cancel: vi.fn(async () => result),
+    chooseExistingCustomer: vi.fn(async () => result),
+    continueCreation: vi.fn(async () => result),
   };
 }
 
@@ -175,6 +215,8 @@ function ackCoordinator(
     confirm: vi.fn(async () => ({ status: 'invalid_response' }) as JarvisRunCall),
     reject: vi.fn(async () => ({ status: 'invalid_response' }) as JarvisRunCall),
     cancel: vi.fn(async () => ({ status: 'invalid_response' }) as JarvisRunCall),
+    chooseExistingCustomer: vi.fn(async () => ({ status: 'invalid_response' }) as JarvisRunCall),
+    continueCreation: vi.fn(async () => ({ status: 'invalid_response' }) as JarvisRunCall),
   };
 }
 
@@ -198,6 +240,7 @@ async function render(
   frame: JarvisRunFrame,
   coordinator: CardCoordinator,
   onAuthoritativeRefresh = vi.fn(),
+  visible = true,
 ): Promise<{ renderer: ReactTestRenderer; onAuthoritativeRefresh: () => void }> {
   let renderer!: ReactTestRenderer;
   await act(async () => {
@@ -207,6 +250,7 @@ async function render(
         coordinator={coordinator as unknown as JarvisRunCoordinator}
         ports={PORTS}
         onAuthoritativeRefresh={onAuthoritativeRefresh}
+        visible={visible}
       />,
     );
   });
@@ -221,10 +265,22 @@ function buttons(renderer: ReactTestRenderer): Record<string, Record<string, unk
   );
 }
 
+function buttonNodes(renderer: ReactTestRenderer, title: string) {
+  return renderer.root.findAllByType(HOST_BUTTON).filter((node) => node.props.title === title);
+}
+
 function texts(renderer: ReactTestRenderer): string[] {
   return renderer.root
     .findAllByType(HOST_TEXT)
     .flatMap((node) => node.children.filter((child): child is string => typeof child === 'string'));
+}
+
+function textLines(renderer: ReactTestRenderer): string[] {
+  return renderer.root
+    .findAllByType(HOST_TEXT)
+    .map((node) =>
+      node.children.filter((child): child is string => typeof child === 'string').join(''),
+    );
 }
 
 function labels(renderer: ReactTestRenderer): string[] {
@@ -240,6 +296,9 @@ afterEach(() => {
 describe('deriveJarvisConfirmationCardMode', () => {
   it('projette toute phase hors confirmation vers un état informatif', () => {
     expect(deriveJarvisConfirmationCardMode(presentation({ phase: 'resolving_customer' }))).toEqual(
+      { kind: 'notice', reason: 'resolving' },
+    );
+    expect(deriveJarvisConfirmationCardMode(presentation({ phase: 'preparing_proposal' }))).toEqual(
       { kind: 'notice', reason: 'preparing' },
     );
     expect(deriveJarvisConfirmationCardMode(presentation({ phase: 'completed' }))).toEqual({
@@ -257,6 +316,22 @@ describe('deriveJarvisConfirmationCardMode', () => {
     expect(deriveJarvisConfirmationCardMode(presentation({ phase: 'cancelling' }))).toEqual({
       kind: 'notice',
       reason: 'cancelling',
+    });
+  });
+
+  it('projette la revue scellée sans trier ni reconstruire ses rangs', () => {
+    const review = duplicateReview();
+    const mode = deriveJarvisConfirmationCardMode(reviewing(review));
+
+    expect(mode).toEqual({
+      kind: 'duplicate_review',
+      reviewId: REVIEW_ID,
+      choices: review.choices,
+    });
+    expect(mode.kind === 'duplicate_review' ? mode.choices : null).toBe(review.choices);
+    expect(deriveJarvisConfirmationCardMode(reviewing(null))).toEqual({
+      kind: 'notice',
+      reason: 'duplicate_labels_unavailable',
     });
   });
 
@@ -371,13 +446,312 @@ describe('JarvisConfirmationCard', () => {
     );
 
     expect(coordinator.acknowledgePresentation).not.toHaveBeenCalled();
-    expect(texts(renderer)).toContain('Bob prépare la proposition…');
+    expect(texts(renderer)).toContain('Dites à Bob ce qu’il faut mettre dans la fiche.');
     // UN SEUL geste ici, et c'est l'abandon : ni confirmer (il n'y a rien à confirmer) ni
     // écarter. Sans lui, un run PARKÉ — celui dont la résolution de cible n'a pas abouti —
     // tiendrait le premier plan de l'artisan sans aucun recours à l'écran.
     const boutons = renderer.root.findAllByType(HOST_BUTTON);
     expect(boutons).toHaveLength(1);
     expect(boutons[0]?.props.title).toBe('Annuler');
+  });
+
+  it('rend la revue dans l’ordre scellé, garde le rang illisible et n’émet aucune commande au montage', async () => {
+    const coordinator = stubCoordinator();
+    const frame: JarvisRunFrame = { run: run(), presentation: reviewing() };
+    const { renderer, onAuthoritativeRefresh } = await render(frame, coordinator);
+
+    expect(textLines(renderer).filter((line) => /^\d+\. /u.test(line))).toEqual([
+      '1. Zulu Couverture',
+      '2. Alpha Plomberie',
+      '3. Fiche introuvable',
+    ]);
+    expect(coordinator.acknowledgePresentation).not.toHaveBeenCalled();
+    expect(coordinator.chooseExistingCustomer).not.toHaveBeenCalled();
+    expect(coordinator.continueCreation).not.toHaveBeenCalled();
+    expect(coordinator.cancel).not.toHaveBeenCalled();
+    expect(onAuthoritativeRefresh).not.toHaveBeenCalled();
+    expect(announceForAccessibility).toHaveBeenCalledTimes(1);
+    expect(announceForAccessibility).toHaveBeenCalledWith(
+      'Bob a trouvé des fiches proches. Choisissez une fiche, créez-en une nouvelle, ou annulez.',
+    );
+
+    const choices = buttonNodes(renderer, 'Choisir cette fiche');
+    expect(choices).toHaveLength(2);
+    expect(choices.map((button) => button.props.accessibilityLabel)).toEqual([
+      '1. Zulu Couverture. Choisir cette fiche existante.',
+      '2. Alpha Plomberie. Choisir cette fiche existante.',
+    ]);
+    const unavailable = buttonNodes(renderer, 'Choix indisponible');
+    expect(unavailable).toHaveLength(1);
+    expect(unavailable[0]?.props).toMatchObject({
+      disabled: true,
+      accessibilityState: { disabled: true },
+      accessibilityLabel: '3. Fiche introuvable. Choix indisponible.',
+    });
+
+    // Même si une couche native déclenchait à tort le handler d'un bouton désactivé, la carte
+    // garde la frontière : aucun choix aveugle n'atteint le coordinateur.
+    await act(async () => {
+      (unavailable[0]?.props.onPress as () => void)();
+    });
+    expect(coordinator.chooseExistingCustomer).not.toHaveBeenCalled();
+  });
+
+  it('annonce une revue à VoiceOver seulement lorsqu’elle devient réellement visible', async () => {
+    const coordinator = stubCoordinator();
+    const frame: JarvisRunFrame = { run: run(), presentation: reviewing() };
+    const onAuthoritativeRefresh = vi.fn();
+    const { renderer } = await render(frame, coordinator, onAuthoritativeRefresh, false);
+
+    expect(announceForAccessibility).not.toHaveBeenCalled();
+    await act(async () => {
+      renderer.update(
+        <JarvisConfirmationCard
+          frame={frame}
+          coordinator={coordinator as unknown as JarvisRunCoordinator}
+          ports={PORTS}
+          onAuthoritativeRefresh={onAuthoritativeRefresh}
+          visible
+        />,
+      );
+    });
+    expect(announceForAccessibility).toHaveBeenCalledTimes(1);
+
+    // Une republication de la même revue ne la fait pas parler une seconde fois.
+    await act(async () => {
+      renderer.update(
+        <JarvisConfirmationCard
+          frame={frame}
+          coordinator={coordinator as unknown as JarvisRunCoordinator}
+          ports={PORTS}
+          onAuthoritativeRefresh={onAuthoritativeRefresh}
+          visible
+        />,
+      );
+    });
+    expect(announceForAccessibility).toHaveBeenCalledTimes(1);
+  });
+
+  it('choisit exactement la fiche rendue et transmet le reçu autoritaire à L7', async () => {
+    const coordinator = stubCoordinator();
+    const frame: JarvisRunFrame = { run: run(), presentation: reviewing() };
+    const { renderer, onAuthoritativeRefresh } = await render(frame, coordinator);
+
+    await act(async () => {
+      (buttonNodes(renderer, 'Choisir cette fiche')[1]?.props.onPress as () => void)();
+    });
+
+    expect(coordinator.chooseExistingCustomer).toHaveBeenCalledTimes(1);
+    expect(coordinator.chooseExistingCustomer).toHaveBeenCalledWith(frame, CHOICE_B, PORTS);
+    expect(coordinator.continueCreation).not.toHaveBeenCalled();
+    expect(coordinator.cancel).not.toHaveBeenCalled();
+    expect(onAuthoritativeRefresh).toHaveBeenCalledTimes(1);
+    expect(onAuthoritativeRefresh).toHaveBeenCalledWith(receipt());
+  });
+
+  it('poursuit la création et annule par les deux autorités exactes, sans promesse trompeuse', async () => {
+    const frame: JarvisRunFrame = { run: run(), presentation: reviewing() };
+    const continueCoordinator = stubCoordinator();
+    const continued = await render(frame, continueCoordinator);
+
+    await act(async () => {
+      (buttons(continued.renderer)['Créer quand même']?.onPress as () => void)();
+    });
+    expect(continueCoordinator.continueCreation).toHaveBeenCalledTimes(1);
+    expect(continueCoordinator.continueCreation).toHaveBeenCalledWith(frame, PORTS);
+    expect(continued.onAuthoritativeRefresh).toHaveBeenCalledWith(receipt());
+
+    const cancelCoordinator = stubCoordinator();
+    const cancelled = await render(frame, cancelCoordinator);
+    await act(async () => {
+      (buttons(cancelled.renderer).Annuler?.onPress as () => void)();
+    });
+    expect(cancelCoordinator.cancel).toHaveBeenCalledTimes(1);
+    expect(cancelCoordinator.cancel).toHaveBeenCalledWith(frame.run, PORTS);
+    expect(cancelled.onAuthoritativeRefresh).toHaveBeenCalledWith(receipt());
+    expect(
+      [...textLines(cancelled.renderer), ...labels(cancelled.renderer)].join(' '),
+    ).not.toContain('rien ne sera enregistré');
+  });
+
+  it('un conflit de revue relit seulement l’autorité, sans afficher un faux échec', async () => {
+    const coordinator = stubCoordinator({
+      status: 'failed',
+      error: { kind: 'conflict', entity: 'jarvis_run', reason: 'stale_revision' },
+    });
+    const { renderer, onAuthoritativeRefresh } = await render(
+      { run: run(), presentation: reviewing() },
+      coordinator,
+    );
+
+    await act(async () => {
+      (buttonNodes(renderer, 'Choisir cette fiche')[0]?.props.onPress as () => void)();
+    });
+
+    expect(coordinator.chooseExistingCustomer).toHaveBeenCalledTimes(1);
+    expect(onAuthoritativeRefresh).toHaveBeenCalledTimes(1);
+    expect(onAuthoritativeRefresh).toHaveBeenCalledWith();
+    expect(texts(renderer)).not.toContain(
+      'Bob n’a pas pu vérifier votre geste. Relisez la demande avant de réessayer.',
+    );
+  });
+
+  it('borne un vol différé, annonce la panne et relit sans transmettre l’événement tactile', async () => {
+    const flight = deferred<JarvisRunCall>();
+    const coordinator = stubCoordinator();
+    coordinator.chooseExistingCustomer.mockImplementation(() => flight.promise);
+    const { renderer, onAuthoritativeRefresh } = await render(
+      { run: run(), presentation: reviewing() },
+      coordinator,
+    );
+    const choose = buttonNodes(renderer, 'Choisir cette fiche')[0];
+    announceForAccessibility.mockClear();
+
+    await act(async () => {
+      (choose?.props.onPress as () => void)();
+      (choose?.props.onPress as () => void)();
+      await Promise.resolve();
+    });
+    expect(coordinator.chooseExistingCustomer).toHaveBeenCalledTimes(1);
+    expect(
+      renderer.root.findAllByType(HOST_BUTTON).every((button) => button.props.disabled === true),
+    ).toBe(true);
+
+    await act(async () => {
+      flight.settle(NETWORK_LOSS);
+      await flight.promise;
+    });
+    expect(texts(renderer)).toContain(
+      'Bob n’a pas pu vérifier votre geste. Relisez la demande avant de réessayer.',
+    );
+    expect(renderer.root.findAll((node) => node.props.accessibilityRole === 'alert')).toHaveLength(
+      1,
+    );
+    expect(
+      renderer.root.findAll(
+        (node) =>
+          node.props.accessibilityRole === 'alert' &&
+          node.props.accessibilityLiveRegion === 'polite',
+      ),
+    ).toHaveLength(1);
+    expect(announceForAccessibility).toHaveBeenCalledTimes(1);
+    expect(announceForAccessibility).toHaveBeenCalledWith(
+      'Bob n’a pas pu vérifier votre geste. Relisez la demande avant de réessayer.',
+    );
+    expect(onAuthoritativeRefresh).not.toHaveBeenCalled();
+
+    await act(async () => {
+      (buttons(renderer)['Relire la demande']?.onPress as (event: unknown) => void)({
+        nativeEvent: { source: 'test' },
+      });
+    });
+    expect(onAuthoritativeRefresh).toHaveBeenCalledTimes(1);
+    expect(onAuthoritativeRefresh).toHaveBeenCalledWith();
+  });
+
+  it('ignore la panne tardive d’une revue remplacée par une frame autoritaire plus récente', async () => {
+    const flight = deferred<JarvisRunCall>();
+    const coordinator = stubCoordinator();
+    coordinator.chooseExistingCustomer.mockImplementation(() => flight.promise);
+    const onAuthoritativeRefresh = vi.fn();
+    const { renderer } = await render(
+      { run: run(), presentation: reviewing() },
+      coordinator,
+      onAuthoritativeRefresh,
+    );
+    announceForAccessibility.mockClear();
+
+    await act(async () => {
+      (buttonNodes(renderer, 'Choisir cette fiche')[0]?.props.onPress as () => void)();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      renderer.update(
+        <JarvisConfirmationCard
+          frame={{ run: run({ revision: 5 }), presentation: presentation(presented()) }}
+          coordinator={coordinator as unknown as JarvisRunCoordinator}
+          ports={PORTS}
+          onAuthoritativeRefresh={onAuthoritativeRefresh}
+        />,
+      );
+    });
+
+    await act(async () => {
+      flight.settle(NETWORK_LOSS);
+      await flight.promise;
+    });
+    expect(texts(renderer)).not.toContain(
+      'Bob n’a pas pu vérifier votre geste. Relisez la demande avant de réessayer.',
+    );
+    expect(texts(renderer)).not.toContain('Bob n’a pas pu enregistrer votre geste.');
+    expect(buttons(renderer).Confirmer?.disabled).toBe(false);
+    expect(onAuthoritativeRefresh).not.toHaveBeenCalled();
+    expect(announceForAccessibility).not.toHaveBeenCalled();
+  });
+
+  it('nomme une revue illisible, offre seulement relecture et annulation, sans faux geste', async () => {
+    const coordinator = stubCoordinator();
+    const frame: JarvisRunFrame = { run: run(), presentation: reviewing(null) };
+    const { renderer, onAuthoritativeRefresh } = await render(frame, coordinator);
+
+    expect(texts(renderer)).toContain(
+      'Bob n’arrive pas à afficher les fiches proches. Relisez la demande ou annulez-la.',
+    );
+    expect(renderer.root.findAll((node) => node.props.accessibilityRole === 'alert')).toHaveLength(
+      1,
+    );
+    expect(renderer.root.findAllByType(HOST_BUTTON).map((button) => button.props.title)).toEqual([
+      'Relire la demande',
+      'Annuler',
+    ]);
+    expect(coordinator.acknowledgePresentation).not.toHaveBeenCalled();
+    expect(coordinator.chooseExistingCustomer).not.toHaveBeenCalled();
+    expect(coordinator.continueCreation).not.toHaveBeenCalled();
+
+    await act(async () => {
+      (buttons(renderer)['Relire la demande']?.onPress as (event: unknown) => void)({
+        nativeEvent: { source: 'test' },
+      });
+    });
+    expect(onAuthoritativeRefresh).toHaveBeenCalledWith();
+
+    await act(async () => {
+      (buttons(renderer).Annuler?.onPress as () => void)();
+    });
+    expect(coordinator.cancel).toHaveBeenCalledTimes(1);
+    expect(coordinator.cancel).toHaveBeenCalledWith(frame.run, PORTS);
+  });
+
+  it('rend et annonce l’échec d’annulation sans promettre une revue absente', async () => {
+    const coordinator = stubCoordinator(NETWORK_LOSS);
+    const { renderer } = await render(
+      {
+        run: run(),
+        presentation: presentation({
+          phase: 'resolving_customer',
+          duplicateReview: null,
+          proposal: null,
+          confirmation: null,
+        }),
+      },
+      coordinator,
+    );
+    announceForAccessibility.mockClear();
+
+    await act(async () => {
+      (buttons(renderer).Annuler?.onPress as () => void)();
+    });
+
+    expect(texts(renderer)).toContain(
+      'Bob n’a pas pu vérifier l’annulation. Relisez la demande avant de réessayer.',
+    );
+    expect(buttons(renderer)['Relire la demande']?.accessibilityLabel).toBe(
+      'Relire la demande après l’échec de l’annulation.',
+    );
+    expect(announceForAccessibility).toHaveBeenCalledTimes(1);
+    expect(announceForAccessibility).toHaveBeenCalledWith(
+      'Bob n’a pas pu vérifier l’annulation. Relisez la demande avant de réessayer.',
+    );
   });
 
   it('montre les détails critiques de façon vocalisable et confirme le geste', async () => {
@@ -521,6 +895,8 @@ describe('JarvisConfirmationCard', () => {
       confirm: vi.fn(async () => ({ status: 'invalid_response' }) as JarvisRunCall),
       reject: vi.fn(() => gesture.promise),
       cancel: vi.fn(async () => ({ status: 'invalid_response' }) as JarvisRunCall),
+      chooseExistingCustomer: vi.fn(async () => ({ status: 'invalid_response' }) as JarvisRunCall),
+      continueCreation: vi.fn(async () => ({ status: 'invalid_response' }) as JarvisRunCall),
     };
     const onAuthoritativeRefresh = vi.fn();
     // La proposition est DÉJÀ présentée : rien n'est dû au montage, seul « Modifier » part.

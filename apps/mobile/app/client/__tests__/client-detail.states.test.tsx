@@ -86,6 +86,7 @@ vi.mock('expo-router', () => ({
     setParams: hoisted.setParams,
     canGoBack: () => true,
   }),
+  useIsFocused: () => true,
   useLocalSearchParams: () => ({ id: 'c1' }),
 }));
 vi.mock('../../../src/agent', () => ({

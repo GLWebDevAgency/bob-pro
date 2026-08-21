@@ -49,7 +49,7 @@ import {
   View,
   findNodeHandle,
 } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useIsFocused, useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   deriveCustomerStandings,
@@ -305,6 +305,7 @@ export default function ClientDetail() {
   const { personality, colors, semantic, theme, radius, controls } = useTheme();
   const palette = useStatusBadgePalette();
   const router = useRouter();
+  const clientDetailFocused = useIsFocused();
   const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{
     id: string;
@@ -1149,6 +1150,7 @@ export default function ClientDetail() {
                   coordinator={jarvis.coordinator}
                   ports={jarvis.state.ports}
                   onAuthoritativeRefresh={jarvis.refresh}
+                  visible={clientDetailFocused}
                 />
               ) : null}
 

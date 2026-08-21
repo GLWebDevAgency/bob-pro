@@ -1,5 +1,5 @@
 /**
- * Carte de confirmation d'un run Jarvis `customer_contact@1` (spec §7.0/§7.1 — lot U1-d).
+ * Carte tactile d'un run Jarvis `customer_contact@1` (spec §7.0/§7.1, U1-d/U1-h).
  *
  * C'est la surface écran JUMELLE de la voix : les mêmes détails critiques y sont MONTRÉS et
  * VOCALISABLES (§7.0 règles 2-3), et chaque geste passe par le même contrat d'admission que le
@@ -19,7 +19,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { AccessibilityInfo, ActivityIndicator, Text, View } from 'react-native';
+import { AccessibilityInfo, ActivityIndicator, Platform, Text, View } from 'react-native';
 import type { ActionDiff } from '@bob/ai';
 import { space } from '@bob/tokens';
 import { Button, Card, font, useTheme } from '@bob/ui';
@@ -43,9 +43,17 @@ export type JarvisConfirmationCardMode =
       readonly confirmable: boolean;
     }
   | {
+      /** Ordre et ordinaux viennent du jeu scellé : l'écran ne les reconstruit jamais. */
+      readonly kind: 'duplicate_review';
+      readonly reviewId: string;
+      readonly choices: NonNullable<CustomerContactPresentationV1['duplicateReview']>['choices'];
+    }
+  | {
       readonly kind: 'notice';
       readonly reason:
+        | 'resolving'
         | 'preparing'
+        | 'duplicate_labels_unavailable'
         | 'recording'
         | 'cancelling'
         | 'consumed'
@@ -60,7 +68,10 @@ export type JarvisConfirmationCardMode =
 const NOTICES: Readonly<
   Record<Extract<JarvisConfirmationCardMode, { kind: 'notice' }>['reason'], string>
 > = {
-  preparing: 'Bob prépare la proposition…',
+  resolving: 'Bob vérifie si ce client existe déjà chez vous…',
+  preparing: 'Dites à Bob ce qu’il faut mettre dans la fiche.',
+  duplicate_labels_unavailable:
+    'Bob n’arrive pas à afficher les fiches proches. Relisez la demande ou annulez-la.',
   recording: 'Bob enregistre la fiche client…',
   cancelling: 'Bob referme cette demande…',
   consumed: 'C’est confirmé. Bob enregistre la fiche client.',
@@ -96,10 +107,20 @@ export function deriveJarvisConfirmationCardMode(
       return { kind: 'notice', reason: 'recording' };
     case 'cancelling':
       return { kind: 'notice', reason: 'cancelling' };
+    case 'resolving_customer':
+      return { kind: 'notice', reason: 'resolving' };
+    case 'awaiting_duplicate_review':
+      return presentation.duplicateReview === null
+        ? { kind: 'notice', reason: 'duplicate_labels_unavailable' }
+        : {
+            kind: 'duplicate_review',
+            reviewId: presentation.duplicateReview.reviewId,
+            choices: presentation.duplicateReview.choices,
+          };
+    case 'preparing_proposal':
+      return { kind: 'notice', reason: 'preparing' };
     case 'awaiting_confirmation':
       break;
-    default:
-      return { kind: 'notice', reason: 'preparing' };
   }
   const confirmation = presentation.confirmation;
   if (confirmation === null || presentation.proposal === null) {
@@ -167,9 +188,17 @@ export function JarvisConfirmationCard({
   visible = true,
 }: JarvisConfirmationCardProps) {
   const { colors, semantic } = useTheme();
+  const frameKey = `${frame.run.runId}:${frame.run.revision}`;
   const [busy, setBusy] = useState<JarvisRunGesture | null>(null);
-  const [failed, setFailed] = useState<JarvisRunGesture | null>(null);
+  const [failure, setFailure] = useState<{
+    readonly frameKey: string;
+    readonly gesture: JarvisRunGesture;
+  } | null>(null);
   const inFlight = useRef(false);
+  // Le tag suffit à masquer une panne d'ancienne révision sans muter une réf pendant un render
+  // concurrent qui pourrait ensuite être abandonné par React.
+  const currentFailure = failure?.frameKey === frameKey ? failure : null;
+  const failed = currentFailure?.gesture ?? null;
   /**
    * Clé de l'accusé RÉELLEMENT abouti — posée APRÈS le succès, jamais avant l'appel. Un accusé
    * perdu ne se marque donc pas comme rendu : la prochaine confirmation réveille l'effet.
@@ -196,6 +225,61 @@ export function JarvisConfirmationCard({
   const sensitive =
     proposal !== null && proposal.fields.some((field) => field.sensitiveField !== null);
 
+  const reviewAnnouncementKey =
+    visible && currentFailure === null && mode.kind === 'duplicate_review'
+      ? `${frame.run.runId}:${mode.reviewId}`
+      : visible &&
+          currentFailure === null &&
+          mode.kind === 'notice' &&
+          mode.reason === 'duplicate_labels_unavailable'
+        ? `${frameKey}:duplicate_labels_unavailable`
+        : null;
+  const reviewAnnouncement =
+    mode.kind === 'duplicate_review'
+      ? 'Bob a trouvé des fiches proches. Choisissez une fiche, créez-en une nouvelle, ou annulez.'
+      : mode.kind === 'notice' && mode.reason === 'duplicate_labels_unavailable'
+        ? NOTICES.duplicate_labels_unavailable
+        : null;
+  const announcedReview = useRef<string | null>(null);
+  useEffect(() => {
+    // Android porte la région vive ; iOS exige une annonce explicite pour VoiceOver.
+    if (
+      Platform.OS !== 'ios' ||
+      reviewAnnouncementKey === null ||
+      reviewAnnouncement === null ||
+      announcedReview.current === reviewAnnouncementKey
+    ) {
+      return;
+    }
+    announcedReview.current = reviewAnnouncementKey;
+    void AccessibilityInfo.announceForAccessibility(reviewAnnouncement);
+  }, [reviewAnnouncement, reviewAnnouncementKey]);
+
+  const failureAnnouncement =
+    currentFailure === null
+      ? null
+      : currentFailure.gesture === 'presentation_ack'
+        ? 'Bob n’a pas pu enregistrer l’affichage de cette proposition.'
+        : mode.kind === 'duplicate_review'
+          ? 'Bob n’a pas pu vérifier votre geste. Relisez la demande avant de réessayer.'
+          : mode.kind === 'notice'
+            ? 'Bob n’a pas pu vérifier l’annulation. Relisez la demande avant de réessayer.'
+            : 'Bob n’a pas pu enregistrer votre geste.';
+  const announcedFailure = useRef<typeof currentFailure>(null);
+  useEffect(() => {
+    if (
+      Platform.OS !== 'ios' ||
+      !visible ||
+      currentFailure === null ||
+      failureAnnouncement === null ||
+      announcedFailure.current === currentFailure
+    ) {
+      return;
+    }
+    announcedFailure.current = currentFailure;
+    void AccessibilityInfo.announceForAccessibility(failureAnnouncement);
+  }, [currentFailure, failureAnnouncement, visible]);
+
   const run = async (
     gesture: JarvisRunGesture,
     task: () => Promise<JarvisRunCall>,
@@ -203,9 +287,10 @@ export function JarvisConfirmationCard({
     ackKeyOfCall: string | null = null,
   ): Promise<void> => {
     if (inFlight.current) return;
+    const callFrameKey = frameKey;
     inFlight.current = true;
     setBusy(gesture);
-    setFailed(null);
+    setFailure((previous) => (previous?.frameKey === callFrameKey ? null : previous));
     try {
       const result = await task();
       if (result.status === 'completed') {
@@ -221,9 +306,9 @@ export function JarvisConfirmationCard({
         onAuthoritativeRefresh();
         return;
       }
-      setFailed(gesture);
+      setFailure({ frameKey: callFrameKey, gesture });
     } catch {
-      setFailed(gesture);
+      setFailure({ frameKey: callFrameKey, gesture });
     } finally {
       inFlight.current = false;
       setBusy(null);
@@ -267,12 +352,16 @@ export function JarvisConfirmationCard({
   }, [ackKey]);
 
   if (mode.kind === 'notice') {
-    // ABANDON TOUJOURS POSSIBLE TANT QUE RIEN N'EST ENGAGÉ. `preparing` couvre les phases où Bob
-    // n'a encore rien écrit — dont un run PARKÉ (résolution de cible non aboutie), qui tient
-    // pourtant le premier plan de l'artisan. Sans ce geste il n'aurait AUCUN recours à l'écran :
-    // ni confirmer (pas de proposition), ni écarter, ni reprendre. On ne l'offre pas sur
-    // `recording`/`cancelling` : l'écriture est partie, dire « annulé » y serait un mensonge.
-    const abandonnable = mode.reason === 'preparing';
+    // ABANDON TOUJOURS POSSIBLE TANT QUE RIEN N'EST ENGAGÉ. Les phases de résolution, de
+    // préparation ou de revue illisible peuvent tenir le premier plan sans autre geste tactile.
+    // On ne l'offre pas sur `recording`/`cancelling` : l'écriture est partie, dire « annulé » y
+    // serait un mensonge.
+    const abandonnable =
+      mode.reason === 'preparing' ||
+      mode.reason === 'resolving' ||
+      mode.reason === 'duplicate_labels_unavailable';
+    const relisible = mode.reason === 'duplicate_labels_unavailable';
+    const refreshable = relisible || failed !== null;
     return (
       <Card padding={space[7]}>
         <Text accessibilityRole="header" style={[font('cardTitle'), { color: colors.ink900 }]}>
@@ -284,13 +373,36 @@ export function JarvisConfirmationCard({
           </Text>
         )}
         <Text
+          accessibilityRole={relisible ? 'alert' : undefined}
           accessibilityLiveRegion="polite"
           style={[font('sub'), { color: colors.slate500, marginTop: space[2] }]}
         >
           {NOTICES[mode.reason]}
         </Text>
+        {failed !== null ? (
+          <Text
+            accessibilityRole="alert"
+            accessibilityLiveRegion="polite"
+            style={[font('sub'), { color: colors.ink900, lineHeight: 20, marginTop: space[3] }]}
+          >
+            Bob n’a pas pu vérifier l’annulation. Relisez la demande avant de réessayer.
+          </Text>
+        ) : null}
         {abandonnable ? (
-          <View style={{ marginTop: space[5] }}>
+          <View style={{ gap: space[3], marginTop: space[5] }}>
+            {refreshable ? (
+              <Button
+                title="Relire la demande"
+                variant="secondary"
+                disabled={busy !== null}
+                accessibilityLabel={
+                  relisible
+                    ? 'Relire la demande pour afficher les fiches proches.'
+                    : 'Relire la demande après l’échec de l’annulation.'
+                }
+                onPress={() => onAuthoritativeRefresh()}
+              />
+            ) : null}
             <Button
               title="Annuler"
               variant="secondary"
@@ -303,6 +415,101 @@ export function JarvisConfirmationCard({
             />
           </View>
         ) : null}
+      </Card>
+    );
+  }
+
+  if (mode.kind === 'duplicate_review') {
+    const locked = busy !== null;
+    return (
+      <Card padding={space[7]} style={{ borderWidth: 1, borderColor: semantic.ai }}>
+        <Text accessibilityRole="header" style={[font('cardTitle'), { color: colors.ink900 }]}>
+          {TITLES[presentation.intent]}
+        </Text>
+        <Text
+          accessibilityLiveRegion="polite"
+          style={[font('sub'), { color: colors.slate500, marginTop: space[2] }]}
+        >
+          Bob a trouvé des fiches proches. Choisissez-en une, poursuivez la création, ou annulez.
+        </Text>
+
+        <View style={{ gap: space[4], marginTop: space[5] }}>
+          {mode.choices.map((choice) => {
+            const unavailable = choice.label === null;
+            return (
+              <View key={choice.choiceId} style={{ gap: space[2] }}>
+                <Text selectable style={[font('sub'), { color: colors.ink900 }]}>
+                  {choice.ordinal}. {choice.label ?? 'Fiche introuvable'}
+                </Text>
+                <View style={{ alignSelf: 'flex-start' }}>
+                  <Button
+                    title={unavailable ? 'Choix indisponible' : 'Choisir cette fiche'}
+                    variant="secondary"
+                    loading={!unavailable && busy === 'use_existing'}
+                    disabled={locked || unavailable}
+                    accessibilityState={{ disabled: locked || unavailable }}
+                    accessibilityLabel={
+                      unavailable
+                        ? `${choice.ordinal}. Fiche introuvable. Choix indisponible.`
+                        : `${choice.ordinal}. ${choice.label}. Choisir cette fiche existante.`
+                    }
+                    onPress={() => {
+                      if (unavailable) return;
+                      void run('use_existing', () =>
+                        coordinator.chooseExistingCustomer(frame, choice.choiceId, ports),
+                      );
+                    }}
+                  />
+                </View>
+              </View>
+            );
+          })}
+        </View>
+
+        {failed !== null ? (
+          <View style={{ gap: space[3], marginTop: space[5] }}>
+            <Text
+              accessibilityRole="alert"
+              accessibilityLiveRegion="polite"
+              style={[font('sub'), { color: colors.ink900, lineHeight: 20 }]}
+            >
+              Bob n’a pas pu vérifier votre geste. Relisez la demande avant de réessayer.
+            </Text>
+            <View style={{ alignSelf: 'flex-start' }}>
+              <Button
+                title="Relire la demande"
+                variant="secondary"
+                disabled={locked}
+                onPress={() => onAuthoritativeRefresh()}
+              />
+            </View>
+          </View>
+        ) : null}
+
+        <View style={{ gap: space[3], marginTop: space[5] }}>
+          <Button
+            title="Créer quand même"
+            variant="secondary"
+            loading={busy === 'continue_create'}
+            disabled={locked}
+            accessibilityState={{ disabled: locked }}
+            accessibilityLabel="Créer quand même une nouvelle fiche malgré les fiches proches."
+            onPress={() => {
+              void run('continue_create', () => coordinator.continueCreation(frame, ports));
+            }}
+          />
+          <Button
+            title="Annuler"
+            variant="danger"
+            loading={busy === 'cancel'}
+            disabled={locked}
+            accessibilityState={{ disabled: locked }}
+            accessibilityLabel="Annuler. Bob annule ce qui peut encore l’être puis relit la demande."
+            onPress={() => {
+              void run('cancel', () => coordinator.cancel(frame.run, ports));
+            }}
+          />
+        </View>
       </Card>
     );
   }
@@ -385,6 +592,7 @@ export function JarvisConfirmationCard({
           <View style={{ gap: space[3], marginTop: space[5] }}>
             <Text
               accessibilityRole="alert"
+              accessibilityLiveRegion="polite"
               style={[font('sub'), { color: colors.ink900, lineHeight: 20 }]}
             >
               {failed === 'presentation_ack'

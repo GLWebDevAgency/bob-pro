@@ -544,9 +544,13 @@ describe('useJarvisRunFrame — L7 : reçu tactile + autorité exacte partagée'
   it('awaiting_confirmation → reçu A pendant → premier current déjà B : A converge quand même', async () => {
     const secondRunId = '77777777-7777-4777-8777-777777777777';
     let current: JarvisCurrentRunView = { run: run(), presentation: presentation() };
+    let settleExact!: (value: Result<JarvisRunSnapshotView, AppError>) => void;
+    const exact = new Promise<Result<JarvisRunSnapshotView, AppError>>((resolve) => {
+      settleExact = resolve;
+    });
     const wire = transport(current, {
       readCurrentRun: () => Promise.resolve({ ok: true, value: current }),
-      readRun: () => Promise.resolve({ ok: true, value: terminalSnapshot }),
+      readRun: () => exact,
     });
     doubles.client = wire.client;
     const qc = queryClient();
@@ -564,11 +568,14 @@ describe('useJarvisRunFrame — L7 : reçu tactile + autorité exacte partagée'
     await act(async () => {
       last(bindings[0] ?? []).refresh(pendingReceipt());
     });
-    // Le reçu pendant arme L7 mais ne relit pas prématurément une fiche encore inchangée.
-    expect(invalidated.filter((key) => JSON.stringify(key) === '["customers"]')).toHaveLength(0);
-
     await settleEffects();
     expect(wire.getRunCalls).toEqual([RUN_ID]);
+    // Le reçu pendant arme L7, mais seul le résultat exact — tenu ouvert ici — a autorité pour
+    // invalider les projections métier. La preuve ne dépend donc plus de la vitesse des microtasks.
+    expect(invalidated.filter((key) => JSON.stringify(key) === '["customers"]')).toHaveLength(0);
+
+    settleExact({ ok: true, value: terminalSnapshot });
+    await settleEffects();
     expect(invalidated.filter((key) => JSON.stringify(key) === '["customers"]')).toHaveLength(1);
     expect(invalidated.filter((key) => JSON.stringify(key) === '["quotes"]')).toHaveLength(1);
   });

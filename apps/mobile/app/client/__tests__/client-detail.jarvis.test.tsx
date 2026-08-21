@@ -112,6 +112,7 @@ const hoisted = vi.hoisted(() => ({
   back: vi.fn(),
   replace: vi.fn(),
   setParams: vi.fn(),
+  focused: true,
 }));
 vi.mock('expo-router', () => ({
   useRouter: () => ({
@@ -121,6 +122,7 @@ vi.mock('expo-router', () => ({
     setParams: hoisted.setParams,
     canGoBack: () => true,
   }),
+  useIsFocused: () => hoisted.focused,
   useLocalSearchParams: () => ({ id: '55555555-5555-4555-8555-555555555555' }),
 }));
 
@@ -435,6 +437,7 @@ function commandTypes(): string[] {
 
 beforeEach(() => {
   announce.mockClear();
+  hoisted.focused = true;
   registry.value = new AgentMissionCommandIdRegistry();
   server.intent = 'update';
   server.targetCustomerId = CUSTOMER_ID;
@@ -582,6 +585,17 @@ describe('La gate d’hôte de la fiche — elle n’héberge que ce qui parle d
 });
 
 describe('Accessibilité et cible tactile de la carte hébergée', () => {
+  it('une fiche conservée en arrière-plan ne vocalise pas la revue Jarvis', async () => {
+    hoisted.focused = false;
+    server.phase = 'awaiting_duplicate_review';
+
+    const rendered = treeOf(await render());
+
+    expect(rendered).toContain('Bob n’arrive pas à afficher les fiches proches.');
+    expect(announce).not.toHaveBeenCalled();
+    expect(commandTypes()).toEqual([]);
+  });
+
   it('« Confirmer » offre une cible ≥ 44 pt (redlines §18)', async () => {
     const renderer = await render();
     const confirm = pressableLabelled(renderer, 'Confirmer');
