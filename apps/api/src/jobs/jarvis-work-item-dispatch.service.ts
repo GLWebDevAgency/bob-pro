@@ -37,7 +37,8 @@
  * lecture stateless RepeatableRead), jamais contre l'horloge ambiante du worker.
  */
 import { randomUUID } from 'node:crypto';
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import { performance } from 'node:perf_hooks';
+import { Inject, Injectable, Optional, type OnApplicationShutdown } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import {
   CLOSED_JARVIS_ACTION_RELEASE_POLICY,
@@ -67,6 +68,12 @@ import type {
   JarvisWorkItemsDispatchRepository,
 } from '../persistence/prisma/jarvis-work-items.persistence';
 import { AppLogger } from '../observability/logger';
+import {
+  JARVIS_DISPATCH_DIRECTORY_MAX_PAGE_SIZE,
+  JARVIS_DISPATCH_DIRECTORY_RUNTIME_PAGE_SIZE,
+  type JarvisDispatchDirectoryClaimedCoordinate,
+  type JarvisDispatchRunDirectoryPort,
+} from './jarvis-dispatch-directory';
 import { ScheduledTenantDirectory } from './tenant-directory';
 
 // ---------------------------------------------------------------------------
@@ -92,25 +99,12 @@ export function jarvisDispatchEnabled(): boolean {
 
 /** `JarvisWorkItemsDispatchRepository` (jarvis-work-items.persistence.ts). */
 export const JARVIS_WORK_ITEMS_DISPATCH = Symbol('JARVIS_WORK_ITEMS_DISPATCH');
-/** `JarvisDispatchRunDirectoryPort` — annuaire serveur des coordonnées à traiter. */
+/** `JarvisDispatchRunDirectoryPort` — annuaire serveur v2 des coordonnées à traiter. */
 export const JARVIS_DISPATCH_RUN_DIRECTORY = Symbol('JARVIS_DISPATCH_RUN_DIRECTORY');
 /** `JarvisAdmissionUnitOfWorkPort` (port core) — adapter liant le UoW unique et ses deps HMAC. */
 export const JARVIS_DISPATCH_ADMISSION = Symbol('JARVIS_DISPATCH_ADMISSION');
 /** Override de registre d'exécuteurs (tests/U1-d) — défaut : registre statique (VIDE en U1-c). */
 export const JARVIS_EFFECT_EXECUTORS = Symbol('JARVIS_EFFECT_EXECUTORS');
-/**
- * Annuaire des coordonnées de dispatch d'un tenant : les (owner, run) portant des work items
- * dus OU des résultats non signalés. Les coordonnées viennent d'un annuaire SERVEUR (précédent
- * reaper, SECURITY DEFINER borné) — jamais d'un client ; le repository les transforme en GUC
- * pour que les policies U1-a s'appliquent fail-closed (option zéro-amendement, SPEC_U1C §3).
- */
-export interface JarvisDispatchRunDirectoryPort {
-  listDispatchCoordinates(
-    companyId: string,
-    limit: number,
-  ): Promise<readonly JarvisWorkItemCoordinates[]>;
-}
-
 // ---------------------------------------------------------------------------
 // Registre statique des exécuteurs d'effets (greffe SPEC_U1C §3)
 // ---------------------------------------------------------------------------
@@ -289,7 +283,9 @@ export class NotificationJobEffectExecutor implements JarvisEffectExecutor {
 /** Lease courte (< plafond repository 30 min) : le fence arbitre toute reprise. */
 const LEASE_DURATION_MS = 5 * 60_000;
 const PENDING_SIGNAL_LIMIT = 25;
-const DIRECTORY_LIMIT = 25;
+const DIRECTORY_HEARTBEAT_INTERVAL_MS = 10_000;
+const DIRECTORY_SHUTDOWN_GRACE_MS = 1_000;
+const DIRECTORY_RESERVATION = Symbol('jarvis-dispatch-directory-reservation');
 
 /** Backoff exponentiel BORNÉ (même loi que notification-delivery, plafond = repository). */
 export function jarvisDispatchRetryDelayMs(attempts: number): number {
@@ -423,6 +419,7 @@ type RevalidationVerdict =
 type LeaseOutcome = 'executed' | 'unknown' | 'cancelled' | 'retried' | 'skipped' | 'failed';
 
 export interface JarvisDispatchCompanySummary {
+  busy: number;
   claimed: number;
   executed: number;
   unknown: number;
@@ -434,11 +431,12 @@ export interface JarvisDispatchCompanySummary {
 
 export interface JarvisDispatchSummary extends JarvisDispatchCompanySummary {
   companies: number;
-  skipped: 'kill_switch' | 'dependencies_absent' | null;
+  skipped: 'kill_switch' | 'dependencies_absent' | 'shutdown' | null;
 }
 
 function emptyCompanySummary(): JarvisDispatchCompanySummary {
   return {
+    busy: 0,
     claimed: 0,
     executed: 0,
     unknown: 0,
@@ -449,16 +447,91 @@ function emptyCompanySummary(): JarvisDispatchCompanySummary {
   };
 }
 
+function mergeCompanySummary(
+  target: JarvisDispatchCompanySummary,
+  delta: JarvisDispatchCompanySummary,
+): void {
+  target.busy += delta.busy;
+  target.claimed += delta.claimed;
+  target.executed += delta.executed;
+  target.unknown += delta.unknown;
+  target.cancelled += delta.cancelled;
+  target.retried += delta.retried;
+  target.signalled += delta.signalled;
+  target.failures += delta.failures;
+}
+
+interface DirectoryHeartbeat {
+  readonly lost: Promise<void>;
+  /** Attend le renew éventuellement en vol et restitue toute perte observée avant son arrêt. */
+  stop(): Promise<boolean>;
+}
+
+type DirectoryCoordinateControl =
+  | { readonly kind: 'completed'; readonly summary: JarvisDispatchCompanySummary }
+  | { readonly kind: 'claim_lost' | 'deadline' | 'shutdown' };
+
+async function raceDirectoryCoordinate(
+  tracked: Promise<JarvisDispatchCompanySummary>,
+  claimLost: Promise<void>,
+  hardDeadline: number,
+  shutdownSignal: AbortSignal,
+): Promise<DirectoryCoordinateControl> {
+  let watchdog: NodeJS.Timeout | null = null;
+  let onShutdown: (() => void) | null = null;
+  const deadline = new Promise<DirectoryCoordinateControl>((resolve) => {
+    watchdog = setTimeout(
+      () => resolve({ kind: 'deadline' }),
+      Math.max(0, hardDeadline - performance.now()),
+    );
+    watchdog.unref();
+  });
+  const shutdown = new Promise<DirectoryCoordinateControl>((resolve) => {
+    if (shutdownSignal.aborted) {
+      resolve({ kind: 'shutdown' });
+      return;
+    }
+    onShutdown = () => resolve({ kind: 'shutdown' });
+    shutdownSignal.addEventListener('abort', onShutdown, { once: true });
+  });
+
+  try {
+    return await Promise.race([
+      tracked.then<DirectoryCoordinateControl, DirectoryCoordinateControl>(
+        (summary) => ({ kind: 'completed', summary }),
+        () => {
+          const summary = emptyCompanySummary();
+          summary.failures = 1;
+          return { kind: 'completed', summary };
+        },
+      ),
+      claimLost.then<DirectoryCoordinateControl>(() => ({ kind: 'claim_lost' })),
+      deadline,
+      shutdown,
+    ]);
+  } finally {
+    if (watchdog !== null) clearTimeout(watchdog);
+    if (onShutdown !== null) shutdownSignal.removeEventListener('abort', onShutdown);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Le worker
 // ---------------------------------------------------------------------------
 
 @Injectable()
-export class JarvisWorkItemDispatchService {
+export class JarvisWorkItemDispatchService implements OnApplicationShutdown {
   private readonly clock = new SystemClock();
   private readonly executors: ReadonlyMap<string, JarvisEffectExecutor>;
   private readonly actionReleasePolicy: JarvisActionReleasePolicy;
   private dependenciesWarned = false;
+  private stopping = false;
+  private readonly activePageControllers = new Set<AbortController>();
+  private readonly activePageTasks = new Set<Promise<unknown>>();
+  private readonly inFlightCoordinates = new Map<
+    string,
+    typeof DIRECTORY_RESERVATION | Promise<JarvisDispatchCompanySummary>
+  >();
 
   constructor(
     @Inject(PERSISTENCE) private readonly p: Persistence,
@@ -495,7 +568,12 @@ export class JarvisWorkItemDispatchService {
   scheduled(): void {
     void this.runAllCompanies()
       .then((summary) => {
-        if (summary.claimed > 0 || summary.signalled > 0 || summary.failures > 0) {
+        if (
+          summary.busy > 0
+          || summary.claimed > 0
+          || summary.signalled > 0
+          || summary.failures > 0
+        ) {
           this.logger.audit('jarvis.dispatch.scheduled', { ...summary });
         }
       })
@@ -511,8 +589,26 @@ export class JarvisWorkItemDispatchService {
     return this.runAllCompanies();
   }
 
+  async onApplicationShutdown(): Promise<void> {
+    this.stopping = true;
+    for (const controller of this.activePageControllers) controller.abort();
+    if (this.activePageTasks.size === 0) return;
+
+    let graceTimer: NodeJS.Timeout | null = null;
+    const grace = new Promise<void>((resolve) => {
+      graceTimer = setTimeout(resolve, DIRECTORY_SHUTDOWN_GRACE_MS);
+      graceTimer.unref();
+    });
+    await Promise.race([
+      Promise.allSettled([...this.activePageTasks]).then(() => undefined),
+      grace,
+    ]);
+    if (graceTimer !== null) clearTimeout(graceTimer);
+  }
+
   async runAllCompanies(limitPerRun = 10): Promise<JarvisDispatchSummary> {
     const base: JarvisDispatchSummary = { companies: 0, skipped: null, ...emptyCompanySummary() };
+    if (this.stopping) return { ...base, skipped: 'shutdown' };
     if (this.repository === null || this.directory === null || this.admission === null) {
       if (!this.dependenciesWarned) {
         this.dependenciesWarned = true;
@@ -535,6 +631,7 @@ export class JarvisWorkItemDispatchService {
     };
     for (const companyId of companyIds) {
       const companySummary = await this.runForCompany(companyId, limitPerRun);
+      summary.busy += companySummary.busy;
       summary.claimed += companySummary.claimed;
       summary.executed += companySummary.executed;
       summary.unknown += companySummary.unknown;
@@ -548,13 +645,20 @@ export class JarvisWorkItemDispatchService {
 
   async runForCompany(companyId: string, limitPerRun = 10): Promise<JarvisDispatchCompanySummary> {
     const summary = emptyCompanySummary();
-    const repository = this.repository;
     const directory = this.directory;
-    if (repository === null || directory === null || this.admission === null) return summary;
+    if (
+      this.stopping
+      || this.repository === null
+      || directory === null
+      || this.admission === null
+    ) return summary;
 
-    let coordinatesList: readonly JarvisWorkItemCoordinates[];
+    let claim: Awaited<ReturnType<JarvisDispatchRunDirectoryPort['claimDispatchCoordinates']>>;
     try {
-      coordinatesList = await directory.listDispatchCoordinates(companyId, DIRECTORY_LIMIT);
+      claim = await directory.claimDispatchCoordinates({
+        companyId,
+        limit: JARVIS_DISPATCH_DIRECTORY_RUNTIME_PAGE_SIZE,
+      });
     } catch (e) {
       this.logger.warn(
         `Annuaire dispatch Jarvis indisponible: ${e instanceof Error ? e.message : String(e)}`,
@@ -563,92 +667,395 @@ export class JarvisWorkItemDispatchService {
       summary.failures += 1;
       return summary;
     }
-    for (const coordinates of coordinatesList) {
-      // Fail-closed : une coordonnée hors du tenant de la boucle est un bug d'annuaire, jamais
-      // une raison d'aller lire ailleurs.
-      if (coordinates.companyId !== companyId) {
-        this.logger.warn(
-          'Annuaire dispatch Jarvis: coordonnée hors tenant ignorée',
-          'jarvis-dispatch',
-        );
-        summary.failures += 1;
-        continue;
+
+    if (claim.status === 'unavailable') {
+      summary.failures += 1;
+      this.logger.warn('Annuaire dispatch Jarvis indisponible', 'jarvis-dispatch');
+      return summary;
+    }
+    if (claim.status === 'empty') return summary;
+    if (claim.status === 'busy') {
+      summary.busy += 1;
+      this.logger.audit('jarvis.dispatch.directory_busy', { companyId });
+      return summary;
+    }
+    if (this.stopping) return summary;
+
+    if (claim.status === 'ack_ready') {
+      const acknowledged = await this.acknowledgeDirectoryPage(companyId, claim.claimId);
+      if (!acknowledged) summary.failures += 1;
+      return summary;
+    }
+
+    const controller = new AbortController();
+    this.activePageControllers.add(controller);
+    const pageTask = this.processDirectoryPage(
+      companyId,
+      claim,
+      limitPerRun,
+      controller.signal,
+    );
+    this.activePageTasks.add(pageTask);
+    try {
+      return await pageTask;
+    } finally {
+      controller.abort();
+      this.activePageControllers.delete(controller);
+      this.activePageTasks.delete(pageTask);
+    }
+  }
+
+  private async processDirectoryPage(
+    companyId: string,
+    claim: Extract<
+      Awaited<ReturnType<JarvisDispatchRunDirectoryPort['claimDispatchCoordinates']>>,
+      { readonly status: 'claimed' }
+    >,
+    limitPerRun: number,
+    shutdownSignal: AbortSignal,
+  ): Promise<JarvisDispatchCompanySummary> {
+    const summary = emptyCompanySummary();
+    const directory = this.directory;
+    if (directory === null) return summary;
+    const hardDeadline = performance.now() + claim.hardLeaseRemainingMs;
+
+    for (const entry of claim.entries) {
+      if (this.stopping || shutdownSignal.aborted || performance.now() >= hardDeadline) {
+        summary.failures += this.stopping || shutdownSignal.aborted ? 0 : 1;
+        return summary;
       }
-      // 1. Redelivery level-triggered AVANT tout claim ET AVANT le kill switch (revue C11) :
-      //    les résultats déjà persistés dont le signal n'est pas appliqué sont re-signalés
-      //    en premier — aucun kill switch ne coupe l'observation d'un effet parti (§5.3).
-      try {
-        const pendings = await repository.listPendingSignals(coordinates, PENDING_SIGNAL_LIMIT);
-        for (const pending of pendings) {
-          const applied = await this.signalStoredResult(coordinates, pending);
-          if (applied) summary.signalled += 1;
+      const attempted = await this.processDirectoryEntry(
+        companyId,
+        claim.claimId,
+        entry,
+        limitPerRun,
+        hardDeadline,
+        shutdownSignal,
+      );
+      mergeCompanySummary(summary, attempted.summary);
+      if (!attempted.completed) return summary;
+    }
+
+    if (this.stopping || shutdownSignal.aborted || performance.now() >= hardDeadline) {
+      summary.failures += this.stopping || shutdownSignal.aborted ? 0 : 1;
+      return summary;
+    }
+    const acknowledged = await this.acknowledgeDirectoryPage(companyId, claim.claimId);
+    if (!acknowledged) summary.failures += 1;
+    return summary;
+  }
+
+  private async processDirectoryEntry(
+    companyId: string,
+    claimId: string,
+    entry: JarvisDispatchDirectoryClaimedCoordinate,
+    limitPerRun: number,
+    hardDeadline: number,
+    shutdownSignal: AbortSignal,
+  ): Promise<{ readonly completed: boolean; readonly summary: JarvisDispatchCompanySummary }> {
+    const summary = emptyCompanySummary();
+    const directory = this.directory;
+    if (directory === null || this.stopping || shutdownSignal.aborted) {
+      return { completed: false, summary };
+    }
+
+    const registryKey = canonicalDigest([
+      'bob.jarvis.dispatch.in-flight.v1',
+      entry.coordinates.companyId,
+      entry.coordinates.ownerUserId,
+      entry.coordinates.runId,
+    ]);
+    const existing = this.inFlightCoordinates.get(registryKey);
+    if (existing === DIRECTORY_RESERVATION) {
+      summary.failures += 1;
+      this.logger.audit('jarvis.dispatch.directory_overloaded', {
+        reason: 'coordinate_reservation_in_progress',
+        registrySize: this.inFlightCoordinates.size,
+      });
+      return { completed: false, summary };
+    }
+    if (
+      existing === undefined
+      && this.inFlightCoordinates.size >= JARVIS_DISPATCH_DIRECTORY_MAX_PAGE_SIZE
+    ) {
+      summary.failures += 1;
+      this.logger.audit('jarvis.dispatch.directory_overloaded', {
+        reason: 'registry_capacity_reached',
+        registrySize: this.inFlightCoordinates.size,
+      });
+      return { completed: false, summary };
+    }
+
+    const ownsReservation = existing === undefined;
+    if (ownsReservation) this.inFlightCoordinates.set(registryKey, DIRECTORY_RESERVATION);
+    const releaseReservation = (): void => {
+      if (
+        ownsReservation
+        && this.inFlightCoordinates.get(registryKey) === DIRECTORY_RESERVATION
+      ) this.inFlightCoordinates.delete(registryKey);
+    };
+
+    const renewed = await this.renewDirectoryClaim(companyId, claimId);
+    if (!renewed || this.stopping || shutdownSignal.aborted) {
+      releaseReservation();
+      summary.failures += this.stopping || shutdownSignal.aborted ? 0 : 1;
+      return { completed: false, summary };
+    }
+    if (performance.now() >= hardDeadline) {
+      releaseReservation();
+      summary.failures += 1;
+      return { completed: false, summary };
+    }
+    const started = await this.startDirectoryPosition(companyId, claimId, entry.position);
+    if (!started) {
+      releaseReservation();
+      summary.failures += 1;
+      return { completed: false, summary };
+    }
+    if (this.stopping || shutdownSignal.aborted || performance.now() >= hardDeadline) {
+      releaseReservation();
+      summary.failures += this.stopping || shutdownSignal.aborted ? 0 : 1;
+      return { completed: false, summary };
+    }
+
+    // Une vraie Promise déjà lancée dans CE process peut porter un nouveau slot sans second
+    // handler. Une sentinelle ne le peut jamais (elle a été refusée plus haut).
+    if (existing instanceof Promise) return { completed: true, summary };
+
+    const tracked = Promise.resolve().then(() => {
+      if (
+        this.stopping
+        || shutdownSignal.aborted
+        || performance.now() >= hardDeadline
+      ) return emptyCompanySummary();
+      return this.processCoordinate(entry.coordinates, limitPerRun);
+    });
+    this.inFlightCoordinates.set(registryKey, tracked);
+    void tracked.then(
+      () => {
+        if (this.inFlightCoordinates.get(registryKey) === tracked) {
+          this.inFlightCoordinates.delete(registryKey);
         }
-      } catch (e) {
-        this.logger.warn(
-          `Redelivery signaux Jarvis impossible: ${e instanceof Error ? e.message : String(e)}`,
-          'jarvis-dispatch',
-        );
-        summary.failures += 1;
-      }
-      // 2. Réconciliation des `authorized` à lease expirée (worker mort APRÈS le point de
-      //    non-retour — revue C10). Comme la redelivery, elle n'est JAMAIS coupée par le
-      //    kill switch : l'effet est déjà autorisé, seul son règlement reste dû (§5.3).
-      try {
-        const reclaimed = await repository.reclaimExpiredAuthorized(coordinates, {
-          leaseOwner: `jarvis-dispatch:${process.pid}`,
-          leaseToken: randomUUID(),
-          leaseDurationMs: LEASE_DURATION_MS,
-          limit: Math.max(1, Math.min(limitPerRun, 100)),
-        });
-        for (const lease of reclaimed) {
-          const { outcome, signalled } = await this.reconcileReclaimedAuthorized(
-            coordinates,
-            lease,
-          );
-          summary.signalled += signalled;
-          // Une reprise peut désormais EXÉCUTER (rejeu du même effectId après réconciliation) :
-          // le compteur doit le dire, sinon un rejeu réussi passerait pour un tick vide.
-          if (outcome === 'executed') summary.executed += 1;
-          if (outcome === 'cancelled') summary.cancelled += 1;
-          if (outcome === 'unknown') summary.unknown += 1;
-          if (outcome === 'failed') summary.failures += 1;
+      },
+      () => {
+        if (this.inFlightCoordinates.get(registryKey) === tracked) {
+          this.inFlightCoordinates.delete(registryKey);
         }
-      } catch (e) {
-        this.logger.warn(
-          `Réconciliation authorized Jarvis impossible: ${e instanceof Error ? e.message : String(e)}`,
-          'jarvis-dispatch',
-        );
-        summary.failures += 1;
+      },
+    );
+
+    const heartbeat = this.startDirectoryHeartbeat(
+      companyId,
+      claimId,
+      hardDeadline,
+      shutdownSignal,
+    );
+    const controlled = await raceDirectoryCoordinate(
+      tracked,
+      heartbeat.lost,
+      hardDeadline,
+      shutdownSignal,
+    );
+    const heartbeatLost = await heartbeat.stop();
+    if (controlled.kind !== 'completed' || heartbeatLost) {
+      if (controlled.kind !== 'shutdown') summary.failures += 1;
+      this.logger.audit('jarvis.dispatch.directory_control_lost', {
+        reason: heartbeatLost ? 'claim_lost' : controlled.kind,
+      });
+      return { completed: false, summary };
+    }
+    mergeCompanySummary(summary, controlled.summary);
+    return { completed: true, summary };
+  }
+
+  private startDirectoryHeartbeat(
+    companyId: string,
+    claimId: string,
+    hardDeadline: number,
+    shutdownSignal: AbortSignal,
+  ): DirectoryHeartbeat {
+    let active = true;
+    let claimLost = false;
+    let lostResolved = false;
+    let timer: NodeJS.Timeout | null = null;
+    let inFlight: Promise<void> | null = null;
+    let stopPromise: Promise<boolean> | null = null;
+    let resolveLost!: () => void;
+    const lost = new Promise<void>((resolve) => {
+      resolveLost = resolve;
+    });
+    const lose = (): void => {
+      claimLost = true;
+      active = false;
+      if (timer !== null) clearTimeout(timer);
+      timer = null;
+      if (!lostResolved) {
+        lostResolved = true;
+        resolveLost();
       }
-      // 3. Kill switch dispatch (revue C11) : il ne gate QUE les nouveaux claims/authorize.
-      if (!jarvisDispatchEnabled()) continue;
-      // 4. Claim court des work items dus du run.
-      let leases: readonly JarvisWorkItemLease[];
-      try {
-        leases = await repository.claimDue(coordinates, {
-          leaseOwner: `jarvis-dispatch:${process.pid}`,
-          leaseToken: randomUUID(),
-          leaseDurationMs: LEASE_DURATION_MS,
-          limit: Math.max(1, Math.min(limitPerRun, 100)),
-        });
-      } catch (e) {
-        this.logger.warn(
-          `Claim work items Jarvis impossible: ${e instanceof Error ? e.message : String(e)}`,
-          'jarvis-dispatch',
-        );
-        summary.failures += 1;
-        continue;
+    };
+    const schedule = (): void => {
+      if (!active) return;
+      if (shutdownSignal.aborted) return lose();
+      const remaining = hardDeadline - performance.now();
+      if (remaining <= 0) {
+        lose();
+        return;
       }
-      summary.claimed += leases.length;
-      for (const lease of leases) {
-        const { outcome, signalled } = await this.processLease(coordinates, lease);
+      timer = setTimeout(() => {
+        timer = null;
+        if (!active) return;
+        if (shutdownSignal.aborted) return lose();
+        inFlight = (async () => {
+          const renewed = await this.renewDirectoryClaim(companyId, claimId);
+          if (!renewed) {
+            lose();
+            return;
+          }
+          if (active) schedule();
+        })();
+        void inFlight.then(
+          () => undefined,
+          () => lose(),
+        );
+      }, Math.min(DIRECTORY_HEARTBEAT_INTERVAL_MS, remaining));
+      timer.unref();
+    };
+    schedule();
+    return {
+      lost,
+      stop: () => {
+        if (stopPromise !== null) return stopPromise;
+        active = false;
+        if (timer !== null) clearTimeout(timer);
+        timer = null;
+        stopPromise = (inFlight ?? Promise.resolve()).then(
+          () => claimLost,
+          () => {
+            lose();
+            return true;
+          },
+        );
+        return stopPromise;
+      },
+    };
+  }
+
+  private async renewDirectoryClaim(companyId: string, claimId: string): Promise<boolean> {
+    const directory = this.directory;
+    if (directory === null) return false;
+    try {
+      const result = await directory.renewDispatchCoordinatesClaim({ companyId, claimId });
+      return result.status === 'succeeded' && result.renewed;
+    } catch {
+      return false;
+    }
+  }
+
+  private async startDirectoryPosition(
+    companyId: string,
+    claimId: string,
+    position: number,
+  ): Promise<boolean> {
+    const directory = this.directory;
+    if (directory === null || this.stopping) return false;
+    try {
+      const result = await directory.startDispatchCoordinate({ companyId, claimId, position });
+      return result.status === 'succeeded' && result.started;
+    } catch {
+      return false;
+    }
+  }
+
+  private async acknowledgeDirectoryPage(companyId: string, claimId: string): Promise<boolean> {
+    const directory = this.directory;
+    if (directory === null) return false;
+    try {
+      const result = await directory.acknowledgeDispatchCoordinates({ companyId, claimId });
+      return result.status === 'succeeded' && result.acknowledged;
+    } catch {
+      return false;
+    }
+  }
+
+  private async processCoordinate(
+    coordinates: JarvisWorkItemCoordinates,
+    limitPerRun: number,
+  ): Promise<JarvisDispatchCompanySummary> {
+    const summary = emptyCompanySummary();
+    const repository = this.repository;
+    if (repository === null || this.admission === null) return summary;
+
+    // 1. Redelivery level-triggered avant le kill switch : un effet déjà parti doit toujours
+    // être observé, même quand les nouveaux claims sont fermés.
+    try {
+      const pendings = await repository.listPendingSignals(coordinates, PENDING_SIGNAL_LIMIT);
+      for (const pending of pendings) {
+        const applied = await this.signalStoredResult(coordinates, pending);
+        if (applied) summary.signalled += 1;
+      }
+    } catch (e) {
+      this.logger.warn(
+        `Redelivery signaux Jarvis impossible: ${e instanceof Error ? e.message : String(e)}`,
+        'jarvis-dispatch',
+      );
+      summary.failures += 1;
+    }
+
+    // 2. Réconciliation des effets déjà autorisés, également indépendante du kill switch.
+    try {
+      const reclaimed = await repository.reclaimExpiredAuthorized(coordinates, {
+        leaseOwner: `jarvis-dispatch:${process.pid}`,
+        leaseToken: randomUUID(),
+        leaseDurationMs: LEASE_DURATION_MS,
+        limit: Math.max(1, Math.min(limitPerRun, 100)),
+      });
+      for (const lease of reclaimed) {
+        const { outcome, signalled } = await this.reconcileReclaimedAuthorized(
+          coordinates,
+          lease,
+        );
         summary.signalled += signalled;
         if (outcome === 'executed') summary.executed += 1;
-        if (outcome === 'unknown') summary.unknown += 1;
         if (outcome === 'cancelled') summary.cancelled += 1;
-        if (outcome === 'retried') summary.retried += 1;
+        if (outcome === 'unknown') summary.unknown += 1;
         if (outcome === 'failed') summary.failures += 1;
       }
+    } catch (e) {
+      this.logger.warn(
+        `Réconciliation authorized Jarvis impossible: ${e instanceof Error ? e.message : String(e)}`,
+        'jarvis-dispatch',
+      );
+      summary.failures += 1;
+    }
+
+    // 3. Le kill switch ne coupe que les nouveaux claims/authorize.
+    if (!jarvisDispatchEnabled()) return summary;
+    let leases: readonly JarvisWorkItemLease[];
+    try {
+      leases = await repository.claimDue(coordinates, {
+        leaseOwner: `jarvis-dispatch:${process.pid}`,
+        leaseToken: randomUUID(),
+        leaseDurationMs: LEASE_DURATION_MS,
+        limit: Math.max(1, Math.min(limitPerRun, 100)),
+      });
+    } catch (e) {
+      this.logger.warn(
+        `Claim work items Jarvis impossible: ${e instanceof Error ? e.message : String(e)}`,
+        'jarvis-dispatch',
+      );
+      summary.failures += 1;
+      return summary;
+    }
+    summary.claimed += leases.length;
+    for (const lease of leases) {
+      const { outcome, signalled } = await this.processLease(coordinates, lease);
+      summary.signalled += signalled;
+      if (outcome === 'executed') summary.executed += 1;
+      if (outcome === 'unknown') summary.unknown += 1;
+      if (outcome === 'cancelled') summary.cancelled += 1;
+      if (outcome === 'retried') summary.retried += 1;
+      if (outcome === 'failed') summary.failures += 1;
     }
     return summary;
   }

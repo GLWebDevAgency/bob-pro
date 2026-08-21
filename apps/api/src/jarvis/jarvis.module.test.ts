@@ -332,7 +332,12 @@ describe('graphe d’injection réel', () => {
     // Ici la persistance porte les trois fabriques : les trois jetons se résolvent NON NULS et
     // le registre ouvre les deux actions du lot. C'est la preuve d'ARMEMENT, pas de câblage.
     const dispatch = { claimDue: vi.fn(), listPendingSignals: vi.fn() };
-    const directory = { listDispatchCoordinates: vi.fn() };
+    const directory = {
+      claimDispatchCoordinates: vi.fn(),
+      renewDispatchCoordinatesClaim: vi.fn(),
+      startDispatchCoordinate: vi.fn(),
+      acknowledgeDispatchCoordinates: vi.fn(),
+    };
     const persistence = {
       ...bootPersistence(FAKE_PAYLOADS),
       createJarvisWorkItemsDispatch: vi.fn(() => dispatch),

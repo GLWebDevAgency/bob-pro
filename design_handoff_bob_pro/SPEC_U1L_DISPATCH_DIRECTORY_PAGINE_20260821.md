@@ -1,6 +1,6 @@
 # SPEC U1-l — Annuaire de dispatch paginé, loué et équitable dans un tenant
 
-- **Date** : 2026-08-21 · **Auteur** : GPT · **Statut normatif** : `specified`.
+- **Date** : 2026-08-21 · **Auteur** : GPT · **Statut normatif** : `implemented`.
 - **Objectif primaire** : O4 — une mission confirmée continue jusqu'à un résultat, un abandon
   explicite ou une erreur récupérable ; une coordonnée fautive ne condamne pas les suivantes.
 - **Contraintes** : O6/O7 — aucune progression inventée, protocole PostgreSQL reproductible,
@@ -460,16 +460,16 @@ acquitter le nouveau claim.
 
 ## 8. Definition of Done
 
-- [ ] Spec contre-relue, P0/P1 à zéro sur le protocole figé.
-- [ ] Migration append-only + modèle `@@ignore` + index keyset + v2 + RLS/ACL/release livrés, sans
+- [x] Spec contre-relue, P0/P1 à zéro sur le protocole figé.
+- [x] Migration append-only + modèle `@@ignore` + index keyset + v2 + RLS/ACL/release livrés, sans
       toucher v1 ni ajouter de colonne, statut, trigger ou nouvelle forme de writer à
       `jarvis_work_items`.
-- [ ] Worker/adapteur v2 sans fallback stateless ; chaque position possède un slot durable avant
+- [x] Worker/adapteur v2 sans fallback stateless ; chaque position possède un slot durable avant
       ACK, et un handler pendant ne bloque pas le suffixe après l'échéance dure.
-- [ ] Tests unitaires et PostgreSQL ci-dessus verts, avec mesure rouge reproduisant la famine v1.
-- [ ] Typechecks API, lint ciblé, migration safety, release safety et rituel AgentMission verts.
+- [x] Tests unitaires et PostgreSQL ci-dessus verts, avec mesure rouge reproduisant la famine v1.
+- [x] Typechecks API, lint ciblé, migration safety, release safety et rituel AgentMission verts.
 - [ ] Preuve Supabase staging non-superuser attachée au SHA exact.
-- [ ] Revue adversariale finale P0/P1 à zéro ; statut au plus `implemented` avant la preuve staging.
-- [ ] Aucun artefact temporaire de build/cluster conservé après validation ; nettoyage limité aux
+- [x] Revue adversariale finale P0/P1 à zéro ; statut au plus `implemented` avant la preuve staging.
+- [x] Aucun artefact temporaire de build/cluster conservé après validation ; nettoyage limité aux
       chemins régénérables explicitement vérifiés.
-- [ ] Aucun flag ouvert, aucun manifest positif, aucun déploiement ni claim d'équité inter-tenant.
+- [x] Aucun flag ouvert, aucun manifest positif, aucun déploiement ni claim d'équité inter-tenant.

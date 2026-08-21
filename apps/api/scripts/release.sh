@@ -870,6 +870,7 @@ SELECT pg_catalog.format(
    -- Cette autorité globale reste fermée jusqu'à son provisioner owner-aware. Même au premier
    -- déploiement, elle ne traverse jamais une fenêtre DML ouverte au runtime.
    AND relation.relname NOT IN (
+     'jarvis_dispatch_directory_cursors',
      'realtime_global_capacity',
      'realtime_voice_trace_events',
      'realtime_voice_trace_access_audits'
@@ -923,6 +924,52 @@ SELECT pg_catalog.format(
   FROM pg_catalog.pg_class AS relation
   JOIN pg_catalog.pg_roles AS owner ON owner.oid = relation.relowner
  WHERE relation.oid = 'public.realtime_global_capacity'::regclass
+\gexec
+-- Le curseur Jarvis v2 n'est jamais une table runtime. L'exclusion ci-dessus ferme la fenêtre
+-- du premier déploiement ; cette normalisation owner-aware retire aussi tout reliquat table ou
+-- colonne d'une release interrompue avant le provisioner dédié.
+DO $jarvis_dispatch_cursor_runtime_acl_owner$
+DECLARE
+  cursor_owner OID;
+BEGIN
+  SELECT relation.relowner
+    INTO STRICT cursor_owner
+    FROM pg_catalog.pg_class AS relation
+   WHERE relation.oid = 'public.jarvis_dispatch_directory_cursors'::regclass;
+  IF cursor_owner <> (
+       SELECT role.oid FROM pg_catalog.pg_roles AS role WHERE role.rolname = current_user
+     )
+     AND NOT pg_catalog.pg_has_role(session_user, cursor_owner, 'SET') THEN
+    RAISE EXCEPTION
+      'jarvis_dispatch_directory_cursors owner is unavailable through SET membership';
+  END IF;
+END;
+$jarvis_dispatch_cursor_runtime_acl_owner$;
+SELECT pg_catalog.format(
+  'SET LOCAL ROLE %I; REVOKE ALL PRIVILEGES ON TABLE public.jarvis_dispatch_directory_cursors FROM %I; RESET ROLE;',
+  owner.rolname,
+  :'app_role'
+)
+  FROM pg_catalog.pg_class AS relation
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = relation.relowner
+ WHERE relation.oid = 'public.jarvis_dispatch_directory_cursors'::regclass
+\gexec
+SELECT pg_catalog.format(
+  'SET LOCAL ROLE %I; REVOKE SELECT (%I), INSERT (%I), UPDATE (%I), REFERENCES (%I) ON TABLE public.jarvis_dispatch_directory_cursors FROM %I; RESET ROLE;',
+  owner.rolname,
+  attribute.attname,
+  attribute.attname,
+  attribute.attname,
+  attribute.attname,
+  :'app_role'
+)
+  FROM pg_catalog.pg_class AS relation
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = relation.relowner
+  JOIN pg_catalog.pg_attribute AS attribute ON attribute.attrelid = relation.oid
+ WHERE relation.oid = 'public.jarvis_dispatch_directory_cursors'::regclass
+   AND attribute.attnum > 0
+   AND NOT attribute.attisdropped
+ ORDER BY attribute.attnum
 \gexec
 -- TRUNCATE n'est jamais une capacité runtime. La liste explicite répare aussi un ancien ACL,
 -- y compris sur le lease dont le DELETE ciblé reste nécessaire à l'autorité de terminaison.
@@ -2670,6 +2717,12 @@ certify_realtime_reaper_release_metadata() {
     -f apps/api/prisma/realtime-reaper-release-cert.sql
 }
 
+certify_jarvis_dispatch_directory_release_metadata() {
+  psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+    -v app_role="${APP_DATABASE_ROLE:-}" \
+    -f apps/api/prisma/jarvis-dispatch-directory-release-cert.sql
+}
+
 # Jarvis U1-e (SPEC_U1E §4) — annuaire des proprietaires dont le PII de proposition est echu.
 # Meme patron que le reaper, en version REDUITE : ni projection ni curseur, le tenant vient de
 # ScheduledTenantDirectory et l'echeance est portee par la ligne. Le role est cree AVANT le
@@ -2987,7 +3040,7 @@ BEGIN
   IF authority.rolcanlogin OR authority.rolsuper OR authority.rolcreatedb
      OR authority.rolcreaterole OR authority.rolinherit OR authority.rolreplication
      OR authority.rolbypassrls THEN
-    RAISE EXCEPTION 'Jarvis payload retention directory role privilege drift';
+    RAISE EXCEPTION 'Jarvis dispatch directory role privilege drift';
   END IF;
 END;
 $$;
@@ -3048,8 +3101,13 @@ DO $$
 BEGIN
   IF EXISTS (
     SELECT 1 FROM pg_catalog.pg_proc AS function
-     WHERE function.oid =
-       'public.list_jarvis_dispatch_coordinates_v1(text,integer)'::regprocedure
+     WHERE function.oid IN (
+       'public.list_jarvis_dispatch_coordinates_v1(text,integer)'::regprocedure,
+       'public.claim_jarvis_dispatch_coordinates_v2(text,integer,uuid)'::regprocedure,
+       'public.renew_jarvis_dispatch_coordinates_claim_v2(text,uuid)'::regprocedure,
+       'public.start_jarvis_dispatch_coordinate_v2(text,uuid,integer)'::regprocedure,
+       'public.ack_jarvis_dispatch_coordinates_v2(text,uuid)'::regprocedure
+     )
        AND function.proowner NOT IN (
          (SELECT role.oid FROM pg_catalog.pg_roles AS role WHERE role.rolname = current_user),
          (SELECT relation.relowner FROM pg_catalog.pg_class AS relation
@@ -3057,7 +3115,7 @@ BEGIN
          'bob_jarvis_dispatch_directory'::regrole
        )
   ) THEN
-    RAISE EXCEPTION 'Jarvis payload retention directory function has an unexpected owner';
+    RAISE EXCEPTION 'Jarvis dispatch directory function has an unexpected owner';
   END IF;
 END;
 $$;
@@ -3081,25 +3139,78 @@ SELECT format(
   'ALTER FUNCTION %s OWNER TO bob_jarvis_dispatch_directory',
   function.oid::regprocedure
 )
-  FROM pg_catalog.pg_proc AS function
- WHERE function.oid =
-   'public.list_jarvis_dispatch_coordinates_v1(text,integer)'::regprocedure
+ FROM pg_catalog.pg_proc AS function
+ WHERE function.oid IN (
+   'public.list_jarvis_dispatch_coordinates_v1(text,integer)'::regprocedure,
+   'public.claim_jarvis_dispatch_coordinates_v2(text,integer,uuid)'::regprocedure,
+   'public.renew_jarvis_dispatch_coordinates_claim_v2(text,uuid)'::regprocedure,
+   'public.start_jarvis_dispatch_coordinate_v2(text,uuid,integer)'::regprocedure,
+   'public.ack_jarvis_dispatch_coordinates_v2(text,uuid)'::regprocedure
+ )
    AND function.proowner = (
      SELECT role.oid FROM pg_catalog.pg_roles AS role WHERE role.rolname = current_user
    )
 \gexec
 
 SET LOCAL ROLE bob_jarvis_dispatch_directory;
-REVOKE ALL ON FUNCTION public.list_jarvis_dispatch_coordinates_v1(TEXT, INTEGER) FROM PUBLIC;
-ALTER FUNCTION public.list_jarvis_dispatch_coordinates_v1(TEXT, INTEGER) SECURITY DEFINER;
-ALTER FUNCTION public.list_jarvis_dispatch_coordinates_v1(TEXT, INTEGER)
-  SET search_path = pg_catalog;
-ALTER FUNCTION public.list_jarvis_dispatch_coordinates_v1(TEXT, INTEGER)
-  SET row_security = on;
-ALTER FUNCTION public.list_jarvis_dispatch_coordinates_v1(TEXT, INTEGER)
-  SET statement_timeout = '4s';
-ALTER FUNCTION public.list_jarvis_dispatch_coordinates_v1(TEXT, INTEGER)
-  SET lock_timeout = '1s';
+SELECT pg_catalog.format('ALTER FUNCTION %s SECURITY DEFINER', function.oid::regprocedure)
+  FROM pg_catalog.pg_proc AS function
+ WHERE function.oid IN (
+   'public.list_jarvis_dispatch_coordinates_v1(text,integer)'::regprocedure,
+   'public.claim_jarvis_dispatch_coordinates_v2(text,integer,uuid)'::regprocedure,
+   'public.renew_jarvis_dispatch_coordinates_claim_v2(text,uuid)'::regprocedure,
+   'public.start_jarvis_dispatch_coordinate_v2(text,uuid,integer)'::regprocedure,
+   'public.ack_jarvis_dispatch_coordinates_v2(text,uuid)'::regprocedure
+ )
+\gexec
+SELECT pg_catalog.format(
+  'ALTER FUNCTION %s SET search_path = pg_catalog', function.oid::regprocedure
+)
+  FROM pg_catalog.pg_proc AS function
+ WHERE function.oid IN (
+   'public.list_jarvis_dispatch_coordinates_v1(text,integer)'::regprocedure,
+   'public.claim_jarvis_dispatch_coordinates_v2(text,integer,uuid)'::regprocedure,
+   'public.renew_jarvis_dispatch_coordinates_claim_v2(text,uuid)'::regprocedure,
+   'public.start_jarvis_dispatch_coordinate_v2(text,uuid,integer)'::regprocedure,
+   'public.ack_jarvis_dispatch_coordinates_v2(text,uuid)'::regprocedure
+ )
+\gexec
+SELECT pg_catalog.format(
+  'ALTER FUNCTION %s SET row_security = on', function.oid::regprocedure
+)
+  FROM pg_catalog.pg_proc AS function
+ WHERE function.oid IN (
+   'public.list_jarvis_dispatch_coordinates_v1(text,integer)'::regprocedure,
+   'public.claim_jarvis_dispatch_coordinates_v2(text,integer,uuid)'::regprocedure,
+   'public.renew_jarvis_dispatch_coordinates_claim_v2(text,uuid)'::regprocedure,
+   'public.start_jarvis_dispatch_coordinate_v2(text,uuid,integer)'::regprocedure,
+   'public.ack_jarvis_dispatch_coordinates_v2(text,uuid)'::regprocedure
+ )
+\gexec
+SELECT pg_catalog.format(
+  'ALTER FUNCTION %s SET statement_timeout = %L', function.oid::regprocedure, '4s'
+)
+  FROM pg_catalog.pg_proc AS function
+ WHERE function.oid IN (
+   'public.list_jarvis_dispatch_coordinates_v1(text,integer)'::regprocedure,
+   'public.claim_jarvis_dispatch_coordinates_v2(text,integer,uuid)'::regprocedure,
+   'public.renew_jarvis_dispatch_coordinates_claim_v2(text,uuid)'::regprocedure,
+   'public.start_jarvis_dispatch_coordinate_v2(text,uuid,integer)'::regprocedure,
+   'public.ack_jarvis_dispatch_coordinates_v2(text,uuid)'::regprocedure
+ )
+\gexec
+SELECT pg_catalog.format(
+  'ALTER FUNCTION %s SET lock_timeout = %L', function.oid::regprocedure, '1s'
+)
+  FROM pg_catalog.pg_proc AS function
+ WHERE function.oid IN (
+   'public.list_jarvis_dispatch_coordinates_v1(text,integer)'::regprocedure,
+   'public.claim_jarvis_dispatch_coordinates_v2(text,integer,uuid)'::regprocedure,
+   'public.renew_jarvis_dispatch_coordinates_claim_v2(text,uuid)'::regprocedure,
+   'public.start_jarvis_dispatch_coordinate_v2(text,uuid,integer)'::regprocedure,
+   'public.ack_jarvis_dispatch_coordinates_v2(text,uuid)'::regprocedure
+ )
+\gexec
 
 -- ACL = allowlist EXACTE, jamais une liste de roles connus a revoquer : un ancien grantee
 -- arbitraire sur une fonction SECURITY DEFINER enumererait les proprietaires d'un tenant.
@@ -3112,25 +3223,48 @@ SELECT format('REVOKE ALL ON FUNCTION %s FROM %s CASCADE',
    COALESCE(function.proacl, pg_catalog.acldefault('f', function.proowner))
  ) AS privilege
   LEFT JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = privilege.grantee
- WHERE function.oid =
-   'public.list_jarvis_dispatch_coordinates_v1(text,integer)'::regprocedure
+ WHERE function.oid IN (
+   'public.list_jarvis_dispatch_coordinates_v1(text,integer)'::regprocedure,
+   'public.claim_jarvis_dispatch_coordinates_v2(text,integer,uuid)'::regprocedure,
+   'public.renew_jarvis_dispatch_coordinates_claim_v2(text,uuid)'::regprocedure,
+   'public.start_jarvis_dispatch_coordinate_v2(text,uuid,integer)'::regprocedure,
+   'public.ack_jarvis_dispatch_coordinates_v2(text,uuid)'::regprocedure
+ )
    AND privilege.privilege_type = 'EXECUTE'
    AND privilege.grantee <> function.proowner
 \gexec
 -- Fence Data API Supabase : ces trois roles recoivent EXECUTE par defaut sur toute fonction neuve
 -- du schema public. Un annuaire de proprietaires atteignable depuis PostgREST serait une fuite.
 SELECT format(
-  'REVOKE ALL PRIVILEGES ON FUNCTION public.list_jarvis_dispatch_coordinates_v1(TEXT, INTEGER) FROM %I',
+  'REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I',
+  function.oid::regprocedure,
   role.rolname
 )
-  FROM pg_catalog.pg_roles AS role
- WHERE role.rolname IN ('anon', 'authenticated', 'service_role')
+  FROM pg_catalog.pg_proc AS function
+ CROSS JOIN pg_catalog.pg_roles AS role
+ WHERE function.oid IN (
+   'public.list_jarvis_dispatch_coordinates_v1(text,integer)'::regprocedure,
+   'public.claim_jarvis_dispatch_coordinates_v2(text,integer,uuid)'::regprocedure,
+   'public.renew_jarvis_dispatch_coordinates_claim_v2(text,uuid)'::regprocedure,
+   'public.start_jarvis_dispatch_coordinate_v2(text,uuid,integer)'::regprocedure,
+   'public.ack_jarvis_dispatch_coordinates_v2(text,uuid)'::regprocedure
+ )
+   AND role.rolname IN ('anon', 'authenticated', 'service_role')
 \gexec
 SELECT format(
-  'GRANT EXECUTE ON FUNCTION public.list_jarvis_dispatch_coordinates_v1(TEXT, INTEGER) TO %I',
+  'GRANT EXECUTE ON FUNCTION %s TO %I',
+  function.oid::regprocedure,
   :'app_role'
 )
+  FROM pg_catalog.pg_proc AS function
  WHERE :'app_role' <> ''
+   AND function.oid IN (
+     'public.list_jarvis_dispatch_coordinates_v1(text,integer)'::regprocedure,
+     'public.claim_jarvis_dispatch_coordinates_v2(text,integer,uuid)'::regprocedure,
+     'public.renew_jarvis_dispatch_coordinates_claim_v2(text,uuid)'::regprocedure,
+     'public.start_jarvis_dispatch_coordinate_v2(text,uuid,integer)'::regprocedure,
+     'public.ack_jarvis_dispatch_coordinates_v2(text,uuid)'::regprocedure
+   )
 \gexec
 RESET ROLE;
 
@@ -3141,6 +3275,85 @@ SELECT format('SET LOCAL ROLE %I', owner.rolname)
 \gexec
 REVOKE CREATE ON SCHEMA public FROM bob_jarvis_dispatch_directory;
 GRANT USAGE ON SCHEMA public TO bob_jarvis_dispatch_directory;
+
+-- Le curseur reste possédé par le schema owner et n'est accessible directement que par
+-- l'autorité des fonctions. Le runtime, PUBLIC et les rôles Data API gardent zéro droit table,
+-- y compris tout ancien grant par colonne.
+SELECT DISTINCT pg_catalog.format(
+  'REVOKE ALL PRIVILEGES ON TABLE public.jarvis_dispatch_directory_cursors FROM %s CASCADE',
+  CASE
+    WHEN privilege.grantee = 0 THEN 'PUBLIC'
+    ELSE pg_catalog.quote_ident(grantee.rolname)
+  END
+)
+  FROM pg_catalog.pg_class AS relation
+ CROSS JOIN LATERAL pg_catalog.aclexplode(relation.relacl) AS privilege
+  LEFT JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = privilege.grantee
+ WHERE relation.oid = 'public.jarvis_dispatch_directory_cursors'::regclass
+   AND privilege.grantee <> relation.relowner
+\gexec
+SELECT DISTINCT pg_catalog.format(
+  'REVOKE ALL PRIVILEGES (%I) ON TABLE public.jarvis_dispatch_directory_cursors FROM %s CASCADE',
+  attribute.attname,
+  CASE
+    WHEN privilege.grantee = 0 THEN 'PUBLIC'
+    ELSE pg_catalog.quote_ident(grantee.rolname)
+  END
+)
+  FROM pg_catalog.pg_class AS relation
+  JOIN pg_catalog.pg_attribute AS attribute ON attribute.attrelid = relation.oid
+ CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) AS privilege
+  LEFT JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = privilege.grantee
+ WHERE relation.oid = 'public.jarvis_dispatch_directory_cursors'::regclass
+   AND attribute.attnum > 0
+   AND NOT attribute.attisdropped
+   AND privilege.grantee <> relation.relowner
+\gexec
+REVOKE ALL PRIVILEGES ON TABLE public.jarvis_dispatch_directory_cursors
+  FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON TABLE public.jarvis_dispatch_directory_cursors
+  FROM bob_jarvis_dispatch_directory CASCADE;
+SELECT pg_catalog.format(
+  'REVOKE ALL PRIVILEGES (%I) ON TABLE public.jarvis_dispatch_directory_cursors FROM bob_jarvis_dispatch_directory CASCADE',
+  attribute.attname
+)
+  FROM pg_catalog.pg_attribute AS attribute
+ CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) AS privilege
+ WHERE attribute.attrelid = 'public.jarvis_dispatch_directory_cursors'::regclass
+   AND attribute.attnum > 0
+   AND NOT attribute.attisdropped
+   AND privilege.grantee = 'bob_jarvis_dispatch_directory'::regrole
+\gexec
+SELECT pg_catalog.format(
+  'REVOKE ALL PRIVILEGES ON TABLE public.jarvis_dispatch_directory_cursors FROM %I CASCADE',
+  role.rolname
+)
+  FROM pg_catalog.pg_roles AS role
+ WHERE role.rolname IN ('anon', 'authenticated', 'service_role')
+\gexec
+SELECT pg_catalog.format(
+  'REVOKE ALL PRIVILEGES ON TABLE public.jarvis_dispatch_directory_cursors FROM %I CASCADE',
+  :'app_role'
+)
+ WHERE :'app_role' <> ''
+\gexec
+SELECT pg_catalog.format(
+  'REVOKE SELECT (%I), INSERT (%I), UPDATE (%I), REFERENCES (%I) ON TABLE public.jarvis_dispatch_directory_cursors FROM %I CASCADE',
+  attribute.attname,
+  attribute.attname,
+  attribute.attname,
+  attribute.attname,
+  :'app_role'
+)
+  FROM pg_catalog.pg_attribute AS attribute
+ WHERE :'app_role' <> ''
+   AND attribute.attrelid = 'public.jarvis_dispatch_directory_cursors'::regclass
+   AND attribute.attnum > 0
+   AND NOT attribute.attisdropped
+ ORDER BY attribute.attnum
+\gexec
+GRANT SELECT, INSERT, UPDATE ON TABLE public.jarvis_dispatch_directory_cursors
+  TO bob_jarvis_dispatch_directory;
 
 -- Table remise a plat pour cette autorite AVANT le grant par colonne : un privilege de table
 -- entier qui survivrait rendrait la restriction par colonne inoperante.
@@ -3165,7 +3378,7 @@ SELECT DISTINCT format(
 -- des preuves opaques, jamais la charge métier.
 -- CE QUI RESTE INATTEIGNABLE, et c'est la le point : payloadRef, authorizationSource,
 -- submittedJobRef et targetDigest. L'autorite oriente le worker ; elle ne lit pas la charge.
-GRANT SELECT ("companyId", "ownerUserId", "runId", "status", "nextAttemptAt", "leaseExpiresAt", "authorizedAt", "authorizationDigest", "resultDigest", "signalAppliedAt")
+GRANT SELECT ("companyId", "ownerUserId", "runId", "status", "nextAttemptAt", "leaseExpiresAt", "authorizedAt", "authorizationDigest", "resultDigest", "signalAppliedAt", "updatedAt")
   ON TABLE public.jarvis_work_items
   TO bob_jarvis_dispatch_directory;
 RESET ROLE;
@@ -3830,6 +4043,7 @@ if [ "$BOB_RELEASE_PHASE" = postdeploy ]; then
   certify_agent_mission_realtime_release_acl
   certify_openai_native_release_metadata
   certify_realtime_reaper_release_metadata
+  certify_jarvis_dispatch_directory_release_metadata
   certify_realtime_global_capacity_release_metadata
   certify_realtime_voice_trace_release
   certify_document_archive_evidence_privacy
@@ -3887,6 +4101,7 @@ provision_openai_native_maintenance_directory
 provision_realtime_reaper_directory
 provision_jarvis_payload_retention_directory
 provision_jarvis_dispatch_directory
+certify_jarvis_dispatch_directory_release_metadata
 provision_agent_mission_release_flag_authority
 certify_agent_mission_realtime_release_acl
 DIRECT_URL="$DIRECT_URL" APP_DATABASE_ROLE="${APP_DATABASE_ROLE:-}" \

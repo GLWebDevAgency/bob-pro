@@ -93,7 +93,6 @@ import {
 import {
   JarvisWorkItemDispatchService,
   jarvisEffectExecutorKey,
-  type JarvisDispatchRunDirectoryPort,
   type JarvisEffectExecutor,
 } from '../../jobs/jarvis-work-item-dispatch.service';
 import type { ScheduledTenantDirectory } from '../../jobs/tenant-directory';
@@ -106,6 +105,7 @@ import { AppLogger } from '../../observability/logger';
 import type { Persistence } from '../persistence';
 import { PrismaAgentMissionUnitOfWork } from './agent-mission.persistence';
 import type { JarvisAdmissionDeps } from './jarvis-admission.persistence';
+import { PrismaJarvisDispatchRunDirectory } from './jarvis-dispatch-directory.persistence';
 import { PrismaJarvisProposalPayloadStore } from './jarvis-proposal-payloads.persistence';
 import { PrismaJarvisWorkItemsRepository } from './jarvis-work-items.persistence';
 import { PrismaService } from './prisma.service';
@@ -1904,6 +1904,7 @@ describe.skipIf(!RUN_CERT)(
           new FailBeforeStoreResultRepository(workerA),
         );
         expect(await crashingWorker.runForCompany(effectCompanyId)).toEqual({
+          busy: 0,
           claimed: 1,
           executed: 0,
           unknown: 0,
@@ -1941,6 +1942,7 @@ describe.skipIf(!RUN_CERT)(
         const writesAfterCommit = authority.writes;
         const recoveryWorker = dispatchWorker(executor, admissionPort);
         expect(await recoveryWorker.runForCompany(effectCompanyId)).toEqual({
+          busy: 0,
           claimed: 0,
           executed: 0,
           unknown: 1,
@@ -1987,6 +1989,7 @@ describe.skipIf(!RUN_CERT)(
 
         // Tick supplémentaire : l'inconnu durable n'est ni réexécuté, ni signalé, ni bougé.
         expect(await recoveryWorker.runForCompany(effectCompanyId)).toEqual({
+          busy: 0,
           claimed: 0,
           executed: 0,
           unknown: 0,
@@ -2007,12 +2010,10 @@ describe.skipIf(!RUN_CERT)(
     );
 
     /**
-     * Worker de dispatch RÉEL, câblé sur les autorités réelles. Deux collaborateurs sont fournis
-     * par le harnais parce que leur implémentation de production arrive avec le module (vague B) :
-     *  · l'annuaire de coordonnées — en production un SECURITY DEFINER borné ; ici une LECTURE
-     *    RÉELLE de `jarvis_work_items` par l'auditeur, jamais une liste écrite à la main ;
-     *  · la surface `Persistence` consommée par la revalidation — `companies.findById` seul, servi
-     *    par une lecture réelle de la colonne `closedAt` du tenant.
+     * Worker de dispatch RÉEL, câblé sur les autorités réelles. L'annuaire est le vrai adaptateur
+     * v2 persistant (claim/start/ACK), jamais une liste écrite à la main. Seule la surface
+     * `Persistence` consommée par la revalidation reste réduite : `companies.findById`, servi par
+     * une lecture réelle de la colonne `closedAt` du tenant.
      */
     function dispatchWorker(
       executor: JarvisEffectExecutor,
@@ -2032,23 +2033,7 @@ describe.skipIf(!RUN_CERT)(
         runWithTenant: <T>(tenantId: string, work: () => Promise<T>): Promise<T> =>
           workerA.withTenant(tenantId, () => work()),
       } as unknown as Persistence;
-      const directory: JarvisDispatchRunDirectoryPort = {
-        listDispatchCoordinates: async (tenantId: string, limit: number) => {
-          const rows = await admin.$queryRaw<Array<{ ownerUserId: string; runId: string }>>`
-            SELECT DISTINCT "ownerUserId", "runId"
-              FROM public.jarvis_work_items
-             WHERE "companyId" = ${tenantId}
-               AND "signalAppliedAt" IS NULL
-             ORDER BY "runId"
-             LIMIT ${limit}
-          `;
-          return rows.map((row) => ({
-            companyId: tenantId,
-            ownerUserId: row.ownerUserId,
-            runId: row.runId,
-          }));
-        },
-      };
+      const directory = new PrismaJarvisDispatchRunDirectory(workerA);
       const executors = new Map<string, JarvisEffectExecutor>([
         [jarvisEffectExecutorKey(CUSTOMER_CONTACT_CREATE_ACTION_ID, 1), executor],
         [jarvisEffectExecutorKey(CUSTOMER_CONTACT_UPDATE_ACTION_ID, 1), executor],

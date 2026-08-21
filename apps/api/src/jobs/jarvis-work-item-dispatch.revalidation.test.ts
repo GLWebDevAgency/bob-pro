@@ -52,10 +52,10 @@ import type {
   StoreJarvisWorkItemResultInput,
 } from '../persistence/prisma/jarvis-work-items.persistence';
 import type { ScheduledTenantDirectory } from './tenant-directory';
+import type { JarvisDispatchRunDirectoryPort } from './jarvis-dispatch-directory';
 import {
   JarvisWorkItemDispatchService,
   jarvisEffectExecutorKey,
-  type JarvisDispatchRunDirectoryPort,
   type JarvisEffectExecutor,
 } from './jarvis-work-item-dispatch.service';
 
@@ -69,6 +69,7 @@ const RUN_ID = '55555555-5555-4555-8555-555555555555';
 const EFFECT_ID = '66666666-6666-4666-8666-666666666666';
 const RECEIPT_ID = '77777777-7777-4777-8777-777777777777';
 const LEASE_TOKEN = '88888888-8888-4888-8888-888888888888';
+const DIRECTORY_CLAIM_ID = '99999999-9999-4999-8999-999999999999';
 const READ_AT = '2026-08-19T10:00:00.000Z';
 
 const COORDINATES: JarvisWorkItemCoordinates = {
@@ -334,7 +335,21 @@ function harness(
     runWithTenant: <T>(_companyId: string, fn: () => Promise<T>) => fn(),
   } as unknown as Persistence;
   const directory: JarvisDispatchRunDirectoryPort = {
-    listDispatchCoordinates: async () => [COORDINATES],
+    claimDispatchCoordinates: async () => ({
+      status: 'claimed',
+      claimId: DIRECTORY_CLAIM_ID,
+      pageSize: 1,
+      hasMore: false,
+      replayed: false,
+      hardLeaseRemainingMs: 295_000,
+      entries: [{ position: 1, coordinates: COORDINATES }],
+    }),
+    renewDispatchCoordinatesClaim: async () => ({ status: 'succeeded', renewed: true }),
+    startDispatchCoordinate: async () => ({ status: 'succeeded', started: true }),
+    acknowledgeDispatchCoordinates: async () => ({
+      status: 'succeeded',
+      acknowledged: true,
+    }),
   };
   const tenants = {
     listCompanyIds: async () => [COMPANY_ID],

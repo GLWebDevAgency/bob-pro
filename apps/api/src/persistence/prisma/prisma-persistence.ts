@@ -29,7 +29,7 @@ import {
 } from './agent-mission.persistence';
 import type { JarvisCustomerEffectAuthority } from '../../jobs/jarvis-customer-effect.executor';
 import type { CustomerUpdateAuthorityPort } from '../../customers/customer-update.authority';
-import type { JarvisDispatchRunDirectoryPort } from '../../jobs/jarvis-work-item-dispatch.service';
+import type { JarvisDispatchRunDirectoryPort } from '../../jobs/jarvis-dispatch-directory';
 import { PrismaJarvisCustomerEffectAuthority } from '../../jarvis/jarvis-customer-effect.authority';
 import { PrismaJarvisDispatchRunDirectory } from './jarvis-dispatch-directory.persistence';
 import {

@@ -2719,6 +2719,32 @@ model RealtimeReaperDirectoryCursor {
   @@ignore
 }
 
+/// Curseur technique par société de l'annuaire Jarvis v2. Les pages sont louées, checkpointées
+/// puis ACKées uniquement par les fonctions SECURITY DEFINER dédiées ; aucun repository métier
+/// n'accède directement à cette table. L'index partiel et les collations C restent autoritaires
+/// dans la migration SQL, car Prisma ne sait pas les représenter fidèlement.
+model JarvisDispatchDirectoryCursor {
+  companyId                   String    @id @db.Text
+  afterOwnerUserId            String?   @db.Text
+  afterRunId                  String?   @db.Uuid
+  cycleUpperOwnerUserId       String?   @db.Text
+  cycleUpperRunId             String?   @db.Uuid
+  cycleCutoffAt               DateTime? @db.Timestamptz(6)
+  pendingOwnerUserIds         String[]  @default([])
+  pendingRunIds               String[]  @default([]) @db.Uuid
+  pendingAfterOwnerUserId     String?   @db.Text
+  pendingAfterRunId           String?   @db.Uuid
+  pendingHasMore              Boolean?
+  pendingNextPosition         Int?
+  claimId                     String?   @db.Uuid
+  claimExpiresAt              DateTime? @db.Timestamptz(6)
+  claimHardExpiresAt          DateTime? @db.Timestamptz(6)
+  revision                    BigInt    @default(0)
+
+  @@map("jarvis_dispatch_directory_cursors")
+  @@ignore
+}
+
 /// Action UI opaque, chiffrée et liée par XOR à une seule preuve de livraison acoustique. Le
 /// défaut `audited_artifact`/v1 conserve byte-for-byte les writers historiques ; le domaine
 /// `provider_stream`/v2 reste séparé. Une grant ne peut jamais être modifiée.

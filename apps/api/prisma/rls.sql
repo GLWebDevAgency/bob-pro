@@ -32,6 +32,7 @@ DECLARE
     'agent_mission_fingerprint_key_version_floors',
     'agent_mission_fingerprint_key_bindings',
     'jarvis_work_items',
+    'jarvis_dispatch_directory_cursors',
     'jarvis_proposal_payloads',
     'documents',
     'document_analyses',
@@ -323,6 +324,138 @@ CREATE POLICY jarvis_work_items_owner_update ON jarvis_work_items FOR UPDATE
     AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
     AND "runId"::text = nullif(current_setting('app.current_agent_mission_id', true), '')
   );
+
+-- Annuaire global minimal U1-l. La policy source reste une pré-borne conservative : les quatre
+-- fonctions v2 ajoutent leur cutoff figé sans jamais contourner FORCE RLS.
+DROP POLICY IF EXISTS jarvis_work_items_dispatch_directory_select ON jarvis_work_items;
+CREATE POLICY jarvis_work_items_dispatch_directory_select ON jarvis_work_items FOR SELECT
+  USING (
+    current_user = 'bob_jarvis_dispatch_directory'
+    AND (
+      (
+        "status" IN ('prepared', 'retry_due')
+        AND ("nextAttemptAt" IS NULL OR "nextAttemptAt" <= statement_timestamp())
+      )
+      OR (
+        "status" = 'leased'
+        AND "leaseExpiresAt" IS NOT NULL
+        AND "leaseExpiresAt" < statement_timestamp()
+      )
+      OR (
+        "status" = 'authorized'
+        AND "resultDigest" IS NULL
+        AND "leaseExpiresAt" IS NOT NULL
+        AND "leaseExpiresAt" < statement_timestamp()
+      )
+      OR (
+        "status" IN ('succeeded', 'failed_terminal', 'cancelled')
+        AND "resultDigest" IS NOT NULL
+        AND "signalAppliedAt" IS NULL
+        AND (
+          "status" <> 'succeeded'
+          OR ("authorizedAt" IS NOT NULL AND "authorizationDigest" IS NOT NULL)
+        )
+        AND (
+          "status" <> 'cancelled'
+          OR ("authorizedAt" IS NULL AND "authorizationDigest" IS NULL)
+        )
+      )
+    )
+  );
+
+REVOKE ALL ON TABLE public.jarvis_dispatch_directory_cursors FROM PUBLIC;
+DROP POLICY IF EXISTS jarvis_dispatch_directory_cursors_select
+  ON public.jarvis_dispatch_directory_cursors;
+DROP POLICY IF EXISTS jarvis_dispatch_directory_cursors_insert
+  ON public.jarvis_dispatch_directory_cursors;
+DROP POLICY IF EXISTS jarvis_dispatch_directory_cursors_update
+  ON public.jarvis_dispatch_directory_cursors;
+CREATE POLICY jarvis_dispatch_directory_cursors_select
+  ON public.jarvis_dispatch_directory_cursors FOR SELECT
+  USING (current_user = 'bob_jarvis_dispatch_directory');
+CREATE POLICY jarvis_dispatch_directory_cursors_insert
+  ON public.jarvis_dispatch_directory_cursors FOR INSERT
+  WITH CHECK (current_user = 'bob_jarvis_dispatch_directory');
+CREATE POLICY jarvis_dispatch_directory_cursors_update
+  ON public.jarvis_dispatch_directory_cursors FOR UPDATE
+  USING (current_user = 'bob_jarvis_dispatch_directory')
+  WITH CHECK (current_user = 'bob_jarvis_dispatch_directory');
+
+DO $jarvis_dispatch_directory_exposed_tables$
+DECLARE
+  exposed_role TEXT;
+BEGIN
+  FOREACH exposed_role IN ARRAY ARRAY['anon', 'authenticated', 'service_role']::TEXT[] LOOP
+    IF pg_catalog.to_regrole(exposed_role) IS NOT NULL THEN
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON TABLE public.jarvis_dispatch_directory_cursors FROM %I',
+        exposed_role
+      );
+    END IF;
+  END LOOP;
+END;
+$jarvis_dispatch_directory_exposed_tables$;
+
+-- Les fonctions peuvent appartenir au deployer (première release) ou déjà à l'autorité NOLOGIN
+-- (replay). On révoque PUBLIC/Data API sous leur owner exact, puis on revient au schema owner ; le
+-- provisioner qui suit conserve EXECUTE v1 pour N-1 et accorde les quatre gestes v2 au runtime.
+DO $jarvis_dispatch_directory_function_owner$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_proc AS function
+     WHERE function.oid IN (
+       'public.list_jarvis_dispatch_coordinates_v1(text,integer)'::regprocedure,
+       'public.claim_jarvis_dispatch_coordinates_v2(text,integer,uuid)'::regprocedure,
+       'public.renew_jarvis_dispatch_coordinates_claim_v2(text,uuid)'::regprocedure,
+       'public.start_jarvis_dispatch_coordinate_v2(text,uuid,integer)'::regprocedure,
+       'public.ack_jarvis_dispatch_coordinates_v2(text,uuid)'::regprocedure
+     )
+       AND function.proowner <> (
+         SELECT role.oid FROM pg_catalog.pg_roles AS role WHERE role.rolname = session_user
+       )
+       AND NOT pg_catalog.pg_has_role(session_user, function.proowner, 'SET')
+  ) THEN
+    RAISE EXCEPTION
+      'Jarvis dispatch directory function has an unexpected owner during RLS replay';
+  END IF;
+END;
+$jarvis_dispatch_directory_function_owner$;
+SELECT pg_catalog.format(
+  'SET LOCAL ROLE %I; REVOKE ALL PRIVILEGES ON FUNCTION %s FROM PUBLIC; SET LOCAL ROLE %I;',
+  owner.rolname,
+  function.oid::regprocedure,
+  current_setting('bob.release.rls_owner_role')
+)
+  FROM pg_catalog.pg_proc AS function
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = function.proowner
+ WHERE function.oid IN (
+   'public.list_jarvis_dispatch_coordinates_v1(text,integer)'::regprocedure,
+   'public.claim_jarvis_dispatch_coordinates_v2(text,integer,uuid)'::regprocedure,
+   'public.renew_jarvis_dispatch_coordinates_claim_v2(text,uuid)'::regprocedure,
+   'public.start_jarvis_dispatch_coordinate_v2(text,uuid,integer)'::regprocedure,
+   'public.ack_jarvis_dispatch_coordinates_v2(text,uuid)'::regprocedure
+ )
+\gexec
+SELECT pg_catalog.format(
+  'SET LOCAL ROLE %I; REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I; SET LOCAL ROLE %I;',
+  owner.rolname,
+  function.oid::regprocedure,
+  exposed_role.rolname,
+  current_setting('bob.release.rls_owner_role')
+)
+  FROM pg_catalog.pg_proc AS function
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = function.proowner
+ CROSS JOIN pg_catalog.pg_roles AS exposed_role
+ WHERE function.oid IN (
+   'public.list_jarvis_dispatch_coordinates_v1(text,integer)'::regprocedure,
+   'public.claim_jarvis_dispatch_coordinates_v2(text,integer,uuid)'::regprocedure,
+   'public.renew_jarvis_dispatch_coordinates_claim_v2(text,uuid)'::regprocedure,
+   'public.start_jarvis_dispatch_coordinate_v2(text,uuid,integer)'::regprocedure,
+   'public.ack_jarvis_dispatch_coordinates_v2(text,uuid)'::regprocedure
+ )
+   AND exposed_role.rolname IN ('anon', 'authenticated', 'service_role')
+\gexec
 
 DROP POLICY IF EXISTS agent_mission_events_owner_select ON agent_mission_events;
 DROP POLICY IF EXISTS agent_mission_events_owner_insert ON agent_mission_events;

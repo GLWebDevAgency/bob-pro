@@ -58,7 +58,10 @@ const assertImplicitSetAuthority = (source, roleName) => {
 
   assert.match(authorityBlock, /membership\.set_option/u);
   assert.match(authorityBlock, /NOT membership\.inherit_option/u);
-  assert.match(authorityBlock, /pg_has_role\(current_user, owner_oid, 'SET'\)/u);
+  assert.match(
+    authorityBlock,
+    /pg_has_role\(current_user, (?:owner|authority)_oid, 'SET'\)/u,
+  );
   assert.match(
     authorityBlock,
     /(?:parent|parent_role)\.rolname <> 'postgres'/u,
@@ -67,8 +70,8 @@ const assertImplicitSetAuthority = (source, roleName) => {
     authorityBlock,
     /(?:member|member_role)\.rolname NOT IN \(current_user, 'postgres'\)/u,
   );
-  assert.match(authorityBlock, /WHERE membership\.member = owner_oid/u);
-  assert.match(authorityBlock, /WHERE membership\.roleid = owner_oid/u);
+  assert.match(authorityBlock, /WHERE membership\.member = (?:owner|authority)_oid/u);
+  assert.match(authorityBlock, /WHERE membership\.roleid = (?:owner|authority)_oid/u);
 };
 
 const assertNoSuperuserOnlyRoleReplay = (source, roleName) => {
@@ -88,6 +91,7 @@ test('les owners NOLOGIN de release utilisent uniquement l’adhésion SET impli
     'bob_mistral_bootstrap_reaper',
     'bob_openai_native_maintenance_directory',
     'bob_realtime_reaper_directory',
+    'bob_jarvis_dispatch_directory',
   ]) {
     assertImplicitSetAuthority(release, roleName);
   }
@@ -100,6 +104,7 @@ test('les owners NOLOGIN de release utilisent uniquement l’adhésion SET impli
     'bob_mistral_bootstrap_reaper',
     'bob_openai_native_maintenance_directory',
     'bob_realtime_reaper_directory',
+    'bob_jarvis_dispatch_directory',
   ]) {
     assertNoSuperuserOnlyRoleReplay(release, roleName);
   }
@@ -152,7 +157,7 @@ test('le rejeu des grants runtime laisse chaque objet transféré à son provisi
   );
   assert.match(
     grantBlock,
-    /relation\.relname NOT IN \(\s*'realtime_global_capacity',\s*'realtime_voice_trace_events',\s*'realtime_voice_trace_access_audits'\s*\)[\s\S]*?relation\.relowner = \(/u,
+    /relation\.relname NOT IN \(\s*'jarvis_dispatch_directory_cursors',\s*'realtime_global_capacity',\s*'realtime_voice_trace_events',\s*'realtime_voice_trace_access_audits'\s*\)[\s\S]*?relation\.relowner = \(/u,
   );
   assert.match(
     grantBlock,

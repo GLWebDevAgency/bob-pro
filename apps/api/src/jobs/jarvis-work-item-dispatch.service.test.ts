@@ -48,6 +48,7 @@ import type {
   StoreJarvisWorkItemResultInput,
 } from '../persistence/prisma/jarvis-work-items.persistence';
 import type { ScheduledTenantDirectory } from './tenant-directory';
+import type { JarvisDispatchRunDirectoryPort } from './jarvis-dispatch-directory';
 import {
   JarvisWorkItemDispatchService,
   NotificationJobEffectExecutor,
@@ -55,7 +56,6 @@ import {
   jarvisDispatchRetryDelayMs,
   jarvisEffectExecutorKey,
   jarvisNotificationEffectDedupeKey,
-  type JarvisDispatchRunDirectoryPort,
   type JarvisEffectExecutionInput,
   type JarvisEffectExecutionOutcome,
   type JarvisEffectExecutor,
@@ -72,6 +72,7 @@ const RUN_ID = '11111111-1111-4111-8111-111111111111';
 const EFFECT_ID = '22222222-2222-4222-8222-222222222222';
 const RECEIPT_ID = '33333333-3333-4333-8333-333333333333';
 const LEASE_TOKEN = '44444444-4444-4444-8444-444444444444';
+const DIRECTORY_CLAIM_ID = '66666666-6666-4666-8666-666666666666';
 const READ_AT = '2026-08-19T10:00:00.000Z';
 const COORDINATES: JarvisWorkItemCoordinates = {
   companyId: COMPANY_ID,
@@ -325,8 +326,38 @@ interface Harness {
   readonly repository: FakeDispatchRepository;
   readonly admission: FakeAdmission;
   readonly enqueue: ReturnType<typeof vi.fn>;
-  readonly listDispatchCoordinates: ReturnType<typeof vi.fn>;
   readonly calls: string[];
+}
+
+function fakeDispatchDirectory(
+  coordinates: readonly JarvisWorkItemCoordinates[] = [COORDINATES],
+): JarvisDispatchRunDirectoryPort {
+  return {
+    claimDispatchCoordinates: vi.fn(async () => ({
+      status: 'claimed' as const,
+      claimId: DIRECTORY_CLAIM_ID,
+      pageSize: coordinates.length,
+      hasMore: false,
+      replayed: false,
+      hardLeaseRemainingMs: 295_000,
+      entries: coordinates.map((entry, index) => ({
+        position: index + 1,
+        coordinates: entry,
+      })),
+    })),
+    renewDispatchCoordinatesClaim: vi.fn(async () => ({
+      status: 'succeeded' as const,
+      renewed: true,
+    })),
+    startDispatchCoordinate: vi.fn(async () => ({
+      status: 'succeeded' as const,
+      started: true,
+    })),
+    acknowledgeDispatchCoordinates: vi.fn(async () => ({
+      status: 'succeeded' as const,
+      acknowledged: true,
+    })),
+  };
 }
 
 function harness(
@@ -336,6 +367,7 @@ function harness(
     executors?: ReadonlyMap<string, JarvisEffectExecutor> | null;
     persistence?: { closed?: boolean; findByIdError?: Error };
     releasePolicy?: JarvisActionReleasePolicy | null;
+    directory?: JarvisDispatchRunDirectoryPort;
   } = {},
 ): Harness {
   const calls: string[] = [];
@@ -346,8 +378,7 @@ function harness(
     options.admissionResults ?? [],
   );
   const { persistence, enqueue } = fakePersistence(options.persistence ?? {});
-  const listDispatchCoordinates = vi.fn(async () => [COORDINATES]);
-  const directory: JarvisDispatchRunDirectoryPort = { listDispatchCoordinates };
+  const directory = options.directory ?? fakeDispatchDirectory();
   const service = new JarvisWorkItemDispatchService(
     persistence,
     tenantDirectory([COMPANY_ID]),
@@ -360,7 +391,7 @@ function harness(
       ? TEST_ONLY_JARVIS_ACTION_RELEASE_POLICY
       : options.releasePolicy,
   );
-  return { service, repository, admission, enqueue, listDispatchCoordinates, calls };
+  return { service, repository, admission, enqueue, calls };
 }
 
 function recordingExecutor(
@@ -381,6 +412,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
   if (ORIGINAL_KILL_SWITCH === undefined) delete process.env.BOB_JARVIS_DISPATCH_ENABLED;
   else process.env.BOB_JARVIS_DISPATCH_ENABLED = ORIGINAL_KILL_SWITCH;
 });
@@ -1133,16 +1166,622 @@ function harnessWith(
   const repository = new FakeDispatchRepository(calls);
   const admission = fakeAdmission(calls, runFixture());
   const { persistence, enqueue } = fakePersistence();
-  const listDispatchCoordinates = vi.fn(async () => [COORDINATES]);
+  const directory = fakeDispatchDirectory();
   const service = new JarvisWorkItemDispatchService(
     persistence,
     tenantDirectory([COMPANY_ID]),
     new AppLogger(),
     repository,
-    { listDispatchCoordinates },
+    directory,
     admission.port,
     executors,
     releasePolicy,
   );
-  return { service, repository, admission, enqueue, listDispatchCoordinates, calls };
+  return { service, repository, admission, enqueue, calls };
 }
+
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+async function flushMicrotasks(): Promise<void> {
+  for (let index = 0; index < 6; index += 1) await Promise.resolve();
+}
+
+type DirectoryClaimResult = Awaited<
+  ReturnType<JarvisDispatchRunDirectoryPort['claimDispatchCoordinates']>
+>;
+
+function claimedDirectoryPage(
+  coordinates: readonly JarvisWorkItemCoordinates[],
+  options: {
+    readonly claimId?: string;
+    readonly hardLeaseRemainingMs?: number;
+    readonly hasMore?: boolean;
+    readonly replayed?: boolean;
+    readonly firstPosition?: number;
+    readonly pageSize?: number;
+  } = {},
+): Extract<DirectoryClaimResult, { readonly status: 'claimed' }> {
+  const firstPosition = options.firstPosition ?? 1;
+  return {
+    status: 'claimed',
+    claimId: options.claimId ?? DIRECTORY_CLAIM_ID,
+    pageSize: options.pageSize ?? coordinates.length,
+    hasMore: options.hasMore ?? false,
+    replayed: options.replayed ?? false,
+    hardLeaseRemainingMs: options.hardLeaseRemainingMs ?? 295_000,
+    entries: coordinates.map((entry, index) => ({
+      position: firstPosition + index,
+      coordinates: entry,
+    })),
+  };
+}
+
+function scriptedDispatchDirectory(
+  claims: readonly DirectoryClaimResult[],
+): {
+  readonly port: JarvisDispatchRunDirectoryPort;
+  readonly claim: ReturnType<typeof vi.fn>;
+  readonly renew: ReturnType<typeof vi.fn>;
+  readonly start: ReturnType<typeof vi.fn>;
+  readonly ack: ReturnType<typeof vi.fn>;
+} {
+  const queue = [...claims];
+  const claim = vi.fn(async () => queue.shift() ?? { status: 'empty' as const });
+  const renew = vi.fn(async () => ({ status: 'succeeded' as const, renewed: true }));
+  const start = vi.fn(async () => ({ status: 'succeeded' as const, started: true }));
+  const ack = vi.fn(async () => ({ status: 'succeeded' as const, acknowledged: true }));
+  return {
+    port: {
+      claimDispatchCoordinates: claim,
+      renewDispatchCoordinatesClaim: renew,
+      startDispatchCoordinate: start,
+      acknowledgeDispatchCoordinates: ack,
+    },
+    claim,
+    renew,
+    start,
+    ack,
+  };
+}
+
+describe('JarvisWorkItemDispatchService — contrôle de page U1-l', () => {
+  it('acquitte 25 coordonnées fautives puis atteint la coordonnée suivante au tick suivant', async () => {
+    const faultyCoordinates = Array.from({ length: 25 }, (_, index) => ({
+      companyId: COMPANY_ID,
+      ownerUserId: `usr-faulty-${index.toString().padStart(2, '0')}`,
+      runId: `aaaaaaaa-aaaa-4aaa-8aaa-${index.toString().padStart(12, '0')}`,
+    }));
+    const nextCoordinate = {
+      companyId: COMPANY_ID,
+      ownerUserId: 'usr-valid-z',
+      runId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    };
+    const directory = scriptedDispatchDirectory([
+      claimedDirectoryPage(faultyCoordinates, {
+        claimId: '66666666-6666-4666-8666-666666666661',
+        hasMore: true,
+      }),
+      claimedDirectoryPage([nextCoordinate], {
+        claimId: '66666666-6666-4666-8666-666666666662',
+      }),
+    ]);
+    const run = runFixture({
+      kind: 'customer_contact',
+      state: { effectId: EFFECT_ID, confirmation: { consumedByCommandId: RECEIPT_ID } },
+    });
+    const h = harness({ run, directory: directory.port });
+    h.repository.pending = [{
+      id: 'wi_unbuildable',
+      effectId: EFFECT_ID,
+      status: 'succeeded',
+      resultDigest: sha256Hex('succes-inconstructible'),
+      leaseFence: 2n,
+      updatedAt: READ_AT,
+    }];
+    const pendingSpy = vi.spyOn(h.repository, 'listPendingSignals');
+
+    const first = await h.service.runForCompany(COMPANY_ID);
+    expect(first).toMatchObject({ failures: 0, signalled: 0 });
+    expect(directory.start.mock.calls.map(([input]) => input.position)).toEqual(
+      Array.from({ length: 25 }, (_, index) => index + 1),
+    );
+    expect(directory.ack).toHaveBeenCalledTimes(1);
+    expect(pendingSpy).toHaveBeenCalledTimes(25);
+
+    const second = await h.service.runForCompany(COMPANY_ID);
+    expect(second).toMatchObject({ failures: 0, signalled: 0 });
+    expect(pendingSpy).toHaveBeenLastCalledWith(nextCoordinate, 25);
+    expect(directory.ack).toHaveBeenCalledTimes(2);
+  });
+
+  it('distingue busy, empty, unavailable et ack_ready sans geste parasite', async () => {
+    const busy = scriptedDispatchDirectory([{ status: 'busy' }]);
+    await expect(harness({ directory: busy.port }).service.runForCompany(COMPANY_ID))
+      .resolves.toEqual({
+        busy: 1,
+        claimed: 0,
+        executed: 0,
+        unknown: 0,
+        cancelled: 0,
+        retried: 0,
+        signalled: 0,
+        failures: 0,
+      });
+    expect(busy.renew).not.toHaveBeenCalled();
+    expect(busy.start).not.toHaveBeenCalled();
+    expect(busy.ack).not.toHaveBeenCalled();
+
+    const empty = scriptedDispatchDirectory([{ status: 'empty' }]);
+    await expect(harness({ directory: empty.port }).service.runForCompany(COMPANY_ID))
+      .resolves.toEqual({
+        busy: 0,
+        claimed: 0,
+        executed: 0,
+        unknown: 0,
+        cancelled: 0,
+        retried: 0,
+        signalled: 0,
+        failures: 0,
+      });
+    expect(empty.ack).not.toHaveBeenCalled();
+
+    const unavailable = scriptedDispatchDirectory([{ status: 'unavailable' }]);
+    await expect(harness({ directory: unavailable.port }).service.runForCompany(COMPANY_ID))
+      .resolves.toMatchObject({ busy: 0, failures: 1 });
+    expect(unavailable.ack).not.toHaveBeenCalled();
+
+    const ackReady = scriptedDispatchDirectory([{
+      status: 'ack_ready',
+      claimId: DIRECTORY_CLAIM_ID,
+      pageSize: 25,
+      hasMore: true,
+      replayed: true,
+      hardLeaseRemainingMs: 295_000,
+    }]);
+    await expect(harness({ directory: ackReady.port }).service.runForCompany(COMPANY_ID))
+      .resolves.toEqual({
+        busy: 0,
+        claimed: 0,
+        executed: 0,
+        unknown: 0,
+        cancelled: 0,
+        retried: 0,
+        signalled: 0,
+        failures: 0,
+      });
+    expect(ackReady.renew).not.toHaveBeenCalled();
+    expect(ackReady.start).not.toHaveBeenCalled();
+    expect(ackReady.ack).toHaveBeenCalledOnce();
+  });
+
+  it('continue avec la société suivante quand le claim de la première est indisponible', async () => {
+    const secondCompanyId = 'co_2';
+    const secondCoordinate: JarvisWorkItemCoordinates = {
+      companyId: secondCompanyId,
+      ownerUserId: 'usr_2',
+      runId: '77777777-7777-4777-8777-777777777777',
+    };
+    const claim = vi.fn(async (input: { readonly companyId: string }) =>
+      input.companyId === COMPANY_ID
+        ? { status: 'unavailable' as const }
+        : claimedDirectoryPage([secondCoordinate], {
+            claimId: '66666666-6666-4666-8666-666666666667',
+          }));
+    const renew = vi.fn(async () => ({ status: 'succeeded' as const, renewed: true }));
+    const start = vi.fn(async () => ({ status: 'succeeded' as const, started: true }));
+    const ack = vi.fn(async () => ({ status: 'succeeded' as const, acknowledged: true }));
+    const calls: string[] = [];
+    const repository = new FakeDispatchRepository(calls);
+    const admission = fakeAdmission(calls, runFixture());
+    const { persistence } = fakePersistence();
+    const service = new JarvisWorkItemDispatchService(
+      persistence,
+      tenantDirectory([COMPANY_ID, secondCompanyId]),
+      new AppLogger(),
+      repository,
+      {
+        claimDispatchCoordinates: claim,
+        renewDispatchCoordinatesClaim: renew,
+        startDispatchCoordinate: start,
+        acknowledgeDispatchCoordinates: ack,
+      },
+      admission.port,
+      null,
+      TEST_ONLY_JARVIS_ACTION_RELEASE_POLICY,
+    );
+
+    await expect(service.runAllCompanies()).resolves.toMatchObject({
+      companies: 2,
+      failures: 1,
+    });
+    expect(claim.mock.calls.map(([input]) => input.companyId)).toEqual([
+      COMPANY_ID,
+      secondCompanyId,
+    ]);
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: secondCompanyId,
+      position: 1,
+    }));
+    expect(ack).toHaveBeenCalledWith(expect.objectContaining({ companyId: secondCompanyId }));
+  });
+
+  it('conserve les positions absolues d’un suffixe rejoué', async () => {
+    const suffix = [
+      { ...COORDINATES, ownerUserId: 'usr_suffix_2' },
+      {
+        ...COORDINATES,
+        ownerUserId: 'usr_suffix_3',
+        runId: '88888888-8888-4888-8888-888888888888',
+      },
+    ];
+    const directory = scriptedDispatchDirectory([
+      claimedDirectoryPage(suffix, {
+        firstPosition: 2,
+        pageSize: 3,
+        replayed: true,
+      }),
+    ]);
+
+    await expect(harness({ directory: directory.port }).service.runForCompany(COMPANY_ID))
+      .resolves.toMatchObject({ failures: 0 });
+    expect(directory.start.mock.calls.map(([input]) => input.position)).toEqual([2, 3]);
+    expect(directory.ack).toHaveBeenCalledOnce();
+  });
+
+  it('arrête la page sur renew/start refusé et rend un ACK refusé visible', async () => {
+    const renewRefused = scriptedDispatchDirectory([claimedDirectoryPage([COORDINATES])]);
+    renewRefused.port.renewDispatchCoordinatesClaim = vi.fn(async () => ({
+      status: 'succeeded' as const,
+      renewed: false,
+    }));
+    await expect(
+      harness({ directory: renewRefused.port }).service.runForCompany(COMPANY_ID),
+    ).resolves.toMatchObject({ failures: 1 });
+    expect(renewRefused.start).not.toHaveBeenCalled();
+    expect(renewRefused.ack).not.toHaveBeenCalled();
+
+    const startUnavailable = scriptedDispatchDirectory([claimedDirectoryPage([COORDINATES])]);
+    startUnavailable.port.startDispatchCoordinate = vi.fn(async () => ({
+      status: 'unavailable' as const,
+    }));
+    await expect(
+      harness({ directory: startUnavailable.port }).service.runForCompany(COMPANY_ID),
+    ).resolves.toMatchObject({ failures: 1 });
+    expect(startUnavailable.ack).not.toHaveBeenCalled();
+
+    const ackRefused = scriptedDispatchDirectory([claimedDirectoryPage([COORDINATES])]);
+    ackRefused.port.acknowledgeDispatchCoordinates = vi.fn(async () => ({
+      status: 'succeeded' as const,
+      acknowledged: false,
+    }));
+    await expect(harness({ directory: ackRefused.port }).service.runForCompany(COMPANY_ID))
+      .resolves.toMatchObject({ failures: 1 });
+  });
+
+  it('le kill switch ferme seulement les nouveaux work items et acquitte encore la page', async () => {
+    process.env.BOB_JARVIS_DISPATCH_ENABLED = 'false';
+    const directory = scriptedDispatchDirectory([claimedDirectoryPage([COORDINATES])]);
+    const h = harness({ directory: directory.port });
+
+    await expect(h.service.runForCompany(COMPANY_ID)).resolves.toMatchObject({ failures: 0 });
+    expect(h.repository.claimInputs).toHaveLength(0);
+    expect(h.repository.reclaimInputs).toHaveLength(1);
+    expect(directory.ack).toHaveBeenCalledOnce();
+  });
+
+  it('ne démarre aucune position si le renew initial rend après la deadline commune', async () => {
+    let monotonicNow = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => monotonicNow);
+    const pendingRenew = deferred<{
+      readonly status: 'succeeded';
+      readonly renewed: boolean;
+    }>();
+    const startDispatchCoordinate = vi.fn(async () => ({
+      status: 'succeeded' as const,
+      started: true,
+    }));
+    const acknowledgeDispatchCoordinates = vi.fn(async () => ({
+      status: 'succeeded' as const,
+      acknowledged: true,
+    }));
+    const directory: JarvisDispatchRunDirectoryPort = {
+      claimDispatchCoordinates: vi.fn(async () => ({
+        status: 'claimed' as const,
+        claimId: DIRECTORY_CLAIM_ID,
+        pageSize: 1,
+        hasMore: false,
+        replayed: false,
+        hardLeaseRemainingMs: 100,
+        entries: [{ position: 1, coordinates: COORDINATES }],
+      })),
+      renewDispatchCoordinatesClaim: vi.fn(() => pendingRenew.promise),
+      startDispatchCoordinate,
+      acknowledgeDispatchCoordinates,
+    };
+    const h = harness({ directory });
+
+    const running = h.service.runForCompany(COMPANY_ID);
+    await flushMicrotasks();
+    monotonicNow = 101;
+    pendingRenew.resolve({ status: 'succeeded', renewed: true });
+
+    await expect(running).resolves.toMatchObject({ failures: 1 });
+    expect(startDispatchCoordinate).not.toHaveBeenCalled();
+    expect(acknowledgeDispatchCoordinates).not.toHaveBeenCalled();
+    expect(h.repository.claimInputs).toHaveLength(0);
+  });
+
+  it('ne lance pas le handler si start revient après la deadline commune', async () => {
+    let monotonicNow = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => monotonicNow);
+    const pendingStart = deferred<{
+      readonly status: 'succeeded';
+      readonly started: boolean;
+    }>();
+    const acknowledgeDispatchCoordinates = vi.fn(async () => ({
+      status: 'succeeded' as const,
+      acknowledged: true,
+    }));
+    const directory: JarvisDispatchRunDirectoryPort = {
+      claimDispatchCoordinates: vi.fn(async () => ({
+        status: 'claimed' as const,
+        claimId: DIRECTORY_CLAIM_ID,
+        pageSize: 1,
+        hasMore: false,
+        replayed: false,
+        hardLeaseRemainingMs: 100,
+        entries: [{ position: 1, coordinates: COORDINATES }],
+      })),
+      renewDispatchCoordinatesClaim: vi.fn(async () => ({
+        status: 'succeeded' as const,
+        renewed: true,
+      })),
+      startDispatchCoordinate: vi.fn(() => pendingStart.promise),
+      acknowledgeDispatchCoordinates,
+    };
+    const h = harness({ directory });
+
+    const running = h.service.runForCompany(COMPANY_ID);
+    await flushMicrotasks();
+    monotonicNow = 101;
+    pendingStart.resolve({ status: 'succeeded', started: true });
+
+    await expect(running).resolves.toMatchObject({ failures: 1 });
+    expect(acknowledgeDispatchCoordinates).not.toHaveBeenCalled();
+    expect(h.repository.claimInputs).toHaveLength(0);
+  });
+
+  it('une perte du heartbeat en vol gagne sur un handler déjà résolu et interdit l’ACK', async () => {
+    vi.useFakeTimers();
+    const pendingSignals = deferred<readonly JarvisWorkItemPendingSignal[]>();
+    const heartbeatRenew = deferred<{
+      readonly status: 'succeeded';
+      readonly renewed: boolean;
+    }>();
+    let renewCount = 0;
+    const renewDispatchCoordinatesClaim = vi.fn(() => {
+      renewCount += 1;
+      return renewCount === 1
+        ? Promise.resolve({ status: 'succeeded' as const, renewed: true })
+        : heartbeatRenew.promise;
+    });
+    const acknowledgeDispatchCoordinates = vi.fn(async () => ({
+      status: 'succeeded' as const,
+      acknowledged: true,
+    }));
+    const directory: JarvisDispatchRunDirectoryPort = {
+      claimDispatchCoordinates: vi.fn(async () => ({
+        status: 'claimed' as const,
+        claimId: DIRECTORY_CLAIM_ID,
+        pageSize: 1,
+        hasMore: false,
+        replayed: false,
+        hardLeaseRemainingMs: 60_000,
+        entries: [{ position: 1, coordinates: COORDINATES }],
+      })),
+      renewDispatchCoordinatesClaim,
+      startDispatchCoordinate: vi.fn(async () => ({
+        status: 'succeeded' as const,
+        started: true,
+      })),
+      acknowledgeDispatchCoordinates,
+    };
+    const h = harness({ directory });
+    vi.spyOn(h.repository, 'listPendingSignals').mockImplementation(
+      async () => pendingSignals.promise,
+    );
+
+    const running = h.service.runForCompany(COMPANY_ID);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(renewDispatchCoordinatesClaim).toHaveBeenCalledTimes(2);
+
+    pendingSignals.resolve([]);
+    await flushMicrotasks();
+    heartbeatRenew.resolve({ status: 'succeeded', renewed: false });
+
+    await expect(running).resolves.toMatchObject({ failures: 1 });
+    expect(acknowledgeDispatchCoordinates).not.toHaveBeenCalled();
+  });
+
+  it('sérialise les heartbeats, les arrête avant ACK et ne laisse aucun timer', async () => {
+    vi.useFakeTimers();
+    const pendingSignals = deferred<readonly JarvisWorkItemPendingSignal[]>();
+    const slowHeartbeat = deferred<{
+      readonly status: 'succeeded';
+      readonly renewed: boolean;
+    }>();
+    let renewCount = 0;
+    const renew = vi.fn(() => {
+      renewCount += 1;
+      if (renewCount === 2) return slowHeartbeat.promise;
+      return Promise.resolve({ status: 'succeeded' as const, renewed: true });
+    });
+    const directory = scriptedDispatchDirectory([claimedDirectoryPage([COORDINATES], {
+      hardLeaseRemainingMs: 120_000,
+    })]);
+    directory.port.renewDispatchCoordinatesClaim = renew;
+    const h = harness({ directory: directory.port });
+    vi.spyOn(h.repository, 'listPendingSignals').mockImplementation(
+      async () => pendingSignals.promise,
+    );
+
+    const running = h.service.runForCompany(COMPANY_ID);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(renew).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(renew).toHaveBeenCalledTimes(2);
+    slowHeartbeat.resolve({ status: 'succeeded', renewed: true });
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(renew).toHaveBeenCalledTimes(3);
+
+    pendingSignals.resolve([]);
+    await expect(running).resolves.toMatchObject({ failures: 0 });
+    expect(directory.ack).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('le watchdog fige le résumé, interdit l’ACK et absorbe une fin tardive', async () => {
+    vi.useFakeTimers();
+    const pendingSignals = deferred<readonly JarvisWorkItemPendingSignal[]>();
+    const directory = scriptedDispatchDirectory([claimedDirectoryPage([COORDINATES], {
+      hardLeaseRemainingMs: 100,
+    })]);
+    const h = harness({ directory: directory.port });
+    vi.spyOn(h.repository, 'listPendingSignals').mockImplementation(
+      async () => pendingSignals.promise,
+    );
+
+    const running = h.service.runForCompany(COMPANY_ID);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(100);
+    const summary = await running;
+    const settledSnapshot = { ...summary };
+
+    expect(summary.failures).toBe(1);
+    expect(directory.ack).not.toHaveBeenCalled();
+    pendingSignals.resolve([]);
+    await flushMicrotasks();
+    expect(summary).toEqual(settledSnapshot);
+    expect(directory.ack).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('adosse un slot repris à la Promise locale existante sans lancer un second handler', async () => {
+    vi.useFakeTimers();
+    const pendingSignals = deferred<readonly JarvisWorkItemPendingSignal[]>();
+    const directory = scriptedDispatchDirectory([
+      claimedDirectoryPage([COORDINATES], {
+        claimId: '66666666-6666-4666-8666-666666666671',
+        hardLeaseRemainingMs: 100,
+      }),
+      claimedDirectoryPage([COORDINATES], {
+        claimId: '66666666-6666-4666-8666-666666666672',
+        hardLeaseRemainingMs: 60_000,
+        replayed: true,
+      }),
+    ]);
+    const h = harness({ directory: directory.port });
+    const pendingSpy = vi.spyOn(h.repository, 'listPendingSignals').mockImplementation(
+      async () => pendingSignals.promise,
+    );
+
+    const first = h.service.runForCompany(COMPANY_ID);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(first).resolves.toMatchObject({ failures: 1 });
+    expect(directory.ack).not.toHaveBeenCalled();
+
+    await expect(h.service.runForCompany(COMPANY_ID)).resolves.toMatchObject({ failures: 0 });
+    expect(directory.start).toHaveBeenCalledTimes(2);
+    expect(pendingSpy).toHaveBeenCalledOnce();
+    expect(directory.ack).toHaveBeenCalledOnce();
+
+    pendingSignals.resolve([]);
+    await flushMicrotasks();
+    expect(pendingSpy).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('borne la registry à 50 digests opaques puis libère exactement les Promises terminées', async () => {
+    vi.useFakeTimers();
+    const pendingSignals = deferred<readonly JarvisWorkItemPendingSignal[]>();
+    const coordinates = Array.from({ length: 52 }, (_, index) => ({
+      companyId: COMPANY_ID,
+      ownerUserId: `usr-registry-${index.toString().padStart(2, '0')}`,
+      runId: `cccccccc-cccc-4ccc-8ccc-${index.toString().padStart(12, '0')}`,
+    }));
+    const claims = coordinates.map((coordinate, index) => claimedDirectoryPage([coordinate], {
+      claimId: `dddddddd-dddd-4ddd-8ddd-${index.toString().padStart(12, '0')}`,
+      hardLeaseRemainingMs: index < 50 ? 100 : 60_000,
+    }));
+    const directory = scriptedDispatchDirectory(claims);
+    const h = harness({ directory: directory.port });
+    vi.spyOn(h.repository, 'listPendingSignals').mockImplementation(
+      async () => pendingSignals.promise,
+    );
+
+    const firstWave = Array.from({ length: 50 }, () => h.service.runForCompany(COMPANY_ID));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(100);
+    await Promise.all(firstWave);
+
+    const registry = (h.service as unknown as {
+      readonly inFlightCoordinates: ReadonlyMap<string, unknown>;
+    }).inFlightCoordinates;
+    expect(registry.size).toBe(50);
+    expect([...registry.keys()].every((key) => /^[0-9a-f]{64}$/u.test(key))).toBe(true);
+    expect([...registry.keys()].some((key) => key.includes('usr-registry'))).toBe(false);
+
+    await expect(h.service.runForCompany(COMPANY_ID)).resolves.toMatchObject({ failures: 1 });
+    expect(directory.start).toHaveBeenCalledTimes(50);
+    expect(directory.ack).not.toHaveBeenCalled();
+
+    pendingSignals.resolve([]);
+    for (let index = 0; index < 100; index += 1) await Promise.resolve();
+    expect(registry.size).toBe(0);
+
+    await expect(h.service.runForCompany(COMPANY_ID)).resolves.toMatchObject({ failures: 0 });
+    expect(directory.start).toHaveBeenCalledTimes(51);
+    expect(directory.ack).toHaveBeenCalledOnce();
+    expect(registry.size).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('le shutdown coupe le contrôle, n’acquitte pas la page et ferme les ticks suivants', async () => {
+    vi.useFakeTimers();
+    const pendingSignals = deferred<readonly JarvisWorkItemPendingSignal[]>();
+    const directory = scriptedDispatchDirectory([claimedDirectoryPage([COORDINATES], {
+      hardLeaseRemainingMs: 60_000,
+    })]);
+    const h = harness({ directory: directory.port });
+    vi.spyOn(h.repository, 'listPendingSignals').mockImplementation(
+      async () => pendingSignals.promise,
+    );
+
+    const running = h.service.runForCompany(COMPANY_ID);
+    await flushMicrotasks();
+    const shuttingDown = h.service.onApplicationShutdown();
+    await expect(running).resolves.toMatchObject({ failures: 0 });
+    await expect(shuttingDown).resolves.toBeUndefined();
+    expect(directory.ack).not.toHaveBeenCalled();
+    await expect(h.service.runAllCompanies()).resolves.toMatchObject({ skipped: 'shutdown' });
+
+    pendingSignals.resolve([]);
+    await flushMicrotasks();
+    expect(directory.ack).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});

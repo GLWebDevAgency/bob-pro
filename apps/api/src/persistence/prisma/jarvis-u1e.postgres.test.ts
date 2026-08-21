@@ -67,7 +67,7 @@ import {
   type JarvisUserAdmissionEnvelope,
 } from '@bob/core';
 import { PrismaClient } from '@prisma/client';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import {
   JarvisCustomerEffectExecutor,
@@ -76,8 +76,8 @@ import {
 import {
   JarvisWorkItemDispatchService,
   jarvisEffectExecutorKey,
-  type JarvisDispatchRunDirectoryPort,
   type JarvisEffectExecutor,
+  type JarvisSucceededEffectQuery,
 } from '../../jobs/jarvis-work-item-dispatch.service';
 import { JarvisProposalPayloadPurgeService } from '../../jobs/jarvis-proposal-payload-purge.service';
 import type { ScheduledTenantDirectory } from '../../jobs/tenant-directory';
@@ -242,6 +242,19 @@ describe.skipIf(!RUN_CERT)(
 
     function freshOwner(prefix: string): string {
       return `jarvis-u1e-${prefix}-${randomUUID()}`;
+    }
+
+    /** Preuve N-1 explicite : lecture stateless v1, sans créer de claim v2 persistant. */
+    async function listDispatchCoordinatesV1(
+      tenantId: string,
+      limit: number,
+    ): Promise<Array<{ companyId: string; ownerUserId: string; runId: string }>> {
+      const rows = await workerA.withIsolatedGlobal((transaction) =>
+        transaction.$queryRaw<Array<{ ownerUserId: string; runId: string }>>`
+          SELECT "ownerUserId", "runId"
+            FROM public.list_jarvis_dispatch_coordinates_v1(${tenantId}, ${limit}::integer)
+        `);
+      return rows.map((row) => ({ companyId: tenantId, ...row }));
     }
 
     /** Adaptateur du port d'admission tel que le module le lie : deps de production épinglées. */
@@ -1222,8 +1235,8 @@ describe.skipIf(!RUN_CERT)(
       "preuve 5 — U1-f : intégration test-only des vrais adaptateurs — l'annuaire trouve le travail dû et l'effet s'exécute",
       async () => {
         // CE QUE CETTE PREUVE ÉTABLIT, et qu'aucune autre ne pouvait établir : le worker de
-        // production, câblé sur les TROIS adaptateurs réels (repository, annuaire SECURITY
-        // DEFINER, autorité métier sur les use cases canoniques), trouve SEUL le travail dû et
+        // production, câblé sur les TROIS adaptateurs réels (repository, annuaire v2 persistant,
+        // autorité métier sur les use cases canoniques), trouve SEUL le travail dû et
         // écrit la fiche. Jusqu'à ce lot ces trois liaisons n'existaient pas : le tick rendait
         // `dependencies_absent` et un `confirm` d'artisan n'écrivait JAMAIS rien.
         const owner: JarvisAdmissionOwner = { companyId, ownerUserId: freshOwner('chaine-armee') };
@@ -1235,9 +1248,9 @@ describe.skipIf(!RUN_CERT)(
         expect(opened.outcome).toBe('admitted');
         const runId = opened.run.runId;
 
-        // L'annuaire runtime réel, avant tout travail : un run ouvert n'a AUCUN work item, donc
-        // il ne doit PAS apparaître. La borne de la policy n'est pas décorative — sans elle,
-        // l'autorité énumérerait tous les runs actifs du tenant.
+        // La sonde SQL v1/N-1, avant tout travail : un run ouvert n'a AUCUN work item, donc il ne
+        // doit PAS apparaître. La borne de la policy n'est pas décorative — sans elle, l'autorité
+        // énumérerait tous les runs actifs du tenant. Le worker ci-dessous, lui, utilise v2.
         const directory = new PrismaJarvisDispatchRunDirectory(workerA);
         const harnessPersistence = {
           companies: {
@@ -1252,7 +1265,7 @@ describe.skipIf(!RUN_CERT)(
           runWithTenant: <T>(tenantId: string, work: () => Promise<T>): Promise<T> =>
             workerA.withTenant(tenantId, () => work()),
         } as unknown as Persistence;
-        const auRepos = await directory.listDispatchCoordinates(companyId, 50);
+        const auRepos = await listDispatchCoordinatesV1(companyId, 50);
         expect(auRepos.some((coordinate) => coordinate.runId === runId)).toBe(false);
 
         // Parcours jusqu'à la confirmation, par les ROUTES (le canal réel de l'artisan).
@@ -1281,21 +1294,21 @@ describe.skipIf(!RUN_CERT)(
         expect(confirmed.outcome).toBe('admitted');
         await expect(countWorkItems(runId)).resolves.toBe(1);
 
-        // L'ANNUAIRE LE TROUVE MAINTENANT — sans qu'on lui ait dit QUI est l'owner. C'est la
-        // question à laquelle aucun rôle tenanté ne peut répondre (les policies de
-        // `jarvis_work_items` sont owner-scopées), et c'est exactement celle du worker.
-        const duList = await directory.listDispatchCoordinates(companyId, 50);
+        // La sonde SQL v1/N-1 LE TROUVE MAINTENANT — sans qu'on lui ait dit QUI est l'owner.
+        // C'est la question à laquelle aucun rôle tenanté ne peut répondre (les policies de
+        // `jarvis_work_items` sont owner-scopées). Le worker prouve ensuite le protocole v2.
+        const duList = await listDispatchCoordinatesV1(companyId, 50);
         const trouve = duList.find((coordinate) => coordinate.runId === runId);
         expect(trouve).toEqual({ companyId, ownerUserId: owner.ownerUserId, runId });
 
         // Le voisin ne voit RIEN de ce travail : l'autorité ne traverse jamais le tenant.
         await expect(
-          directory.listDispatchCoordinates(neighborCompanyId, 50),
+          listDispatchCoordinatesV1(neighborCompanyId, 50),
         ).resolves.toEqual(expect.not.arrayContaining([expect.objectContaining({ runId })]));
 
-        // LE WORKER, câblé sur les DEUX adaptateurs que ce lot livre : l'annuaire d'autorité
-        // (SECURITY DEFINER) et l'autorité métier (use cases canoniques). Le repository de
-        // dispatch est déjà le vrai (`workItems`).
+        // LE WORKER, câblé sur les DEUX adaptateurs que ce lot livre : l'annuaire v2 persistant
+        // (claim/start/ACK) et l'autorité métier (use cases canoniques). Le repository de dispatch
+        // est déjà le vrai (`workItems`).
         //
         // SEULE la lecture de `companies` reste celle du harnais, et c'est une limite du HARNAIS,
         // pas du lot : ce cluster crée une surface `companies` N-1 volontairement réduite (id,
@@ -1360,13 +1373,13 @@ describe.skipIf(!RUN_CERT)(
         expect(etatItems[0]?.status).toBe('succeeded');
         expect(etatItems[0]?.signalAppliedAt).not.toBeNull();
 
-        // Le travail est CONSOMMÉ : l'annuaire se tait, il n'a plus rien à orienter.
-        const apres = await directory.listDispatchCoordinates(companyId, 50);
+        // Le travail est CONSOMMÉ : la sonde v1/N-1 se tait, il n'y a plus rien à orienter.
+        const apres = await listDispatchCoordinatesV1(companyId, 50);
         expect(apres.some((coordinate) => coordinate.runId === runId)).toBe(false);
 
-        // Bornes de l'annuaire : une demande hors plafond est REFUSÉE, jamais rognée en silence.
-        await expect(directory.listDispatchCoordinates(companyId, 51)).rejects.toThrow(
-          /Borne de l'annuaire de dispatch/,
+        // Borne N-1 : une demande v1 hors plafond est REFUSÉE, jamais rognée en silence.
+        await expect(listDispatchCoordinatesV1(companyId, 51)).rejects.toThrow(
+          /jarvis dispatch directory request rejected/,
         );
 
         // LEASE MORTE — le worker tombé entre le claim et le règlement. C'est le P0 que la revue
@@ -1407,7 +1420,7 @@ describe.skipIf(!RUN_CERT)(
               proposalHash: orphelinHash,
             },
           }));
-        // La panne : claim effectué, puis plus rien. La lease meurt.
+        // La panne : claim du work item effectué, puis plus rien. La lease métier meurt.
         await admin.$executeRaw`
           UPDATE public.jarvis_work_items
              SET "status" = 'leased',
@@ -1421,7 +1434,7 @@ describe.skipIf(!RUN_CERT)(
 
         // L'ANNUAIRE LE VOIT — c'est tout l'objet du correctif. Sans la quatrième branche, cette
         // coordonnée était invisible et le run restait en `committing` pour toujours.
-        const reprises = await directory.listDispatchCoordinates(companyId, 50);
+        const reprises = await listDispatchCoordinatesV1(companyId, 50);
         expect(reprises.some((coordinate) => coordinate.runId === orphelinRunId)).toBe(true);
 
         // Et le worker le REPREND vraiment : l'effet s'exécute, la fiche est écrite.
@@ -1436,17 +1449,16 @@ describe.skipIf(!RUN_CERT)(
     );
 
     it(
-      'preuve 5b — plus d’une page d’outcome_unknown ne peut pas affamer un vrai signal dû',
+      'preuve 5b — 25 succès inconstructibles n’affament pas le 26e signal valide',
       async () => {
         const directoryLimit = 25;
         const fixturePrefix = `jarvis-u1e-directory-${randomUUID()}`;
-        const unknownOwners = Array.from(
-          { length: directoryLimit + 1 },
+        const faultyOwners = Array.from(
+          { length: directoryLimit },
           (_, index) => `${fixturePrefix}-aaa-${index.toString().padStart(2, '0')}`,
         );
-        const contradictoryOwner = `${fixturePrefix}-yyy-cancelled-authorized`;
         const signalOwner = `${fixturePrefix}-zzz-signal`;
-        const allOwners = [...unknownOwners, contradictoryOwner, signalOwner];
+        const allOwners = [...faultyOwners, signalOwner];
         const signalPrincipal: JarvisAdmissionOwner = {
           companyId: directorySignalableCompanyId,
           ownerUserId: signalOwner,
@@ -1508,12 +1520,7 @@ describe.skipIf(!RUN_CERT)(
           for (const ownerUserId of allOwners) {
             const runId = runsByOwner.get(ownerUserId);
             if (runId === undefined) throw new Error(`Jarvis U1-f: run absent pour ${ownerUserId}`);
-            const status =
-              ownerUserId === signalOwner
-                ? 'succeeded'
-                : ownerUserId === contradictoryOwner
-                  ? 'cancelled'
-                  : 'outcome_unknown';
+            const status = ownerUserId === signalOwner ? 'failed_terminal' : 'succeeded';
             const updated = await transaction.$executeRaw`
               UPDATE public.jarvis_work_items
                  SET "status" = ${status},
@@ -1530,35 +1537,33 @@ describe.skipIf(!RUN_CERT)(
           }
         });
 
-        const population = await admin.$queryRaw<
-          Array<{ unknownCount: number; contradictoryCount: number; signalCount: number }>
-        >`
+        const population = await admin.$queryRaw<Array<{
+          faultyCount: number;
+          validCount: number;
+        }>>`
           SELECT
             count(*) FILTER (
-              WHERE "status" = 'outcome_unknown'
-                AND "resultDigest" IS NOT NULL
-                AND "signalAppliedAt" IS NULL
-            )::int AS "unknownCount",
-            count(*) FILTER (
-              WHERE "ownerUserId" = ${contradictoryOwner}
-                AND "status" = 'cancelled'
+              WHERE "ownerUserId" = ANY (${faultyOwners})
+                AND "status" = 'succeeded'
                 AND "authorizedAt" IS NOT NULL
                 AND "authorizationDigest" IS NOT NULL
                 AND "resultDigest" IS NOT NULL
                 AND "signalAppliedAt" IS NULL
-            )::int AS "contradictoryCount",
+            )::int AS "faultyCount",
             count(*) FILTER (
-              WHERE "status" = 'succeeded'
+              WHERE "ownerUserId" = ${signalOwner}
+                AND "status" = 'failed_terminal'
+                AND "authorizedAt" IS NOT NULL
+                AND "authorizationDigest" IS NOT NULL
                 AND "resultDigest" IS NOT NULL
                 AND "signalAppliedAt" IS NULL
-            )::int AS "signalCount"
+            )::int AS "validCount"
           FROM public.jarvis_work_items
           WHERE "companyId" = ${directorySignalableCompanyId}
         `;
         expect(population[0]).toEqual({
-          unknownCount: directoryLimit + 1,
-          contradictoryCount: 1,
-          signalCount: 1,
+          faultyCount: directoryLimit,
+          validCount: 1,
         });
 
         const [pendingSignalIndex] = await admin.$queryRaw<
@@ -1580,38 +1585,98 @@ describe.skipIf(!RUN_CERT)(
         expect(pendingSignalIndex?.predicate).toContain('"authorizedAt" IS NULL');
         expect(pendingSignalIndex?.predicate).toContain('"authorizationDigest" IS NULL');
 
-        // Le prédicat historique remplit sa page avec les unknown et manque le vrai signal.
-        const legacyPage = await admin.$queryRaw<
-          Array<{ ownerUserId: string; runId: string; status: string }>
-        >`
-          SELECT "ownerUserId", "runId"::text AS "runId", "status"
-            FROM public.jarvis_work_items
-           WHERE "companyId" = ${directorySignalableCompanyId}
-             AND "resultDigest" IS NOT NULL
-             AND "signalAppliedAt" IS NULL
-           ORDER BY "ownerUserId", "runId"::text
-           LIMIT ${directoryLimit}
-        `;
-        expect(legacyPage).toHaveLength(directoryLimit);
-        expect(legacyPage.every((row) => row.status === 'outcome_unknown')).toBe(true);
-        expect(legacyPage.map((row) => row.ownerUserId)).not.toContain(signalOwner);
-
-        // La policy corrigée élimine les unknown AVANT DISTINCT / ORDER / LIMIT.
-        const directory = new PrismaJarvisDispatchRunDirectory(workerA);
-        const page = await directory.listDispatchCoordinates(
+        // Mesure rouge exacte : la v1 stateless rend deux fois le même préfixe de 25 succès
+        // inconstructibles et ne voit jamais le 26e signal lexicographiquement suivant.
+        const firstLegacyPage = await listDispatchCoordinatesV1(
           directorySignalableCompanyId,
           directoryLimit,
         );
-        expect(page).toEqual([
-          {
-            companyId: directorySignalableCompanyId,
-            ownerUserId: signalOwner,
-            runId: signalRunId,
-          },
-        ]);
-        const unknownOwnerSet = new Set(unknownOwners);
-        expect(page.some((row) => unknownOwnerSet.has(row.ownerUserId))).toBe(false);
-        expect(page.some((row) => row.ownerUserId === contradictoryOwner)).toBe(false);
+        const secondLegacyPage = await listDispatchCoordinatesV1(
+          directorySignalableCompanyId,
+          directoryLimit,
+        );
+        expect(secondLegacyPage).toEqual(firstLegacyPage);
+        expect(firstLegacyPage.map((row) => row.ownerUserId)).toEqual(faultyOwners);
+        expect(firstLegacyPage.some((row) => row.runId === signalRunId)).toBe(false);
+
+        const describeSucceededEffect = vi.fn(
+          async (_input: JarvisSucceededEffectQuery): Promise<null> => null,
+        );
+        const neverExecute: JarvisEffectExecutor = {
+          execute: () => Promise.reject(new Error('U1-l: aucun effet ne doit être réexécuté')),
+          describeSucceededEffect,
+        };
+        const pageWorker = dispatchWorker(neverExecute, admissionPortOf(uowA));
+        const firstTick = await pageWorker.runForCompany(directorySignalableCompanyId);
+        expect(firstTick).toEqual({
+          busy: 0,
+          claimed: 0,
+          executed: 0,
+          unknown: 0,
+          cancelled: 0,
+          retried: 0,
+          signalled: 0,
+          failures: 0,
+        });
+        expect(describeSucceededEffect).toHaveBeenCalledTimes(directoryLimit);
+        expect(describeSucceededEffect.mock.calls.map(([input]) => input.coordinates)).toEqual(
+          firstLegacyPage,
+        );
+        const afterFirstTick = await admin.$queryRaw<Array<{
+          faultyStillDue: number;
+          validStillDue: number;
+        }>>`
+          SELECT
+            count(*) FILTER (
+              WHERE "ownerUserId" = ANY (${faultyOwners})
+                AND "signalAppliedAt" IS NULL
+            )::int AS "faultyStillDue",
+            count(*) FILTER (
+              WHERE "ownerUserId" = ${signalOwner}
+                AND "signalAppliedAt" IS NULL
+            )::int AS "validStillDue"
+          FROM public.jarvis_work_items
+          WHERE "companyId" = ${directorySignalableCompanyId}
+        `;
+        expect(afterFirstTick[0]).toEqual({ faultyStillDue: directoryLimit, validStillDue: 1 });
+
+        // Le deuxième tick part du curseur ACKé, atteint la 26e coordonnée et applique son reçu
+        // terminal reconstructible. Les 25 succès restent volontairement dus, sans faux stamp.
+        const secondTick = await pageWorker.runForCompany(directorySignalableCompanyId);
+        expect(secondTick).toEqual({
+          busy: 0,
+          claimed: 0,
+          executed: 0,
+          unknown: 0,
+          cancelled: 0,
+          retried: 0,
+          signalled: 1,
+          failures: 0,
+        });
+        const afterSecondTick = await admin.$queryRaw<Array<{
+          faultyStillDue: number;
+          validApplied: number;
+        }>>`
+          SELECT
+            count(*) FILTER (
+              WHERE "ownerUserId" = ANY (${faultyOwners})
+                AND "status" = 'succeeded'
+                AND "signalAppliedAt" IS NULL
+            )::int AS "faultyStillDue",
+            count(*) FILTER (
+              WHERE "ownerUserId" = ${signalOwner}
+                AND "status" = 'failed_terminal'
+                AND "signalAppliedAt" IS NOT NULL
+            )::int AS "validApplied"
+          FROM public.jarvis_work_items
+          WHERE "companyId" = ${directorySignalableCompanyId}
+        `;
+        expect(afterSecondTick[0]).toEqual({ faultyStillDue: directoryLimit, validApplied: 1 });
+        const nextLegacyCycle = await listDispatchCoordinatesV1(
+          directorySignalableCompanyId,
+          directoryLimit,
+        );
+        expect(nextLegacyCycle.map((row) => row.ownerUserId)).toEqual(faultyOwners);
       },
       TEST_TIMEOUT_MS,
     );
@@ -1752,10 +1817,9 @@ describe.skipIf(!RUN_CERT)(
     );
 
     /**
-     * Worker de dispatch RÉEL, câblé sur les autorités réelles. Deux collaborateurs viennent du
-     * harnais parce que leur implémentation de production arrive avec le module (vague B) :
-     * l'annuaire de coordonnées (ici une LECTURE RÉELLE de `jarvis_work_items` par l'auditeur) et
-     * la surface `Persistence` consommée par la revalidation (`companies.findById`).
+     * Worker de dispatch RÉEL, câblé sur les autorités réelles. L'annuaire est le vrai adaptateur
+     * v2 persistant (claim/start/ACK). Seule la surface `Persistence` consommée par la
+     * revalidation (`companies.findById`) est réduite par ce harnais.
      */
     function dispatchWorker(
       executor: JarvisEffectExecutor,
@@ -1774,23 +1838,7 @@ describe.skipIf(!RUN_CERT)(
         runWithTenant: <T>(tenantId: string, work: () => Promise<T>): Promise<T> =>
           workerA.withTenant(tenantId, () => work()),
       } as unknown as Persistence;
-      const directory: JarvisDispatchRunDirectoryPort = {
-        listDispatchCoordinates: async (tenantId: string, limit: number) => {
-          const rows = await admin.$queryRaw<Array<{ ownerUserId: string; runId: string }>>`
-            SELECT DISTINCT "ownerUserId", "runId"
-              FROM public.jarvis_work_items
-             WHERE "companyId" = ${tenantId}
-               AND "signalAppliedAt" IS NULL
-             ORDER BY "runId"
-             LIMIT ${limit}
-          `;
-          return rows.map((row) => ({
-            companyId: tenantId,
-            ownerUserId: row.ownerUserId,
-            runId: row.runId,
-          }));
-        },
-      };
+      const directory = new PrismaJarvisDispatchRunDirectory(workerA);
       return new JarvisWorkItemDispatchService(
         persistence,
         { listCompanyIds: async () => [companyId] } as unknown as ScheduledTenantDirectory,

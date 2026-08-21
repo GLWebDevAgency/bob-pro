@@ -44,7 +44,7 @@ import type {
 import type { JarvisCustomerEffectAuthority } from '../jobs/jarvis-customer-effect.executor';
 import type { CustomerUpdateAuthorityPort } from '../customers/customer-update.authority';
 import type { JarvisWorkItemsDispatchRepository } from './prisma/jarvis-work-items.persistence';
-import type { JarvisDispatchRunDirectoryPort } from '../jobs/jarvis-work-item-dispatch.service';
+import type { JarvisDispatchRunDirectoryPort } from '../jobs/jarvis-dispatch-directory';
 import type { CabinetInfrastructure } from '../cabinet/cabinet-infrastructure';
 import type { DocumentFolderDeletionPlanStore } from '../documents/document-folder-deletion-plan';
 import type {

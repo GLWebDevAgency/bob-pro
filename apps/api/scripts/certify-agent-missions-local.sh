@@ -5395,6 +5395,357 @@ END;
 $bob_u1f_dispatch_membership$;
 SQL
 
+# Témoin rolling N-1 AVANT l'expand U1-l : le writer historique exact crée une vraie coordonnée
+# due avec sa forme de colonnes N-1. La page v1 non vide est capturée byte-for-byte afin que le
+# remplacement de sa policy par l'expand ne puisse pas être certifié sur un tenant vide.
+certify_agent_mission_event_writer \
+  "writer-u1l-directory-n1" \
+  "d1000000-0000-4000-8000-000000000010" \
+  "d1000000-0000-4000-8000-000000000011" \
+  "d1000000-0000-4000-8000-000000000012" \
+  "d1000000-0000-4000-8000-000000000013" \
+  "d1000000-0000-8000-8000-000000000014" \
+  "d1000000-0000-4000-8000-000000000015"
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+SET LOCAL ROLE bob_schema_owner;
+DO $bob_u1l_n1_writer$
+DECLARE
+  target RECORD;
+BEGIN
+  PERFORM pg_catalog.set_config('app.current_company_id', 'writer-n1-company', true);
+  PERFORM pg_catalog.set_config('app.current_user_id', 'writer-u1l-directory-n1', true);
+  PERFORM pg_catalog.set_config(
+    'app.current_agent_mission_id',
+    'd1000000-0000-4000-8000-000000000010',
+    true
+  );
+  SELECT mission."id", mission."companyId", mission."ownerUserId"
+    INTO STRICT target
+    FROM public.agent_missions AS mission
+   WHERE mission."id" = 'd1000000-0000-4000-8000-000000000010'::UUID
+     AND mission."companyId" = 'writer-n1-company'
+     AND mission."ownerUserId" = 'writer-u1l-directory-n1';
+  PERFORM pg_catalog.set_config('app.current_company_id', target."companyId", true);
+  PERFORM pg_catalog.set_config('app.current_user_id', target."ownerUserId", true);
+  PERFORM pg_catalog.set_config('app.current_agent_mission_id', target."id"::TEXT, true);
+  INSERT INTO public.jarvis_work_items (
+    "id", "companyId", "runId", "ownerUserId", "effectId",
+    "actionId", "actionVersion", "authorizationSource", "actingPrincipalId",
+    "executeBy", "createdAt", "updatedAt"
+  ) VALUES (
+    'd1000000-0000-4000-8000-000000000001'::UUID,
+    target."companyId",
+    target."id",
+    target."ownerUserId",
+    'd1000000-0000-4000-8000-000000000002'::UUID,
+    'client-creer',
+    1,
+    jsonb_build_object(
+      'source', 'confirmation',
+      'receiptId', 'd1000000-0000-4000-8000-000000000003'
+    ),
+    target."ownerUserId",
+    pg_catalog.statement_timestamp() + INTERVAL '1 hour',
+    pg_catalog.statement_timestamp(),
+    pg_catalog.statement_timestamp()
+  );
+END;
+$bob_u1l_n1_writer$;
+COMMIT;
+SQL
+u1l_v1_page_before="$(
+  "$PSQL_BIN" "$DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 \
+    -c "SELECT \"ownerUserId\" || '|' || \"runId\" FROM public.list_jarvis_dispatch_coordinates_v1('writer-n1-company', 10)"
+)"
+case "$u1l_v1_page_before" in
+  *'|'*) ;;
+  *)
+    echo "Jarvis U1-l N-1 directory page was empty before expand" >&2
+    exit 1
+    ;;
+esac
+
+# Jarvis U1-l : expand strictement additif. La fonction v1 précédente reste byte-for-byte ; les
+# quatre fonctions v2 naissent INVOKER et sans EXECUTE runtime jusqu'au provisionnement ci-dessous.
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260821010000_jarvis_dispatch_directory_cursor/migration.sql"
+
+# Témoin rolling N-1 APRÈS l'expand, avant tout geste v2 : même page non vide, même ordre, aucune
+# dépendance aux quatre nouvelles fonctions encore fermées.
+u1l_v1_page_after="$(
+  "$PSQL_BIN" "$DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 \
+    -c "SELECT \"ownerUserId\" || '|' || \"runId\" FROM public.list_jarvis_dispatch_coordinates_v1('writer-n1-company', 10)"
+)"
+if [ "$u1l_v1_page_after" != "$u1l_v1_page_before" ]; then
+  echo "Jarvis U1-l N-1 directory page drifted across expand" >&2
+  exit 1
+fi
+
+# La preuve rolling est terminée. Le writer N-1 règle sa ligne dédiée en `outcome_unknown` via la
+# policy owner-scopée réelle : elle n'est plus due et ne contamine pas les suites suivantes. La base
+# entière reste jetable et sera supprimée par le trap ; aucun faux `signalAppliedAt` n'est posé.
+"$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+SELECT pg_catalog.set_config('app.current_company_id', 'writer-n1-company', true);
+SELECT pg_catalog.set_config('app.current_user_id', 'writer-u1l-directory-n1', true);
+SELECT pg_catalog.set_config(
+  'app.current_agent_mission_id',
+  'd1000000-0000-4000-8000-000000000010',
+  true
+);
+DO $bob_u1l_n1_cleanup$
+DECLARE
+  updated_rows INTEGER;
+BEGIN
+  UPDATE public.jarvis_work_items
+     SET "status" = 'outcome_unknown',
+         "authorizedAt" = pg_catalog.statement_timestamp(),
+         "authorizationDigest" = repeat('a', 64),
+         "resultDigest" = repeat('b', 64),
+         "updatedAt" = pg_catalog.statement_timestamp()
+   WHERE "id" = 'd1000000-0000-4000-8000-000000000001'::UUID;
+  GET DIAGNOSTICS updated_rows = ROW_COUNT;
+  IF updated_rows <> 1 THEN
+    RAISE EXCEPTION 'JARVIS_U1L_N1_FIXTURE_CLEANUP_DRIFT';
+  END IF;
+END;
+$bob_u1l_n1_cleanup$;
+COMMIT;
+SQL
+
+# Le runtime n'a encore aucun EXECUTE v2 et même le deployer propriétaire est refusé par la garde
+# current_user. Une migration interrompue ne peut donc jamais ouvrir l'annuaire global.
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+DO $bob_u1l_directory_closed$
+DECLARE
+  refused BOOLEAN := FALSE;
+BEGIN
+  IF pg_catalog.has_function_privilege(
+       'bob_app',
+       'public.claim_jarvis_dispatch_coordinates_v2(text,integer,uuid)',
+       'EXECUTE'
+     ) THEN
+    RAISE EXCEPTION 'JARVIS_U1L_RUNTIME_EXECUTE_OPEN_BEFORE_PROVISIONING';
+  END IF;
+  BEGIN
+    PERFORM * FROM public.claim_jarvis_dispatch_coordinates_v2(
+      'cert-company', 10, '90000000-0000-4000-8000-000000000001'::UUID
+    );
+  EXCEPTION
+    WHEN insufficient_privilege THEN refused := TRUE;
+  END;
+  IF NOT refused THEN
+    RAISE EXCEPTION 'JARVIS_U1L_DIRECTORY_NOT_FAIL_CLOSED_BEFORE_PROVISIONING';
+  END IF;
+END;
+$bob_u1l_directory_closed$;
+
+-- Injection volontaire de grants rogue : le provisionnement doit les retirer, y compris le
+-- grant par colonne que REVOKE ALL ON TABLE ne couvre pas.
+BEGIN;
+SET LOCAL ROLE bob_schema_owner;
+GRANT SELECT ON TABLE public.jarvis_dispatch_directory_cursors TO authenticated;
+GRANT SELECT ("companyId") ON TABLE public.jarvis_dispatch_directory_cursors TO service_role;
+COMMIT;
+SQL
+
+# Provisionnement v1+v2 fidèle à la surface finale de release. Le v1 est rejoué dans l'allowlist
+# pour garantir le rolling N-1 ; le binaire N n'appelle ensuite que les quatre gestes v2.
+"$PSQL_BIN" "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 <<'SQL'
+SET LOCAL ROLE bob_schema_owner;
+GRANT USAGE, CREATE ON SCHEMA public TO bob_jarvis_dispatch_directory;
+RESET ROLE;
+
+ALTER FUNCTION public.claim_jarvis_dispatch_coordinates_v2(TEXT, INTEGER, UUID)
+  OWNER TO bob_jarvis_dispatch_directory;
+ALTER FUNCTION public.renew_jarvis_dispatch_coordinates_claim_v2(TEXT, UUID)
+  OWNER TO bob_jarvis_dispatch_directory;
+ALTER FUNCTION public.start_jarvis_dispatch_coordinate_v2(TEXT, UUID, INTEGER)
+  OWNER TO bob_jarvis_dispatch_directory;
+ALTER FUNCTION public.ack_jarvis_dispatch_coordinates_v2(TEXT, UUID)
+  OWNER TO bob_jarvis_dispatch_directory;
+
+SET LOCAL ROLE bob_jarvis_dispatch_directory;
+SELECT pg_catalog.format('ALTER FUNCTION %s SECURITY DEFINER', function.oid::regprocedure)
+  FROM pg_catalog.pg_proc AS function
+ WHERE function.oid IN (
+   'public.list_jarvis_dispatch_coordinates_v1(text,integer)'::regprocedure,
+   'public.claim_jarvis_dispatch_coordinates_v2(text,integer,uuid)'::regprocedure,
+   'public.renew_jarvis_dispatch_coordinates_claim_v2(text,uuid)'::regprocedure,
+   'public.start_jarvis_dispatch_coordinate_v2(text,uuid,integer)'::regprocedure,
+   'public.ack_jarvis_dispatch_coordinates_v2(text,uuid)'::regprocedure
+ )
+\gexec
+SELECT pg_catalog.format(
+  'ALTER FUNCTION %s SET search_path = pg_catalog', function.oid::regprocedure
+)
+  FROM pg_catalog.pg_proc AS function
+ WHERE function.oid IN (
+   'public.list_jarvis_dispatch_coordinates_v1(text,integer)'::regprocedure,
+   'public.claim_jarvis_dispatch_coordinates_v2(text,integer,uuid)'::regprocedure,
+   'public.renew_jarvis_dispatch_coordinates_claim_v2(text,uuid)'::regprocedure,
+   'public.start_jarvis_dispatch_coordinate_v2(text,uuid,integer)'::regprocedure,
+   'public.ack_jarvis_dispatch_coordinates_v2(text,uuid)'::regprocedure
+ )
+\gexec
+SELECT pg_catalog.format(
+  'ALTER FUNCTION %s SET row_security = on', function.oid::regprocedure
+)
+  FROM pg_catalog.pg_proc AS function
+ WHERE function.oid IN (
+   'public.list_jarvis_dispatch_coordinates_v1(text,integer)'::regprocedure,
+   'public.claim_jarvis_dispatch_coordinates_v2(text,integer,uuid)'::regprocedure,
+   'public.renew_jarvis_dispatch_coordinates_claim_v2(text,uuid)'::regprocedure,
+   'public.start_jarvis_dispatch_coordinate_v2(text,uuid,integer)'::regprocedure,
+   'public.ack_jarvis_dispatch_coordinates_v2(text,uuid)'::regprocedure
+ )
+\gexec
+SELECT pg_catalog.format(
+  'ALTER FUNCTION %s SET statement_timeout = %L', function.oid::regprocedure, '4s'
+)
+  FROM pg_catalog.pg_proc AS function
+ WHERE function.oid IN (
+   'public.list_jarvis_dispatch_coordinates_v1(text,integer)'::regprocedure,
+   'public.claim_jarvis_dispatch_coordinates_v2(text,integer,uuid)'::regprocedure,
+   'public.renew_jarvis_dispatch_coordinates_claim_v2(text,uuid)'::regprocedure,
+   'public.start_jarvis_dispatch_coordinate_v2(text,uuid,integer)'::regprocedure,
+   'public.ack_jarvis_dispatch_coordinates_v2(text,uuid)'::regprocedure
+ )
+\gexec
+SELECT pg_catalog.format(
+  'ALTER FUNCTION %s SET lock_timeout = %L', function.oid::regprocedure, '1s'
+)
+  FROM pg_catalog.pg_proc AS function
+ WHERE function.oid IN (
+   'public.list_jarvis_dispatch_coordinates_v1(text,integer)'::regprocedure,
+   'public.claim_jarvis_dispatch_coordinates_v2(text,integer,uuid)'::regprocedure,
+   'public.renew_jarvis_dispatch_coordinates_claim_v2(text,uuid)'::regprocedure,
+   'public.start_jarvis_dispatch_coordinate_v2(text,uuid,integer)'::regprocedure,
+   'public.ack_jarvis_dispatch_coordinates_v2(text,uuid)'::regprocedure
+ )
+\gexec
+SELECT pg_catalog.format(
+  'REVOKE ALL ON FUNCTION %s FROM %s CASCADE',
+  function.oid::regprocedure,
+  CASE WHEN privilege.grantee = 0 THEN 'PUBLIC'
+       ELSE pg_catalog.quote_ident(grantee.rolname) END
+)
+  FROM pg_catalog.pg_proc AS function
+ CROSS JOIN LATERAL pg_catalog.aclexplode(
+   COALESCE(function.proacl, pg_catalog.acldefault('f', function.proowner))
+ ) AS privilege
+  LEFT JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = privilege.grantee
+ WHERE function.oid IN (
+   'public.list_jarvis_dispatch_coordinates_v1(text,integer)'::regprocedure,
+   'public.claim_jarvis_dispatch_coordinates_v2(text,integer,uuid)'::regprocedure,
+   'public.renew_jarvis_dispatch_coordinates_claim_v2(text,uuid)'::regprocedure,
+   'public.start_jarvis_dispatch_coordinate_v2(text,uuid,integer)'::regprocedure,
+   'public.ack_jarvis_dispatch_coordinates_v2(text,uuid)'::regprocedure
+ )
+   AND privilege.privilege_type = 'EXECUTE'
+   AND privilege.grantee <> function.proowner
+\gexec
+SELECT pg_catalog.format(
+  'REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I',
+  function.oid::regprocedure,
+  role.rolname
+)
+  FROM pg_catalog.pg_proc AS function
+ CROSS JOIN pg_catalog.pg_roles AS role
+ WHERE function.oid IN (
+   'public.list_jarvis_dispatch_coordinates_v1(text,integer)'::regprocedure,
+   'public.claim_jarvis_dispatch_coordinates_v2(text,integer,uuid)'::regprocedure,
+   'public.renew_jarvis_dispatch_coordinates_claim_v2(text,uuid)'::regprocedure,
+   'public.start_jarvis_dispatch_coordinate_v2(text,uuid,integer)'::regprocedure,
+   'public.ack_jarvis_dispatch_coordinates_v2(text,uuid)'::regprocedure
+ )
+   AND role.rolname IN ('anon', 'authenticated', 'service_role')
+\gexec
+SELECT pg_catalog.format(
+  'GRANT EXECUTE ON FUNCTION %s TO bob_app', function.oid::regprocedure
+)
+  FROM pg_catalog.pg_proc AS function
+ WHERE function.oid IN (
+   'public.list_jarvis_dispatch_coordinates_v1(text,integer)'::regprocedure,
+   'public.claim_jarvis_dispatch_coordinates_v2(text,integer,uuid)'::regprocedure,
+   'public.renew_jarvis_dispatch_coordinates_claim_v2(text,uuid)'::regprocedure,
+   'public.start_jarvis_dispatch_coordinate_v2(text,uuid,integer)'::regprocedure,
+   'public.ack_jarvis_dispatch_coordinates_v2(text,uuid)'::regprocedure
+ )
+\gexec
+RESET ROLE;
+
+SET LOCAL ROLE bob_schema_owner;
+REVOKE CREATE ON SCHEMA public FROM bob_jarvis_dispatch_directory;
+GRANT USAGE ON SCHEMA public TO bob_jarvis_dispatch_directory;
+SELECT DISTINCT pg_catalog.format(
+  'REVOKE ALL PRIVILEGES ON TABLE public.jarvis_dispatch_directory_cursors FROM %s CASCADE',
+  CASE WHEN privilege.grantee = 0 THEN 'PUBLIC'
+       ELSE pg_catalog.quote_ident(grantee.rolname) END
+)
+  FROM pg_catalog.pg_class AS relation
+ CROSS JOIN LATERAL pg_catalog.aclexplode(relation.relacl) AS privilege
+  LEFT JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = privilege.grantee
+ WHERE relation.oid = 'public.jarvis_dispatch_directory_cursors'::regclass
+   AND privilege.grantee <> relation.relowner
+\gexec
+SELECT DISTINCT pg_catalog.format(
+  'REVOKE ALL PRIVILEGES (%I) ON TABLE public.jarvis_dispatch_directory_cursors FROM %s CASCADE',
+  attribute.attname,
+  CASE WHEN privilege.grantee = 0 THEN 'PUBLIC'
+       ELSE pg_catalog.quote_ident(grantee.rolname) END
+)
+  FROM pg_catalog.pg_class AS relation
+  JOIN pg_catalog.pg_attribute AS attribute ON attribute.attrelid = relation.oid
+ CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) AS privilege
+  LEFT JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = privilege.grantee
+ WHERE relation.oid = 'public.jarvis_dispatch_directory_cursors'::regclass
+   AND attribute.attnum > 0
+   AND NOT attribute.attisdropped
+   AND privilege.grantee <> relation.relowner
+\gexec
+GRANT SELECT, INSERT, UPDATE ON TABLE public.jarvis_dispatch_directory_cursors
+  TO bob_jarvis_dispatch_directory;
+
+REVOKE ALL PRIVILEGES ON TABLE public.jarvis_work_items
+  FROM bob_jarvis_dispatch_directory CASCADE;
+SELECT DISTINCT pg_catalog.format(
+  'REVOKE ALL PRIVILEGES (%I) ON TABLE public.jarvis_work_items FROM bob_jarvis_dispatch_directory CASCADE',
+  attribute.attname
+)
+  FROM pg_catalog.pg_attribute AS attribute
+ CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) AS privilege
+ WHERE attribute.attrelid = 'public.jarvis_work_items'::regclass
+   AND attribute.attnum > 0
+   AND NOT attribute.attisdropped
+   AND privilege.grantee = 'bob_jarvis_dispatch_directory'::regrole
+\gexec
+GRANT SELECT ("companyId", "ownerUserId", "runId", "status", "nextAttemptAt", "leaseExpiresAt", "authorizedAt", "authorizationDigest", "resultDigest", "signalAppliedAt", "updatedAt")
+  ON TABLE public.jarvis_work_items
+  TO bob_jarvis_dispatch_directory;
+RESET ROLE;
+
+DO $bob_u1l_dispatch_membership$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_auth_members AS membership
+     WHERE membership.roleid = 'bob_jarvis_dispatch_directory'::regrole
+       AND membership.member = 'bob_app'::regrole
+  ) THEN
+    REVOKE bob_jarvis_dispatch_directory FROM bob_app CASCADE;
+  END IF;
+END;
+$bob_u1l_dispatch_membership$;
+SQL
+
+# Le même certificat metadata-only que release lit la postimage finale, notamment les ACL rogue
+# injectées plus haut et désormais retirées.
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -v app_role=bob_app \
+  -f "$ROOT_DIR/apps/api/prisma/jarvis-dispatch-directory-release-cert.sql"
+
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
 SET ROLE bob_schema_owner;
 GRANT USAGE ON SCHEMA public TO bob_cert_auditor;
@@ -5443,6 +5794,7 @@ DATABASE_URL="$DATABASE_URL" \
 DIRECT_URL="$DIRECT_URL" \
 AGENT_MISSION_CERT_ADMIN_URL="$CERT_ADMIN_URL" \
 RUN_AGENT_MISSION_POSTGRES_CERT=true \
+RUN_POSTGRES_JARVIS_DISPATCH_DIRECTORY_CERT=true \
 AGENT_MISSION_CERT_DATABASE_IS_DISPOSABLE=true \
 JARVIS_PAYLOAD_RETENTION_DIRECTORY_CERT=true \
 pnpm --filter @bob/api exec vitest run \
@@ -5453,7 +5805,8 @@ pnpm --filter @bob/api exec vitest run \
   src/persistence/prisma/jarvis-proposal-payloads.postgres.test.ts \
   src/jobs/jarvis-customer-effect.executor.postgres.test.ts \
   src/persistence/prisma/jarvis-oracles.postgres.test.ts \
-  src/persistence/prisma/jarvis-u1e.postgres.test.ts
+  src/persistence/prisma/jarvis-u1e.postgres.test.ts \
+  src/persistence/prisma/jarvis-dispatch-directory.postgres.test.ts
 
 # Exécute le VRAI preflight de release contre PostgreSQL, pas un stub de `psql`. La fixture prend
 # la forme N-1 historique exacte : run `cancelling`, item `cancelled/no-effect` déjà signalé. Le
